@@ -42,13 +42,31 @@ Target: end-to-end coding task in a sandbox with guard + verified audit.
 | `AX-113` | Windows containment tier: AppContainer + restricted token/job objects + acceptance tests (honest limits; not equivalent to Landlock/seccomp) | `DEC-008`, `REQ-GUARD-004` |
 | `AX-114` | macOS Seatbelt sandbox backend + acceptance tests (child-network blocking documented as best-effort) | `DEC-008`, `REQ-GUARD-004` |
 | `AX-307` | Eval harness: paired per-task A/B (k ≥ 3), pre-registered endpoints + published benchmark suite — pulled forward prerequisite for all eval-gated features | `DEC-016`, `REQ-CTX-003/006/009`, `REQ-HORIZON-*` |
+| `AX-115` | Security hardening pass 1: canonicalize-and-re-validate every fs target (TOCTOU), argv-only spawn with env allowlist, resolve-then-check egress with per-hop re-authorization, project-scope narrowing-only config validation | `ARCH/22`, `REQ-SEC-004..008`, `REQ-SEC-019/022` |
+| `AX-116` | Secret non-disclosure: redaction before all persistence (incl. external text), no-`Debug` secret types, redacting panic hook, canary-corpus scan over prompts/errors/audit/analytics/TUI/exports | `ARCH/22`, `REQ-SEC-009` |
+| `AX-117` | Audit hardening: off-box root anchoring made the declared default, anchor status surfaced in every surface, cross-process append lock, reconciliation gap treated as an incident | `ARCH/22`, `ARCH/14`, `REQ-SEC-012/020/024` |
+| `AX-118` | Guard hardening: `unmatched: "allow"` rejected at schema load, non-canonical resource refusal, composed reduced-safety acknowledgement, guard↔sandbox pattern parity corpus | `ARCH/22`, `ARCH/12`, `REQ-SEC-021`, `REQ-GUARD-002` |
+| `AX-119` | Extension hardening: normalized file-set pin digest, bounded/confined package-extraction budgets, extension processes confined with network off, hook tighten-only enforcement | `ARCH/22`, `DEC-018`, `REQ-SEC-015/016` |
+| `AX-120` | Multi-agent authority: parent-ceiling intersection asserted at spawn and per effect, peer requests re-authorized locally, approvals bound to (peer, tool, resource) | `ARCH/22`, `ARCH/16`, `REQ-SEC-014`, `REQ-ORCH-001/005` |
+| `AX-121` | Architecture gates in CI: no effect path without guard+audit, no policy evaluation outside the guard, no direct network client above the egress adapter, brand-name scan over shipped artifacts | `ARCH/22`, `ARCH/23`, `REQ-SEC-023`, `REQ-VISION-003` |
+| `AX-122` | Verification harness: injectable clock/ids/rng/home, mock provider transport, loopback-only HTTP with a non-loopback tripwire, 5×/20× repeat policy, quarantine ledger, fuzz targets for untrusted formats | `ARCH/23`, `REQ-VER-002..004`, `REQ-VER-016` |
+| `AX-123` | P1 acceptance matrix `ACC-P1-01..08`: containment per tier, guard decision table, ACP approval round-trip, audit verify + census, ACP handshake, replay/resume determinism, compaction continuity, headless exit codes | `ARCH/23`, `REQ-VER-005..011`, `REQ-VER-013..015` |
+| `AX-124` | Performance baseline harness: repeatable benchmark procedure with a recorded machine baseline; provisional budgets replaced by measured values; `unmeasured` as a first-class verdict | `ARCH/23`, `REQ-VER-012` |
+| `AX-125` | Fail-closed resource bounds: session/run ceilings for steps, tool calls, wall-clock, tokens, cost, output bytes, concurrency; tree totals capped by the session ceiling; unknown pricing fails closed on the cost term | `ARCH/22`, `REQ-SEC-013`, `REQ-HORIZON-003` |
+| `AX-126` | Local state integrity: state/config/cache ownership+mode validation, no-follow/exclusive-create lock/head/temp files, symlinked policy/config path refusal, portable-bundle verify-before-trust | `ARCH/22`, `ARCH/07`, `REQ-SEC-018/019` |
 
 **Eval gate prerequisite:** `AX-307` ships in this phase so the P2 eval-gated features
 (`AX-203`, `AX-206`) are gated by a harness that already exists when they are built —
 a gate cannot be satisfied retroactively. The gating requirement is unchanged; only
 its tooling moves earlier.
 
-**Exit:** guarded, sandboxed, audited coding task; policy changes behavior with no code change. **Differentiator: guard + verifiable audit.**
+**Security/verification prerequisite:** `ARCH/22-SECURITY.md` and
+`ARCH/23-VERIFICATION.md` define the threat model and the evidence rules for this
+phase. `AX-115..AX-126` are not polish: `AX-122` (verification harness) and `AX-123`
+(the `ACC-P1-01..08` acceptance matrix) are what turn "it works" into evidence, and
+they ship **in this phase** for the same reason `AX-307` does.
+
+**Exit:** guarded, sandboxed, audited coding task; policy changes behavior with no code change; the `ACC-P1-01..08` acceptance matrix passes with retained records. **Differentiator: guard + verifiable audit.**
 
 ## P2 — Context that survives scale + routing (weeks 8–16)
 
@@ -86,3 +104,6 @@ its tooling moves earlier.
 - **Hard gate (open until evidenced):** the exact model-catalog source and its data license MUST be confirmed, with recorded evidence, before any catalog snapshot is vendored or committed. This gate is not closed by assumption or by a rushed snapshot (`SRC-009`, `ARCH/11` §Open questions).
 - Resolved: worktree cockpit layout is specified in `ARCH/06-UI.md` (`DEC-010`); implementation tracked as `AX-208`.
 - Extension trust policy (pin format, allow/deny + managed lockdown) is specified in `ARCH/21-DISCOVERY.md`; the exact pin hash format is still open.
+- **Hard gate (needs a `DEC-*`):** audit anchoring. `REQ-AUDIT-004` requires roots anchored beyond the local store, but the documented default in `ARCH/14` is `audit.anchor.offbox: "none"` (local-trust). Either the default changes or the requirement is amended to state that an unanchored deployment provides local-trust evidence only. Tracked by `AX-117`; not silently decided in `ARCH/22-SECURITY.md` §Open questions 1.
+- **Protocol naming (needs a `DEC-*`):** `ARCH/15` lists the permission method as `request/permission`; the acceptance work is specified against the wire method `session/request_permission`. Settle which token is authoritative before the protocol table is frozen (`ARCH/23` `ACC-P1-03`, `ARCH/22` §Open questions 2).
+- **Flagged for the owning lane:** `DEC-021` closes the `SRC-009` data-license hard gate and sets the catalog posture (curated primary + opt-in enrichment, no full-dataset snapshot by default). The hard-gate bullet above and `AX-107`'s "offline snapshot" wording predate that decision and need reconciling; `ARCH/22` `X-09`/`RR-06` and `REQ-SEC-017` are already aligned to `DEC-021`.
