@@ -7,7 +7,8 @@
 3. **`ARCH/03-ARCHITECTURE.md`** — the architectural "how".
 4. **`ARCH/04-DECISIONS.md`** — `DEC-*` records that constrain the architecture.
 5. **`ARCH/05-SOURCE-LEDGER.md`** — `SRC-*` provenance and licensing dispositions.
-6. Module-level documents (added as the design matures) — the "LLD" layer.
+6. Module-level documents (`ARCH/06`–`ARCH/21`) — the "LLD" layer:
+   - `06-UI.md` · `07-SESSION.md` · `08-LOOP.md` · `09-CONTEXT.md` · `10-TOOLS.md` · `11-PROVIDER.md` · `12-GUARD.md` · `13-SANDBOX.md` · `14-AUDIT.md` · `15-PROTOCOLS.md` · `16-ORCH.md` · `18-CONFIG.md` · `19-COMPRESSION.md` · `20-ANALYTICS.md` · `21-DISCOVERY.md`. (`17` is intentionally unused.)
 
 `TODO.md` is a delivery tracker, not a design authority. When it disagrees with `ARCH/`, `ARCH/` wins.
 
@@ -22,7 +23,7 @@
 | `AX-<nnn>` | Delivery task in `TODO.md` | `AX-012` |
 | `AX-<MISSION>-<nnn>` | Coding task bound to an architecture decision | `AX-ARCH-003` |
 
-Area codes: `VISION`, `REQ`, `ARCH`, `LOOP`, `TOOL`, `CTX`, `PROV`, `GUARD`, `AUDIT`, `SBX`, `PROTO`, `SESS`, `ORCH`, `UI`, `HORIZON`, `SEC`, `PERF`.
+Area codes: `VISION`, `REQ`, `ARCH`, `LOOP`, `TOOL`, `CTX`, `PROV`, `GUARD`, `AUDIT`, `SBX`, `PROTO`, `SESS`, `ORCH`, `UI`, `HORIZON`, `MEM`, `SKILL`, `PLUGIN`, `ANALYTICS`, `SEC`, `PERF`.
 
 ## Requirement quality bar
 

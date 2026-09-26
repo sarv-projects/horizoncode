@@ -63,6 +63,8 @@ A **single Rust workspace** producing one binary per platform. The binary contai
 | `CMP-mcp` | MCP edge | Capability | MCP host: server lifecycle, tool/resource/prompt mirroring, dedupe |
 | `CMP-tui` | TUI | Surface | Transcript, dock, cockpit, palette, permissions, telemetry |
 | `CMP-headless` | Headless | Surface | Non-interactive run, structured output, CI use |
+| `CMP-config` | Configuration | Capability | Discovery precedence, validation, instructions, skills, plugins, hooks, memory |
+| `CMP-analytics` | Analytics | Observability | Usage/cost/tool/session metrics, local ledger, `stats`/`export` surfaces |
 
 ## 3. The agent loop (contract)
 

@@ -50,6 +50,10 @@ Reference entries are indexed by role. Concrete upstream identity is intentional
 | `SRC-012` | Sandbox crates | **Depend** | MIT/Apache-2.0 | Landlock bindings, seccomp bindings; bubblewrap invoked as subprocess |
 | `SRC-013` | Parser / LSP / index | **Depend** | MIT / Apache-2.0 | tree-sitter, LSP client, SCIP ingest |
 | `SRC-014` | Git / DB / CLI / TUI / hash / WASM | **Depend** | permissive | gitoxide, rusqlite, clap, ratatui, crossterm, blake3, wasmtime |
+| `SRC-015` | Skill file convention | **Adopt** (convention) | open standard | `SKILL.md` discovery, frontmatter, description routing, progressive disclosure |
+| `SRC-016` | Plugin + hook convention | **Pattern** | — | Manifest + component dirs + marketplace install + hook-matching shape |
+| `SRC-017` | Analytics CLI shape | **Pattern** | permissive | Local usage ledger with `stats`/`export`/insights surfaces; priced locally |
+| `SRC-018` | MCP registry listing model | **Reference** | — | Enumeration model only; never auto-installed, trust defined by agentX |
 
 ## 3. Hard no-go
 

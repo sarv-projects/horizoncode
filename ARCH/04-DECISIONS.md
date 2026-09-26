@@ -105,3 +105,59 @@ Architecture decision records. Each constrains the design until superseded by a 
 **Decision.** A dependency allowlist (permissive SPDX set only) is enforced by an automated check that fails the build on any violation. Adapted files carry a provenance header (upstream role, pinned revision, license, changes). Copyleft, source-available, restricted-dual-license, and unlicensed code is a hard no-go.
 
 **Rationale.** One contaminated file poisons the distribution irreversibly (`REQ-SEC-001`).
+
+## DEC-013 — Adopt the observation-compression pattern, not the tool
+
+**Status:** accepted.
+
+**Decision.** Implement **native, deterministic per-command output formatters** (filtering, grouping, truncation, deduplication) plus a full-output **recall store**, per command family, **eval-gated**. Do **not** depend on any external output-filter binary, and never present a compressor-internal counter as a saving.
+
+**Rationale.** Investigated directly (`ARCH/19`). The named approach is well engineered but two independent paired benchmarks found no per-task cost reduction (parity at best, increases elsewhere) with task quality tied, because little input flows through the compressible channel and cached re-reads dominate cost. The *pattern* is sound and client-side; the tool and its self-reported metric are not evidence.
+
+## DEC-014 — Prompt caching is a first-class context concern
+
+**Status:** accepted.
+
+**Decision.** Order context as tools → system → messages with an explicit cache breakpoint at the end of static content, never mutate the cached prefix mid-run, and treat the cache-read/creation/input token triple as the primary compression metric.
+
+**Rationale.** It is the only provider-exposed form of KV reuse and the largest proven cost lever for a remote-API agent (`REQ-CTX-007`).
+
+## DEC-015 — Extractive for code, schema-bound abstractive for prose
+
+**Status:** accepted.
+
+**Decision.** Code and tool observations are compressed by **selection/grouping** (verbatim spans) or not at all; abstractive summarization is reserved for prose and must follow a structured schema (decisions / open bugs with exact errors / file refs / next step / discarded-and-where-to-recover).
+
+**Rationale.** Rewording code or logs destroys identifiers, hashes, and negations; extraction preserves them (`REQ-CTX-008`, `REQ-CTX-003`).
+
+## DEC-016 — Compression is judged by paired task evals, never by internal counters
+
+**Status:** accepted.
+
+**Decision.** Every compression change ships only if a **paired per-task A/B** (k ≥ 3, pre-registered endpoints) shows task success ≥ baseline and cost/turn improved; results are reported as per-task median + pass-rate deltas, not totals. Compressor-internal "saved" counters are explicitly not evidence.
+
+**Rationale.** Both cited benchmarks were decided by this methodology; self-reported savings systematically overcount (`REQ-CTX-009`).
+
+## DEC-017 — Analytics is local-first and separate from product telemetry
+
+**Status:** accepted.
+
+**Decision.** Usage/cost/tool/session/reliability/routing metrics are recorded to a local, rebuildable ledger and served by local commands; the analytics path makes no network egress. Any remote export is explicit opt-in and sanitized. Engineering analytics are kept distinct from product/usage analytics.
+
+**Rationale.** Long-horizon work must be inspectable without leaking code or prompts, and "proper" numbers (observed vs estimated, pinned pricing) are impossible to trust if they are mixed with adoption metrics (`REQ-ANALYTICS-001..006`).
+
+## DEC-018 — Extensions are deny-by-default and provenance-pinned
+
+**Status:** accepted.
+
+**Decision.** MCP servers, skills, and plugins are discovered but not used until explicitly enabled; externally sourced artifacts are pinned by version/hash and their provenance is shown; plugin/hook effects pass through the guard; untrusted processes run sandboxed; a managed lockdown can restrict them. No external registry's trust policy is inherited.
+
+**Rationale.** Discovery is not trust; a coding agent with filesystem and network reach is a high-value target for a malicious skill, plugin, or server (`REQ-SKILL-001..004`, `REQ-PLUGIN-001..004`, `REQ-PROTO-003`).
+
+## DEC-019 — ACP both directions are first-class
+
+**Status:** accepted.
+
+**Decision.** agentX implements ACP as a first-class **server** (usable by clients) and a first-class **client** (driving peer agents as subordinates) with equal standing. This supersedes the "later" qualifier in `DEC-003`. Capability negotiation gates every optional call in both roles.
+
+**Rationale.** Being both usable and composable is a stated product priority and the seam that lets agentX orchestrate peers without a second engine (`REQ-PROTO-004`, `REQ-PROTO-006`).

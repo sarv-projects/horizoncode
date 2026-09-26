@@ -34,6 +34,10 @@ Target: end-to-end coding task in a sandbox with guard + verified audit.
 | `AX-106` | MCP host: stdio + streamable HTTP, per-session dedupe | `REQ-PROTO-003` |
 | `AX-107` | Multi-provider + catalog fetch/cache/offline snapshot | `DEC-007`, `REQ-PROV-002` |
 | `AX-108` | `ratatui` TUI: overlays, permission modal, telemetry | `REQ-UI-*` |
+| `AX-109` | Analytics ledger + usage/insights/stats/export surfaces | `DEC-017`, `REQ-ANALYTICS-001..006` |
+| `AX-110` | Skills: discovery + description routing + progressive disclosure | `REQ-SKILL-001..004` |
+| `AX-111` | Plugins + hooks: manifest, enumeration, disabled by default | `DEC-018`, `REQ-PLUGIN-001..004` |
+| `AX-112` | ACP client mode: drive peer agents as subordinates | `DEC-019`, `REQ-PROTO-004/006` |
 
 **Exit:** guarded, sandboxed, audited coding task; policy changes behavior with no code change. **Differentiator: guard + verifiable audit.**
 
@@ -59,14 +63,16 @@ Target: end-to-end coding task in a sandbox with guard + verified audit.
 | `AX-301` | Durable task graph surviving compaction/restart | `DEC-009`, `REQ-HORIZON-002` |
 | `AX-302` | Budgets: token/cost/wall-clock, fail closed | `REQ-HORIZON-003` |
 | `AX-303` | Parallel self-hosted team orchestration + CI feedback loop | `REQ-ORCH-*` |
-| `AX-304` | ACP client mode (drive peer agents as subordinates) | `REQ-PROTO-004` |
+| `AX-304` | ACP multi-agent orchestration hardening (supervised peer pool) | `DEC-019`, `REQ-PROTO-004` |
 | `AX-305` | Local/offline models | `REQ-PROV-001` |
 | `AX-306` | Sandboxed WASM skills/plugins | `DEC-008` |
 | `AX-307` | Published benchmark harness | `REQ-HORIZON-*` |
+| `AX-308` | Skills curator lifecycle (usage telemetry, archive-not-delete) | `REQ-SKILL-*` |
 
 **Exit:** N agents work a real backlog in parallel, auto-merge clean work, surface conflicts with evidence. **Differentiator: open parallel orchestration.**
 
 ## Open decisions
 
 - Exact model catalog source and its data license must be confirmed before any snapshot is committed.
-- Worktree cockpit layout details are pending the UI design lane (see `DEC-010`).
+- Resolved: worktree cockpit layout is specified in `ARCH/06-UI.md` (`DEC-010`); implementation tracked as `AX-208`.
+- Extension trust policy (pin format, allow/deny + managed lockdown) is specified in `ARCH/21-DISCOVERY.md`; the exact pin hash format is still open.

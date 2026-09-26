@@ -32,6 +32,10 @@ Observable, falsifiable requirements. Grouped by area. `MUST` = hard requirement
 - `REQ-CTX-003` — Compaction quality MUST be gated by a retrieval evaluation, not only by fitting the window.
 - `REQ-CTX-004` — The engine MUST estimate token usage before each model request and MUST handle provider context-overflow by compacting and retrying once.
 - `REQ-CTX-005` — Project instructions (`AGENTS.md`) MUST be discovered hierarchically (user → repository walk) and injected as a typed context source.
+- `REQ-CTX-006` — The engine MUST reduce tool observations with native, deterministic per-command formatters (filter/group/truncate/dedupe) plus a full-output recall store; formatters MUST be eval-gated per command family and MUST NOT depend on an external filter binary.
+- `REQ-CTX-007` — The engine MUST order context (tools → system → messages) for provider prompt caching, MUST place an explicit cache breakpoint at the end of static content, and MUST NOT mutate the cached prefix mid-run; cache-read/creation tokens MUST be tracked as the primary compression metric.
+- `REQ-CTX-008` — Code and tool observations MUST be compressed by verbatim selection/grouping only; abstractive summarization is permitted for prose only and MUST follow a structured schema (decisions / open bugs with exact errors / file refs / next step / discarded-and-where-to-recover).
+- `REQ-CTX-009` — Every compression change MUST be gated by a paired per-task evaluation (k ≥ 3) requiring task success ≥ baseline and cost/turn improvement; results MUST be reported as per-task median and pass-rate deltas. Compressor-internal counters MUST NOT be used as evidence.
 
 ## PROV (providers)
 
@@ -56,8 +60,10 @@ Observable, falsifiable requirements. Grouped by area. `MUST` = hard requirement
 - `REQ-PROTO-001` — agentX MUST implement an ACP server over stdio supporting session create/load/resume/list/close/prompt/cancel and streamed updates.
 - `REQ-PROTO-002` — agentX MUST implement permission requests to the ACP client and honor allow/deny decisions.
 - `REQ-PROTO-003` — agentX MUST act as an MCP host (client), supporting stdio and streamable-HTTP servers with per-session deduplication.
-- `REQ-PROTO-004` — agentX SHOULD expose an ACP **client** mode to drive other ACP agents as subordinates.
+- `REQ-PROTO-004` — agentX MUST expose an ACP **client** mode to drive other ACP agents as subordinates, with equal standing to its server mode.
 - `REQ-PROTO-005` — The agent core MUST NOT depend on a specific UI; all surfaces talk through one control interface.
+- `REQ-PROTO-006` — agentX MUST negotiate capabilities before use (ACP capability gating; MCP discovery) and MUST NOT call an ungated method.
+- `REQ-PROTO-007` — agentX MUST enumerate detected MCP servers, skills, and plugins with their status in a user-inspectable surface.
 
 ## SESS
 
@@ -101,3 +107,32 @@ Observable, falsifiable requirements. Grouped by area. `MUST` = hard requirement
 - `REQ-PERF-001` — The binary MUST reach an interactive prompt within a bounded startup time on a warm cache.
 - `REQ-PERF-002` — The live render region MUST be virtualized; only visible rows and the mutable tail are re-rendered.
 - `REQ-PERF-003` — Worktree indexing MUST be incremental and MUST NOT block the agent loop.
+
+## MEM (persistent memory)
+
+- `REQ-MEM-001` — The agent MUST maintain a persistent project/user memory store distinct from sessions, with bounded size and an explicit compaction policy.
+- `REQ-MEM-002` — Memory writes MUST be attributable and inspectable; the agent MUST NOT silently persist model guesses as facts.
+- `REQ-MEM-003` — Memory MUST be injectable as a typed context source.
+
+## SKILL
+
+- `REQ-SKILL-001` — Skills MUST be discovered from `SKILL.md` files with `name` + `description` frontmatter; discovery roots MUST include the user scope and the project scope.
+- `REQ-SKILL-002` — Skill routing MUST be description-based with progressive disclosure: only metadata is resident in context until invocation; the body loads on demand; resources and scripts load lazily.
+- `REQ-SKILL-003` — Externally sourced skills MUST be pinned by version/hash before use; a pin mismatch MUST refuse to load until re-pinned.
+- `REQ-SKILL-004` — A skill's declared `allowed-tools` MUST be treated as an approval hint, never as a sandbox or a grant.
+
+## PLUGIN
+
+- `REQ-PLUGIN-001` — Plugins MUST declare a manifest, and every component they contribute (skills, agents, hooks, MCP servers, LSP servers) MUST be enumerable.
+- `REQ-PLUGIN-002` — Third-party and project plugins MUST be disabled by default and require an explicit enable.
+- `REQ-PLUGIN-003` — Plugin installs MUST resolve and verify symlinks and pin a version/hash; untrusted plugin processes MUST run under the sandbox.
+- `REQ-PLUGIN-004` — Every hook invocation and its outcome MUST be logged.
+
+## ANALYTICS
+
+- `REQ-ANALYTICS-001` — The agent MUST record per-turn usage (input/output/cache-read/cache-creation tokens) and cost, attributable per session, model, and project.
+- `REQ-ANALYTICS-002` — Cost MUST distinguish observed from estimated and MUST carry a pricing version; unknown pricing MUST be reported as unknown, never fabricated.
+- `REQ-ANALYTICS-003` — The agent MUST expose per-tool metrics (calls, accepted/rejected, error rate, latency percentile).
+- `REQ-ANALYTICS-004` — Analytics MUST be local-only with no network egress by default; any remote export MUST be explicit opt-in and sanitizable.
+- `REQ-ANALYTICS-005` — The agent MUST provide commands to view usage/insights and to export a session or the ledger machine-readably.
+- `REQ-ANALYTICS-006` — Engineering analytics (tokens/cost/latency/retries) MUST be kept distinct from product/usage analytics.

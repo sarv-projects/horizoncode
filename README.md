@@ -22,6 +22,20 @@ A standalone, ACP-native, **long-horizon** command-line coding agent.
 | `ARCH/04-DECISIONS.md` | Architecture decisions (`DEC-*`) |
 | `ARCH/05-SOURCE-LEDGER.md` | What we build, vendor, or only draw patterns from |
 | `ARCH/06-UI.md` | TUI, dockable workspace, and the worktree cockpit |
+| `ARCH/07-SESSION.md` | Sessions: durable event log, replay, checkpoint |
+| `ARCH/08-LOOP.md` | The agent loop and turn lifecycle |
+| `ARCH/09-CONTEXT.md` | Context assembly, repo map, compaction |
+| `ARCH/10-TOOLS.md` | Tool contract, registry, execution |
+| `ARCH/11-PROVIDER.md` | Provider transports, catalog, routing |
+| `ARCH/12-GUARD.md` | Policy guard and approvals |
+| `ARCH/13-SANDBOX.md` | Execution confinement tiers |
+| `ARCH/14-AUDIT.md` | Tamper-evident execution log |
+| `ARCH/15-PROTOCOLS.md` | ACP (server + client), MCP, headless |
+| `ARCH/16-ORCH.md` | Sub-agents, task graph, merge |
+| `ARCH/18-CONFIG.md` | Configuration, instructions, memory |
+| `ARCH/19-COMPRESSION.md` | Context compression (evidence-gated) |
+| `ARCH/20-ANALYTICS.md` | Usage, cost, tool, and routing analytics |
+| `ARCH/21-DISCOVERY.md` | MCP/skills/plugins/agents discovery & use |
 | `TODO.md` | Delivery tracker |
 
 `archives/` holds reference material copied from an unrelated project. It is **not** an authority for this repository and is git-ignored.
