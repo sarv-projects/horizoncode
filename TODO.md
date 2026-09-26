@@ -12,11 +12,12 @@ Target: an ACP client drives a real turn with streamed tool calls; sessions are 
 | `AX-002` | Event-sourced session store + append-only JSONL log | `DEC-004` |
 | `AX-003` | Runner skeleton: admission → model step → continuation | `REQ-LOOP-001..006` |
 | `AX-004` | Read-only tools: read, glob, grep, list | `REQ-TOOL-001..005` |
-| `AX-005` | One OpenAI-compatible provider transport + executor retries | `REQ-PROV-001..004` |
+| `AX-005` | One HTTP chat-completion provider transport + executor retries | `REQ-PROV-001..004` |
 | `AX-006` | ACP stdio server: session lifecycle + streamed updates | `REQ-PROTO-001..002` |
 | `AX-007` | Headless `-p` run mode (default + JSON) | `REQ-PROTO-005` |
 | `AX-008` | Config discovery + `AGENTS.md` instruction context | `REQ-CTX-005` |
 | `AX-009` | Minimal TUI transcript + fixed composer dock | `REQ-UI-002..004` |
+| `AX-010` | Generate + ship the `THIRD-PARTY-NOTICES` bundle (upstream identity, pinned commits, licenses, copyright lines) | `DEC-011`, `DEC-012`, `REQ-SEC-001` |
 
 **Exit:** ACP-driven turn with streamed tool calls, replayable session log.
 
@@ -27,7 +28,7 @@ Target: end-to-end coding task in a sandbox with guard + verified audit.
 | ID | Task | Refs |
 |---|---|---|
 | `AX-101` | Full tool plane: write, edit, apply-patch, shell | `REQ-TOOL-001` |
-| `AX-102` | Sandbox tier 1: Landlock + seccomp, network off, workspace writes | `DEC-008`, `REQ-GUARD-004` |
+| `AX-102` | Sandbox tier 1 (Linux/macOS): `SandboxProvider` tier; namespaces + Landlock + seccomp (Linux), network off, workspace writes | `DEC-008`, `REQ-GUARD-004` |
 | `AX-103` | Policy guard: ordered rules, fail-closed, approval lifecycle | `DEC-005`, `REQ-GUARD-001..003` |
 | `AX-104` | Audit log: hash chain + verification command + redaction | `DEC-005`, `REQ-AUDIT-001..003` |
 | `AX-105` | Secret broker + never-log guarantees | `REQ-PROV-004` |
@@ -38,6 +39,14 @@ Target: end-to-end coding task in a sandbox with guard + verified audit.
 | `AX-110` | Skills: discovery + description routing + progressive disclosure | `REQ-SKILL-001..004` |
 | `AX-111` | Plugins + hooks: manifest, enumeration, disabled by default | `DEC-018`, `REQ-PLUGIN-001..004` |
 | `AX-112` | ACP client mode: drive peer agents as subordinates | `DEC-019`, `REQ-PROTO-004/006` |
+| `AX-113` | Windows containment tier: AppContainer + restricted token/job objects + acceptance tests (honest limits; not equivalent to Landlock/seccomp) | `DEC-008`, `REQ-GUARD-004` |
+| `AX-114` | macOS Seatbelt sandbox backend + acceptance tests (child-network blocking documented as best-effort) | `DEC-008`, `REQ-GUARD-004` |
+| `AX-307` | Eval harness: paired per-task A/B (k ≥ 3), pre-registered endpoints + published benchmark suite — pulled forward prerequisite for all eval-gated features | `DEC-016`, `REQ-CTX-003/006/009`, `REQ-HORIZON-*` |
+
+**Eval gate prerequisite:** `AX-307` ships in this phase so the P2 eval-gated features
+(`AX-203`, `AX-206`) are gated by a harness that already exists when they are built —
+a gate cannot be satisfied retroactively. The gating requirement is unchanged; only
+its tooling moves earlier.
 
 **Exit:** guarded, sandboxed, audited coding task; policy changes behavior with no code change. **Differentiator: guard + verifiable audit.**
 
@@ -47,10 +56,10 @@ Target: end-to-end coding task in a sandbox with guard + verified audit.
 |---|---|---|
 | `AX-201` | Tree-sitter repo map + reference-graph ranking | `DEC-006`, `REQ-CTX-001` |
 | `AX-202` | LSP symbols + SCIP ingest | `REQ-CTX-001` |
-| `AX-203` | Eval-gated compaction (tail + summary + retrieval eval) | `DEC-006`, `REQ-CTX-002..004` |
+| `AX-203` | Eval-gated compaction (tail + summary + retrieval eval) | `DEC-006`, `DEC-016`, `REQ-CTX-002..004/009`, `AX-307` |
 | `AX-204` | Sub-agents: worktree isolation, receipts, depth/count bounds | `REQ-ORCH-001..002/005` |
 | `AX-205` | Merge arbitration (deterministic) | `REQ-ORCH-003..004` |
-| `AX-206` | Eval-gated routing + published scores | `DEC-007`, `REQ-PROV-005` |
+| `AX-206` | Eval-gated routing + published scores | `DEC-007`, `DEC-016`, `REQ-PROV-005`, `AX-307` |
 | `AX-207` | Checkpoint + rewind | `REQ-SESS-003` |
 | `AX-208` | Worktree cockpit: dockable pane + tree + diffs + embedded editor | `DEC-010`, `REQ-UI-005..006` |
 
@@ -66,13 +75,14 @@ Target: end-to-end coding task in a sandbox with guard + verified audit.
 | `AX-304` | ACP multi-agent orchestration hardening (supervised peer pool) | `DEC-019`, `REQ-PROTO-004` |
 | `AX-305` | Local/offline models | `REQ-PROV-001` |
 | `AX-306` | Sandboxed WASM skills/plugins | `DEC-008` |
-| `AX-307` | Published benchmark harness | `REQ-HORIZON-*` |
 | `AX-308` | Skills curator lifecycle (usage telemetry, archive-not-delete) | `REQ-SKILL-*` |
+
+(`AX-307`, the eval harness, was pulled forward to P1; see the Eval gate prerequisite note.)
 
 **Exit:** N agents work a real backlog in parallel, auto-merge clean work, surface conflicts with evidence. **Differentiator: open parallel orchestration.**
 
 ## Open decisions
 
-- Exact model catalog source and its data license must be confirmed before any snapshot is committed.
+- **Hard gate (open until evidenced):** the exact model-catalog source and its data license MUST be confirmed, with recorded evidence, before any catalog snapshot is vendored or committed. This gate is not closed by assumption or by a rushed snapshot (`SRC-009`, `ARCH/11` §Open questions).
 - Resolved: worktree cockpit layout is specified in `ARCH/06-UI.md` (`DEC-010`); implementation tracked as `AX-208`.
 - Extension trust policy (pin format, allow/deny + managed lockdown) is specified in `ARCH/21-DISCOVERY.md`; the exact pin hash format is still open.

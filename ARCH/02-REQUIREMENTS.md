@@ -39,7 +39,7 @@ Observable, falsifiable requirements. Grouped by area. `MUST` = hard requirement
 
 ## PROV (providers)
 
-- `REQ-PROV-001` — The agent MUST support at least: hosted OpenAI-compatible endpoints, local runtimes, and a broad third-party catalog, plus arbitrary custom OpenAI-compatible endpoints.
+- `REQ-PROV-001` — The agent MUST support at least: hosted HTTP chat-completion endpoints (the widely implemented compatible wire format), local runtimes, and a broad third-party catalog, plus arbitrary custom HTTP chat-completion endpoints.
 - `REQ-PROV-002` — The provider/model catalog MUST be data-driven from an external source of truth and MUST be consumable without vendoring its code.
 - `REQ-PROV-003` — Provisional model quirk handling (thinking passthrough, reasoning fields, streaming framing) MUST be isolated per provider.
 - `REQ-PROV-004` — Credentials MUST never be written to logs, model prompts, telemetry, or the audit log.
@@ -51,9 +51,12 @@ Observable, falsifiable requirements. Grouped by area. `MUST` = hard requirement
 - `REQ-GUARD-002` — The default posture MUST fail closed: an unmatched action evaluates to ask or deny per configuration, never implicit allow.
 - `REQ-GUARD-003` — "Always allow" decisions MUST persist the exact pattern they remember, shown to the user before confirmation.
 - `REQ-GUARD-004` — Sandboxed execution MUST default to workspace-scoped writes and no outbound network unless explicitly granted.
-- `REQ-AUDIT-001` — Every security-relevant effect MUST append to an append-only execution log.
-- `REQ-AUDIT-002` — The audit log MUST be tamper-evident via a hash chain or Merkle structure, with a verification command.
+- `REQ-AUDIT-001` — For a declared set of security-relevant **effect classes** (decisions, tool calls, approvals, file writes, sandbox denials, model/provider calls, cost, ticket lifecycle), every effect MUST append exactly one immutable entry to an append-only execution log; a **coverage census** MUST map every declared class to at least one recorded entry so the property is checkable rather than merely asserted.
+- `REQ-AUDIT-002` — The audit log MUST be tamper-evident via a hash chain plus periodic Merkle roots, with a verification command that reports any added, removed, reordered, truncated, or modified entry; the command MUST state precisely what it does and does not prove.
 - `REQ-AUDIT-003` — Secrets MUST be redacted from audit entries.
+- `REQ-AUDIT-004` — Audit segment roots MUST be **anchored** beyond the local store — signed, and recorded off-box (or counter-signed) — so that a root rewritten by a local actor is detectable; the anchor's trust assumptions and strength MUST be documented per deployment.
+- `REQ-AUDIT-005` — The audit MUST provide a first-class **coverage census** deliverable that enumerates every declared security-relevant effect class and the entry(ies) evidencing it, and MUST fail loudly on any uncovered class.
+- `REQ-AUDIT-006` — Where an effect is represented in more than one append-only store (session log, audit chain, analytics ledger), the stores MUST satisfy a documented cross-store consistency invariant: a security-relevant effect is complete only once durably chained in audit, cross-store references carry the authoritative store sequence, and cross-store ordering MUST NOT be inferred from wall-clock time.
 
 ## PROTO
 

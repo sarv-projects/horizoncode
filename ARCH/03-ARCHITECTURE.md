@@ -56,7 +56,7 @@ A **single Rust workspace** producing one binary per platform. The binary contai
 | `CMP-provider` | Provider router | Capability | Catalog, route resolution, transports, retries, usage accounting |
 | `CMP-orch` | Orchestrator | Capability | Sub-agent spawn/isolation/receipts, parallel scheduling, merge arbitration |
 | `CMP-guard` | Policy guard | Trust | Ordered allow/ask/deny rules; approval lifecycle |
-| `CMP-sandbox` | Sandbox | Trust | Landlock/seccomp/namespace confinement; egress control |
+| `CMP-sandbox` | Sandbox | Trust | Platform confinement (namespaces/Landlock/seccomp; Seatbelt; AppContainer + restricted token/job objects); egress control |
 | `CMP-secrets` | Secret broker | Trust | Credential resolution; redaction; never-log guarantees |
 | `CMP-audit` | Audit log | Trust | Append-only hash-chained execution record; verification |
 | `CMP-acp` | ACP edge | Surface | ACP server (stdio) and client modes; protocol mapping |
@@ -106,7 +106,7 @@ Terminal states: `completed | failed | interrupted | declined`. Exactly one per 
 | Parsing | `tree-sitter` | Repo map, syntax highlight |
 | Language servers | LSP client | Symbols and diagnostics |
 | Indexing | SCIP ingest | Precise cross-repo symbol data where available |
-| Sandbox | `landlock`, seccomp, bubblewrap-as-subprocess | Tiered confinement without linking copyleft |
+| Sandbox | `landlock`, seccomp, bubblewrap-as-subprocess; Seatbelt; AppContainer APIs | Tiered confinement without linking copyleft |
 | Hashing | `blake3` | Audit chain and content hashing |
 | Plugins/skills | WASM (`wasmtime`) | Sandboxed extensibility |
 | ACP/MCP | Protocol SDKs (permissive) | Avoid re-implementing wire protocol |
@@ -131,12 +131,18 @@ Terminal states: `completed | failed | interrupted | declined`. Exactly one per 
 
 | Tier | Backend | Use |
 |---|---|---|
-| Local (default) | bubblewrap + Landlock + seccomp, network off, workspace writes only | Everyday repo work |
+| Local (default) | Linux: bubblewrap + Landlock + seccomp · macOS: Seatbelt profile · Windows: AppContainer + restricted token/job objects — network off, workspace writes only | Everyday repo work |
 | Container | OCI runtime (Docker/Podman) | Reproducible toolchains |
 | Micro-VM | Firecracker-class or lightweight VM sandbox | Untrusted/unsafe tasks |
 | Remote | Managed sandbox behind one interface | Hostile or elastic workloads |
 
-All tiers implement one `SandboxProvider` interface so callers never branch on backend.
+Linux and macOS are the **first enforcement targets** — each has a kernel mechanism
+that denies filesystem paths and restricts syscalls, so real containment is an
+acceptance target there. Windows is a **fully supported target but a distinct tier**:
+AppContainer plus a restricted token and job objects, with its own acceptance tests;
+job objects alone do **not** equal Landlock + seccomp path/egress denial, and its
+limits are stated honestly (`ARCH/13` §Platform notes). All tiers implement one
+`SandboxProvider` interface so callers never branch on backend.
 
 ## 9. Deployment and distribution
 

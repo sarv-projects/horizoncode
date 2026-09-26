@@ -176,15 +176,23 @@ The compaction sequence:
    from its result; both edges of the selected span must be balanced, else the
    span is rejected and a safe adjacent range chosen.
 
-**Anchored summary template** (section order fixed; empty sections render
-`(none)`; terse bullets; preserve exact paths, symbols, commands, error strings):
+**Anchored summary template** — our own structure, implemented by us, not
+transcribed from any upstream template (see `ARCH/05` §2). Section order is fixed;
+empty sections render `(none)`; entries stay terse (bullets, not paragraphs); exact
+paths, symbols, commands, and error strings are copied verbatim, never reworded:
 
-`## Objective` → `## Important Details` → `## Work State` (`### Completed` /
-`### Active` / `### Blocked`) → `## Next Move` → `## Relevant Files`.
+`## Aim` → `## Load-Bearing Facts` → `## Where Things Stand` (`### Settled` /
+`### In Flight` / `### Held Up`) → `## Next Concrete Action` → `## Touchpoints`.
 
-When a prior summary exists, the new summary must carry forward objectives,
-constraints, decisions, and parallel workstreams; conversation wins on conflict;
-completed items move from Active to Completed; resolved blockers are updated.
+Each section answers exactly one question: what we are trying to achieve (*Aim*);
+the constraints, decisions, versions, and exact errors that must survive
+(*Load-Bearing Facts*); what is finished, underway, and blocked (*Where Things
+Stand*); the single next action (*Next Concrete Action*); and the files/symbols in
+play (*Touchpoints*).
+
+When a prior summary exists, the new summary must carry forward the aim,
+constraints, decisions, and parallel workstreams; the conversation wins on conflict;
+finished items move from In Flight to Settled; resolved blockers are updated.
 
 `auto: false` disables automatic compaction but never disables manual compaction.
 

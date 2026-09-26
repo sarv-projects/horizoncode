@@ -59,7 +59,7 @@ Callers hold a resolved profile, not a backend. Backends are selected by tier:
 
 | Tier | Backend | Notes |
 |---|---|---|
-| Local (default) | Linux: namespaces via `bubblewrap` **as a subprocess**, Landlock, seccomp | `--network=none` default; workspace-write only |
+| Local (default) | Linux: namespaces via `bubblewrap` **as a subprocess**, Landlock, seccomp · macOS: Seatbelt profile · Windows: AppContainer + restricted token/job objects | `--network=none` default; workspace-write only |
 | Container | OCI runtime (Docker/Podman) | Reproducible toolchains; mount-scoped workspace |
 | Remote / cloud | Managed sandbox behind the same trait | Hostile or elastic workloads; transport is an adapter detail |
 
@@ -101,8 +101,10 @@ SandboxOutcome  = { exit, stdout_ref, stderr_ref, denied?, violations[] }
 ### Once at startup
 1. **Probe** each candidate backend for the platform and record availability.
 2. Listen/apply the sandbox for the **whole process lifetime** for the agent's own
-   file operations (in-process Landlock + `no_new_privs` + seccomp on Linux), so tool
-   reads/writes are covered without per-call wrapping.
+   file operations (in-process Landlock + `no_new_privs` + seccomp on Linux; a
+   Seatbelt profile on macOS), so tool reads/writes are covered without per-call
+   wrapping. On the Windows tier the AppContainer/restricted-token confinement is
+   applied at spawn time.
 3. Freeze the resolved profile: it is **immutable for the process lifetime**; a
    running session cannot relax it. Resuming a session re-applies the profile it was
    started with, and a request to *widen* a resumed session's profile is refused.
@@ -116,6 +118,9 @@ SandboxOutcome  = { exit, stdout_ref, stderr_ref, denied?, violations[] }
 3. On Linux the local backend: creates user/mount/PID namespaces, mounts the scoped
    filesystem view, sets `--network=none` unless granted, drops capabilities
    (`capget` verified empty), sets `no_new_privs`, and installs the seccomp filter.
+   The macOS and Windows tiers apply the equivalent mechanism their kernel provides
+   (Seatbelt profile; AppContainer + restricted token/job objects) through the same
+   interface, and report their documented limits.
 4. Output is bounded and persisted by `CMP-runner`; the model sees a compact view.
 5. Denials and violations append to `CMP-audit`; cancellation reaps the process tree.
 
@@ -143,18 +148,34 @@ the single-egress rule still apply.
 
 ## Platform notes
 
-- **Windows (first release target).** Confinement uses a **restricted token** and
-  **job objects** for process/child containment; an AppContainer-class level is the
-  stronger option. Availability is probed; a requested backend that cannot be
-  established fails closed. WSL is an execution backend, not the Windows storage
-  root.
-- **Linux (local default).** `bubblewrap` + Landlock + seccomp stacked; Landlock is
-  the fallback when bubblewrap is unavailable for a profile that does not require
-  read-deny. Read-deny requires bubblewrap; if it is missing, refuse rather than run
-  with denied paths exposed.
-- **macOS (future).** A Seatbelt-profile backend implements the same trait; child
-  network blocking is best-effort there and must be documented as such. Not a v1
-  acceptance target.
+Enforcement targets are tiered by **what the platform can actually prove**, not by
+product importance. Linux and macOS are the **first enforcement targets**: each has
+a kernel mechanism that denies filesystem paths and restricts syscalls at the kernel
+boundary, so real containment is a first-class acceptance target there. Windows is a
+**fully supported target** with its own containment tier, its own acceptance tests,
+and limits stated honestly — it is not dropped, and it is not claimed to be
+equivalent to the Unix path/syscall denial described above.
+
+- **Linux (local default, first enforcement target).** `bubblewrap` + Landlock +
+  seccomp stacked; Landlock is the fallback when bubblewrap is unavailable for a
+  profile that does not require read-deny. Read-deny requires bubblewrap; if it is
+  missing, refuse rather than run with denied paths exposed. Kernel-enforced path
+  read/write denial and syscall/egress denial are both available.
+- **macOS (first enforcement target).** A Seatbelt-profile backend implements the
+  same `SandboxProvider` trait and is an acceptance target for real containment.
+  Path containment is kernel-enforced by the Seatbelt profile; **child-process
+  network denial is best-effort at this tier** and must be documented as such
+  whenever a network-restricted profile is requested.
+- **Windows (fully supported target; distinct tier).** Confinement uses an
+  **AppContainer** boundary plus a **restricted token** and **job objects** for
+  process/child containment. Job objects alone govern process lifetime, job-wide
+  limits, and child membership — they do **not** by themselves deny filesystem paths
+  or outbound network the way Landlock + seccomp do; AppContainer capability plus
+  file/registry ACLs carry the path and network part. This tier therefore has its own
+  acceptance tests (`TODO.md` Windows-containment task) and its limits are stated
+  honestly rather than described as equivalent. Availability is probed; a requested
+  backend that cannot be established fails closed. WSL is an execution backend, not
+  the Windows storage root.
 
 ## Failure modes
 
@@ -223,9 +244,11 @@ network policy.
 
 ## Open questions
 
-1. **Windows job-object coverage** — exactly which child-process and network
-   restrictions are enforceable through job objects vs. requiring an
-   AppContainer-class backend, and the acceptance test for each.
+1. **Windows acceptance matrix** — the distinct Windows tier is decided
+   (AppContainer + restricted token/job objects; see Platform notes); the open item
+   is the exact per-restriction test matrix: which filesystem, registry, child-process,
+   and network restrictions are proven by which mechanism, and the acceptance test
+   that records each (`TODO.md` Windows-containment task).
 2. **Once-at-startup vs. per-command wrapping** — confirm the split between the
    process-lifetime in-process confinement and the per-command subprocess view for
    every tool, especially long-lived shells.
@@ -234,4 +257,5 @@ network policy.
 4. **Deny-glob materialization on Linux** — the fail-closed threshold (file count,
    scan depth) at which a glob makes the profile unstartable.
 5. **macOS Seatbelt child-network** — whether best-effort blocking is acceptable or
-   the backend must be marked unsupported for network-restricted profiles.
+   the backend must be marked unsupported for network-restricted profiles, and how
+   that limit is surfaced in the acceptance record (`TODO.md` macOS task).

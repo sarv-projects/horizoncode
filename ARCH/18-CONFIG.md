@@ -162,8 +162,8 @@ This document *is* the configuration surface. Key groups: `providers.*`, `models
 
 ## Open questions
 
-1. **`CMP-config` registration.** This document introduces `CMP-config`; `ARCH/03-ARCHITECTURE.md` does not yet list it in the component table. Registering it (or declaring it part of the kernel) requires a `DEC-*` and a `REQ-*` update per `ARCH/00-INDEX.md` change control.
-2. **Memory requirements.** There is no dedicated `REQ-MEM-*` in `ARCH/02-REQUIREMENTS.md`; memory's observable guarantees and bounds should be promoted to real requirements.
+1. **`CMP-config` registration.** Resolved: `CMP-config` is registered in `ARCH/03-ARCHITECTURE.md` §2 (Capability layer). No further `DEC-*` is needed for registration; the extension surfaces it configures remain governed by `DEC-018`.
+2. **Memory requirements.** Resolved: memory is covered by `REQ-MEM-001..003` in `ARCH/02-REQUIREMENTS.md` (persistent store with bounds, attributable/inspectable writes, injectable typed context source). The remaining open detail is the exact per-scope size bounds and eviction thresholds.
 3. **Config format authority.** JSONC is primary; whether YAML is a supported authoring format (and how it maps to JSONC precedence) is undecided.
 4. **Plugin permission model.** Whether plugins request capability grants or surface grants, and how review depth maps to v1.
 5. **Hook surface freeze.** The exact v1 hook event set and whether experimental transform hooks ship or are deferred.

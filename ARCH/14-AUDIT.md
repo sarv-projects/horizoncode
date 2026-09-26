@@ -5,8 +5,11 @@
 `CMP-audit` is the **tamper-evident, append-only execution record**. Every
 security-relevant effect and every decisive moment — policy decisions, tool calls,
 approvals, file writes, sandbox denials, model/provider calls, and cost — is recorded
-in a hash-chained log with periodic Merkle roots, so history can be verified rather
-than merely trusted (`DEC-005`, `REQ-AUDIT-001`, `REQ-AUDIT-002`).
+in a hash-chained log with periodic Merkle roots that are **signed and anchored
+beyond the local store**, so history can be verified rather than merely trusted.
+A first-class **coverage census** turns "every effect is recorded" from an assertion
+into a checkable deliverable (`DEC-005`, `REQ-AUDIT-001`, `REQ-AUDIT-002`,
+`REQ-AUDIT-004`, `REQ-AUDIT-005`).
 
 The audit store is **not** the session event log. `CMP-session` owns replayable
 session events; `CMP-audit` owns independently verifiable evidence and is not pruned
@@ -24,6 +27,12 @@ with operational events. Audit reads are themselves access-controlled
 - Guarantee **secret redaction**: credentials never enter an entry
   (`REQ-PROV-004`, `REQ-AUDIT-003`).
 - Reference durable receipts for effects rather than duplicating payloads.
+- **Sign and anchor** finalized segment roots so tamper-evidence holds against a
+  local actor (`REQ-AUDIT-004`).
+- Publish a first-class **coverage census** mapping every declared security-relevant
+  effect class to at least one recorded entry (`REQ-AUDIT-005`).
+- Maintain the **cross-store consistency invariant** with the session log and the
+  analytics ledger (`REQ-AUDIT-006`, `DEC-020`).
 - Keep the record portable with the session bundle.
 
 **Never owns:** session event replay (`CMP-session`), receipts/artifacts
@@ -118,14 +127,14 @@ Recomputes each `entry_hash` from stored bytes and `prev_hash`, checks contiguit
 `seq`, recomputes every segment Merkle root, and confirms root linkage across
 segments.
 
-**What verify proves:** given the recorded roots, no entry has been added, removed,
-reordered, truncated, or modified without detection, and every entry is included in
-its segment root.
+**What verify proves:** given a trusted anchor, no entry has been added, removed,
+reordered, truncated, or modified without detection, every entry is included in its
+segment root, and every root signature verifies.
 **What verify does not prove:** that the recorded content is truthful, that no
-unrecorded effect occurred elsewhere, or who authored an entry. Coverage (every
-effect has an entry) is a separate census, and root-anchoring is only as strong as
-where the root lives (local roots detect local tampering; an off-box anchor is an
-open question).
+unrecorded effect occurred elsewhere, or who authored an entry. Coverage is a
+separate **census** (`REQ-AUDIT-005`), and root-anchoring is only as strong as the
+trusted key/sink it anchors to (`REQ-AUDIT-004`). A run with only a local anchor is
+reported as **local-trust**, never as independently anchored.
 
 ### Replay
 ```
@@ -161,6 +170,73 @@ moved session remains reconstructable and its decisions reproducible
   chain; a torn tail is detected at verify and truncated to the last valid entry with
   an audit note.
 
+## Root anchoring (signed / off-box)
+
+Local roots detect local tampering only. To make tamper-evidence meaningful against a
+local actor, `CMP-audit` **signs and anchors** every finalized `SegmentRoots`
+(`REQ-AUDIT-004`):
+
+- **Local root chain.** Each root is appended to `roots.jsonl` and chain-linked by
+  `prev_root`, so deleting or editing a root breaks the root chain.
+- **Signed roots.** Each root is signed with a device key held by `CMP-secrets`; the
+  signature covers `{segment, first_seq, last_seq, count, merkle_root, prev_root}`.
+  `audit verify` checks signatures as well as hashes.
+- **Off-box anchor.** On a configured cadence or at a session-close boundary, the
+  signed root is exported to a user-nominated external sink (append-only file, remote
+  object, or counter-signing service). The sink is transport behind an adapter and
+  receives roots and signatures only — never entries.
+- **What anchoring buys.** Given a trusted anchor, a local actor who rewrites entries
+  and recomputes local roots is still detected: the anchor's root no longer matches.
+  It does not prove the content is truthful, and it is only as strong as the trust in
+  the anchor key and sink, which is documented per deployment.
+
+Absent an anchor, roots are **local-only** and `verify` labels the evidence
+`local-trust`; it never presents local roots as independently anchored.
+
+## Coverage census
+
+`REQ-AUDIT-001` is only meaningful if coverage is checkable, so `CMP-audit` ships a
+first-class **coverage census** (`REQ-AUDIT-005`):
+
+- A declared registry of **security-relevant effect classes**; the "What is recorded"
+  table is its seed, and additions are data, not prose.
+- A census command that, over a bounded window or segment set, maps every declared
+  class to at least one recorded entry and reports per-class counts.
+- Any uncovered declared class fails loudly (non-zero, audited); an uncovered class is
+  a defect, not an accepted gap.
+- The census output is a generated artifact that can accompany a release or a session
+  bundle as evidence.
+
+The census proves *that* every declared class is represented; it does not by itself
+prove that no undeclared class exists — the declared registry is reviewed as part of
+the security boundary.
+
+## Cross-store consistency (single store vs. multiple)
+
+`DEC-020` fixes the answer: **multiple append-only stores, one invariant.** The stores
+are:
+
+| Store | Owner | Role | Ordering |
+|---|---|---|---|
+| `log.jsonl` (session event log) | `CMP-session` | replay source of truth | per-session dense `seq` |
+| `segments/*.jsonl` + `roots.jsonl` | `CMP-audit` | independently verifiable evidence | global audit `seq`; chain-linked roots |
+| `events.jsonl` (analytics ledger) | `CMP-analytics` | rebuildable rollups | derived; coalesced appends |
+
+Invariant (`REQ-AUDIT-006`):
+
+1. A security-relevant effect is **complete** only once its audit entry is durably
+   chained; a session or analytics fact that references it carries `session_id`, the
+   session `seq`, and the audit `seq` (or `receipt_ref`).
+2. Each store's own monotonic sequence defines its internal order. **Cross-store
+   ordering is never inferred from wall-clock time**; the audit `seq` is the
+   authoritative tie-break for security-relevant ordering, and the session/analytics
+   stores carry their own sequence for their internal use.
+3. A reconciliation check flags any referenced effect with no audit entry and any
+   audit entry whose referenced session fact is missing; disagreement is surfaced,
+   never silently merged.
+4. Retention is per-store: the audit chain is never pruned with the session log or the
+   analytics ledger, and analytics remains rebuildable without the audit chain.
+
 ## Privacy / PII handling
 
 - Entries store digests and refs, not user content; prompt/completion text is never
@@ -191,6 +267,11 @@ moved session remains reconstructable and its decisions reproducible
     "segment_max_entries": 4096,
     "segment_max_bytes": 8388608,
     "hash": "blake3",
+    "anchor": {
+      "sign": true,
+      "offbox": "none",                         // none (local-trust) | file | remote
+      "cadence": "session_close"                // session_close | every_n_segments
+    },
     "retention": { "mode": "preserve" },      // preserve | archive with proof
     "export": { "require_chain_proof": true }
   }
@@ -201,9 +282,12 @@ moved session remains reconstructable and its decisions reproducible
 
 | REQ | How this module satisfies it |
 |---|---|
-| `REQ-AUDIT-001` | Every security-relevant effect appends to the append-only log. |
-| `REQ-AUDIT-002` | Hash chain + Merkle roots with an `audit verify` command. |
+| `REQ-AUDIT-001` | Every declared security-relevant effect class appends exactly one entry; the coverage census checks the mapping. |
+| `REQ-AUDIT-002` | Hash chain + Merkle roots with an `audit verify` command that states what it does and does not prove. |
 | `REQ-AUDIT-003` | `CMP-secrets` redaction pass before any entry is chained. |
+| `REQ-AUDIT-004` | Segment roots are signed and anchored off-box; unanchored runs are labeled local-trust. |
+| `REQ-AUDIT-005` | First-class coverage census maps every declared effect class to entries and fails on a gap. |
+| `REQ-AUDIT-006` | Cross-store consistency invariant with the session log and analytics ledger (`DEC-020`). |
 | `REQ-PROV-004` | Credentials never appear in audit entries; provider calls logged as counts/refs only. |
 | `REQ-SESS-002` | Replay reconstructs a session timeline from persisted evidence. |
 | `REQ-SESS-004` | Model, mode, and permission configuration recorded with the session. |
@@ -212,8 +296,10 @@ moved session remains reconstructable and its decisions reproducible
 
 ## Open questions
 
-1. **Root anchoring** — whether the periodic Merkle root is anchored off-box (signed
-   or co-signed) to strengthen tamper evidence beyond local detection.
+1. **Root anchoring defaults** — the mechanism is decided (sign + optional off-box
+   anchor; see "Root anchoring"); the open items are the default sink/trust model per
+   deployment, the default anchor cadence, and device-key rotation/escrow for the
+   signing key.
 2. **Retention vs. portability** — how long full entries are preserved versus a
    roots-plus-receipts archive, and how a truncated archive still proves the range it
    covers.

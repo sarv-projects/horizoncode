@@ -94,7 +94,7 @@ Architecture decision records. Each constrains the design until superseded by a 
 
 **Status:** accepted.
 
-**Decision.** No vendor, competitor, or assistant brand names in source, commits, help text, or shipped documentation. Upstream dependencies are cited by role and license; legally required attribution is generated into `THIRD-PARTY-NOTICES.md` at release.
+**Decision.** No vendor, competitor, or assistant brand names in source, commits, help text, or shipped documentation. Upstream dependencies are cited by role and license. This rule **explicitly exempts mandatory legal attribution**: copyright lines, license texts, `NOTICE`/`THIRD-PARTY-NOTICES` content, and provenance headers that an upstream license requires MUST be reproduced where the license demands it, and MUST NOT be stripped or paraphrased to satisfy brand-neutrality. The exemption is limited to what a license legally requires — vendors' internal or unreleased *code names*, and optional marketing names, remain excluded. `THIRD-PARTY-NOTICES.md` is generated at release and shipped with the binary.
 
 **Rationale.** Clean-room posture and trademark hygiene (`REQ-VISION-003`).
 
@@ -136,6 +136,8 @@ Architecture decision records. Each constrains the design until superseded by a 
 
 **Decision.** Every compression change ships only if a **paired per-task A/B** (k ≥ 3, pre-registered endpoints) shows task success ≥ baseline and cost/turn improved; results are reported as per-task median + pass-rate deltas, not totals. Compressor-internal "saved" counters are explicitly not evidence.
 
+**Sequencing.** The pairing/eval harness is a prerequisite, not a follow-up: it MUST be built and working **before** the eval-gated features it judges are built or shipped. A gate that cannot be run at the moment a feature lands is not a gate (`TODO.md` `AX-307`, pulled ahead of the P2 gated features).
+
 **Rationale.** Both cited benchmarks were decided by this methodology; self-reported savings systematically overcount (`REQ-CTX-009`).
 
 ## DEC-017 — Analytics is local-first and separate from product telemetry
@@ -161,3 +163,11 @@ Architecture decision records. Each constrains the design until superseded by a 
 **Decision.** agentX implements ACP as a first-class **server** (usable by clients) and a first-class **client** (driving peer agents as subordinates) with equal standing. This supersedes the "later" qualifier in `DEC-003`. Capability negotiation gates every optional call in both roles.
 
 **Rationale.** Being both usable and composable is a stated product priority and the seam that lets agentX orchestrate peers without a second engine (`REQ-PROTO-004`, `REQ-PROTO-006`).
+
+## DEC-020 — Multiple append-only stores under one cross-store invariant
+
+**Status:** accepted.
+
+**Decision.** Keep **separate** append-only stores, each owned by exactly one component, rather than collapsing them into a single log: the session event log (`CMP-session`; replay source of truth), the tamper-evident audit chain (`CMP-audit`; independently verifiable evidence), and the analytics ledger (`CMP-analytics`; rebuildable rollup source). Each store owns its own ordering and retention. Where one effect appears in more than one store, the stores MUST satisfy a **cross-store consistency invariant**: a security-relevant effect is complete only once its audit entry is durably chained, and every session/analytics fact that references it carries the owning `session_id`, its monotonic session `seq`, and the audit `seq` (or `receipt_ref`). Ordering is defined by each store's own monotonic sequence; **cross-store ordering is never inferred from wall-clock time** — the audit `seq` is the authoritative tie-break for security-relevant ordering, and a reconciliation check flags any referenced effect that has no audit entry. Retention stays per-store: the audit chain is never pruned with the session log or the analytics ledger.
+
+**Rationale.** A single store would couple replay, tamper-evidence, and derived metrics: an analytics retention choice could put the audit chain at risk, and a corrupt session log could poison evidence. Separate stores keep each guarantee provable while an explicit invariant stops them drifting into disagreement (`REQ-AUDIT-001`, `REQ-AUDIT-006`, `DEC-004`, `DEC-005`, `DEC-017`; detail in `ARCH/14`).
