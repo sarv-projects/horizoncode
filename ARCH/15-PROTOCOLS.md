@@ -9,7 +9,7 @@ Let external editors and peer agents drive agentX, let agentX drive peer agents 
 ## Responsibilities
 
 **`CMP-acp` — own.**
-- ACP **server** over stdio using newline-delimited JSON-RPC: `initialize`/capabilities, session `new`/`load`/`resume`/`list`/`close`/`fork`, `prompt`, `cancel`, `set-mode`, `set-model`, `set-config-option`, streamed session updates, permission requests to the client, and client-side fs/terminal calls.
+- ACP **server** over stdio using newline-delimited JSON-RPC: `initialize`/capabilities, session `new`/`load`/`resume`/`list`/`close`/`fork`, `prompt`, `cancel`, `set-mode`, `set-model`, `set-config-option`, streamed session updates, permission requests to the client via the canonical `session/request_permission` method (`DEC-023`, `REQ-PROTO-002`), and client-side fs/terminal calls.
 - ACP **client** mode: agentX dials a peer ACP agent as a subordinate and maps its updates onto the control plane. This is the transport behind `CMP-orch`'s ACP isolation mode.
 - Capability negotiation: advertise only implemented methods; a client that does not support permission prompts is treated as reject-by-default, never auto-allow.
 
@@ -57,11 +57,11 @@ Let external editors and peer agents drive agentX, let agentX drive peer agents 
 | `prompt` | submit turn | append events; stream updates |
 | `cancel` | cancel turn (cooperative) | in-flight work settled `interrupted` |
 | `set-mode` / `set-model` / `set-config-option` | adjust turn context | recorded on the session |
-| `request/permission` | guard ask → client | resumes or declines the turn |
+| `session/request_permission` | guard ask → client | resumes or declines the turn |
 | client fs read/write | governed write path | snapshot/conflict rules apply |
 | client terminal create/output | terminal surface | none durable |
 
-**Permission exchange.** The server emits a permission request with a tool-call descriptor and a fixed option set (allow-once, allow-always, reject-once). An allow-always reply is recorded as the exact remembered pattern by `CMP-guard`, shown to the user before confirmation (`REQ-GUARD-003`). Requests are serialized per session; overlapping requests queue.
+**Permission exchange.** The method token is exactly `session/request_permission`; it is frozen by `DEC-023` and no alias is accepted (the unnamespaced `request/permission` form is not a transition form in either direction). The server emits a permission request with a tool-call descriptor and a fixed option set (allow-once, allow-always, reject-once). An allow-always reply is recorded as the exact remembered pattern by `CMP-guard`, shown to the user before confirmation (`REQ-GUARD-003`). Requests are serialized per session; overlapping requests queue.
 
 **Client fs/terminal calls.** The server may request file read/write and terminal create/output on the client. Writes go through the governed write path (lease → re-read+hash → compare → atomic rename → else conflict). Each call carries the session cwd and is bounded.
 
@@ -138,7 +138,7 @@ Signals (`SIGINT`/`SIGTERM`) map to cooperative cancel; the run always emits its
 | REQ | How this module satisfies it |
 |---|---|
 | `REQ-PROTO-001` | ACP stdio server with session create/load/resume/list/close/prompt/cancel and streamed updates |
-| `REQ-PROTO-002` | Permission requests to the ACP client; allow/deny honored by `CMP-guard` |
+| `REQ-PROTO-002` | The canonical, frozen `session/request_permission` method carries the permission request to the ACP client; allow/deny is honored by `CMP-guard` and no alias is accepted (`DEC-023`). |
 | `REQ-PROTO-003` | MCP host over stdio and streamable HTTP with per-session dedupe |
 | `REQ-PROTO-004` | ACP client mode drives peer agents as subordinates (behind `CMP-orch`) |
 | `REQ-PROTO-005` | All surfaces talk through one control interface; no loop logic in a surface |

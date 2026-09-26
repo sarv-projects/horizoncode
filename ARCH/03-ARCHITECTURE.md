@@ -122,7 +122,10 @@ Terminal states: `completed | failed | interrupted | declined`. Exactly one per 
 ## 7. Security model
 
 - **Default deny.** Guard posture fails closed; ambiguous actions ask or deny (`REQ-GUARD-002`).
-- **Sandbox by default.** Writes scoped to the workspace; egress closed unless granted (`REQ-GUARD-004`).
+- **Sandbox by default.** Writes scoped to the workspace; egress closed unless
+  granted, up to the **tier's declared network guarantee level** — `enforced`,
+  `best_effort`, or `none` — and a caller requiring a level the tier cannot provide
+  is refused (`REQ-GUARD-004`, `DEC-026`).
 - **Untrusted input.** Web, files, tool output, and MCP responses are data, never instructions (`REQ-SEC-002`).
 - **No secret leakage.** The broker never emits credentials to prompts, logs, telemetry, or audit (`REQ-PROV-004`, `REQ-AUDIT-003`).
 - **Provenance.** Every dependency passes a license allowlist gate; provenance headers on adapted files (`REQ-SEC-001`).
@@ -131,7 +134,7 @@ Terminal states: `completed | failed | interrupted | declined`. Exactly one per 
 
 | Tier | Backend | Use |
 |---|---|---|
-| Local (default) | Linux: bubblewrap + Landlock + seccomp · macOS: Seatbelt profile · Windows: AppContainer + restricted token/job objects — network off, workspace writes only | Everyday repo work |
+| Local (default) | Linux: bubblewrap + Landlock + seccomp · macOS: Seatbelt profile · Windows: AppContainer + restricted token/job objects — network off at the tier's declared guarantee level, workspace reads and writes only | Everyday repo work |
 | Container | OCI runtime (Docker/Podman) | Reproducible toolchains |
 | Micro-VM | Firecracker-class or lightweight VM sandbox | Untrusted/unsafe tasks |
 | Remote | Managed sandbox behind one interface | Hostile or elastic workloads |
@@ -141,8 +144,17 @@ that denies filesystem paths and restricts syscalls, so real containment is an
 acceptance target there. Windows is a **fully supported target but a distinct tier**:
 AppContainer plus a restricted token and job objects, with its own acceptance tests;
 job objects alone do **not** equal Landlock + seccomp path/egress denial, and its
-limits are stated honestly (`ARCH/13` §Platform notes). All tiers implement one
-`SandboxProvider` interface so callers never branch on backend.
+limits are stated honestly (`ARCH/13` §Platform notes).
+
+**"Network off" is a declared level, not one universal claim** (`DEC-026`,
+`REQ-GUARD-004`). Linux is `enforced` (seccomp + network namespace); Windows is
+`capability` (application-container capability absence — deny-by-absence, not a
+syscall filter); macOS is `best_effort` (a Seatbelt rule on the wrapped process; an
+escaped descendant is not separately confined). Each tier declares its level,
+mechanism, and residual, the level is surfaced wherever a network-restricted profile is
+presented, and a caller requiring a stronger level than the tier provides is refused
+rather than silently degraded. All tiers implement one `SandboxProvider` interface so
+callers never branch on backend.
 
 ## 9. Deployment and distribution
 

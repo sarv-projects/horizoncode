@@ -169,7 +169,7 @@ Assumed **non**-adversaries: the OS user themselves (see the trust-boundary note
 
 | ID | Asset | Attack | Existing control | Residual risk | Mitigation to implement |
 |---|---|---|---|---|---|
-| `F-01` | `AS-1`,`AS-8` | Relative traversal (`../../`) or an absolute path outside the workspace reaches host files | Separate `external_directory` assert before the tool assert; `check_path`; deny globs; protected subpaths; workspace-scoped write roots | Guard resource patterns may be evaluated on a **non-canonical** path, and `bash` path scanning is advisory by design (`ARCH/10`) | Canonicalize and contain at the **enforcement** layer for every fs operation; reject absolute paths outside granted roots at spawn; assert the pattern grammar parity between `CMP-guard` and `CMP-sandbox` |
+| `F-01` | `AS-1`,`AS-8` | Relative traversal (`../../`) or an absolute path outside the workspace reaches host files | Separate `external_directory` floor rule in the guard with effect `ask`; `check_path`/`spawn`; deny globs; protected subpaths; workspace-scoped write **and read** roots | Guard resource patterns may be evaluated on a **non-canonical** path, and the tool-plane bash argument scan is **advisory extraction only** — the hard control is spawn-time containment (`DEC-024`, `ARCH/10`) | Canonicalize and contain at the **enforcement** layer for every fs operation; reject absolute paths outside granted roots at spawn; scope reads to granted roots on every tier; assert the pattern grammar parity between `CMP-guard` and `CMP-sandbox` |
 | `F-02` | `AS-1`,`AS-3` | A symlink/junction inside a granted root points at a denied or foreign path | Canonicalization before policy; deny globs enforced at the kernel; refuse a symlinked policy/config path | Check-then-open window: the link can be swapped between validation and use | Re-canonicalize **at use**; deny on mismatch with a typed error; no policy decision is ever made on a non-canonical path; use handle-relative validation where the platform allows |
 | `F-03` | `AS-1`,`AS-6` | TOCTOU between the conflict check and the write: the file changes after re-read/hash/compare | One governed write path: lease → re-read → digest compare → atomic rename, else typed conflict | The compare is advisory against an **external** writer that does not hold the lease | Make the governed write path the only mutation route; re-validate digest at the rename boundary; treat a lease held by another principal as a hard refusal |
 | `F-04` | `AS-3` | A write grant is used to rewrite VCS hooks or agent-owned config inside a writable root | Protected subpaths stay read-only inside any writable root (`ARCH/13`) | Protection depends on correct root identification; a re-pointed workspace root changes the protected set | Pin and re-verify the workspace root and protected set at session start and refuse on change; audit protected-subpath violations distinctly |
@@ -182,7 +182,7 @@ Assumed **non**-adversaries: the OS user themselves (see the trust-boundary note
 |---|---|---|---|---|---|
 | `E-01` | `AS-4` | Command/argument injection by string-concatenating model- or file-supplied text into a shell | Argv-based spawn; policy evaluated on a command token prefix | Any future convenience wrapper that builds a shell string reintroduces `FO-4` | Static gate: no shell-string construction on the tool path; a lint/CI check plus a test that a crafted argument containing shell metacharacters is passed through inertly; reject NUL/newline in an argument |
 | `E-02` | `AS-2` | Environment injection: an attacker-supplied env value overrides a required one, or the host env leaks ambient credentials | Child env filtered; secret fields are references only; header/query/body redaction | Host environment may already contain tokens (VCS/net helpers) that a child would inherit | Explicit child-env allowlist; never forward agentX-resolved credential material; record the child's env **shape** (names) in audit, never values |
-| `E-03` | `AS-1` | A child re-parses an argument as a shell command (interpreter shim, `sh -c`, a wrapper script) and reaches a denied path | Kernel-level deny globs apply to the whole process tree, not only the direct child | `exec.run` pattern rules are prefix-shaped; they are not a semantic guarantee about what a wrapper will do | State explicitly that `exec.run` patterns match argv tokens, not interpreted semantics; keep the catastrophic gate evaluated on the **resolved** argv; test a shim path that re-executes a denied target |
+| `E-03` | `AS-1` | A child re-parses an argument as a shell command (interpreter shim, `sh -c`, a wrapper script) and reaches a denied path | Kernel-level deny globs apply to the whole process tree, not only the direct child; the sandbox is the sole reach authority at spawn (`DEC-024`, `REQ-SEC-025`) | `exec.run` pattern rules are prefix-shaped; they are not a semantic guarantee about what a wrapper will do. A lexical argument scan **cannot** close this — a shell re-parses, so the scan is an extraction/escalation signal only | State explicitly that `exec.run` patterns match argv tokens, not interpreted semantics, and that `exec.run` carries no path-shaped resources; keep the catastrophic gate evaluated on the **resolved** argv; test a shim path that re-executes a denied target |
 | `E-04` | `AS-4` | Escape via process inspection, VM sockets, `io_uring`, or an unfiltered syscall on a newer kernel | seccomp filter denying the escape-relevant syscall classes; empty capability set; `no_new_privs` | Newer kernels introduce syscalls not in an older filter set | Pin the required filter set per kernel range; **refuse** the effect when the set cannot be installed; a syscall-enumeration test per supported kernel |
 | `E-05` | `AS-4`,`AS-7` | A hung or fork-exploding child outlives the wall-clock bound | Watchdog → interrupt/cancel; tree reaped; process/child limits | Descendants that detach from the process group survive | Re-parent tracking and group/cgroup/job kill; a per-effect process-count cap; a test that a double-forked grandchild is reaped |
 | `E-06` | `AS-4` | Orphans persist after session teardown and are re-adopted by a later run | Reaping on cancel; stray reconciliation is an open item (`ARCH/13`) | Strays can retain workspace write access | Reconcile strays at startup and at teardown, record them in audit, and re-apply the profile of the owning session |
@@ -236,15 +236,15 @@ Assumed **non**-adversaries: the OS user themselves (see the trust-boundary note
 | `G-06` | `AS-4` | A slow or hung policy engine stalls a turn and is treated as a stall rather than a denial | Bounded decision deadline; timeout ⇒ deny with reason; audited | A deadline tuned too tight produces denial storms | Deadline is configuration; the timeout path is tested; a denial storm is surfaced as an anomaly, not silently retried |
 | `G-07` | `AS-4` | A headless run configured with an allow-all posture approves everything non-interactively | Headless posture derives from policy and never blocks on stdin; ACP clients without the permission capability resolve to reject | A CI configuration that must not prompt may be tempted toward allow-all | Schema forbids `allow`; test that headless with an empty policy denies every effectful class; a headless denial is a distinct documented exit code, never a success |
 | `G-08` | `AS-3` | A hook returns a "loosening" result that widens the effective decision | Hooks may only tighten or block; invocations and outcomes logged | A hook that fails open is treated as neutral | A hook failure is isolated and the action proceeds at its **original** authority; a hook result is intersected with the guard decision, never unioned |
-| `G-09` | `AS-3` | A second permission system appears inside a domain, connector, extension, or surface | Architectural rule: one decider | New code can drift | CI architecture gate: a static check that no crate other than the guard evaluates policy; every new effect path must add a guard assertion |
-| `G-10` | `AS-3`,`AS-4` | The same glob means different things to guard and to the sandbox, so an allow is not an allow | Shared pattern grammar | Grammar drift across two implementations | Parity test over one shared pattern corpus asserting an identical decision in both layers; grammar is versioned |
+| `G-09` | `AS-3` | A second permission system appears inside a domain, connector, extension, or surface | Architectural rule: one decider | New code can drift | CI architecture gate: a static check that no crate other than the guard evaluates policy and **no path-policy evaluation exists outside the guard**; a path-shaped `exec.run` rule is rejected at load; every new effect path must add a guard assertion (`DEC-025`, `REQ-SEC-023`, `REQ-SEC-025`) |
+| `G-10` | `AS-3`,`AS-4` | The same glob means different things to guard and to the sandbox, so an allow is not an allow | Shared pattern grammar | Grammar drift across two implementations | Parity test over one shared pattern corpus asserting an identical decision in both layers; grammar is versioned; exactly one path grammar (`fs.*`, `MatchMode::Path`) and one command matcher (`exec.run`, `MatchMode::Raw`) exist (`DEC-025`) |
 
 ### T-7 — Audit integrity (`CMP-audit`)
 
 | ID | Asset | Attack | Existing control | Residual risk | Mitigation to implement |
 |---|---|---|---|---|---|
-| `D-01` | `AS-5` | Entry removed, reordered, truncated, or modified in place | Hash chain + dense `seq` + per-segment Merkle roots; `audit verify` reports the failing `seq` | A local actor who also rewrites the local roots defeats local-only verification | Signed roots and an off-box anchor are the only fix; see `D-02` and Open question 1 |
-| `D-02` | `AS-5`,`FO-8` | Rewrite entries **and** recompute local roots to hide the tampering | Signed segment roots; off-box anchor; unanchored runs labeled `local-trust` | The documented default is a **local-only** anchor, which is weaker than the stated intent of tamper-evidence against a local actor | Surface the anchoring status everywhere audit history is shown; make off-box anchoring the default for any deployment that declares a trust requirement; a run that cannot reach its configured anchor fails the release gate rather than degrading silently |
+| `D-01` | `AS-5` | Entry removed, reordered, truncated, or modified in place | Hash chain + dense `seq` + per-segment Merkle roots; `audit verify` reports the failing `seq` | A local actor who also rewrites the local roots defeats local-only verification | Roots are always signed and anchored at a **declared level**; the default is `local-sink`, a validated append-only sink outside the audit store root (`DEC-022`, `REQ-AUDIT-004`); see `D-02` |
+| `D-02` | `AS-5`,`FO-8` | Rewrite entries **and** recompute local roots to hide the tampering | Signed segment roots; anchoring at a declared level; the `local-trust` posture is labeled everywhere | The default is `local-sink`, which is stronger than the old local-only default but weaker than `off-box`; **fabrication and the unanchored tail are not detected by any local anchor** | Surface the anchoring **level** wherever audit history is shown; make `off-box` required for any deployment declaring an off-box trust requirement; a run that cannot reach its configured anchor fails the release gate rather than degrading silently; `audit verify` renders the precise claim boundary (`REQ-AUDIT-007`) |
 | `D-03` | `AS-5`,`FO-7` | **Omission**: an effect happens and is never recorded | Coverage census over a declared class registry; uncovered class fails loudly | The census cannot prove the *absence of an undeclared class* | The declared registry is reviewed as part of the security boundary; adding a class is data + review; the census artifact is retained with the release |
 | `D-04` | `AS-5`,`FO-7` | Append fails (disk full, rotation error) and the effect proceeds unrecorded | Append I/O error fails the guarded action closed | Pre-flight space is not specified | Space pre-flight before large appends; typed error; a design where the effect is denied rather than committed unrecorded (already stated in `ARCH/14`) |
 | `D-05` | `AS-5`,`AS-6` | Cross-store disagreement: a session event or analytics row references an effect with no audit entry | Cross-store consistency invariant; reconciliation check flags both directions | A reconciliation gap discovered late is easy to dismiss | Treat a reconciliation gap as an incident with an owner; never merge silently; the check runs in the acceptance suite |
@@ -435,7 +435,7 @@ not a second definition.
 |---|---|---|
 | Guard | `guard.mode`, `guard.unmatched`, `guard.approval.default_timeout_ms`, `guard.rules[]` | `unmatched: "allow"` is invalid in any layer; a project layer cannot widen an outer deny |
 | Sandbox | `sandbox.profile`, `sandbox.tier`, `sandbox.workspace.*`, `sandbox.deny[]`, `sandbox.network.*` | `profile: "full-access"`, unconfined execution, `tier: "remote"` |
-| Audit | `audit.enabled`, `audit.anchor.{sign,offbox,cadence}`, `audit.retention.mode`, `audit.export.require_chain_proof` | `anchor.offbox: "none"` where the deployment declares an anchor requirement; disabling audit for a governed effect |
+| Audit | `audit.enabled`, `audit.anchor.{sign,offbox,sink_path,trust_requirement,cadence}`, `audit.retention.mode`, `audit.export.require_chain_proof` | setting `anchor.offbox` below the declared `anchor.trust_requirement`; `anchor.sign: false`; `anchor.sink_path` outside the approved state layout; disabling audit for a governed effect |
 | Orchestrator | `orch.max_depth`, `orch.max_parallel`, `orch.max_total_per_tree`, `orch.limits.*` | raising any bound |
 | Extensions | `plugins.*`, `skills.*`, `hooks.*`, `mcp.servers[].enabled`, `extensions.lockdown` | enabling a third-party or project plugin; relaxing a lockdown |
 | Redaction | `redaction.sensitive_names[]` (extend-only) | removing a built-in pattern |
@@ -449,15 +449,15 @@ Recorded, owned, and reviewed. "Accepted" here means **disclosed and bounded**, 
 | ID | Residual risk | Severity | Why it cannot be closed now | Treatment |
 |---|---|---|---|---|
 | `RR-01` | A determined prompt-injection payload can still steer model behavior within the authority the user already granted | critical | Content cannot be reliably distinguished from data; detection is not a security property | Containment only: content can never grant authority (`FO-6`); injection corpus asserting **no unauthorized effect**; user-visible provenance; every consequential action re-enters the governed path |
-| `RR-02` | Audit tamper-evidence is only as strong as the anchor, and the documented default anchor is local-only | high | Off-box anchoring needs a nominated sink, a device key, and a trust model per deployment | Make anchoring status a first-class displayed fact; fail the release gate when a configured anchor is unreachable; keep `local-trust` labeling honest (Open question 1) |
-| `RR-03` | A local writer with access to the session log can fabricate plausible entries that verify structurally | high | Content authenticity cannot be proven by a hash chain over the same store | Off-box anchoring of roots plus bundle verification; disclose the precise limit in `audit verify` output |
+| `RR-02` | Audit tamper-evidence is only as strong as the anchor, and the default level is `local-sink` rather than `off-box` | high | `off-box` anchoring needs a nominated remote sink or counter-signer and a trust model per deployment; a fresh install cannot invent one | **Default is `local-sink`**; `off-box` is required for any deployment declaring an off-box trust requirement; the anchoring level is surfaced wherever audit history is presented; a configured-but-unreachable anchor fails the release gate; `local-trust` labeling stays honest (`DEC-022`, `REQ-AUDIT-004`, `REQ-AUDIT-007`) |
+| `RR-03` | A local writer with access to the session log can fabricate plausible entries that verify structurally; at `local-sink`, a writer with sink access can do the same to the anchor | high | Content authenticity cannot be proven by a hash chain over the same store, and no local anchor can catch a principal that can also rewrite the anchor | Off-box anchoring of roots plus bundle verification; **fabrication and the unanchored tail are explicitly not detected by any local anchor**, and `audit verify` renders that boundary rather than leaving it implied (`DEC-022`, `REQ-AUDIT-007`) |
 | `RR-04` | The composed `yolo` + `full-access` posture is broader than either switch suggests | critical | Two independent widening switches exist by decision | One explicit audited acknowledgement of the composed scope; catastrophic gate irreducible; neither switch reachable from project config; posture displayed in every surface |
 | `RR-05` | A compromised upstream dependency inside the license allowlist is undetectable by a license check | high | Only pinned revisions + review + the generated notices bundle reduce it; none eliminates it | Locked builds, dependency-change review, notices generated from the resolved graph, `THIRD-PARTY-NOTICES` shipped (`DEC-011`, `DEC-012`) |
 | `RR-06` | The model catalog's upstream title, contributor agreement, database rights, and accuracy are not fully provable from public sources | high | Accepted upstream; not closable by us | Per-row provenance record plus cross-verification, not a stronger license claim (`DEC-021`); records schema-validated; a descriptor may not introduce an endpoint or credential; pinned eval fixtures are never silently overwritten; no marks bundled |
-| `RR-07` | macOS child-process network denial is best-effort at the current tier | high | The platform mechanism available to that tier does not equal the Unix path/syscall denial | State the limit in every surface that claims a network-restricted profile; either the backend declares itself unsupported for that profile or the limit is displayed (Open question 4) |
-| `RR-08` | The Windows tier's job objects do not by themselves deny paths or network; the application-container boundary plus ACLs carry that (`ARCH/13` §Platform notes) | high | Different kernel mechanism, different proof obligation | Its own acceptance matrix and record; limits stated honestly rather than described as equivalent |
+| `RR-07` | macOS child-process network denial is `best_effort` at that tier | high | The platform mechanism available to that tier does not equal the Unix path/syscall denial | The tier **declares** `best_effort` with its residual; the level is surfaced wherever a network-restricted profile is presented and recorded in the tier's acceptance record; a caller requiring `enforced` is **refused** rather than downgraded (`DEC-026`, `REQ-GUARD-004`) |
+| `RR-08` | The Windows tier's job objects do not by themselves deny paths or network; the application-container boundary plus ACLs carry that, so its network level is `capability` (deny-by-absence) rather than a syscall filter (`ARCH/13` §Platform notes) | high | Different kernel mechanism, different proof obligation | Its own acceptance matrix and record naming the declared level; the level is surfaced and a stronger requirement is refused; limits stated honestly rather than described as equivalent (`DEC-026`) |
 | `RR-09` | Session ownership is process-local in v1, so two processes can drive one session | medium | A durable cross-process owner is deferred (`ARCH/07`) | Cross-process append lock + audit concurrency test; a single-controlling-connection rule per session; do not claim multi-editor collaboration before this closes |
-| `RR-10` | Enforced `exec.run` patterns match argv tokens, not interpreted semantics; a shell re-parses an argument | medium | A command wrapper is opaque to a prefix rule; the kernel boundary is the real control | Pattern grammar states this; the kernel deny set is the boundary; a shim test asserts the deny still applies |
+| `RR-10` | Enforced `exec.run` patterns match argv tokens, not interpreted semantics; a shell re-parses an argument | medium | A command wrapper is opaque to a prefix rule; the kernel boundary is the real control | Pattern grammar states this and `exec.run` carries no path-shaped resources; the kernel deny set is the boundary; the tool-plane argument scan is extraction/escalation only and may never be the sole control; a shim test asserts the deny still applies (`DEC-024`, `DEC-025`) |
 | `RR-11` | Cost ceilings cannot be enforced precisely when pricing is unknown | medium | Pricing is external, versioned, and may be absent | Unknown pricing is reported as unknown, never fabricated; a cost ceiling with unknown pricing fails closed on that term or is declared token-only |
 | `RR-12` | Secrets already present in workspace files are readable unless they match a deny pattern | medium | Content inspection at scale is not a boundary | Deny-glob set is extend-only and reviewed; preflight secret scan warns (and may deny) on changed files; the limit is stated rather than implied |
 | `RR-13` | A hostile peer agent can burn budget while staying inside its ceiling (slow liveness) | medium | Liveness of an external process is not a security property | Hard wall-clock and output caps, slot release on close, storm anomalies recorded, a bounded `await` auto-backgrounds |
@@ -501,14 +501,14 @@ Explicitly **not** claimed, mitigated, or tested by this document:
 
 ## Requirements mapping
 
-`REQ-SEC-001..003` predate this document; `REQ-SEC-004..024` are derived from it and
+`REQ-SEC-001..003` predate this document; `REQ-SEC-004..025` are derived from it and
 are added by it.
 
 | REQ | Threat rows |
 |---|---|
 | `REQ-SEC-001` (license allowlist) | `X-11`, `RR-05` |
 | `REQ-SEC-002` (external content is data) | `P-01`…`P-07`, `RR-01` |
-| `REQ-SEC-003` (targets validated before use) | `F-01`, `N-01`, `G-01` |
+| `REQ-SEC-003` (targets validated before use; guard authorizes, sandbox enforces reach, the argument scan is a signal only) | `F-01`, `N-01`, `G-01`, `E-03`, `RR-10` |
 | `REQ-SEC-004` (canonicalization + re-validation at use) | `F-02`, `G-01` |
 | `REQ-SEC-005` (containment at the enforcement layer) | `F-01`, `F-04`, `E-04` |
 | `REQ-SEC-006` (no shell-string construction; env allowlist) | `E-01`, `E-02` |
@@ -529,30 +529,45 @@ are added by it.
 | `REQ-SEC-021` (unconfined execution requires an audited user act) | `G-05`, `RR-04` |
 | `REQ-SEC-022` (adversarial input rejection) | `F-05`, `E-01`, `O-07`, `X-03` |
 | `REQ-SEC-023` (structural boundaries are CI gates) | `G-09`, `N-06`, `D-08` |
-| `REQ-SEC-024` (anchor status is surfaced, never over-claimed) | `D-02`, `RR-02` |
-| `REQ-GUARD-001..004`, `REQ-AUDIT-001..006`, `REQ-TOOL-003`, `REQ-ORCH-001..005`, `REQ-SKILL-001..004`, `REQ-PLUGIN-001..004`, `REQ-PROV-004`, `REQ-ANALYTICS-004` | The subsystem tables above are the threat-side statement of how each is enforced; each module document remains the owner of its own mechanism. |
+| `REQ-SEC-024` (anchor status is surfaced, never over-claimed) | `D-01`, `D-02`, `RR-02`, `RR-03` |
+| `REQ-SEC-025` (one path policy owner, one path reach owner; `exec.run` carries no paths) | `F-01`, `E-03`, `G-09`, `G-10`, `RR-10` |
+| `REQ-GUARD-001..004`, `REQ-AUDIT-001..007`, `REQ-TOOL-003`, `REQ-ORCH-001..005`, `REQ-SKILL-001..004`, `REQ-PLUGIN-001..004`, `REQ-PROV-004`, `REQ-ANALYTICS-004` | The subsystem tables above are the threat-side statement of how each is enforced; each module document remains the owner of its own mechanism. |
 
 ## Open questions
 
-1. **Anchoring default vs. tamper-evidence intent.** `REQ-AUDIT-004` requires roots to
-   be "anchored beyond the local store"; the documented configuration default is
-   `audit.anchor.offbox: "none"`, i.e. `local-trust`. Either the default changes, or
-   `REQ-AUDIT-004` is amended to state that an unanchored deployment provides
-   local-trust evidence only. This needs a `DEC-*`; it is not resolved here.
-2. **ACP permission method name.** `ARCH/15` §Data model lists the method as
-   `request/permission`, while the acceptance work is specified against the wire
-   method `session/request_permission`. Which token is authoritative in our schema
-   (and whether both are accepted during a transition) must be settled before the
-   protocol table is frozen.
-3. **`exec.run` rules and paths.** `ARCH/10` states command-argument path scans are
-   advisory only, while `REQ-SEC-003` requires targets to be validated. The
-   reconciliation is that the kernel is the boundary — but should `exec.run` rules be
-   permitted to express path-shaped resources at all, given they cannot be enforced
-   semantically?
-4. **macOS network-restricted profiles.** Is a `network: none` profile allowed to be
-   requested on the current macOS tier with a best-effort child-network block, or must
-   the backend declare itself unsupported and force the user to a stronger tier?
-   (`ARCH/13` Open question 5.)
+1. **Anchoring default vs. tamper-evidence intent.** **Resolved by `DEC-022`.** The
+   default is **`local-sink`**: roots are always signed (signing is not configurable
+   off) and anchored to a validated append-only sink outside the audit store root.
+   `off-box` is required for any deployment that declares an off-box trust
+   requirement; a configured-but-unreachable sink fails closed; `local-trust` remains
+   available only as an explicit, acknowledged, labeled posture. `REQ-AUDIT-004` was
+   reworded rather than lowered, and the claim boundary is now separately testable
+   under `REQ-AUDIT-007`. The residual is unchanged and stays in the register:
+   **fabrication and the unanchored tail are not detected by any local anchor**
+   (`RR-02`, `RR-03`). What remains open is device-key rotation/escrow
+   (`ARCH/14` Open question 1).
+2. **ACP permission method name.** **Resolved by `DEC-023`.** The canonical, frozen
+   wire token is `session/request_permission`; no alias is accepted and
+   `request/permission` is not a transition form in either direction. `ARCH/15` was
+   corrected and `REQ-PROTO-002` now names the token, so `ACC-P1-03`/`ACC-P1-05` and
+   the implementation agree. A second method identity is refused rather than
+   transitional — that was the whole point of the question.
+3. **`exec.run` rules and paths.** **Resolved by `DEC-025`.** Yes — `exec.run` rules
+   match the **command token prefix only** and MUST NOT carry path-shaped resources; a
+   path named by a shell argument travels as an `fs.*` resource, so exactly one path
+   grammar and one command matcher exist and a path-shaped `exec.run` rule is a
+   configuration error rejected at load. The reconciliation `REQ-SEC-003` could not
+   state is now stated directly by `REQ-SEC-025` and `DEC-024`: the tool plane
+   **extracts** and may only escalate, the guard **authorizes**, the sandbox
+   **enforces reach**. Residual: a prefix rule is still not a semantic guarantee about
+   what a wrapper will do (`RR-10`).
+4. **macOS network-restricted profiles.** **Resolved by `DEC-026`.** A
+   `network: none` profile **is allowed** on the macOS tier; the tier declares
+   `best_effort` with its residual, the level is surfaced wherever the profile is
+   presented and recorded in that tier's acceptance record, and a caller requiring
+   `enforced` is **refused** rather than silently downgraded. The backend is therefore
+   not forced to declare itself unsupported — macOS stays a supported tier with an
+   honest level (`RR-07`, `ARCH/13` Open question 5, `ARCH/23` Open question 8).
 5. **Windows acceptance matrix.** Which specific filesystem, registry,
    child-process, and network restrictions are proven by which mechanism, and what
    record proves each? (`ARCH/13` Open question 1; `TODO.md` Windows-containment task.)

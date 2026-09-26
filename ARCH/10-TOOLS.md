@@ -31,9 +31,9 @@ Owns:
 - step/loop tool guards (max-steps tool disablement);
 - the model/UI result split.
 
-Never owns: allow/ask/deny evaluation (`CMP-guard`), confinement (`CMP-sandbox`),
-HTTP/process transports (`CMP-provider`/host), or the number of steps in a turn
-(`CMP-runner` sets the bound; tools enforce the final guard).
+Never owns: allow/ask/deny evaluation or path policy (`CMP-guard`), confinement
+(`CMP-sandbox`), HTTP/process transports (`CMP-provider`/host), or the number of
+steps in a turn (`CMP-runner` sets the bound; tools enforce the final guard).
 
 ## Interfaces
 
@@ -142,8 +142,10 @@ definitions into the token budget; the registry never sends them itself.
 Behavioral rules per tool:
 
 - **Paths** — relative paths resolve within the active location; absolute paths
-  inside it are accepted; an external absolute path requires a separate
-  `external_directory` approval *before* the tool's own permission assert.
+  inside it are accepted; an external absolute path is carried into the guard
+  request as an `fs.*` resource, where the built-in external-directory floor rule
+  produces the single `external_directory` ask (`DEC-024`, `REQ-SEC-025`). The
+  tool plane never returns that decision itself.
 - **Mutations** — `write`, `edit`, and `apply_patch` share one governed write
   path: re-read + hash + compare against the approved base, then write; a
   changed file returns a typed re-read/conflict result. `edit` rejects empty or
@@ -151,9 +153,12 @@ Behavioral rules per tool:
 - **`apply_patch`** — all targets are resolved and approved before contents are
   read; hunks apply sequentially and a later failure reports which earlier
   operations remain applied (no silent atomicity claim).
-- **`bash`** — runs with host authority through the sandbox; command-argument
-  path scans are advisory only; timeout is bounded; output is captured up to a
-  byte cap.
+- **`bash`** — runs with host authority through the sandbox; the tool extracts
+  path-shaped arguments as additional `fs.*` resources for the guard request; the
+  scan may escalate, never de-escalate; it is not the control (`REQ-SEC-003`,
+  `REQ-SEC-025`, `DEC-024`). The hard target control is spawn-time confinement —
+  scoped roots plus kernel-enforced deny globs over the whole process tree.
+  Timeout is bounded; output is captured up to a byte cap.
 - **`question` / `skill` / `task`** — `question` gathers user decisions
   (unavailable headless, see below); `skill` injects instructions as data; `task`
   returns a receipt, never a raw transcript (`REQ-ORCH-001`).
@@ -176,6 +181,15 @@ assert({ action, resources, save?, metadata?, sessionID, agent, source })
 ```
 
 - A deny is returned to the model as a typed failure; the effect never runs.
+- **Resource extraction, not decision.** A `bash` request carries the
+  **command-token-prefix** resource for `exec.run` **and** any extracted
+  path-shaped arguments as `fs.*` resources, in one request. `CMP-guard` owns the
+  combined decision: exactly one allow/ask/deny over the whole resource set, using
+  the one path matcher shared with the sandbox deny globs. An extracted path may
+  only *raise* the outcome — it can escalate to `ask` or `deny` and can never lower
+  a decision, and the tool plane may not return a path decision at all
+  (`DEC-024`, `DEC-025`, `REQ-SEC-025`). A path-shaped `exec.run` resource is a
+  configuration error and never reaches this call.
 - "Always allow" persists the exact `save` pattern (or `*` where the tool has no
   meaningful pattern), shown to the user before confirmation (`REQ-GUARD-003`).
 - `metadata` carries the non-secret context the approval UI needs (root, limit,
@@ -280,7 +294,7 @@ register (validate names, scope-bound)
   → settle(call)
       → reject stale/unknown name
       → decode input
-      → guard assert (+ external-directory assert where needed)
+      → guard assert (command-prefix + extracted fs.* resources)
       → sandboxed execute
       → encode output / structured
       → bound content (spill if over budget)
@@ -295,7 +309,7 @@ register (validate names, scope-bound)
 | Invalid tool name / unknown-stale call | Registration rejected; a stale/unknown call gets a typed result and is never routed. |
 | Invalid input / output mismatch | Typed `Invalid tool input` (execute never entered) or `Tool returned an invalid value…` (effect already recorded). |
 | Guard deny | Typed failure; the effect never runs; approval/audit recorded. |
-| External path | Separate `external_directory` approval before the tool action. |
+| External path | The path travels as an extracted `fs.*` resource and the guard's external-directory floor rule decides: deny-glob or protected-subpath match → `deny`; outside the granted roots and not explicitly allowed → `ask` (external-directory); a tier that cannot confine the reach → the effect is **refused**, not run unconfined. The tool plane never decides any of these (`DEC-024`, `REQ-SEC-025`). |
 | Concurrent mutation | Exclusive lock serializes; a dirty/conflicted base returns a typed re-read result. |
 | Oversized output | Managed spill; model gets a head/tail preview + path. |
 | Interrupted mid-execution | Typed aborted result; partial work inspectable; no fabricated success. |
@@ -330,7 +344,8 @@ only reflects the resulting advertised set.
 | `REQ-GUARD-001..004` | Guard asserted per call; fail closed; remembered patterns. |
 | `REQ-PROTO-003` | MCP-bridged registration with per-session dedupe. |
 | `REQ-PROTO-005` | Headless/ACP behavior with no surface-owned loop logic. |
-| `REQ-SEC-002/003` | Tool output is untrusted; targets validated before use. |
+| `REQ-SEC-002/003` | Tool output is untrusted. Targets are validated before use, but the ownership is split: `CMP-guard` authorizes (allow/ask/deny) and `CMP-sandbox` enforces reach — the tool plane only extracts resources and may raise, never lower, a decision. |
+| `REQ-SEC-025` | Path-shaped shell arguments are extracted into `fs.*` resources on one guard request alongside the command-prefix resource; deny-glob → `deny`, outside-root → `ask`, unconfineable tier → refuse, all decided by the guard (`DEC-024`, `DEC-025`). |
 
 ## Open questions
 

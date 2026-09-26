@@ -67,6 +67,25 @@ GuardMode   = Plan | Act | Yolo
 - **Resources** are the concrete target: a path or path glob (`fs.*`), a command
   token prefix (`exec.run`), `host:port` plus protocol (`net.connect`), or
   `server/tool` (`mcp.call`).
+- **One path matcher, one command matcher** (`DEC-025`). A path-shaped target is
+  always an `fs.*` resource; `exec.run` resources match the **command token prefix
+  only** and MUST NOT carry path-shaped resources. A path-named `exec.run` resource
+  is a **configuration error, rejected at load** — it cannot be expressed, so a
+  second, unenforceable path policy cannot appear. A path protection stays fully
+  expressible as an `fs.*` rule.
+- **Guard is the sole path *authorization* owner; `CMP-sandbox` is the sole path
+  *enforcement* owner** (`REQ-SEC-025`). `CMP-tools` is a resource extractor: it may
+  attach an `fs.*` resource for a path named by a shell argument and may refuse an
+  unparseable escape, but it never returns a path decision and is never the sole path
+  control.
+- **Built-in external-directory floor rule.** An `fs.*` resource that names an
+  absolute path **outside the granted roots**, is not deny-globbed, and is not
+  explicitly allowed resolves to `ask` — the single `external_directory` ask, and
+  Guard is the one decider for it. The floor is **overridable toward `deny`**
+  (a deny-glob, a protected subpath, or a more specific deny rule wins immediately)
+  and **never toward a silent `allow`**. A caller that requires the effect to be
+  *refused* rather than asked, or that requires a tier which can confine the reach,
+  is refused by the enforcement layer (`REQ-SEC-010`) — not resolved here.
 - **Wildcards:** `*` matches within one path/token segment; `**` spans path
   segments. Pattern grammar is shared with `CMP-sandbox` deny globs so a pattern
   means the same thing to Guard and to the kernel. A malformed pattern makes its
@@ -97,6 +116,14 @@ fn evaluate(action, resources, ctx) -> Decision:
 ```
 
 - **find-last-wins**: the last matching rule in the concatenated order decides.
+- **External-directory floor.** After the deny ceiling and rule evaluation, an
+  `fs.*` resource naming an absolute path outside the granted roots that matched
+  neither a deny glob nor an explicit allow is raised to `ask` by the built-in
+  floor rule. The floor only ever **raises** the effect (deny > ask > allow); it can
+  never lower an existing deny, and a configuration may not set it to `allow`
+  (`REQ-SEC-025`, `DEC-024`). The `CMP-tools` extraction that supplies the `fs.*`
+  resource may likewise only raise, so the same `deny`/`ask`/`refuse` outcome is
+  reached whether the path arrived from a tool argument or from configuration.
 - **fail-closed default**: an unmatched action resolves to the configured unmatched
   effect, which is `deny` by default and may be set to `ask`; it may **never** be set
   to `allow` (`REQ-GUARD-002`).
@@ -190,6 +217,15 @@ Rule sources: global config → project config → agent-level policy → sessio
 overrides. Session overrides are ephemeral; "always" persists to the project-scoped
 saved-rule store, never into a shipped config file.
 
+**Load-time validation (reject, never normalize).** A rule whose resource is
+path-shaped while its action is `exec.run` makes its config layer **invalid** and is
+rejected at load — a transition period where such a rule is silently ignored or
+loosened is not offered (`DEC-025`, `REQ-SEC-025`). A malformed pattern, a
+`guard.unmatched` value that is not `deny`/`ask`, and a negative or non-integer
+`use`/`limit` are handled the same way: the layer is rejected and the previous valid
+layer stands (`REQ-GUARD-002`). The equivalent CI gate asserts that no component other
+than the guard evaluates path policy (`REQ-SEC-023`, `AX-121`).
+
 ## Requirements mapping
 
 | REQ | How this module satisfies it |
@@ -197,11 +233,12 @@ saved-rule store, never into a shipped config file.
 | `REQ-GUARD-001` | Ordered rules → allow/ask/deny, deterministic find-last-wins evaluation. |
 | `REQ-GUARD-002` | Unmatched actions default to deny (ask if configured); never implicit allow. |
 | `REQ-GUARD-003` | "Always" persists the exact `{action, resource}` pattern, shown pre-confirmation. |
-| `REQ-GUARD-004` | Guard passes the workspace-scoped, network-off profile to `CMP-sandbox`. |
+| `REQ-GUARD-004` | Guard passes the workspace-scoped profile to `CMP-sandbox` and reads the tier's **declared** network guarantee level; a level the tier cannot provide is refused, never widened (`DEC-026`). |
 | `REQ-TOOL-003` | `materialize_filter()` removes unconditionally-denied tools at registration. |
 | `REQ-AUDIT-001` | Every decision and ticket lifecycle event appends to `CMP-audit`. |
 | `REQ-SESS-004` | Mode + policy snapshot recorded with the session. |
-| `REQ-SEC-003` | Filesystem and network targets validated against policy before use. |
+| `REQ-SEC-003` | Guard authorizes the target (allow/ask/deny); `CMP-sandbox` enforces reach before the effect. Guard never executes and never widens a profile. |
+| `REQ-SEC-025` | Exactly one path authorization owner: `fs.*` resources are matched by the one shared path grammar; `exec.run` matches the command token prefix only and a path-shaped `exec.run` rule is a load-time error; the built-in external-directory floor rule resolves an outside-root path to `ask`, overridable toward `deny` and never to a silent allow (`DEC-024`, `DEC-025`). |
 
 ## Open questions
 
@@ -213,5 +250,11 @@ saved-rule store, never into a shipped config file.
    is moved or opened through a symlink.
 4. **Catastrophic-gate catalogue** — the exact deny-by-default action list that
    survives yolo, and how it is versioned.
-5. **Wildcard/glob unification** — confirm one grammar shared with `CMP-sandbox` and
-   the exact escape rules (leading `!`/`^`, character classes) for parity.
+5. **Wildcard/glob unification** — **Resolved by `DEC-025`:** there is exactly one
+   path grammar. `fs.*` resources are matched with the shared path grammar
+   (`MatchMode::Path`) and `exec.run` with the raw command matcher
+   (`MatchMode::Raw`); the grammar is versioned and the same corpus is replayed
+   against `CMP-sandbox` deny globs to assert an identical decision in both layers.
+   What remains open is only the exact escape-rule surface (leading `!`/`^`,
+   character classes) and how it is versioned alongside the grammar
+   (`G-10`).

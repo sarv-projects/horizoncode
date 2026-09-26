@@ -12,11 +12,21 @@ The module executes the confinement decision owned by `CMP-guard`; it never eval
 its own policy. If confinement cannot be established, the default is refusal, not
 silent unconfined execution.
 
+`CMP-sandbox` is the **sole reach authority**: `check_path` (in-process filesystem
+operations) and `spawn` (child processes) are the only two calls that can grant or
+bound reach, and every tier enforces the resolved profile through them
+(`DEC-024`, `DEC-025`, `REQ-SEC-025`). Authorization is not reach
+(`REQ-SEC-010`): a Guard `allow` is a proposal this layer is free to refuse.
+
 ## Responsibilities
 
 - Resolve a requested profile into a concrete confinement plan and apply it.
-- Scope filesystem **read** and **write** access to the workspace under policy.
-- Apply the **network policy**, defaulting to *no outbound network*.
+- Scope filesystem **read** and **write** access to the granted roots under policy —
+  reads are scoped on **every** tier, not only writes.
+- Apply the **network policy** at the tier's **declared guarantee level**
+  (`DEC-026`, `REQ-GUARD-004`).
+- Refuse a spawn that names an absolute path outside the granted roots, rather than
+  relying on the tool plane to have extracted it (`DEC-024`).
 - Block child-process network and dangerous syscalls (process inspection, VM
   sockets, `io_uring`) unless explicitly granted.
 - Provision and invoke an isolation backend per tier (local / container / remote).
@@ -34,7 +44,7 @@ silent unconfined execution.
 | Peer (`CMP-*`) | Direction | Contract |
 |---|---|---|
 | `CMP-guard` | inbound | resolved `ConfinementProfile` (fs scope, network policy, protected subpaths) |
-| `CMP-tools` | inbound | `run(command, cwd, env, profile, limits) -> SandboxOutcome` for shell/exec; in-process fs ops consult `check_path` |
+| `CMP-tools` | inbound | `run(command, cwd, env, profile, limits) -> SandboxOutcome` for shell/exec; in-process fs ops consult `check_path`. **These two calls are the only enforcement calls** — no other entry point may grant or bound reach (`DEC-024`, `REQ-SEC-025`). |
 | `CMP-runner` | inbound | cancellation handle; process trees reaped on cancel |
 | `CMP-audit` | outbound | profile-applied, apply-failed, fs-violation, net-violation records |
 | `CMP-tui` / `CMP-headless` | outbound | health/status: `ok | degraded | down` with reason |
@@ -65,7 +75,9 @@ Callers hold a resolved profile, not a backend. Backends are selected by tier:
 
 `bubblewrap` is invoked as a subprocess, never linked, keeping the binary's license
 surface clean (`DEC-008`, `DEC-012`). Landlock and seccomp bindings are ordinary
-permissive dependencies used in-process.
+permissive dependencies used in-process. The `--network=none` default is a *request*;
+what each backend actually enforces is its declared `network_guarantee_level`
+(§Network guarantee levels, `DEC-026`).
 
 ## Data / state model
 
@@ -81,19 +93,33 @@ ConfinementProfile = {
   network_rules:   [host:port/protocol],
   limits:          { cpu, memory, disk, wall_clock }
 }
-ResolvedProfile = { backend, applied_at, mounts[], seccomp_mode, epoch }
+ResolvedProfile = { backend, applied_at, mounts[], seccomp_mode, epoch,
+                    network_guarantee_level, network_mechanism, network_residual }
 SandboxOutcome  = { exit, stdout_ref, stderr_ref, denied?, violations[] }
 ```
 
-- **Profiles:** `read-only` (write only to session state + temp; network off),
-  `workspace-write` (default; write to workspace + session + temp; network off),
-  `full-access` (no fs restriction, network allowed — still subject to Guard and the
-  catastrophic gate, and still one egress path).
+- **Profiles:** `read-only` (write only to session state + temp; network off at the
+  tier's declared level), `workspace-write` (default; write to workspace + session +
+  temp; network off at the tier's declared level), `full-access` (no fs restriction,
+  network allowed — still subject to Guard and the catastrophic gate, and still one
+  egress path).
 - **Protected subpaths:** VCS metadata/hooks and agent-owned configuration stay
   read-only inside any writable root so a write grant cannot rewrite the policy or
   install a hook that runs outside confinement.
 - **Deny globs** are kernel-enforced read **and** write/rename, so a denied path
   cannot be read via a tool nor relocated out of the deny set and read elsewhere.
+- **Reads are scoped to the granted roots on every tier** (`REQ-SEC-025`). This is a
+  reach property enforced here, not an authorization the caller performed: Linux
+  materializes a mount view containing only the granted roots; the macOS Seatbelt
+  profile's `file-read*` grants MUST be expressed as granted-root subpath allows
+  rather than a blanket read; Windows relies on the AppContainer file ACLs. A spawn
+  naming an absolute path outside the granted roots is **rejected**, or masked so the
+  target does not exist in the child's view.
+- **`network_guarantee_level`** is the tier's declared level (`enforced` |
+  `best_effort` | `none`) together with `network_mechanism` and `network_residual`;
+  all three are surfaced as `ResolvedProfile.applied` notes wherever a
+  network-restricted profile is presented, and recorded in that tier's acceptance
+  record (`DEC-026`, `REQ-GUARD-004`, `REQ-VER-014`).
 - A denied operation inside a namespace is reported as a **violation**, not a crash.
 
 ## Lifecycle & flows
@@ -125,26 +151,43 @@ SandboxOutcome  = { exit, stdout_ref, stderr_ref, denied?, violations[] }
 5. Denials and violations append to `CMP-audit`; cancellation reaps the process tree.
 
 ### Network policy
-- Default `none`: the child namespace has no usable network. On Linux a seccomp
-  filter denies `connect`, `accept`, `bind`, `listen`, `sendto`, `sendmmsg`,
-  `getsockopt`/`setsockopt`, and restricts `socket`/`socketpair` to `AF_UNIX`; it
-  also denies `ptrace`, `process_vm_readv/writev`, `io_uring_*`, and VM sockets so a
-  child cannot escape the filesystem view through host bridges.
+- Default `none`: the child namespace has no usable network **to the extent the tier
+  can prove**. The mechanism differs per tier, so the level it reaches is declared,
+  never assumed (§Platform notes, `DEC-026`).
+- On Linux, where the level is `enforced`, a seccomp filter denies `connect`,
+  `accept`, `bind`, `listen`, `sendto`, `sendmmsg`, `getsockopt`/`setsockopt`, and
+  restricts `socket`/`socketpair` to `AF_UNIX`; it also denies `ptrace`,
+  `process_vm_readv/writev`, `io_uring_*`, and VM sockets so a child cannot escape the
+  filesystem view through host bridges.
+- On Windows the level is `capability`: egress is denied by **absence of the network
+  capability** inside the AppContainer, not by a syscall filter — job objects do not
+  deny network. On macOS the level is `best_effort`: the Seatbelt rule binds the
+  wrapped process, and an escaped descendant is **not** separately confined. In both
+  cases the residual is recorded on the resolved profile and disclosed; neither tier
+  claims `enforced`.
 - **Allowlist** grants specific `host:port` + protocol; the egress path is single and
   mediated, so an allowed host still cannot be reached by a disallowed protocol.
 - **Process/child-network blocking** is the same filter applied to every descendant;
   there is no "trusted child" exemption.
+- **A required level the tier cannot provide is refused (fail closed)**
+  (`REQ-GUARD-004`). A caller demanding `enforced` on the macOS or Windows tier gets a
+  typed refusal, never a silent downgrade to `best_effort`/`capability`.
 
 ## Profile matrix
 
 | Profile | FS read | FS write | Network | Use |
 |---|---|---|---|---|
-| `read-only` | scoped read | session state + temp only | off | Exploration, review, untrusted analysis |
-| `workspace-write` (default) | scoped read | workspace + session + temp | off | Everyday repo work |
+| `read-only` | scoped to granted roots | session state + temp only | off at the tier's declared level | Exploration, review, untrusted analysis |
+| `workspace-write` (default) | scoped to granted roots | workspace + session + temp | off at the tier's declared level | Everyday repo work |
 | `full-access` | unrestricted | unrestricted | allowed | Explicit, audited user activation only |
 
 `full-access` widens capability but never bypasses Guard: the catastrophic gate and
 the single-egress rule still apply.
+
+**"Off" is a per-tier declared level, not a universal claim** (`DEC-026`). The matrix
+row says the profile *requests* no network; §Platform notes states what each tier can
+actually enforce, and the resolved profile records the level, mechanism, and residual.
+A profile whose requested level the tier cannot provide is refused, not approximated.
 
 ## Platform notes
 
@@ -160,22 +203,46 @@ equivalent to the Unix path/syscall denial described above.
   seccomp stacked; Landlock is the fallback when bubblewrap is unavailable for a
   profile that does not require read-deny. Read-deny requires bubblewrap; if it is
   missing, refuse rather than run with denied paths exposed. Kernel-enforced path
-  read/write denial and syscall/egress denial are both available.
+  read/write denial and syscall/egress denial are both available. Read scoping comes
+  from the mount view: only the granted roots are visible to the child.
 - **macOS (first enforcement target).** A Seatbelt-profile backend implements the
   same `SandboxProvider` trait and is an acceptance target for real containment.
-  Path containment is kernel-enforced by the Seatbelt profile; **child-process
-  network denial is best-effort at this tier** and must be documented as such
-  whenever a network-restricted profile is requested.
+  Path containment is kernel-enforced by the Seatbelt profile, and `file-read*` grants
+  MUST be issued as granted-root subpath allows rather than a blanket read, so reads
+  are scoped to the granted roots like every other tier. **Child-process network
+  denial is `best_effort` at this tier** — the rule binds the wrapped process, and an
+  escaped descendant is not separately confined — which must be declared and
+  displayed wherever a network-restricted profile is presented (`DEC-026`).
 - **Windows (fully supported target; distinct tier).** Confinement uses an
   **AppContainer** boundary plus a **restricted token** and **job objects** for
   process/child containment. Job objects alone govern process lifetime, job-wide
   limits, and child membership — they do **not** by themselves deny filesystem paths
   or outbound network the way Landlock + seccomp do; AppContainer capability plus
-  file/registry ACLs carry the path and network part. This tier therefore has its own
+  file/registry ACLs carry the path and network part, and those ACLs are what scope
+  reads to the granted roots on this tier. This tier therefore has its own
   acceptance tests (`TODO.md` Windows-containment task) and its limits are stated
   honestly rather than described as equivalent. Availability is probed; a requested
   backend that cannot be established fails closed. WSL is an execution backend, not
   the Windows storage root.
+
+### Network guarantee levels (`DEC-026`)
+
+Every tier **declares** the level it provides. `enforced` is a kernel/syscall or
+OS-capability denial of egress; `best_effort` limits denial to the wrapped process;
+`none` means no network guarantee. A tier MUST NOT claim a level stronger than it can
+prove, and a caller that requires a level the tier does not provide MUST be refused.
+
+| Tier | Level | Mechanism | Residual |
+|---|---|---|---|
+| Linux (local) | `enforced` | seccomp egress filter + network namespace | A denial proves the syscall/network bar for this tier; loopback is corroboration only, never the proof. |
+| macOS (local) | `best_effort` | Seatbelt rule on the wrapped process | An escaped descendant is not separately confined; allowlist entries are already reported `Unsupported` for this reason. |
+| Windows (local) | `capability` | AppContainer **capability absence** (deny-by-absence, not a syscall filter) | Job objects do not deny network; an in-container process holding the capability would not be filtered. |
+| Container / remote | declared by the tier | the tier's own isolation boundary | Whatever the tier declares is recorded verbatim; the interface is not upgraded by assumption. |
+
+`enforced` is the level a caller must demand for a hard "no egress" claim. The
+`best_effort` and `capability` levels are supported, disclosed postures — not
+"unsupported" tiers — and the difference is enforced by refusing an unmeetable
+requirement rather than by downgrading it silently.
 
 ## Failure modes
 
@@ -219,11 +286,18 @@ network policy.
 
 ## Verification approach
 
-- **Containment tests:** a command cannot read a denied path, cannot write outside
-  the writable roots, and cannot rename a denied path out of the deny set.
-- **Network tests:** with `network: none`, `connect`-class syscalls fail and only
-  `AF_UNIX` sockets succeed; with an allowlist, only granted `host:port`+protocol
-  succeed.
+- **Containment tests:** a command cannot read a denied path, cannot read a path
+  outside the granted roots, cannot write outside the writable roots, and cannot
+  rename a denied path out of the deny set. A spawn naming an absolute path outside
+  the granted roots is rejected or masked, asserted per tier.
+- **Network tests, per declared level** (`DEC-026`, `ACC-P1-01(d)`): at `enforced`,
+  the `connect`-class syscalls fail and only `AF_UNIX` sockets succeed; at `capability`,
+  the outbound attempt fails because the capability is absent; at `best_effort`, the
+  wrapped process is denied and the residual (an escaped descendant is not separately
+  confined) is proven to be **disclosed** in the surface and the record. With an
+  allowlist, only granted `host:port`+protocol succeed.
+- **Level/refusal test:** a caller requiring `enforced` on a `best_effort` or
+  `capability` tier is refused typed — the run never silently downgrades.
 - **Capability test:** after setup, effective/permitted capabilities are empty.
 - **Fail-closed tests:** with the backend removed, the effect is denied and audited,
   not run unconfined.
@@ -235,9 +309,10 @@ network policy.
 
 | REQ | How this module satisfies it |
 |---|---|
-| `REQ-GUARD-004` | Sandboxed execution defaults to workspace-scoped writes and network off. |
+| `REQ-GUARD-004` | Sandboxed execution defaults to workspace-scoped writes and no outbound network; each tier declares its `network_guarantee_level` with mechanism and residual, the level is surfaced and recorded, and a required level the tier cannot provide is refused (`DEC-026`). |
 | `REQ-TOOL-003` | Denied tools are absent via Guard; the sandbox independently confines the rest. |
-| `REQ-SEC-003` | Filesystem and network targets validated against the resolved profile before use. |
+| `REQ-SEC-003` | This module is the sole path *reach* enforcer: `check_path` and `spawn` enforce the resolved profile's scoped roots and kernel-enforced deny globs over the whole process tree, so validation happens at the enforcement boundary, not in a pre-scan. |
+| `REQ-SEC-025` | Sole path reach owner: reads are scoped to the granted roots on every tier, a spawn naming an absolute path outside them is rejected or masked, deny-glob/protected-subpath matches are denied at the kernel, and a tier that cannot confine the reach refuses the effect (`DEC-024`, `DEC-025`). |
 | `REQ-LOOP-005` | Cancellation propagates to process trees; partial state stays inspectable. |
 | `REQ-ORCH-003` | Per-subagent writable scopes are non-overlapping worktrees or explicitly merged. |
 | `REQ-PERF-001` | Startup probe is bounded; the warm-cache prompt target is unaffected. |
@@ -256,6 +331,10 @@ network policy.
    where credentials come from without leaving `CMP-secrets`.
 4. **Deny-glob materialization on Linux** — the fail-closed threshold (file count,
    scan depth) at which a glob makes the profile unstartable.
-5. **macOS Seatbelt child-network** — whether best-effort blocking is acceptable or
-   the backend must be marked unsupported for network-restricted profiles, and how
-   that limit is surfaced in the acceptance record (`TODO.md` macOS task).
+5. **macOS Seatbelt child-network** — **Resolved by `DEC-026`:** best-effort
+   blocking is **allowed**, but the tier must declare `best_effort` with its residual,
+   surface the level wherever a network-restricted profile is presented, record it in
+   the acceptance record, and **refuse** a caller that requires `enforced`. macOS is
+   not declared unsupported for network-restricted profiles; the level is the
+   disclosure (`RR-07`, `ARCH/23` Open question 8). What remains open is the exact
+   per-restriction test matrix for the tier (`TODO.md` `AX-114`).

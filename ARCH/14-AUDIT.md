@@ -5,11 +5,12 @@
 `CMP-audit` is the **tamper-evident, append-only execution record**. Every
 security-relevant effect and every decisive moment — policy decisions, tool calls,
 approvals, file writes, sandbox denials, model/provider calls, and cost — is recorded
-in a hash-chained log with periodic Merkle roots that are **signed and anchored
-beyond the local store**, so history can be verified rather than merely trusted.
-A first-class **coverage census** turns "every effect is recorded" from an assertion
-into a checkable deliverable (`DEC-005`, `REQ-AUDIT-001`, `REQ-AUDIT-002`,
-`REQ-AUDIT-004`, `REQ-AUDIT-005`).
+in a hash-chained log with periodic Merkle roots that are **signed; anchored at a
+declared level (`local-sink` default, `off-box` when required)**, so history can be
+verified rather than merely trusted. A first-class **coverage census** turns "every
+effect is recorded" from an assertion into a checkable deliverable (`DEC-005`,
+`DEC-022`, `REQ-AUDIT-001`, `REQ-AUDIT-002`, `REQ-AUDIT-004`, `REQ-AUDIT-005`,
+`REQ-AUDIT-007`).
 
 The audit store is **not** the session event log. `CMP-session` owns replayable
 session events; `CMP-audit` owns independently verifiable evidence and is not pruned
@@ -27,8 +28,13 @@ with operational events. Audit reads are themselves access-controlled
 - Guarantee **secret redaction**: credentials never enter an entry
   (`REQ-PROV-004`, `REQ-AUDIT-003`).
 - Reference durable receipts for effects rather than duplicating payloads.
-- **Sign and anchor** finalized segment roots so tamper-evidence holds against a
-  local actor (`REQ-AUDIT-004`).
+- **Sign and anchor** finalized segment roots at a declared anchoring level —
+  signing is unconditional, the default level is `local-sink`, and a declared
+  off-box trust requirement makes `off-box` mandatory (`REQ-AUDIT-004`,
+  `REQ-AUDIT-007`, `DEC-022`).
+- **Render the claim boundary**: `verify` states, per level, what is and is not
+  detected, and never presents a weaker level as a stronger one
+  (`REQ-AUDIT-007`).
 - Publish a first-class **coverage census** mapping every declared security-relevant
   effect class to at least one recorded entry (`REQ-AUDIT-005`).
 - Maintain the **cross-store consistency invariant** with the session log and the
@@ -131,10 +137,17 @@ segments.
 reordered, truncated, or modified without detection, every entry is included in its
 segment root, and every root signature verifies.
 **What verify does not prove:** that the recorded content is truthful, that no
-unrecorded effect occurred elsewhere, or who authored an entry. Coverage is a
-separate **census** (`REQ-AUDIT-005`), and root-anchoring is only as strong as the
-trusted key/sink it anchors to (`REQ-AUDIT-004`). A run with only a local anchor is
-reported as **local-trust**, never as independently anchored.
+unrecorded effect occurred elsewhere, or who authored an entry. On top of that, per
+`REQ-AUDIT-007` (`DEC-022`): it does NOT prove content authenticity, does NOT detect
+**fabrication** by a principal holding local write access (and, at the `local-sink`
+level, sink-write access), and does NOT cover entries written **after the last anchored
+root**. Tamper-evidence covers modification of **already-anchored** history by a
+principal that does not hold the anchoring credential, and nothing beyond that.
+Coverage is a separate **census** (`REQ-AUDIT-005`), and root-anchoring is only as strong
+as the trusted key/sink it anchors to (`REQ-AUDIT-004`). Verify names the **level** it
+evaluated — `local-trust`, `local-sink`, or `off-box` — alongside that boundary, and
+never renders `local-sink` as `off-box`. A run with only a local anchor is reported as
+**local-trust**, never as independently anchored.
 
 ### Replay
 ```
@@ -170,7 +183,7 @@ moved session remains reconstructable and its decisions reproducible
   chain; a torn tail is detected at verify and truncated to the last valid entry with
   an audit note.
 
-## Root anchoring (signed / off-box)
+## Root anchoring (signed / declared level)
 
 Local roots detect local tampering only. To make tamper-evidence meaningful against a
 local actor, `CMP-audit` **signs and anchors** every finalized `SegmentRoots`
@@ -181,17 +194,51 @@ local actor, `CMP-audit` **signs and anchors** every finalized `SegmentRoots`
 - **Signed roots.** Each root is signed with a device key held by `CMP-secrets`; the
   signature covers `{segment, first_seq, last_seq, count, merkle_root, prev_root}`.
   `audit verify` checks signatures as well as hashes.
-- **Off-box anchor.** On a configured cadence or at a session-close boundary, the
-  signed root is exported to a user-nominated external sink (append-only file, remote
-  object, or counter-signing service). The sink is transport behind an adapter and
-  receives roots and signatures only — never entries.
+- **Anchor sink.** On a configured cadence or at a session-close boundary, the
+  signed root is exported to the declared sink (append-only file for `local-sink`, or
+  a remote object / counter-signing service for `off-box`). The sink is transport
+  behind an adapter and receives roots and signatures only — never entries.
 - **What anchoring buys.** Given a trusted anchor, a local actor who rewrites entries
   and recomputes local roots is still detected: the anchor's root no longer matches.
   It does not prove the content is truthful, and it is only as strong as the trust in
   the anchor key and sink, which is documented per deployment.
 
-Absent an anchor, roots are **local-only** and `verify` labels the evidence
-`local-trust`; it never presents local roots as independently anchored.
+**Anchoring levels.** `DEC-022` fixes three declared levels. Roots are **always signed**
+— `anchor.sign: false` is a configuration error, not a supported posture, because
+signing is a security control rather than a convenience.
+
+| Level | `anchor.offbox` | Sink | Claim it may make |
+|---|---|---|---|
+| `local-trust` | `none` | none | Signed roots inside the audit store. **No independent-verification claim.** Permitted only as an explicit, acknowledged posture; labeled everywhere. |
+| `local-sink` (**default**) | `file` | a distinct, ownership- and mode-validated append-only sink **outside** `<state-dir>/audit` | Tamper-evidence against audit-store-local rewriting and against a *different* unprivileged principal (`AV-6`). **Not** a claim that survives the invoking user. |
+| `off-box` | `remote` | off-host object store or counter-signing service | The only level that survives an actor who also controls local storage. **Required** for any deployment that declares an off-box trust requirement. |
+
+- **Default is `local-sink` (`offbox: "file"`).** A fresh install cannot invent a
+  remote sink, so the honest zero-config default is the strongest level that needs no
+  external party: signed roots written to a sink outside the audit store root.
+  `"offbox": "none"` keeps working, but it is now an explicit, acknowledged
+  `local-trust` posture and is labeled wherever audit history is shown; nothing is
+  deleted by this change.
+- **A configured-but-unreachable sink fails closed.** The evidence gate fails and the
+  run does not degrade to a weaker level presented as the configured one
+  (`REQ-AUDIT-004`, `REQ-SEC-024`).
+- **The sink is validated like any other security-relevant path** — ownership and mode
+  checked before use, and refused on mismatch (`REQ-SEC-018`).
+
+**The precise detection boundary.** Each level states, and `audit verify` renders,
+what it detects and what it does not (`REQ-AUDIT-007`):
+
+| Question | Answer at any level |
+|---|---|
+| Was **already-anchored** history modified by a principal that does not hold the anchoring credential? | **Detected.** |
+| Is the recorded content truthful / authentic? | **Not proven.** A chain never establishes content authenticity. |
+| Were entries **fabricated** by a principal holding local write access (and, for `local-sink`, sink-write access)? | **Not detected.** No local anchor can catch a writer who can also rewrite the anchor. |
+| Were entries written **after the last anchored root** altered? | **Not covered.** The unanchored tail is outside the evidence. |
+
+Only the level names `local-trust`, `local-sink`, and `off-box` may describe the
+evidence, and **`local-sink` MUST NOT be presented as `off-box`**. Absent an anchor,
+roots are **local-only** and `verify` labels the evidence `local-trust`; it never
+presents local roots as independently anchored.
 
 ## Coverage census
 
@@ -268,9 +315,12 @@ Invariant (`REQ-AUDIT-006`):
     "segment_max_bytes": 8388608,
     "hash": "blake3",
     "anchor": {
-      "sign": true,
-      "offbox": "none",                         // none (local-trust) | file | remote
-      "cadence": "session_close"                // session_close | every_n_segments
+      "sign": true,                              // required; "false" is a config error
+      "offbox": "file",                          // file (local-sink, DEFAULT) | remote (off-box) | none (local-trust)
+      "sink_path": "<state-dir>/audit-anchor",   // default: a directory outside <state-dir>/audit,
+                                                 // ownership+mode validated (REQ-SEC-018)
+      "trust_requirement": "none",               // none | off_box — "off_box" requires offbox: "remote"
+      "cadence": "session_close"                 // session_close | every_n_segments
     },
     "retention": { "mode": "preserve" },      // preserve | archive with proof
     "export": { "require_chain_proof": true }
@@ -285,9 +335,10 @@ Invariant (`REQ-AUDIT-006`):
 | `REQ-AUDIT-001` | Every declared security-relevant effect class appends exactly one entry; the coverage census checks the mapping. |
 | `REQ-AUDIT-002` | Hash chain + Merkle roots with an `audit verify` command that states what it does and does not prove. |
 | `REQ-AUDIT-003` | `CMP-secrets` redaction pass before any entry is chained. |
-| `REQ-AUDIT-004` | Segment roots are signed and anchored off-box; unanchored runs are labeled local-trust. |
+| `REQ-AUDIT-004` | Segment roots are signed with a `CMP-secrets` device key (signing is not configurable off) and anchored at a declared level: `local-sink` (default), or `off-box` where a trust requirement is declared; a configured-but-unreachable sink fails closed. |
 | `REQ-AUDIT-005` | First-class coverage census maps every declared effect class to entries and fails on a gap. |
 | `REQ-AUDIT-006` | Cross-store consistency invariant with the session log and analytics ledger (`DEC-020`). |
+| `REQ-AUDIT-007` | Every level states and `verify` renders its detection boundary — modification of already-anchored history only; no content authenticity, no fabrication detection, no coverage of the unanchored tail; only the three level names are used and `local-sink` is never rendered as `off-box` (`DEC-022`). |
 | `REQ-PROV-004` | Credentials never appear in audit entries; provider calls logged as counts/refs only. |
 | `REQ-SESS-002` | Replay reconstructs a session timeline from persisted evidence. |
 | `REQ-SESS-004` | Model, mode, and permission configuration recorded with the session. |
@@ -296,10 +347,13 @@ Invariant (`REQ-AUDIT-006`):
 
 ## Open questions
 
-1. **Root anchoring defaults** — the mechanism is decided (sign + optional off-box
-   anchor; see "Root anchoring"); the open items are the default sink/trust model per
-   deployment, the default anchor cadence, and device-key rotation/escrow for the
-   signing key.
+1. **Device-key rotation and escrow.** The anchoring *defaults* are resolved by
+   `DEC-022`: signing is unconditional, the default level is `local-sink`
+   (`offbox: "file"`, a validated sink outside the audit store root), `off-box` is
+   required for a deployment that declares an off-box trust requirement, a
+   configured-but-unreachable sink fails closed, and `local-trust` survives only as an
+   explicit, acknowledged, labeled posture. What remains open is rotation and escrow for
+   the device signing key (and the default anchor cadence per deployment).
 2. **Retention vs. portability** — how long full entries are preserved versus a
    roots-plus-receipts archive, and how a truncated archive still proves the range it
    covers.

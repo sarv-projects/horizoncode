@@ -51,7 +51,7 @@ own question.
 | **L2 — Contract** | Does each `CMP-*` honor its declared interface, schema, and failure contract? | Real types; fake ports for collaborators | Interface conformance, typed failures, fail-closed behavior, schema validity, "no second permission path" static gates | End-to-end effect execution; platform containment |
 | **L3 — Integration** | Do real components compose correctly with real OS resources? | Real temp roots, real child processes under the local backend, loopback HTTP servers, real VCS worktrees, mock provider transport | The governed path per effect class; confinement behavior on the host kernel; audit chain mechanics; session replay and repair | Cross-platform claims; client/UI behavior |
 | **L4 — E2E** | Does the built binary complete a real user-visible task from the outside? | The release build; a scripted ACP stdio client; headless invocation; a scripted TUI session | Protocol handshakes, permission round-trips, exit codes, one full coding task in a real workspace | Tier-specific containment depth; anything on a tier not exercised |
-| **L5 — Acceptance** | Does the claim hold on a real platform, with a real anchor, against the declared trust model? | Real OS, real confinement backend, real off-box anchor, real user | Containment per tier, network-off proof, anchoring, Windows/macOS limits, performance baselines | Anything not recorded with build id, platform, and exact commit |
+| **L5 — Acceptance** | Does the claim hold on a real platform, with a real anchor, against the declared trust model? | Real OS, real confinement backend, a real anchoring sink at the declared level, real user | Containment per tier, the tier's **declared** network guarantee level, anchoring at a declared level, Windows/macOS limits, performance baselines | Anything not recorded with build id, platform, and exact commit |
 
 **Layer exit criteria (all must hold to leave a layer).**
 
@@ -77,6 +77,16 @@ own question.
 - A browser/simulated surface cannot prove the real surface.
 - A static catalog entry cannot prove a provider works.
 - A unit-only result never satisfies a readiness claim for a risky capability class.
+- A static architecture gate can prove that **no path-policy evaluation exists outside
+  the guard** and that a path-shaped `exec.run` rule is rejected at load; it cannot
+  prove that a particular path *would* be denied at runtime — that needs the L3
+  governed-path run (`REQ-SEC-023`, `REQ-SEC-025`, `DEC-025`).
+- A passing containment run proves the tier's **declared** network guarantee level,
+  not a universal "no outbound network" claim for every platform; a stronger level is
+  proven only by the mechanism named in the record (`DEC-026`, `REQ-GUARD-004`).
+- Audit verification proves modification of already-anchored history is detected. It
+  does not prove content authenticity, does not detect fabrication by a principal
+  with write access, and does not cover the unanchored tail (`REQ-AUDIT-007`).
 
 ### P1 acceptance matrix
 
@@ -87,10 +97,10 @@ a skipped sub-check fails the row.
 
 | ID | Item | What is proven (sub-checks) | Method | Pass criterion | Evidence artifact |
 |---|---|---|---|---|---|
-| `ACC-P1-01` | **Sandbox containment**, per supported tier | (a) a command cannot read a deny-globbed path; (b) cannot write outside the writable roots; (c) cannot rename a denied path out of the deny set and then read it; (d) with `network: none`, `connect`-class syscalls are denied and only `AF_UNIX` sockets succeed; (e) with an allowlist, only granted `host:port`+protocol succeed; (f) effective/permitted capability set is empty after setup; (g) with the backend removed, the effect is **denied and audited**, not run unconfined; (h) namespace rearrangement, VM-socket bridging, and synthetic-mount cleanup all fail with a violation and a non-zero outcome | L3 + L5. Temp workspace with a deny-glob tree; a loopback listener bound to an ephemeral `127.0.0.1` port for (e); for (d) the **primary** proof is the syscall-level assertion (filter denies `connect`/`bind`/… and restricts `socket` to `AF_UNIX`) with the loopback listener as corroboration — loopback reachability alone is explicitly *not* proof of "no network" | every sub-check denies; no sub-check skipped; a skipped sub-check fails the run; the suite runs against each tier that advertises support | `acceptance/sandbox/<tier>/<build-id>.json` + raw output + kernel/runtime versions |
-| `ACC-P1-02` | **Guard precedence** | deny > ask > allow across multiple resources; the outer-scope deny ceiling is non-overridable; plan mode forces deny for every mutating class; unmatched ⇒ `deny` by default, may be `ask`, **never** `allow` in any layer; a malformed rule layer falls back to the previous valid layer and never widens; find-last-wins ordering; ticket scope/uses/expiry/epoch validation including the concurrent-use race; the persisted "always" rule equals the displayed pattern byte-for-byte | L2 + L3. A committed **decision table** enumerating rule-order *classes* (deny-only, ask-only, allow-only, mixed, ceiling conflict, unmatched, malformed, multi-resource mixed effects, yolo-composition, plan-ceiling) — not an exhaustive permutation count | the table is exhaustive over the declared classes; each row asserts exactly one effect; a test fails when the evaluator's semantics and the class list disagree; the yolo and plan rows are present | golden decision table + test report + the saved-rule store diff |
+| `ACC-P1-01` | **Sandbox containment**, per supported tier | (a) a command cannot read a deny-globbed path; (b) cannot write outside the writable roots; (c) cannot rename a denied path out of the deny set and then read it; (d) with `network: none`, the tier's **declared network guarantee level** is the assertion — for `enforced` (Linux), `connect`-class syscalls are denied and only `AF_UNIX` sockets succeed; for `capability` (Windows), the AppContainer network capability is absent and an outbound attempt fails; for `best_effort` (macOS), the Seatbelt rule denies the wrapped process **and** the residual (an escaped descendant is not separately confined) is proven disclosed in the surface and the record; (e) with an allowlist, only granted `host:port`+protocol succeed; (f) effective/permitted capability set is empty after setup; (g) with the backend removed, the effect is **denied and audited**, not run unconfined; (h) namespace rearrangement, VM-socket bridging, and synthetic-mount cleanup all fail with a violation and a non-zero outcome; (i) reads are scoped to the granted roots on **every** tier, and a spawn naming an absolute path outside them is rejected or masked; (j) a caller requiring a network level the tier does not provide is **refused**, never downgraded | L3 + L5. Temp workspace with a deny-glob tree; a loopback listener bound to an ephemeral `127.0.0.1` port for (e); for (d) the **primary** proof is the tier's declared mechanism — for `enforced` the syscall-level assertion (filter denies `connect`/`bind`/… and restricts `socket` to `AF_UNIX`) with the loopback listener as corroboration, because loopback reachability alone is explicitly *not* proof of "no network" | every sub-check denies; **observed behavior, the declared level, and the recorded residual agree**; a tier claiming a stronger level than it proves **fails** the row; no sub-check skipped; a skipped sub-check fails the run; the suite runs against each tier that advertises support | `acceptance/sandbox/<tier>/<build-id>.json` (including `network_guarantee_level`, `network_mechanism`, `network_residual`) + raw output + kernel/runtime versions |
+| `ACC-P1-02` | **Guard precedence** | deny > ask > allow across multiple resources; the outer-scope deny ceiling is non-overridable; plan mode forces deny for every mutating class; unmatched ⇒ `deny` by default, may be `ask`, **never** `allow` in any layer; a malformed rule layer falls back to the previous valid layer and never widens; find-last-wins ordering; ticket scope/uses/expiry/epoch validation including the concurrent-use race; the persisted "always" rule equals the displayed pattern byte-for-byte; the built-in external-directory floor rule raises an outside-root `fs.*` resource to `ask`, is overridable toward `deny` and never toward a silent allow; a path-shaped `exec.run` rule is rejected at config load; a `bash` request carries the command-prefix resource **and** the extracted `fs.*` resources, and the guard returns exactly one decision over the combined set | L2 + L3. A committed **decision table** enumerating rule-order *classes* (deny-only, ask-only, allow-only, mixed, ceiling conflict, unmatched, malformed, multi-resource mixed effects, yolo-composition, plan-ceiling) — not an exhaustive permutation count — plus a **static L2 assertion** that a path-shaped `exec.run` resource is rejected at load and that **no path-policy evaluation is produced outside the guard** | the table is exhaustive over the declared classes; each row asserts exactly one effect; a test fails when the evaluator's semantics and the class list disagree; the yolo and plan rows are present; the floor rule never lowers a decision; the static gate fails on a second path evaluator | golden decision table + test report + the saved-rule store diff + the static-gate report |
 | `ACC-P1-03` | **Approval round-trip through the ACP permission path** | a guard `ask` becomes **exactly one** `session/request_permission` request carrying the tool-call descriptor and the fixed option set; the client's reply is recorded verbatim and drives the decision; a client that does not advertise the permission capability resolves to **reject**, never allow; a client disconnect mid-request resolves per the configured timeout policy (default deny) and is audited; a second concurrent request is serialized per session; a reject ends the turn `declined` and is **not** converted into model-facing output; allow-always persists exactly the shown pattern and is shown pre-confirmation; the recorded reply is verifiable in the audit trail | L3 + L4. A scripted ACP stdio client over an in-process pipe (no network) that records every frame it sends and receives | the audit trail contains exactly one approval entry per request; the recorded reply equals the client's reply; the turn's terminal state matches the reply; the unadvertised-capability case records a reject | paired NDJSON transcripts (server + client) + the audit segment for the run |
-| `ACC-P1-04` | **Audit chain verify + coverage census** | `audit verify` succeeds on an untampered run; for a **negative-control copy** it detects each of added / removed / reordered / truncated / modified entries and names the failing `seq`; the coverage census maps every declared effect class to ≥1 entry and **fails loudly** on an injected uncovered class; a redaction canary is absent from every entry, root, verify output, replay output, and export; cross-store reconciliation flags a referenced effect with no audit entry and an audit entry with no session fact; an unanchored run is labeled `local-trust` and an anchored run names its anchor | L3 + L5 (anchoring needs a real sink) | all six tamper classes detected; census exits non-zero on the injected gap; canary absent by byte comparison; both reconciliation directions flagged | tamper-detection report, census artifact, canary scan output, anchor sink receipt |
+| `ACC-P1-04` | **Audit chain verify + coverage census** | `audit verify` succeeds on an untampered run; for a **negative-control copy** it detects each of added / removed / reordered / truncated / modified entries and names the failing `seq`; the coverage census maps every declared effect class to ≥1 entry and **fails loudly** on an injected uncovered class; a redaction canary is absent from every entry, root, verify output, replay output, and export; cross-store reconciliation flags a referenced effect with no audit entry and an audit entry with no session fact; the record stores the **anchoring level** actually in force (`local-trust` \| `local-sink` \| `off-box`); for `local-trust` and `local-sink` the rendered `verify` output states the `REQ-AUDIT-007` claim boundary — modification of already-anchored history only, no content authenticity, no fabrication detection, no coverage of the unanchored tail — and never renders `local-sink` as `off-box`; an unanchored run is labeled `local-trust` and an anchored run names its anchor | L3 + L5 (anchoring needs a real sink) | all six tamper classes detected; census exits non-zero on the injected gap; canary absent by byte comparison; both reconciliation directions flagged; the stored level, the rendered level, and the rendered claim boundary agree, and a `local-sink` run rendered as `off-box` **fails** | tamper-detection report, census artifact, canary scan output, anchor sink receipt, rendered-claim-boundary capture |
 | `ACC-P1-05` | **ACP stdio handshake with capability advertisement** | `initialize` negotiates a protocol version and advertises **only implemented** methods; every optional call is capability-gated and an ungated call is refused typed; `session/new`, `load`, `resume`, `list`, `close`, `fork` map to the store lifecycle; streamed updates use one typed vocabulary with no opaque chunk channel; unknown method or malformed frame yields a typed protocol error with session state unchanged; a second surface claiming the same session is rejected; the edge SDK is framing-only | L4. In-process stdio + a schema conformance check against the negotiated schema version | the advertised method set equals the implemented method set, checked by a **generated list diff** so drift fails the build; schema conformance passes; every negative case is typed, never a crash or a silent no-op | handshake transcript + method-coverage diff artifact |
 | `ACC-P1-06` | **Session replay/resume determinism** | replaying the same log twice yields **byte-identical** projections; an open tail is repaired deterministically (same synthetic closers, same `seq`, same bytes); a crash mid-turn loses no committed step; `fork` at a boundary produces a child whose inherited prefix is exactly the parent's events through the cut; the index rebuilds from the log to identical rows; a log whose stored format is newer than the build is refused typed with **no partial decode**; a moved workspace root is refused with re-point guidance and never guessed; per-key ownership admits one drain and a second resume joins | L3 + L4. Real process kill/restart (not a simulated crash) + committed golden transcripts | golden comparison is byte equality for projections and repair output; the kill/restart matrix runs ≥20 times with zero divergence; the newer-format case produces zero decoded events | golden transcript hashes + the restart matrix (per scenario, with the divergence count) |
 | `ACC-P1-07` | **Compaction continuity** | after compaction the post-compaction context still contains every fact in the pre-registered probe set; a boundary never splits an assistant tool call from its result; an unbalanced span is rejected in favor of a safe adjacent range; a provider overflow triggers **exactly one** compact-and-retry of the same step and a second overflow is terminal; a failed summarize call leaves the turn un-compacted rather than half-compacted; the checkpoint records the shadowed range and count and the log is never rewritten; the stable prefix is byte-stable until a real change | L3 (mock provider) + the offline retrieval probe | probe recall = 100% on the pre-registered set; zero unbalanced spans; the exactly-one-retry assertion holds; prefix-stability holds | probe-set results keyed by strategy version; paired A/B report when a strategy changes (`DEC-016`) |
@@ -202,8 +212,8 @@ A release is blocked unless **all** of these pass and their records are retained
 | `G-1` | License allowlist check passes; every `Adapt`/`Vendor` entry has a complete in-tree provenance record (`DEC-012`, `ARCH/05` §4) |
 | `G-2` | `THIRD-PARTY-NOTICES` is generated from the resolved dependency graph and shipped with the binary (`DEC-011`, `AX-010`) |
 | `G-3` | Full suite green with zero quarantined tests across ≥5 consecutive runs; the determinism-sensitive suites across ≥20 repetitions |
-| `G-4` | Containment acceptance (`ACC-P1-01`) passes for **every** supported tier, with a record per tier |
-| `G-5` | `audit verify` and the coverage census pass on a fresh run; root anchoring is configured per the declared trust model, and a configured-but-unreachable anchor **fails** rather than degrading |
+| `G-4` | Containment acceptance (`ACC-P1-01`) passes for **every** supported tier, with a record per tier, and each record **names that tier's `network_guarantee_level`**, its mechanism, and its residual (`DEC-026`); a tier claiming a stronger level than it proves fails |
+| `G-5` | `audit verify` and the coverage census pass on a fresh run; the record stores the anchoring **level** in force, root anchoring is configured per the declared trust model, the rendered claim boundary matches that level (`REQ-AUDIT-007`), and a configured-but-unreachable anchor **fails** rather than degrading |
 | `G-6` | The headless exit-code contract matches `--help` (`ACC-P1-08`) |
 | `G-7` | The session-format migration chain compiles, round-trips, and refuses a newer stored version |
 | `G-8` | Performance budgets are measured with a recorded baseline, or an unmeasured budget is explicitly disclosed and is **not** a P1 exit criterion |
@@ -291,10 +301,10 @@ appears.
 | `CMP-runner` | Turn/step state machine, terminal-state contract, cancellation, fail-unsettled, step bound |
 | `CMP-session` | Event-log append/replay/repair, checkpoints, fork boundary, migration chain, per-key coordinator |
 | `CMP-context` | Assembly order, budget arithmetic, compaction trigger and continuity, prefix stability, epoch |
-| `CMP-tools` | Schema decode/encode, materialization filtering, bounded output, the model/UI split, external-directory assert |
+| `CMP-tools` | Schema decode/encode, materialization filtering, bounded output, the model/UI split, and the **extraction** of path-shaped shell arguments into `fs.*` resources — the seam asserts extraction only, never a path decision (`DEC-024`, `REQ-SEC-025`) |
 | `CMP-provider` | **Mock transport seam**; adapter conformance fixtures; retry single-ownership; usage accounting; egress denial typing |
-| `CMP-guard` | Decision table, tickets, approval lifecycle, modes, saved-rule exactness |
-| `CMP-sandbox` | `probe` seam (for backend-absence tests), `check_path`/`spawn`, profile immutability, violation records |
+| `CMP-guard` | Decision table, tickets, approval lifecycle, modes, saved-rule exactness, the external-directory floor rule, the load-time rejection of a path-shaped `exec.run` resource, and the static gate that no other component evaluates path policy |
+| `CMP-sandbox` | `probe` seam (for backend-absence tests), `check_path`/`spawn` as the only enforcement calls, per-tier read scoping, profile immutability, violation records, and the declared `network_guarantee_level` per tier |
 | `CMP-audit` | Chain math, verify, census, anchoring, redaction, cross-store reconciliation |
 | `CMP-orch` | Authority intersection, bounds, receipts, leases, deterministic merge |
 | `CMP-acp` | **Scripted stdio client harness** for L4; capability gating; schema conformance |
@@ -310,7 +320,9 @@ EvidenceRecord  = { build_id, commit, layer, suite, verdict, duration_ms,
                     environment{os, kernel, tier, backend}, repetitions }
 Verdict         = pass | fail | unmeasured | skipped_blocked
 AcceptanceRecord= { build_id, platform, tier, backend, sub_checks[{id, verdict,
-                    evidence_ref}], operator_surface, notes }
+                    evidence_ref}], operator_surface, notes,
+                    network_guarantee_level, network_mechanism, network_residual,
+                    anchor_level, anchor_claim_rendered }
 Budget          = { id, p50, p95, samples, workload, machine_baseline, verdict }
 Quarantine      = { test_id, owner, reason, issue_ref, expires_on }
 TraceabilityRow = { req, owner_doc, code_paths, decision_refs, task_id,
@@ -344,7 +356,8 @@ it belongs to.
 
 1. Build in release mode; record build id and commit.
 2. Create a temp workspace with a deny-glob tree and a `protected` path.
-3. Apply the requested profile; record the resolved profile and backend.
+3. Apply the requested profile; record the resolved profile, the backend, and the
+   tier's **declared `network_guarantee_level`** with its mechanism and residual.
 4. For each sub-check: attempt the escape, record the kernel-level outcome, and record
    whether the violation was audited.
 5. Repeat with the backend made unavailable via the `probe` seam → expect deny + audit.
@@ -381,7 +394,10 @@ record. Otherwise the surface shows the weaker, true word.
 | Evidence is attached to the wrong build id | The record names its own build id and cannot be cited elsewhere |
 | A unit test is cited as acceptance evidence | A traceability-status finding; the requirement drops to `implemented` |
 | A quarantine exists at release time | Release blocked if any quarantined test is security-relevant; otherwise the quarantine list ships with the release notes |
-| The configured anchor sink is unreachable | The gate fails; it never degrades to a local-only run presented as anchored |
+| The configured anchor sink is unreachable | The gate fails; it never degrades to a local-only run presented as anchored (`DEC-022`) |
+| The record names a network level stronger than the tier proves | The row fails; the level, its mechanism, and the residual are rewritten to what was observed, or the tier is refused the profile it cannot confine (`DEC-026`) |
+| `verify` renders `local-sink` as `off-box`, or omits the claim boundary | `ACC-P1-04` fails; the rendered evidence is the artifact under test, so a weaker level presented as stronger is a failure, not a wording nit (`REQ-AUDIT-007`) |
+| A path decision is produced outside the guard | The static architecture gate fails the build (`DEC-025`, `REQ-SEC-025`) |
 | Fuzzing finds a crash or unbounded allocation | Release blocker; the minimized input is committed as a regression case |
 | An eval-gated feature ships before its harness can run | Release blocked (`DEC-016`) |
 
@@ -420,7 +436,7 @@ rules**; `REQ-VER-004/016` by the **repeat/quarantine policy and fuzz coverage**
 | `REQ-VER-002` | §Determinism — injectable substrate table |
 | `REQ-VER-003` | §Determinism — transport rules (mock provider transports, loopback only) |
 | `REQ-VER-004` | §Determinism — repeat and quarantine policy |
-| `REQ-VER-005` | `ACC-P1-01` |
+| `REQ-VER-005` | `ACC-P1-01` — the network sub-check asserts each tier's **declared** guarantee level rather than one universal no-network claim (`DEC-026`) |
 | `REQ-VER-006` | `ACC-P1-02` |
 | `REQ-VER-007` | `ACC-P1-03` |
 | `REQ-VER-008` | `ACC-P1-04` |
@@ -438,7 +454,9 @@ rules**; `REQ-VER-004/016` by the **repeat/quarantine policy and fuzz coverage**
 | `REQ-PROV-005` | Routing eval-gate evidence is a P2 forward-declared item and a `G-11` obligation |
 | `REQ-AUDIT-002`, `REQ-AUDIT-005` | `ACC-P1-04`; `G-5` |
 | `REQ-AUDIT-004` | `ACC-P1-04` anchor receipt; `G-5` (an unreachable anchor fails) |
-| `REQ-GUARD-004`, `REQ-SEC-003` | `ACC-P1-01` |
+| `REQ-AUDIT-007` | `ACC-P1-04` stores the anchoring level and captures the rendered claim boundary; `G-5` (`DEC-022`) |
+| `REQ-GUARD-004` | `ACC-P1-01(d)` per the tier's **declared** network guarantee level; `G-4` (`DEC-026`) |
+| `REQ-SEC-003`, `REQ-SEC-025` | `ACC-P1-01` (reach) and `ACC-P1-02` (authorization + the static "no path evaluation outside the guard" gate) (`DEC-024`, `DEC-025`) |
 | `REQ-SESS-002` | `ACC-P1-06` |
 | `REQ-PROTO-001`, `REQ-PROTO-002`, `REQ-PROTO-006` | `ACC-P1-03`, `ACC-P1-05` |
 | `REQ-PERF-001`, `REQ-PERF-002`, `REQ-PERF-003` | §Performance budgets |
@@ -473,11 +491,14 @@ rules**; `REQ-VER-004/016` by the **repeat/quarantine policy and fuzz coverage**
    `REQ-UI-003` (zero layout shift) and the accessibility properties. Whether that
    harness is in scope for P1 or lands with the cockpit in P2 is undecided; the
    `CMP-tui` seam is listed either way.
-8. **macOS network-restricted profiles as an acceptance row.** If the current macOS
-   tier's child-network block stays best-effort, does `ACC-P1-01` (d) apply to it, or
-   is the backend required to declare itself unsupported for that profile? This is
-   coupled to `ARCH/22` Open question 4 and `ARCH/13` Open question 5, and the two
-   documents must land the same answer.
+8. **macOS network-restricted profiles as an acceptance row.** **Resolved by
+   `DEC-026`:** `ACC-P1-01` (d) **does** apply to macOS, as the `best_effort`
+   assertion — the Seatbelt rule denies the wrapped process, **and** the residual (an
+   escaped descendant is not separately confined) is proven to be disclosed in the
+   surface and the record. macOS is **not** "unsupported" for a network-restricted
+   profile: it is a supported tier at a declared level, and a caller requiring
+   `enforced` receives a refusal. This is the same answer as `ARCH/22` Open question 4
+   and `ARCH/13` Open question 5, so the three documents now agree by construction.
 9. **Adversarial corpus sourcing.** Fuzz corpora and the injection corpus are ours to
    generate. Whether a curated public corpus is also used (and how its provenance is
    recorded) is undecided.

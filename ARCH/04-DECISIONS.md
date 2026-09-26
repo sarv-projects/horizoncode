@@ -187,3 +187,191 @@ Architecture decision records. Each constrains the design until superseded by a 
 **Rationale.** The grant is permissive and verified from primary sources, so redistribution is legally available. The real risk is operational, not legal: a pseudonymous holder, no contributor agreement, unaddressed database rights, and third-party marks inside the data. A small verified primary keeps offline determinism and eval reproducibility, bounds staleness liability, and keeps provenance defensible per row rather than per dataset. Runtime enrichment restores breadth without making correctness depend on it. Excluding marks removes the one clearly unlicensed element (`SRC-009`, `DEC-011`, `AX-010`, `REQ-PROV-*`; detail in `ARCH/05` §5 and `ARCH/11`).
 
 **Residual risk (accepted).** Upstream title to every byte of a community-curated dataset is not fully provable from public sources; no contributor agreement exists upstream; EU sui generis database rights are not addressed by the grant; upstream disclaims accuracy entirely, so pricing and limit errors are our operational liability. Mitigation is the per-row provenance record plus cross-verification — not a stronger license claim.
+
+## DEC-022 — Audit anchoring: signed roots always, a declared anchoring level, an honest claim boundary
+
+**Status:** accepted. Resolves `ARCH/22` Open question 1 and `ARCH/14` Open question 1.
+
+**Decision.**
+
+1. **Signing is not configurable off.** Every audit segment root is signed with a
+   device key held by `CMP-secrets`. `audit.anchor.sign: false` is a configuration
+   error, not a supported posture.
+2. **Three declared anchoring levels, default `local-sink`** (table below).
+3. **A configured-but-unreachable sink fails closed.** The evidence gate fails and
+   the run does not degrade to a weaker level presented as the configured one
+   (`REQ-AUDIT-007`, `REQ-SEC-024`).
+4. **The claim boundary is stated, not implied.** Tamper-evidence covers modification
+   of *already-anchored* history by a principal that does not hold the anchoring
+   credential. It is not content authenticity, not fabrication by a principal with
+   local (and, for `local-sink`, sink-write) access, and not entries written after the
+   last anchored root. `local-sink` is never presented as `off-box`.
+
+| Level | `anchor.offbox` | Claim |
+|---|---|---|
+| `local-trust` | `none` | signed roots only, in the audit store; no independent verification claim. Permitted only as an explicit, acknowledged posture and labeled everywhere. |
+| `local-sink` (**default**) | `file` | signed roots appended to a distinct, ownership- and mode-validated append-only sink **outside** `<state-dir>/audit`. |
+| `off-box` | `remote` | signed roots recorded off-host or counter-signed; the required level for any deployment that declares an off-box trust requirement. |
+
+**Rationale.** `REQ-AUDIT-004` (strict: signed *and* anchored off-box) and `ARCH/14`'s
+`offbox: "none"` default genuinely conflicted. The stricter requirement stays the floor,
+and the weaker statement is scoped to the case where it is demonstrably true (a
+genuinely local-only deployment). A fresh install cannot invent a remote sink, so the
+honest zero-config default is the strongest level that needs no external party: signed
+roots written to a sink *outside* the audit store root. That defends against
+audit-store-local rewriting and against a *different* unprivileged principal (`AV-6`),
+which are exactly the in-scope adversaries; `off-box` is reserved for the claim that
+survives against the invoking user (out of scope per the threat model, but a deployment
+may still require it). The requirement also had to stop over-claiming: a chain — even
+anchored — proves detection of modification of already-anchored history, never content
+authenticity, and never detects fabrication in the unanchored tail.
+
+**Consequences.** `"offbox": "file"` replaces `"none"` as the shipped default
+(`ARCH/14` §Configuration), with `sink_path` validated per `REQ-SEC-018` and a
+`trust_requirement` key (`none` | `off_box`); `"none"` continues to work but must carry
+an explicit `local-trust` acknowledgement. Signing once and only once is the contract, so
+`sign: false` is rejected at load. A deployment that declares `trust_requirement:
+off_box` and configures a weaker `anchor.offbox` is refused. The acceptance record
+stores the **level** and, for `local-trust`/`local-sink`, the rendered claim boundary.
+
+**Governs:** `REQ-AUDIT-004`, `REQ-AUDIT-007`, `REQ-SEC-024`; evidence in
+`ACC-P1-04` and gate `G-5`; residual risks `RR-02`, `RR-03`, and threat rows `D-01`,
+`D-02`. Detail in `ARCH/14`; tracked by `TODO.md` `AX-117`.
+
+## DEC-023 — The canonical ACP permission method token is `session/request_permission`
+
+**Status:** accepted. Resolves `ARCH/22` Open question 2 and the `TODO.md` protocol-naming
+open decision.
+
+**Decision.** The wire token for the ACP client permission request is exactly
+**`session/request_permission`**. It is **frozen**: no alias is accepted, and
+`request/permission` is not recognized as a transition form in either direction. One
+method, one token, one entry in the protocol table.
+
+**Rationale.** The implementation, the pinned ACP SDK, and the existing end-to-end test
+already use `session/request_permission`, and `ACC-P1-03` is specified against it.
+`ARCH/15`'s `request/permission` row was a single documentation error, so the correct
+resolution is to fix the document, not to widen the protocol. Accepting both would create
+a second method identity — the opposite of one typed vocabulary and of
+`REQ-PROTO-006` capability gating, and a second identity is exactly the class of drift the
+capability gate exists to prevent.
+
+**Consequences.** The `ARCH/15` method matrix carries only the canonical token. A peer that
+sends or advertises the unnamespaced form receives a typed unknown-method error; there is
+no compatibility shim to retire later. `ARCH/23` `ACC-P1-03` and `ACC-P1-05` already
+specify the canonical token and are unchanged.
+
+**Governs:** `REQ-PROTO-002`; evidence in `ACC-P1-03`, `ACC-P1-05`. Detail in `ARCH/15`
+§Data / state model.
+
+## DEC-024 — Shell-argument path scanning is an escalation signal; spawn-time confinement is the control
+
+**Status:** accepted. Resolves the `ARCH/10` / `REQ-SEC-003` reconciliation (part of
+`ARCH/22` Open question 3).
+
+**Decision.** A lexical scan of a shell command's arguments is a **resource-extraction and
+escalation signal only**. It may raise an `ask` or a `deny`; it may never lower one, and it
+is never the sole control. The hard target control for a spawned command is
+**spawn-time confinement**: the resolved profile's scoped roots plus kernel-enforced deny
+globs applied to the whole process tree. Specifically:
+
+- a `bash` command naming a path outside the workspace is **asked** by default, through
+  the existing `external_directory` approval;
+- a path matching a deny glob or a protected subpath is **denied**;
+- a tier that cannot actually confine the reach **refuses (fails closed)**.
+
+"Allowed-with-warning" is never the sole control for a spawned path target.
+
+**Rationale.** `REQ-SEC-003` ("targets MUST be validated against policy before use") and
+`ARCH/10` ("advisory only") do not actually contradict once the layers are named: for a
+*spawned* process the only sound validation is at the enforcement boundary, because a shell
+re-parses its arguments and a lexical scan cannot be sound (`ARCH/22` `E-03`, `RR-10`).
+Calling the scan "advisory" without naming the hard control left `REQ-SEC-003`
+aspirational. This keeps the stricter rule (`REQ-SEC-005`: kernel-level containment) as
+the floor and scopes the weak statement to the role where it is true: a conservative
+pre-filter that may only *raise* a decision. "Asked" rather than "denied" preserves the
+documented `external_directory` capability while the kernel still bounds reach
+(`REQ-SEC-010`: authorization is not reach).
+
+**Consequences.** `external_directory` becomes a built-in floor rule with effect `ask`
+(overridable toward `deny`, never to a silent allow). The tool plane extracts
+path-shaped arguments as additional `fs.*` resources on the guard request
+(`crates/agentx-tools/src/registry.rs` `resources_from_input`,
+`crates/agentx-tools/src/path.rs` are the future implementation touchpoints) rather than
+judging them. `audit verify` and the guard decision table record the combined decision.
+An acceptance assertion covers the deny/ask/refuse split per tier, including per-tier read
+scoping.
+
+**Governs:** `REQ-SEC-003`, `REQ-SEC-005`, `REQ-SEC-010`, `REQ-SEC-025`; evidence in
+`ACC-P1-01` and `ACC-P1-02`. Detail in `ARCH/10` §Built-in tool set, `ARCH/12`, and
+`ARCH/13`. Tracked by `TODO.md` `AX-115`.
+
+## DEC-025 — Path policy ownership on shell execution: the guard authorizes, the sandbox enforces, the tool plane extracts
+
+**Status:** accepted. Resolves `ARCH/22` Open question 3 and `ARCH/12` Open question 5.
+
+**Decision.** `CMP-guard` is the **sole path *authorization* owner** and `CMP-sandbox` is
+the **sole path *enforcement* owner**. `CMP-tools` is a **resource extractor /
+conservative pre-filter** only: it may attach resources and refuse an unparseable escape,
+but it must never return a path `allow`/`ask`/`deny` and must never be the sole path
+control. `exec.run` rules match the **command token prefix only** (`MatchMode::Raw`) and
+MUST NOT carry path-shaped resources; a path named by a shell argument is expressed as an
+`fs.*` resource (`MatchMode::Path`, the same grammar as the sandbox deny globs). A
+path-shaped `exec.run` resource is a **configuration error, rejected at load**.
+
+**Rationale.** `ARCH/12` already defines `exec.run` resources as "a command token prefix",
+while `ARCH/10` and `agentx-tools::resources_from_input` push the raw `command` string
+into the guard request. Nothing today implements a second path policy; this decision
+prevents one from appearing. Forbidding path-shaped `exec.run` resources gives exactly one
+path grammar and exactly one command matcher, and satisfies `REQ-SEC-023` ("no permission
+evaluation outside the guard") with no capability loss — a path protection is still fully
+expressible as an `fs.*` rule.
+
+**Consequences.** `CMP-tools` gains an extraction step, not a decision step. The
+`CMP-guard` CI gate extends to "no path-policy evaluation outside the guard". A CI
+architecture check rejects a path-shaped `exec.run` rule at load and asserts that no
+component other than the guard produces a path decision. The `ARCH/12` wildcard/glob open
+question is answered by the one-path-matcher statement: one grammar, versioned, with a
+shared parity corpus.
+
+**Governs:** `REQ-SEC-003`, `REQ-SEC-023`, `REQ-SEC-025`; evidence in `ACC-P1-02` and the
+`G-09` architecture gate. Detail in `ARCH/12` §Data / state model and §Configuration.
+Tracked by `TODO.md` `AX-115`, `AX-121`.
+
+## DEC-026 — Per-tier network guarantee levels; no universal "no network" claim
+
+**Status:** accepted. Resolves `ARCH/22` Open question 4, `ARCH/13` Open question 5, and
+`ARCH/23` Open question 8.
+
+**Decision.** Every supported tier MUST **declare** a network guarantee level — `enforced`
+(kernel/syscall or OS-capability denial of egress), `best_effort` (denial limited to the
+wrapped process; an escaped descendant is not separately confined), or `none` — together
+with its mechanism and its residual. The level MUST be surfaced wherever a
+network-restricted profile is presented and recorded in that tier's acceptance record. A
+caller that **requires** a level the tier does not provide MUST be **refused (fail
+closed)**, never silently degraded, and a tier MUST NOT claim a level stronger than it can
+prove.
+
+**Rationale.** `REQ-GUARD-004` claimed "no outbound network" universally, but the
+mechanisms differ: Linux is a real syscall/namespace denial (`enforced`); Windows is an
+application-container **capability absence** (`capability` — deny-by-absence, not a
+syscall filter, and job objects do not deny network); macOS is a Seatbelt rule for the
+wrapped process with no separate confinement of an escaped descendant (`best_effort`).
+Restating per level keeps the strict floor where it is real (Linux must prove the syscall
+bar) and scopes the weaker statement to where it is true, with mandatory disclosure — the
+treatment `RR-07`/`RR-08` already hint at. Preserving capability matters: macOS is **not**
+forced to declare itself unsupported; it is honest about its level, and a caller requiring
+`enforced` gets a refusal, never a silent downgrade.
+
+**Consequences.** `ResolvedProfile` carries `network_guarantee_level` and
+`network_residual` (surfaced as `ResolvedProfile.applied` notes). `ACC-P1-01(d)` asserts
+the tier's **declared** level: the syscall assertion for `enforced`, the capability-
+absence assertion plus a failing outbound attempt for `capability`, and the Seatbelt rule
+assertion **plus** proof that the residual is disclosed for `best_effort`. A tier claiming
+a stronger level than it proves fails its acceptance row. `DEC-008`'s "network off"
+wording is read through this decision: the phrase states the *request*, and the tier's
+declared level states what is enforced.
+
+**Governs:** `REQ-GUARD-004`, `REQ-VER-014`; evidence in `ACC-P1-01` and gate `G-4`;
+residual risks `RR-07`, `RR-08`. Detail in `ARCH/13` §Platform notes. Tracked by
+`TODO.md` `AX-113`, `AX-114`.
