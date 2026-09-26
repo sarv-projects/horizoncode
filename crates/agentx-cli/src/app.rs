@@ -1,17 +1,26 @@
-//! Wiring: environment resolution, context construction, and command dispatch.
+//! Wiring: environment resolution, guard/sandbox construction, command dispatch.
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use agentx_acp::AcpOptions;
+use agentx_guard::{
+    AutoApproveResolver, DenyAllResolver, Effect, Guard, GuardMode, Rule, canonical_action,
+    default_rules,
+};
 use agentx_provider::{ChatCompletionsProvider, Provider, ProviderConfig};
 use agentx_runner::{RunConfig, Runner};
+use agentx_sandbox::{ConfinementProfile, FsProfile, NetworkPolicy, SandboxProvider};
 use agentx_session::{ModelRef, SessionCreatedPayload, SessionStore, TurnEndStatus};
-use agentx_tools::{PermissionGate, PolicyGate, ToolRegistry, register_read_only_builtins};
+use agentx_tools::{
+    BuiltinOptions, GuardPermissionGate, PermissionGate, ToolRegistry, register_all_builtins,
+};
 use agentx_types::{CancelToken, SessionId};
 use thiserror::Error;
 
-use crate::args::{Cli, Command, OutputFormat};
+use crate::approval::InteractiveApprovalResolver;
+use crate::args::{Cli, Command, ModeArg, OutputFormat, SandboxArg};
 use crate::output::CliObserver;
 
 /// Exit code: the turn completed.
@@ -62,8 +71,11 @@ struct Context {
     provider: Arc<dyn Provider>,
     tools: Arc<ToolRegistry>,
     store: Arc<SessionStore>,
-    policy: PolicyGate,
+    guard: Arc<Guard>,
+    gate: Arc<dyn PermissionGate>,
     config: RunConfig,
+    sandbox: Option<Arc<dyn SandboxProvider>>,
+    sandbox_profile: Option<ConfinementProfile>,
 }
 
 /// Runs the requested command, returning a process exit code.
@@ -114,22 +126,32 @@ fn build_context(args: &Cli) -> Result<Context, CliError> {
         .join("tool-output");
 
     let mut registry = ToolRegistry::new();
-    register_read_only_builtins(&mut registry)
+    register_all_builtins(&mut registry, BuiltinOptions::headless())
         .map_err(|error| CliError::Config(format!("failed to register built-in tools: {error}")))?;
     registry.set_spill_dir(Some(spill.clone()));
 
-    let policy = PolicyGate::read_only()
-        .ask(split_env("AGENTX_ASK_ACTIONS"))
-        .deny(split_env("AGENTX_DENY_ACTIONS"));
+    let guard = build_guard(args, &workspace)?;
+    let sandbox = build_sandbox(args, &workspace, &spill)?;
+
+    let resolver: Arc<dyn agentx_guard::ApprovalResolver> = if guard.mode() == GuardMode::Yolo {
+        Arc::new(AutoApproveResolver)
+    } else if args.format == OutputFormat::Default && std::io::stdin().is_terminal() {
+        Arc::new(InteractiveApprovalResolver)
+    } else {
+        Arc::new(DenyAllResolver)
+    };
+    let gate: Arc<dyn PermissionGate> = Arc::new(GuardPermissionGate::new(guard.clone(), resolver));
 
     let config = RunConfig {
         model,
         provider: args.provider.clone(),
-        mode: "chat".to_owned(),
+        mode: guard.mode().as_str().to_owned(),
         workspace: workspace.clone(),
         output_dir: Some(spill),
         max_steps: args.max_steps,
-        system: vec![system_prompt(&workspace)],
+        system: vec![system_prompt(&workspace, guard.mode())],
+        sandbox: sandbox.provider.clone(),
+        sandbox_resolved: sandbox.resolved.clone(),
         ..RunConfig::default()
     };
 
@@ -137,9 +159,89 @@ fn build_context(args: &Cli) -> Result<Context, CliError> {
         provider: Arc::new(provider),
         tools: Arc::new(registry),
         store,
-        policy,
+        guard,
+        gate,
         config,
+        sandbox: sandbox.provider,
+        sandbox_profile: sandbox.profile,
     })
+}
+
+fn build_guard(args: &Cli, workspace: &std::path::Path) -> Result<Arc<Guard>, CliError> {
+    let explicit_mode = if args.yolo {
+        Some(GuardMode::Yolo)
+    } else {
+        args.mode.map(|mode| match mode {
+            ModeArg::Plan => GuardMode::Plan,
+            ModeArg::Act => GuardMode::Act,
+            ModeArg::Yolo => GuardMode::Yolo,
+        })
+    };
+
+    let mut session_rules = Vec::new();
+    for action in split_env("AGENTX_ASK_ACTIONS") {
+        session_rules.push(Rule::new(canonical_action(&action), "**", Effect::Ask));
+    }
+    for action in split_env("AGENTX_DENY_ACTIONS") {
+        session_rules.push(Rule::new(canonical_action(&action), "**", Effect::Deny));
+    }
+
+    let mut builder = Guard::builder()
+        .with_workspace(workspace.to_path_buf())
+        .with_default_rules(default_rules())
+        .with_unmatched(Effect::Deny)
+        .with_session_rules(session_rules)
+        .with_saved_path(workspace.join(".agentx").join("saved-rules.json"));
+    if let Some(mode) = explicit_mode {
+        builder = builder.with_mode(mode);
+    }
+    let guard = builder.build();
+    if let Some(reason) = guard.degraded() {
+        eprintln!("agentx: guard policy failed to load; failing closed ({reason})");
+    }
+    Ok(Arc::new(guard))
+}
+
+fn build_sandbox(
+    args: &Cli,
+    workspace: &std::path::Path,
+    spill: &std::path::Path,
+) -> Result<SandboxSetup, CliError> {
+    let provider = agentx_sandbox::local_provider();
+    let mut profile = ConfinementProfile::workspace_write(workspace.to_path_buf());
+    profile.profile = match args.sandbox {
+        SandboxArg::ReadOnly => FsProfile::ReadOnly,
+        SandboxArg::WorkspaceWrite => FsProfile::WorkspaceWrite,
+        SandboxArg::FullAccess => FsProfile::FullAccess,
+    };
+    profile.session_dir = Some(spill.to_path_buf());
+    if profile.profile == FsProfile::FullAccess {
+        profile.network = NetworkPolicy::Full;
+    }
+    let resolved = match provider.resolve(&profile) {
+        Ok(resolved) => Some(Arc::new(resolved)),
+        Err(error) => {
+            if profile.profile != FsProfile::FullAccess {
+                eprintln!(
+                    "agentx: sandbox unavailable ({error}); shell effects will be refused rather \
+                     than run unconfined"
+                );
+            }
+            None
+        }
+    };
+    Ok(SandboxSetup {
+        provider: Some(provider),
+        profile: Some(profile),
+        resolved,
+    })
+}
+
+/// The resolved sandbox wiring for one CLI invocation.
+struct SandboxSetup {
+    provider: Option<Arc<dyn SandboxProvider>>,
+    profile: Option<ConfinementProfile>,
+    resolved: Option<Arc<agentx_sandbox::ResolvedProfile>>,
 }
 
 async fn run_acp(context: Context) -> Result<u8, CliError> {
@@ -148,7 +250,9 @@ async fn run_acp(context: Context) -> Result<u8, CliError> {
         tools: context.tools,
         store: context.store,
         config: context.config,
-        policy: context.policy,
+        guard: context.guard,
+        sandbox: context.sandbox,
+        sandbox_profile: context.sandbox_profile,
         server_name: "agentx".to_owned(),
         server_version: env!("CARGO_PKG_VERSION").to_owned(),
     };
@@ -170,12 +274,11 @@ async fn run_headless(args: &Cli, context: &Context) -> Result<u8, CliError> {
         });
     }
 
-    let gate: Arc<dyn PermissionGate> = Arc::new(context.policy.clone());
     let runner = Runner::new(
         context.provider.clone(),
         context.tools.clone(),
         context.store.clone(),
-        gate,
+        context.gate.clone(),
         context.config.clone(),
     );
     let mut observer = CliObserver::new(args.format);
@@ -242,11 +345,7 @@ fn resolve_session(args: &Cli, context: &Context) -> Result<SessionId, CliError>
             variant: None,
         },
         context.config.mode.clone(),
-        serde_json::json!({
-            "allow": context.policy.allowed_actions(),
-            "ask": context.policy.ask_actions(),
-            "deny": context.policy.deny_actions(),
-        }),
+        context.guard.snapshot(),
     );
     let created = context.store.create(header)?;
     Ok(created.id)
@@ -298,11 +397,13 @@ fn split_env(name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn system_prompt(workspace: &std::path::Path) -> String {
+fn system_prompt(workspace: &std::path::Path, mode: GuardMode) -> String {
     format!(
-        "You are agentX, an autonomous coding agent working in the workspace {}.\n\
-         Inspect the repository with the read-only tools before answering, then give a precise, \
-         verified final answer. Never invent file contents or command output.",
-        workspace.display()
+        "You are agentX, an autonomous coding agent working in the workspace {} in {} mode.\n\
+         Use the available tools to inspect and change the repository. Shell commands run inside \
+         a sandbox with workspace-scoped writes and no outbound network. Never invent file \
+         contents or command output; verify before claiming success.",
+        workspace.display(),
+        mode.as_str()
     )
 }

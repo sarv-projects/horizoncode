@@ -69,6 +69,14 @@ pub trait PermissionGate: Send + Sync + Debug {
     fn wholly_denied(&self, _action: &str) -> bool {
         false
     }
+
+    /// Classifies a request without resolving an `ask`, so a surface can emit an
+    /// approval request before the async authorization runs.
+    ///
+    /// The default returns `None` (unknown), which emits no approval event.
+    fn classify(&self, _request: &PermissionRequest) -> Option<PolicyOutcome> {
+        None
+    }
 }
 
 /// How a request that would otherwise prompt is resolved.

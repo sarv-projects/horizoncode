@@ -1,40 +1,37 @@
-//! Permission requests to the ACP client (`REQ-PROTO-002`, `REQ-PROTO-006`).
+//! Approval requests to the ACP client (`REQ-PROTO-002`, `REQ-PROTO-006`).
 //!
-//! The gate first evaluates the local policy. An `allow` or `deny` is answered
-//! locally; an `ask` becomes a `session/request_permission` request and the
-//! client's decision is honored. A client that cancels resolves to deny — never
-//! auto-allow.
+//! The guard decides allow/ask/deny. An `ask` is forwarded to the client as a
+//! `session/request_permission` request and the client's decision is honored. A
+//! client that cancels resolves to reject — never auto-allow.
 
 use agent_client_protocol::schema::v1 as acp;
 use agent_client_protocol::{Client, ConnectionTo};
-use agentx_tools::{GateDecision, PermissionGate, PermissionRequest, PolicyGate, PolicyOutcome};
+use agentx_guard::{ApprovalReply, ApprovalRequest, ApprovalResolver};
+use async_trait::async_trait;
 
-/// A permission gate that forwards `ask` decisions to the connected client.
+/// An approval resolver that forwards `ask` decisions to the connected client.
 #[derive(Debug, Clone)]
-pub struct AcpPermissionGate {
-    policy: PolicyGate,
+pub struct AcpApprovalResolver {
     connection: ConnectionTo<Client>,
     session: acp::SessionId,
 }
 
-impl AcpPermissionGate {
-    /// Builds a gate bound to one session's connection.
+impl AcpApprovalResolver {
+    /// Builds a resolver bound to one session's connection.
     #[must_use]
-    pub fn new(
-        policy: PolicyGate,
-        connection: ConnectionTo<Client>,
-        session: acp::SessionId,
-    ) -> Self {
+    pub fn new(connection: ConnectionTo<Client>, session: acp::SessionId) -> Self {
         Self {
-            policy,
             connection,
             session,
         }
     }
+}
 
-    async fn prompt(&self, request: &PermissionRequest) -> GateDecision {
-        let tool_call_id: acp::ToolCallId = request.source.as_str().to_owned().into();
-        let title = format!("{} {}", request.tool_name, request.resources.join(" "));
+#[async_trait]
+impl ApprovalResolver for AcpApprovalResolver {
+    async fn resolve(&self, request: &ApprovalRequest) -> ApprovalReply {
+        let tool_call_id: acp::ToolCallId = request.source.clone().into();
+        let title = format!("{} {}", request.tool, request.resources.join(" "));
         let tool_call = acp::ToolCallUpdate::new(
             tool_call_id,
             acp::ToolCallUpdateFields::new()
@@ -62,40 +59,16 @@ impl AcpPermissionGate {
         match self.connection.send_request(outgoing).block_task().await {
             Ok(response) => match response.outcome {
                 acp::RequestPermissionOutcome::Selected(selected) => {
-                    let option = selected.option_id.0.as_ref();
-                    if option == "allow_once" || option == "allow_always" {
-                        GateDecision::Allow
-                    } else {
-                        GateDecision::Deny {
-                            reason: format!("permission rejected for `{}`", request.tool_name),
-                        }
+                    match selected.option_id.0.as_ref() {
+                        "allow_once" => ApprovalReply::Once,
+                        "allow_always" => ApprovalReply::Always,
+                        _ => ApprovalReply::Reject,
                     }
                 }
-                acp::RequestPermissionOutcome::Cancelled => GateDecision::Deny {
-                    reason: "permission request cancelled by the client".to_owned(),
-                },
-                _ => GateDecision::Deny {
-                    reason: "unknown permission outcome".to_owned(),
-                },
+                acp::RequestPermissionOutcome::Cancelled => ApprovalReply::Reject,
+                _ => ApprovalReply::Reject,
             },
-            Err(error) => GateDecision::Deny {
-                reason: format!("permission request failed: {error}"),
-            },
+            Err(_) => ApprovalReply::Reject,
         }
-    }
-}
-
-#[async_trait::async_trait]
-impl PermissionGate for AcpPermissionGate {
-    async fn authorize(&self, request: &PermissionRequest) -> GateDecision {
-        match self.policy.evaluate(&request.action) {
-            PolicyOutcome::Allow => GateDecision::Allow,
-            PolicyOutcome::Deny { reason } => GateDecision::Deny { reason },
-            PolicyOutcome::Ask => self.prompt(request).await,
-        }
-    }
-
-    fn wholly_denied(&self, action: &str) -> bool {
-        self.policy.wholly_denied(action)
     }
 }

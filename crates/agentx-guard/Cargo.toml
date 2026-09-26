@@ -1,6 +1,6 @@
 [package]
-name = "agentx-tools"
-description = "Tool contract, permission-filtered registry, and the first-party built-in tools."
+name = "agentx-guard"
+description = "Policy guard: ordered allow/ask/deny rules, approval lifecycle, scoped tickets, and plan/act/yolo modes."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,17 +8,12 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-agentx-guard.workspace = true
-agentx-sandbox.workspace = true
-agentx-types.workspace = true
 async-trait.workspace = true
-globset.workspace = true
-regex.workspace = true
+dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt"] }
-walkdir.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

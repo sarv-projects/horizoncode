@@ -6,16 +6,17 @@ use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1 as acp;
 use agent_client_protocol::{Agent, Client, ConnectionTo, Stdio};
+use agentx_guard::{Guard, default_rules};
 use agentx_provider::Provider;
 use agentx_runner::{RunConfig, Runner};
+use agentx_sandbox::{ConfinementProfile, SandboxProvider};
 use agentx_session::{ModelRef, SessionCreatedPayload, SessionStore, TurnEndStatus};
-use agentx_tools::{PermissionGate, PolicyGate, ToolRegistry};
+use agentx_tools::{GuardPermissionGate, PermissionGate, ToolRegistry};
 use agentx_types::{CancelToken, SessionId as AxSessionId};
-use serde_json::json;
 
 use crate::error::AcpError;
 use crate::observer::AcpObserver;
-use crate::permission::AcpPermissionGate;
+use crate::permission::AcpApprovalResolver;
 
 /// Options for the ACP server.
 #[derive(Debug)]
@@ -28,8 +29,12 @@ pub struct AcpOptions {
     pub store: Arc<SessionStore>,
     /// The base run configuration.
     pub config: RunConfig,
-    /// The permission policy; `ask` actions prompt the client.
-    pub policy: PolicyGate,
+    /// The policy guard; `ask` actions prompt the client.
+    pub guard: Arc<Guard>,
+    /// The confinement backend used for shell effects.
+    pub sandbox: Option<Arc<dyn SandboxProvider>>,
+    /// The base confinement profile, re-scoped to each session's workspace.
+    pub sandbox_profile: Option<ConfinementProfile>,
     /// The advertised implementation name.
     pub server_name: String,
     /// The advertised implementation version.
@@ -37,7 +42,7 @@ pub struct AcpOptions {
 }
 
 impl AcpOptions {
-    /// Builds options with the default read-only policy and `agentx` identity.
+    /// Builds options with the default read-only posture and `agentx` identity.
     #[must_use]
     pub fn new(
         provider: Arc<dyn Provider>,
@@ -45,12 +50,15 @@ impl AcpOptions {
         store: Arc<SessionStore>,
         config: RunConfig,
     ) -> Self {
+        let guard = Arc::new(Guard::builder().with_default_rules(default_rules()).build());
         Self {
             provider,
             tools,
             store,
             config,
-            policy: PolicyGate::read_only(),
+            guard,
+            sandbox: None,
+            sandbox_profile: None,
             server_name: "agentx".to_owned(),
             server_version: env!("CARGO_PKG_VERSION").to_owned(),
         }
@@ -63,7 +71,9 @@ struct AcpState {
     tools: Arc<ToolRegistry>,
     store: Arc<SessionStore>,
     config: RunConfig,
-    policy: PolicyGate,
+    guard: Arc<Guard>,
+    sandbox: Option<Arc<dyn SandboxProvider>>,
+    sandbox_profile: Option<ConfinementProfile>,
     server_name: String,
     server_version: String,
     active: Arc<Mutex<HashSet<String>>>,
@@ -77,7 +87,9 @@ impl AcpState {
             tools: options.tools,
             store: options.store,
             config: options.config,
-            policy: options.policy,
+            guard: options.guard,
+            sandbox: options.sandbox,
+            sandbox_profile: options.sandbox_profile,
             server_name: options.server_name,
             server_version: options.server_version,
             active: Arc::new(Mutex::new(HashSet::new())),
@@ -185,11 +197,7 @@ fn handle_new_session(
             variant: None,
         },
         state.config.mode.clone(),
-        json!({
-            "allow": state.policy.allowed_actions(),
-            "ask": state.policy.ask_actions(),
-            "deny": state.policy.deny_actions(),
-        }),
+        state.guard.snapshot(),
     );
     match state.store.create(header) {
         Ok(session) => {
@@ -249,13 +257,25 @@ fn handle_prompt(
     lock(&state.cancels).insert(key.clone(), cancel.clone());
 
     let workspace = PathBuf::from(loaded.header.workspace_id);
-    let gate: Arc<dyn PermissionGate> = Arc::new(AcpPermissionGate::new(
-        state.policy.clone(),
-        cx.clone(),
-        request.session_id.clone(),
+    let gate: Arc<dyn PermissionGate> = Arc::new(GuardPermissionGate::new(
+        state.guard.clone(),
+        Arc::new(AcpApprovalResolver::new(
+            cx.clone(),
+            request.session_id.clone(),
+        )),
     ));
+    let sandbox_resolved = match (&state.sandbox, &state.sandbox_profile) {
+        (Some(provider), Some(profile)) => {
+            let mut profile = profile.clone();
+            profile.workspace = workspace.clone();
+            provider.resolve(&profile).ok().map(Arc::new)
+        }
+        _ => None,
+    };
     let config = RunConfig {
         workspace,
+        sandbox: state.sandbox.clone(),
+        sandbox_resolved,
         ..state.config.clone()
     };
     let runner = Runner::new(

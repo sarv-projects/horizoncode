@@ -1,7 +1,9 @@
 //! Loop configuration.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use agentx_sandbox::{ResolvedProfile, SandboxProvider};
 use agentx_tools::OutputBounds;
 
 /// Configuration for one runner instance.
@@ -31,6 +33,10 @@ pub struct RunConfig {
     pub temperature: Option<f32>,
     /// Optional output-token ceiling.
     pub max_output_tokens: Option<u32>,
+    /// The confinement backend used for shell effects.
+    pub sandbox: Option<Arc<dyn SandboxProvider>>,
+    /// The resolved confinement plan matching `sandbox`.
+    pub sandbox_resolved: Option<Arc<ResolvedProfile>>,
 }
 
 impl Default for RunConfig {
@@ -48,6 +54,8 @@ impl Default for RunConfig {
             token_budget: None,
             temperature: None,
             max_output_tokens: None,
+            sandbox: None,
+            sandbox_resolved: None,
         }
     }
 }

@@ -18,6 +18,9 @@ agentx-provider.workspace = true
 agentx-tools.workspace = true
 agentx-runner.workspace = true
 agentx-acp.workspace = true
+agentx-guard.workspace = true
+agentx-sandbox.workspace = true
+async-trait.workspace = true
 clap.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -25,6 +28,7 @@ tokio.workspace = true
 
 [dev-dependencies]
 agentx-provider = { workspace = true, features = ["testing"] }
+agentx-sandbox.workspace = true
 tempfile.workspace = true
 
 [lints]

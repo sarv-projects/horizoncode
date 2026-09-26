@@ -9,7 +9,9 @@ use agentx_session::{
     StepStartPayload, ToolCallPayload, ToolResultPayload, TurnEndPayload, TurnEndStatus,
     TurnStartPayload,
 };
-use agentx_tools::{Materialization, PermissionGate, Settlement, ToolContext, ToolRegistry};
+use agentx_tools::{
+    Materialization, PermissionGate, PolicyOutcome, Settlement, ToolContext, ToolRegistry,
+};
 use agentx_types::{
     CancelToken, ContentPart, Event, EventKind, Message, ModelEvent, ModelRequest, SessionId,
     ToolCall, ToolChoice, ToolStatus, TurnId, Usage,
@@ -411,6 +413,19 @@ impl Runner {
                     tool_call: call.clone(),
                     action,
                 });
+                // Surface an approval request before the async authorization
+                // runs, so an interactive surface can show it (`REQ-GUARD-003`).
+                let ctx = self.tool_context(session_id, call);
+                if let Some(request) = self.tools.permission_request(call, &ctx)
+                    && matches!(self.gate.classify(&request), Some(PolicyOutcome::Ask))
+                {
+                    observer.on_event(RunEvent::ApprovalRequested {
+                        tool_call_id: call.id.clone(),
+                        tool: call.name.clone(),
+                        action: request.action.clone(),
+                        resources: request.resources.clone(),
+                    });
+                }
             }
 
             let settlements = self.execute_calls(session_id, &calls).await;
@@ -452,6 +467,19 @@ impl Runner {
         self.tools
             .action_for(name)
             .unwrap_or_else(|| name.to_owned())
+    }
+
+    fn tool_context(&self, session_id: &SessionId, call: &ToolCall) -> ToolContext {
+        ToolContext {
+            session_id: session_id.clone(),
+            turn_id: None,
+            tool_call_id: call.id.clone(),
+            workspace: self.config.workspace.clone(),
+            output_dir: self.config.output_dir.clone(),
+            gate: Some(self.gate.clone()),
+            sandbox: self.config.sandbox.clone(),
+            resolved: self.config.sandbox_resolved.clone(),
+        }
     }
 
     async fn execute_calls(
@@ -518,13 +546,7 @@ impl Runner {
                 error_code: Some("TOOL_INVALID_INPUT".to_owned()),
             };
         }
-        let ctx = ToolContext {
-            session_id: session_id.clone(),
-            turn_id: None,
-            tool_call_id: call.id.clone(),
-            workspace: self.config.workspace.clone(),
-            output_dir: self.config.output_dir.clone(),
-        };
+        let ctx = self.tool_context(session_id, call);
         self.tools
             .settle(call, &ctx, self.gate.as_ref(), &self.config.output_bounds)
             .await

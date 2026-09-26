@@ -39,6 +39,11 @@ pub enum ToolError {
     /// The tool failed while carrying out its work.
     #[error("tool execution failed: {0}")]
     Execute(String),
+
+    /// The tool is unavailable in this run mode (for example a question in a
+    /// non-interactive run).
+    #[error("tool unavailable: {0}")]
+    Unavailable(String),
 }
 
 impl ToolError {
@@ -52,6 +57,7 @@ impl ToolError {
             Self::Io { .. } => "TOOL_IO_ERROR",
             Self::Aborted(_) => "TOOL_ABORTED",
             Self::Execute(_) => "TOOL_EXECUTE_ERROR",
+            Self::Unavailable(_) => "TOOL_UNAVAILABLE",
         }
     }
 

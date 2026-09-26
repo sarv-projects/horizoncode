@@ -1,6 +1,7 @@
 //! The `agentx` binary entry point.
 
 mod app;
+mod approval;
 mod args;
 mod output;
 

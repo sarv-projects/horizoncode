@@ -12,6 +12,7 @@ agentx-types.workspace = true
 agentx-session.workspace = true
 agentx-provider.workspace = true
 agentx-tools.workspace = true
+agentx-sandbox.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 serde.workspace = true

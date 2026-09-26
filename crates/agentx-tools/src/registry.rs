@@ -30,10 +30,16 @@ pub struct ToolContext {
     pub workspace: PathBuf,
     /// Where to spill oversized output, when managed output is enabled.
     pub output_dir: Option<PathBuf>,
+    /// The guard seam, when the caller wants tools to re-assert before effects.
+    pub gate: Option<Arc<dyn PermissionGate>>,
+    /// The confinement backend, when shell effects are available.
+    pub sandbox: Option<Arc<dyn agentx_sandbox::SandboxProvider>>,
+    /// The resolved confinement plan matching `sandbox`.
+    pub resolved: Option<Arc<agentx_sandbox::ResolvedProfile>>,
 }
 
 impl ToolContext {
-    /// Builds a context with no turn and no managed-output directory.
+    /// Builds a context with no turn, gate, sandbox or managed-output directory.
     #[must_use]
     pub fn new(
         session_id: impl Into<SessionId>,
@@ -46,7 +52,29 @@ impl ToolContext {
             tool_call_id: tool_call_id.into(),
             workspace: workspace.into(),
             output_dir: None,
+            gate: None,
+            sandbox: None,
+            resolved: None,
         }
+    }
+
+    /// Attaches the guard seam so mutating tools re-assert before an effect.
+    #[must_use]
+    pub fn with_gate(mut self, gate: Arc<dyn PermissionGate>) -> Self {
+        self.gate = Some(gate);
+        self
+    }
+
+    /// Attaches the confinement backend and resolved plan.
+    #[must_use]
+    pub fn with_sandbox(
+        mut self,
+        sandbox: Arc<dyn agentx_sandbox::SandboxProvider>,
+        resolved: Arc<agentx_sandbox::ResolvedProfile>,
+    ) -> Self {
+        self.sandbox = Some(sandbox);
+        self.resolved = Some(resolved);
+        self
     }
 }
 
@@ -259,6 +287,29 @@ impl ToolRegistry {
         materialization
     }
 
+    /// Builds the policy request for a call, when the tool is registered.
+    #[must_use]
+    pub fn permission_request(
+        &self,
+        call: &ToolCall,
+        ctx: &ToolContext,
+    ) -> Option<PermissionRequest> {
+        let tool = self.tools.get(&call.name)?;
+        let action = tool.action();
+        Some(PermissionRequest {
+            action: action.clone(),
+            tool_name: call.name.clone(),
+            resources: resources_from_input(&call.arguments),
+            session_id: ctx.session_id.clone(),
+            source: call.id.clone(),
+            metadata: serde_json::json!({
+                "action": action,
+                "tool": call.name,
+                "workspace": ctx.workspace.to_string_lossy(),
+            }),
+        })
+    }
+
     /// Settles one tool call.
     ///
     /// Returns a typed [`Settlement`] in every case, so the loop always has a
@@ -279,18 +330,14 @@ impl ToolRegistry {
                 "TOOL_UNKNOWN",
             );
         };
-        let action = tool.action();
-        let request = PermissionRequest {
-            action: action.clone(),
-            tool_name: call.name.clone(),
-            resources: resources_from_input(&call.arguments),
-            session_id: ctx.session_id.clone(),
-            source: call.id.clone(),
-            metadata: serde_json::json!({
-                "action": action,
-                "tool": call.name,
-                "workspace": ctx.workspace.to_string_lossy(),
-            }),
+        let Some(request) = self.permission_request(call, ctx) else {
+            return Settlement::failure(
+                call.name.clone(),
+                call.id.clone(),
+                ToolStatus::Error,
+                format!("Unknown tool: {}", call.name),
+                "TOOL_UNKNOWN",
+            );
         };
         if let GateDecision::Deny { reason } = gate.authorize(&request).await {
             return Settlement::failure(
@@ -374,7 +421,7 @@ fn spill(dir: &std::path::Path, call: &ToolCall, text: &str) -> Result<String, T
 /// Collects the non-secret resources a call names, for policy metadata.
 fn resources_from_input(input: &Value) -> Vec<String> {
     let mut resources = Vec::new();
-    for key in ["path", "url", "pattern", "include"] {
+    for key in ["path", "url", "pattern", "include", "command"] {
         if let Some(value) = input.get(key).and_then(Value::as_str) {
             resources.push(value.to_owned());
         }

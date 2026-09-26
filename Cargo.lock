@@ -57,8 +57,10 @@ name = "agentx-acp"
 version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
+ "agentx-guard",
  "agentx-provider",
  "agentx-runner",
+ "agentx-sandbox",
  "agentx-session",
  "agentx-tools",
  "agentx-types",
@@ -74,16 +76,33 @@ name = "agentx-cli"
 version = "0.1.0"
 dependencies = [
  "agentx-acp",
+ "agentx-guard",
  "agentx-provider",
  "agentx-runner",
+ "agentx-sandbox",
  "agentx-session",
  "agentx-tools",
  "agentx-types",
+ "async-trait",
  "clap",
  "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "agentx-guard"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "dirs",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -108,6 +127,7 @@ name = "agentx-runner"
 version = "0.1.0"
 dependencies = [
  "agentx-provider",
+ "agentx-sandbox",
  "agentx-session",
  "agentx-tools",
  "agentx-types",
@@ -118,6 +138,16 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "agentx-sandbox"
+version = "0.1.0"
+dependencies = [
+ "globset",
+ "tempfile",
+ "thiserror",
+ "walkdir",
 ]
 
 [[package]]
@@ -136,6 +166,8 @@ dependencies = [
 name = "agentx-tools"
 version = "0.1.0"
 dependencies = [
+ "agentx-guard",
+ "agentx-sandbox",
  "agentx-types",
  "async-trait",
  "globset",

@@ -188,10 +188,13 @@ async fn acp_initializes_creates_a_session_and_streams_updates() {
         update["params"]["update"]["sessionUpdate"] == "tool_call"
             && update["params"]["update"]["name"] == "list"
     }));
-    assert!(updates.iter().any(|update| {
-        update["params"]["update"]["sessionUpdate"] == "tool_call_update"
-            && update["params"]["update"]["status"] == "completed"
-    }));
+    assert!(
+        updates.iter().any(|update| {
+            update["params"]["update"]["sessionUpdate"] == "tool_call_update"
+                && update["params"]["update"]["status"] == "completed"
+        }),
+        "updates: {updates:?}"
+    );
     assert_eq!(server.request_count(), 2);
 
     let _ = client.child.kill().await;

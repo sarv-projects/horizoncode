@@ -22,6 +22,8 @@ agentx-types = { path = "crates/agentx-types", version = "0.1.0" }
 agentx-session = { path = "crates/agentx-session", version = "0.1.0" }
 agentx-provider = { path = "crates/agentx-provider", version = "0.1.0" }
 agentx-tools = { path = "crates/agentx-tools", version = "0.1.0" }
+agentx-guard = { path = "crates/agentx-guard", version = "0.1.0" }
+agentx-sandbox = { path = "crates/agentx-sandbox", version = "0.1.0" }
 agentx-runner = { path = "crates/agentx-runner", version = "0.1.0" }
 agentx-acp = { path = "crates/agentx-acp", version = "0.1.0" }
 agentx-cli = { path = "crates/agentx-cli", version = "0.1.0" }

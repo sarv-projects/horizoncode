@@ -41,6 +41,17 @@ pub enum RunEvent {
         /// The policy action.
         action: String,
     },
+    /// A tool call requires approval before it can execute.
+    ApprovalRequested {
+        /// The call awaiting approval.
+        tool_call_id: agentx_types::ToolCallId,
+        /// The advertised tool name.
+        tool: String,
+        /// The canonical policy action.
+        action: String,
+        /// The resources the call will touch.
+        resources: Vec<String>,
+    },
     /// A tool call settled.
     ToolFinished {
         /// The settlement.

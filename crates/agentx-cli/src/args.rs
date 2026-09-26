@@ -25,6 +25,28 @@ pub enum OutputFormat {
     Ndjson,
 }
 
+/// The interaction posture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ModeArg {
+    /// Read-only planning: mutating actions are refused.
+    Plan,
+    /// Normal evaluation.
+    Act,
+    /// Auto-approve non-catastrophic asks; deny rules still apply.
+    Yolo,
+}
+
+/// The sandbox filesystem profile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum SandboxArg {
+    /// Scoped read; writes only to session state and temp.
+    ReadOnly,
+    /// Scoped read; workspace writes; network off (default).
+    WorkspaceWrite,
+    /// No confinement; explicit, audited opt-in only.
+    FullAccess,
+}
+
 /// Standalone, protocol-native command-line coding agent.
 #[derive(Debug, Parser)]
 #[command(
@@ -81,6 +103,18 @@ pub struct Cli {
     /// Maximum model steps per turn.
     #[arg(long, value_name = "N", default_value_t = 25)]
     pub max_steps: usize,
+
+    /// Interaction mode; overrides any mode discovered from configuration.
+    #[arg(long, value_enum, value_name = "MODE")]
+    pub mode: Option<ModeArg>,
+
+    /// Shorthand for `--mode yolo`.
+    #[arg(long)]
+    pub yolo: bool,
+
+    /// Sandbox filesystem profile.
+    #[arg(long, value_enum, value_name = "PROFILE", default_value_t = SandboxArg::WorkspaceWrite)]
+    pub sandbox: SandboxArg,
 }
 
 /// Subcommands.
