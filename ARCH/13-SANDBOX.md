@@ -231,6 +231,8 @@ Every tier **declares** the level it provides. `enforced` is a kernel/syscall or
 OS-capability denial of egress; `best_effort` limits denial to the wrapped process;
 `none` means no network guarantee. A tier MUST NOT claim a level stronger than it can
 prove, and a caller that requires a level the tier does not provide MUST be refused.
+`DEC-027` is the formal read-through that makes "network off" a *request* everywhere in
+the document set and never a claim about what a tier enforces.
 
 | Tier | Level | Mechanism | Residual |
 |---|---|---|---|
@@ -309,7 +311,7 @@ network policy.
 
 | REQ | How this module satisfies it |
 |---|---|
-| `REQ-GUARD-004` | Sandboxed execution defaults to workspace-scoped writes and no outbound network; each tier declares its `network_guarantee_level` with mechanism and residual, the level is surfaced and recorded, and a required level the tier cannot provide is refused (`DEC-026`). |
+| `REQ-GUARD-004` | Sandboxed execution defaults to workspace-scoped writes and a request for no outbound network; each tier declares its `network_guarantee_level` with mechanism and residual, the level is surfaced and recorded, and a required level the tier cannot provide is refused (`DEC-026`, `DEC-027`). |
 | `REQ-TOOL-003` | Denied tools are absent via Guard; the sandbox independently confines the rest. |
 | `REQ-SEC-003` | This module is the sole path *reach* enforcer: `check_path` and `spawn` enforce the resolved profile's scoped roots and kernel-enforced deny globs over the whole process tree, so validation happens at the enforcement boundary, not in a pre-scan. |
 | `REQ-SEC-025` | Sole path reach owner: reads are scoped to the granted roots on every tier, a spawn naming an absolute path outside them is rejected or masked, deny-glob/protected-subpath matches are denied at the kernel, and a tier that cannot confine the reach refuses the effect (`DEC-024`, `DEC-025`). |
@@ -331,7 +333,8 @@ network policy.
    where credentials come from without leaving `CMP-secrets`.
 4. **Deny-glob materialization on Linux** — the fail-closed threshold (file count,
    scan depth) at which a glob makes the profile unstartable.
-5. **macOS Seatbelt child-network** — **Resolved by `DEC-026`:** best-effort
+5. **macOS Seatbelt child-network** — **Resolved by `DEC-026`, read through by
+   `DEC-027`:** best-effort
    blocking is **allowed**, but the tier must declare `best_effort` with its residual,
    surface the level wherever a network-restricted profile is presented, record it in
    the acceptance record, and **refuse** a caller that requires `enforced`. macOS is

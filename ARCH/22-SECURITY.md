@@ -123,7 +123,7 @@ the table that follows.
 | `TB-3` | host → external network | One mediated egress; host/port/protocol authorized **after** resolution and re-authorized per redirect hop | `CMP-sandbox` network policy, `CMP-guard` `net.connect` |
 | `TB-4` | untrusted source → context | Content enters the model request **labeled and framed as data**; it cannot create a rule, a ticket, a grant, or a decision | `CMP-context`, `CMP-tools` framing, `CMP-orch` receipt intake |
 | `TB-5` | effect → evidence | A security-relevant effect is not *complete* until its audit entry is durably chained | `CMP-audit`, `CMP-session`, `CMP-analytics` (`DEC-020`) |
-| `TB-6` | in-process → external extension process | An extension runs confined, with no ambient network and workspace-scoped writes; its effects pass the same guard | `CMP-sandbox`, `CMP-config`, `CMP-mcp` |
+| `TB-6` | in-process → external extension process | An extension runs confined, with no ambient network **at the tier's declared `network_guarantee_level`** and workspace-scoped writes; its effects pass the same guard | `CMP-sandbox`, `CMP-config`, `CMP-mcp` |
 | `TB-7` | agentX → peer agent | Authority is *never* delegated across the ACP boundary; only proposals cross, and each is re-authorized locally | `CMP-acp` client mode, `CMP-guard`, `CMP-orch` |
 | `TB-8` | local state → future run | Persisted content (config, logs, bundles, catalog cache) is re-validated before it can influence behavior | `CMP-config`, `CMP-session`, `CMP-audit`, `CMP-provider` |
 
@@ -196,7 +196,7 @@ Assumed **non**-adversaries: the OS user themselves (see the trust-boundary note
 | `N-03` | `AS-8` | Scheme abuse (`file:`, `data:`, vendor-specific schemes) or a non-HTTP protocol on an allowed port | Per-protocol grant semantics | Adapters may accept more than one scheme | Explicit scheme allowlist per tool; an unknown scheme is a typed refusal, not a fallback |
 | `N-04` | `AS-2` | Credential smuggled in a URL, query key, or `userinfo` | Redaction of userinfo, authorization headers, and secret-pattern keys; credentials only as references | A URL that already contains a token is *stored* before redaction in some code paths | Reject URLs containing `userinfo` outright; redact query keys matching the secret pattern set **before** the URL is persisted or logged; never log a full URL — normalized `host`/`host:port` only |
 | `N-05` | `AS-7` | A malicious or broken MCP server returns an unbounded body, or paginates forever | Per-server timeout, visited-cursor set, hard page cap, dedupe | Response size is not obviously bounded on every method | Per-method response byte ceilings with streaming abort; a cap overrun is a typed error, never a partial read treated as complete |
-| `N-06` | `AS-4`,`AS-8` | An extension opens its own socket, bypassing the single egress path | Extension processes run confined with network off (`DEC-018`); one-egress rule | An in-process extension surface could reach a network primitive | Static sweep for direct network-client construction above the adapter layer; extension processes are always out-of-process and confined; any in-process network use must go through the mediated path with a `net.connect` decision |
+| `N-06` | `AS-4`,`AS-8` | An extension opens its own socket, bypassing the single egress path | Extension processes run confined with network denied **to the level the tier declares** (`DEC-026`, `DEC-027`); one-egress rule | An in-process extension surface could reach a network primitive | Static sweep for direct network-client construction above the adapter layer; extension processes are always out-of-process and confined at the declared level; any in-process network use must go through the mediated path with a `net.connect` decision |
 | `N-07` | `AS-7` | `Retry-After` abuse, redirect loops, or retry storms amplify load on a third party or an internal host | Bounded retries with jitter, cooldown, typed failure classification | Jitter source and cap are not fixed; a hostile server can still be polled | Bound total attempts and total elapsed time per logical request; observe rate-limit hints; record a retry storm as an audited anomaly |
 
 ### T-4 — Context assembly and prompt injection (`CMP-context`, `CMP-runner`, `CMP-tools` output, `CMP-orch` receipts)
@@ -272,7 +272,7 @@ Assumed **non**-adversaries: the OS user themselves (see the trust-boundary note
 | `X-02` | `AS-10` | Pin bypass through digest normalization (line endings, Unicode normalization, case, path spelling, file-set omission) | Pin is a version + content hash | A naive digest over raw bytes or names can be made to collide across equivalent encodings | Digest over a **normalized** canonical file-set manifest (relative path, normalized bytes, mode) rather than names; a mismatch refuses; add normalization fixtures to the test corpus |
 | `X-03` | `AS-10`,`AS-8` | A hostile package escapes its root at install (`..` members, absolute members, symlink members, decompression bomb) | Install **copies** into a cache rather than linking; symlinks resolved and verified; bounded extraction | Extraction budgets (file count, total bytes) are not yet fixed | Extraction confined to the cache root with declared file-count/byte budgets; absolute and `..` members rejected typed; no symlink members; nothing lands outside the package |
 | `X-04` | `AS-3`,`AS-10` | A plugin claims a surface it does not own (core patching, raw hooks, arbitrary renderers) | Closed surface set in the manifest; review gate | A future surface addition widens the set | Manifest schema rejects unknown surfaces; a contract-compat window rejects version skew; no surface may patch core behavior |
-| `X-05` | `AS-3`,`AS-4` | A hook becomes a policy-loosening or arbitrary-execution vector | Hooks tighten/block only; every invocation and outcome logged; failure isolated | A command hook is still arbitrary code execution at hook time | Hook commands run confined with network off and workspace-scoped writes; hook exit status is interpreted only as tighten/block/observe; a hook that tries to loosen is rejected and audited |
+| `X-05` | `AS-3`,`AS-4` | A hook becomes a policy-loosening or arbitrary-execution vector | Hooks tighten/block only; every invocation and outcome logged; failure isolated | A command hook is still arbitrary code execution at hook time | Hook commands run confined with network denied at the tier's declared level and workspace-scoped writes; hook exit status is interpreted only as tighten/block/observe; a hook that tries to loosen is rejected and audited |
 | `X-06` | `AS-1`,`AS-3` | A malicious MCP server squats a native tool name or shadows a reserved prefix | Namespacing (`mcp__<server>__<tool>`), name validation, scoped registration, frozen registration identity | A server named to mimic a native tool could still confuse a human | Reject collisions and reserved prefixes; show the origin of every advertised tool in the inspection surface; a call to a removed tool fails typed rather than rerouting |
 | `X-07` | `AS-7` | A server floods, loops, or hangs | Per-server timeout, pagination cap, dedupe, bounded reconnect | Response bytes unbounded (see `N-05`) | Byte ceilings per method; abort typed; a repeated failure auto-disables the server with an audit entry |
 | `X-08` | `AS-1`,`AS-3` | A server requests client filesystem/terminal services beyond its declared need | The same guard path for client fs/terminal calls; writes go through the governed write path | A server could probe for capability by asking | A server's service requests are proposals; the approval shows the requesting server; no auto-grant; a request outside the declared scope is denied and audited |
@@ -454,8 +454,8 @@ Recorded, owned, and reviewed. "Accepted" here means **disclosed and bounded**, 
 | `RR-04` | The composed `yolo` + `full-access` posture is broader than either switch suggests | critical | Two independent widening switches exist by decision | One explicit audited acknowledgement of the composed scope; catastrophic gate irreducible; neither switch reachable from project config; posture displayed in every surface |
 | `RR-05` | A compromised upstream dependency inside the license allowlist is undetectable by a license check | high | Only pinned revisions + review + the generated notices bundle reduce it; none eliminates it | Locked builds, dependency-change review, notices generated from the resolved graph, `THIRD-PARTY-NOTICES` shipped (`DEC-011`, `DEC-012`) |
 | `RR-06` | The model catalog's upstream title, contributor agreement, database rights, and accuracy are not fully provable from public sources | high | Accepted upstream; not closable by us | Per-row provenance record plus cross-verification, not a stronger license claim (`DEC-021`); records schema-validated; a descriptor may not introduce an endpoint or credential; pinned eval fixtures are never silently overwritten; no marks bundled |
-| `RR-07` | macOS child-process network denial is `best_effort` at that tier | high | The platform mechanism available to that tier does not equal the Unix path/syscall denial | The tier **declares** `best_effort` with its residual; the level is surfaced wherever a network-restricted profile is presented and recorded in the tier's acceptance record; a caller requiring `enforced` is **refused** rather than downgraded (`DEC-026`, `REQ-GUARD-004`) |
-| `RR-08` | The Windows tier's job objects do not by themselves deny paths or network; the application-container boundary plus ACLs carry that, so its network level is `capability` (deny-by-absence) rather than a syscall filter (`ARCH/13` §Platform notes) | high | Different kernel mechanism, different proof obligation | Its own acceptance matrix and record naming the declared level; the level is surfaced and a stronger requirement is refused; limits stated honestly rather than described as equivalent (`DEC-026`) |
+| `RR-07` | macOS child-process network denial is `best_effort` at that tier | high | The platform mechanism available to that tier does not equal the Unix path/syscall denial | The tier **declares** `best_effort` with its residual; the level is surfaced wherever a network-restricted profile is presented and recorded in the tier's acceptance record; a caller requiring `enforced` is **refused** rather than downgraded, and no document states "network off" as what this tier enforces (`DEC-026`, `DEC-027`, `REQ-GUARD-004`) |
+| `RR-08` | The Windows tier's job objects do not by themselves deny paths or network; the application-container boundary plus ACLs carry that, so its network level is `capability` (deny-by-absence) rather than a syscall filter (`ARCH/13` §Platform notes) | high | Different kernel mechanism, different proof obligation | Its own acceptance matrix and record naming the declared level; the level is surfaced and a stronger requirement is refused; limits stated honestly rather than described as equivalent (`DEC-026`, `DEC-027`) |
 | `RR-09` | Session ownership is process-local in v1, so two processes can drive one session | medium | A durable cross-process owner is deferred (`ARCH/07`) | Cross-process append lock + audit concurrency test; a single-controlling-connection rule per session; do not claim multi-editor collaboration before this closes |
 | `RR-10` | Enforced `exec.run` patterns match argv tokens, not interpreted semantics; a shell re-parses an argument | medium | A command wrapper is opaque to a prefix rule; the kernel boundary is the real control | Pattern grammar states this and `exec.run` carries no path-shaped resources; the kernel deny set is the boundary; the tool-plane argument scan is extraction/escalation only and may never be the sole control; a shim test asserts the deny still applies (`DEC-024`, `DEC-025`) |
 | `RR-11` | Cost ceilings cannot be enforced precisely when pricing is unknown | medium | Pricing is external, versioned, and may be absent | Unknown pricing is reported as unknown, never fabricated; a cost ceiling with unknown pricing fails closed on that term or is declared token-only |
@@ -513,7 +513,7 @@ are added by it.
 | `REQ-SEC-005` (containment at the enforcement layer) | `F-01`, `F-04`, `E-04` |
 | `REQ-SEC-006` (no shell-string construction; env allowlist) | `E-01`, `E-02` |
 | `REQ-SEC-007` (one mediated egress, resolve-then-check) | `N-01`…`N-04`, `N-06` |
-| `REQ-SEC-008` (content cannot grant authority) | `P-01`…`P-07` |
+| `REQ-SEC-008` (content cannot grant authority, and cannot grant network either) | `P-01`…`P-07`, `N-06`, `RR-07`, `RR-08` |
 | `REQ-SEC-009` (secret non-disclosure incl. errors) | `S-01`…`S-08` |
 | `REQ-SEC-010` (confinement independent of authorization) | `E-04`, `RR-07`, `RR-08` |
 | `REQ-SEC-011` (no ambient privilege) | `E-04`, `G-05` |
@@ -521,7 +521,7 @@ are added by it.
 | `REQ-SEC-013` (fail-closed resource bounds) | `C-01`…`C-08` |
 | `REQ-SEC-014` (sub-agent/peer authority intersection) | `O-01`…`O-07` |
 | `REQ-SEC-015` (extension pinning and explicit enable) | `X-01`, `X-02`, `X-10` |
-| `REQ-SEC-016` (extension processes confined; hooks tighten only) | `X-03`…`X-05` |
+| `REQ-SEC-016` (extension processes confined at the tier's declared network level; hooks tighten only) | `X-03`…`X-05`, `N-06`, `RR-07`, `RR-08` |
 | `REQ-SEC-017` (catalog data is data) | `X-09`, `X-12`, `N-04` |
 | `REQ-SEC-018` (local state ownership/permission validation) | `L-01`, `L-02`, `L-07` |
 | `REQ-SEC-019` (path retargeting refused) | `F-04`, `L-06`, `L-07` |
@@ -561,13 +561,18 @@ are added by it.
    **extracts** and may only escalate, the guard **authorizes**, the sandbox
    **enforces reach**. Residual: a prefix rule is still not a semantic guarantee about
    what a wrapper will do (`RR-10`).
-4. **macOS network-restricted profiles.** **Resolved by `DEC-026`.** A
+4. **macOS network-restricted profiles.** **Resolved by `DEC-026`, read through by
+   `DEC-027`.** A
    `network: none` profile **is allowed** on the macOS tier; the tier declares
    `best_effort` with its residual, the level is surfaced wherever the profile is
    presented and recorded in that tier's acceptance record, and a caller requiring
    `enforced` is **refused** rather than silently downgraded. The backend is therefore
    not forced to declare itself unsupported — macOS stays a supported tier with an
-   honest level (`RR-07`, `ARCH/13` Open question 5, `ARCH/23` Open question 8).
+   honest level (`RR-07`, `ARCH/13` Open question 5, `ARCH/23` Open question 8). What
+   the read-through adds is that no statement anywhere in the set may present "network
+   off" as what a tier *enforces*; it is the request the profile makes, and the
+   declared level is the enforcement. `DEC-008`'s wording is unchanged — it is the
+   request.
 5. **Windows acceptance matrix.** Which specific filesystem, registry,
    child-process, and network restrictions are proven by which mechanism, and what
    record proves each? (`ARCH/13` Open question 1; `TODO.md` Windows-containment task.)

@@ -83,7 +83,8 @@ own question.
   governed-path run (`REQ-SEC-023`, `REQ-SEC-025`, `DEC-025`).
 - A passing containment run proves the tier's **declared** network guarantee level,
   not a universal "no outbound network" claim for every platform; a stronger level is
-  proven only by the mechanism named in the record (`DEC-026`, `REQ-GUARD-004`).
+  proven only by the mechanism named in the record (`DEC-026`, `DEC-027`,
+  `REQ-GUARD-004`). "Network off" in a profile is the request, never the evidence.
 - Audit verification proves modification of already-anchored history is detected. It
   does not prove content authenticity, does not detect fabrication by a principal
   with write access, and does not cover the unanchored tail (`REQ-AUDIT-007`).
@@ -436,7 +437,7 @@ rules**; `REQ-VER-004/016` by the **repeat/quarantine policy and fuzz coverage**
 | `REQ-VER-002` | §Determinism — injectable substrate table |
 | `REQ-VER-003` | §Determinism — transport rules (mock provider transports, loopback only) |
 | `REQ-VER-004` | §Determinism — repeat and quarantine policy |
-| `REQ-VER-005` | `ACC-P1-01` — the network sub-check asserts each tier's **declared** guarantee level rather than one universal no-network claim (`DEC-026`) |
+| `REQ-VER-005` | `ACC-P1-01` — the network sub-check asserts each tier's **declared** guarantee level rather than one universal no-network claim, and the record stores `network_guarantee_level` / `network_mechanism` / `network_residual` (`DEC-026`, `DEC-027`) |
 | `REQ-VER-006` | `ACC-P1-02` |
 | `REQ-VER-007` | `ACC-P1-03` |
 | `REQ-VER-008` | `ACC-P1-04` |
@@ -455,7 +456,8 @@ rules**; `REQ-VER-004/016` by the **repeat/quarantine policy and fuzz coverage**
 | `REQ-AUDIT-002`, `REQ-AUDIT-005` | `ACC-P1-04`; `G-5` |
 | `REQ-AUDIT-004` | `ACC-P1-04` anchor receipt; `G-5` (an unreachable anchor fails) |
 | `REQ-AUDIT-007` | `ACC-P1-04` stores the anchoring level and captures the rendered claim boundary; `G-5` (`DEC-022`) |
-| `REQ-GUARD-004` | `ACC-P1-01(d)` per the tier's **declared** network guarantee level; `G-4` (`DEC-026`) |
+| `REQ-GUARD-004` | `ACC-P1-01(d)` per the tier's **declared** network guarantee level; `ACC-P1-01(j)` is the refusal half; `G-4` (`DEC-026`, `DEC-027`) |
+| `REQ-SEC-016`, `REQ-SEC-008` | `ACC-P1-01(d)`/`(j)` for the extension-profile level and for a network grant no content can create (`DEC-027`) |
 | `REQ-SEC-003`, `REQ-SEC-025` | `ACC-P1-01` (reach) and `ACC-P1-02` (authorization + the static "no path evaluation outside the guard" gate) (`DEC-024`, `DEC-025`) |
 | `REQ-SESS-002` | `ACC-P1-06` |
 | `REQ-PROTO-001`, `REQ-PROTO-002`, `REQ-PROTO-006` | `ACC-P1-03`, `ACC-P1-05` |

@@ -9,7 +9,16 @@ A standalone, ACP-native, **long-horizon** command-line coding agent.
 
 ## Status
 
-**Architecture phase.** No implementation code yet. The design set lives in `ARCH/`.
+**Architecture complete; P0 slice implemented, P1 in progress.** The design set lives in
+`ARCH/`. The Rust workspace at `crates/` implements the P0 vertical slice (session log,
+one provider transport, the read-only and mutating tool plane, the step loop, the ACP
+stdio server, and the headless `-p` mode) plus the first half of P1 (the policy guard
+and the local sandbox backends).
+
+Honest labelling, per `ARCH/23`: this is **implemented and test-covered, not accepted.**
+No `ACC-P1-*` acceptance record exists, so no containment, audit, or readiness claim is
+verified, and the audit component does not exist yet. See `TODO.md` for per-task status
+and the open-defect list.
 
 ## Documentation map
 
@@ -36,7 +45,10 @@ A standalone, ACP-native, **long-horizon** command-line coding agent.
 | `ARCH/19-COMPRESSION.md` | Context compression (evidence-gated) |
 | `ARCH/20-ANALYTICS.md` | Usage, cost, tool, and routing analytics |
 | `ARCH/21-DISCOVERY.md` | MCP/skills/plugins/agents discovery & use |
-| `TODO.md` | Delivery tracker |
+| `ARCH/22-SECURITY.md` | Consolidated threat model, residual-risk register |
+| `ARCH/23-VERIFICATION.md` | Evidence layers, acceptance matrix, release gates |
+| `TODO.md` | Delivery tracker: status, evidence, open defects |
+| `CURRENT_RUN.md` | Handover state for the next session |
 
 `archives/` holds reference material copied from an unrelated project. It is **not** an authority for this repository and is git-ignored.
 

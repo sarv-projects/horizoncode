@@ -375,3 +375,67 @@ declared level states what is enforced.
 **Governs:** `REQ-GUARD-004`, `REQ-VER-014`; evidence in `ACC-P1-01` and gate `G-4`;
 residual risks `RR-07`, `RR-08`. Detail in `ARCH/13` §Platform notes. Tracked by
 `TODO.md` `AX-113`, `AX-114`.
+
+## DEC-027 — Formal read-through of `DEC-008`..`DEC-026`: "network off" is a request, never a uniform claim
+
+**Status:** accepted. A read-through, not a rewrite: no earlier record is edited, and
+`DEC-008` remains in force and intact. Discharges the remaining `DEC-026` consequences.
+
+**Question read through.** `DEC-008` records the default local profile as
+"bubblewrap + Landlock + seccomp (**network off**, workspace-only writes)". `DEC-026`
+introduced per-tier guarantee levels. Read together, does "network off" hold uniformly
+across the requirement set, the delivery tasks, and the acceptance rows?
+
+**Decision.**
+
+1. **"Network off" states the *request*, not the *enforcement*.** Every default profile
+   requests no outbound network on every tier; what each tier *enforces* is the
+   `network_guarantee_level` it declares (`DEC-026`). The phrase is never a universal
+   factual claim about the host.
+2. **The strict floor is preserved, not averaged away.** Linux remains `enforced`: any
+   profile advertised as network-restricted MUST be proven at the syscall/namespace
+   bar, and a Linux tier that cannot reach that bar MUST refuse the profile rather than
+   claim a weaker level as if it were the same thing. macOS (`best_effort`) and Windows
+   (`capability`) remain **supported** tiers with disclosed levels — neither is
+   declared unsupported, and neither is described as equivalent to the Unix
+   path/syscall bar.
+3. **A required level the tier cannot provide is refused.** The difference between
+   levels is enforced by a typed refusal, never by a silent downgrade (`DEC-026`).
+4. **Mechanism and residual travel with the level.** A record for a tier that confines
+   a process carries `network_guarantee_level`, `network_mechanism`, and
+   `network_residual` (`ARCH/23` §Data / state model), and the level is surfaced
+   wherever a network-restricted profile is presented.
+5. **History is preserved.** `DEC-008` is left exactly as written; this record is the
+   read-through. A later decision supersedes `DEC-008` only where it says so.
+
+**Where each of the five residual items is now governed.**
+
+| Item | Tier-honest statement now in force |
+|---|---|
+| `REQ-VER-005` (`ARCH/02`) | The network sub-check asserts the tier's **declared** level per `ACC-P1-01(d)` — `enforced` proves `connect`-class denial with only `AF_UNIX` succeeding, `capability` proves a failing outbound attempt because the capability is absent, `best_effort` proves wrapped-process denial **and** that the residual is disclosed. The record stores `network_guarantee_level` / `network_mechanism` / `network_residual`; `ACC-P1-01(j)` is the refusal half. Linux `enforced` is the floor for a network-restricted profile. |
+| `REQ-SEC-016` (`ARCH/02`) | Extension processes are confined with no ambient network **to the level the tier declares**, with the level, mechanism, and residual recorded and surfaced, and a stronger requirement refused. |
+| `REQ-SEC-008` (`ARCH/02`) | Content still cannot create a rule, ticket, grant, or decision — and now explicitly cannot create, widen, or satisfy a **network** grant either; a network permission is a user act (`TB-0`) enforced at the declared level. |
+| `AX-102` (`TODO.md`) | Linux tier 1 is the `enforced` tier and the level it must prove. The mechanism is stated as what it is: namespace isolation is the enforcement present in the current build (`bwrap --unshare-all` with the network namespace off); Landlock/seccomp stacking is still pending and namespace isolation MUST NOT be described as syscall-level denial. |
+| `AX-119` (`TODO.md`) | Extension-process confinement declares the tier's level with its residual, and a caller requiring a stronger level is refused. |
+
+**Rationale.** The residual was a wording layer, not a design layer: after `DEC-026` the
+design was already per-tier, but four of the five items below still read as a single
+uniform "network off", so a reader could conclude that every supported tier proves what
+only Linux proves. That is exactly the over-claim `ARCH/22` §Purpose exists to prevent
+("a **residual risk** so nothing is over-claimed"; `RR-07`, `RR-08`). The fifth item,
+`REQ-SEC-008`, was not over-claiming — it was *silent* on network, which is its own
+hazard: a requirement that says content cannot create "a grant" without saying which
+grants are in scope leaves the network grant ambiguous. It therefore now states the rule
+instead of inheriting it. Rewording to the tier where the statement is demonstrably true
+keeps the strict floor where it is real and preserves the macOS and Windows capability
+instead of declaring them unsupported. The requirement set is narrowed in wording only:
+no control was removed, and the Linux bar is unchanged.
+
+**Consequences.** `ARCH/13` §Network guarantee levels, `ARCH/22` `TB-6`/`N-06`/`X-05`
+and the `REQ-SEC-008`/`REQ-SEC-016` mapping rows, and `ARCH/23`'s `REQ-VER-005` row cite
+this record. `ACC-P1-01` already asserted the declared level and already required the
+three record fields, so no acceptance row changed meaning.
+
+**Governs:** `REQ-VER-005`, `REQ-SEC-016`, `REQ-SEC-008`; `TODO.md` `AX-102`, `AX-119`.
+Evidence in `ACC-P1-01(d)` and `ACC-P1-01(j)` and gate `G-4`; residual risks `RR-07`,
+`RR-08`. Tracked by `TODO.md` `AX-102`, `AX-113`, `AX-114`, `AX-119`.
