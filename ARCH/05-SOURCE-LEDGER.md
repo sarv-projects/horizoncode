@@ -56,7 +56,7 @@ research archive.
 | `SRC-006` | Multi-provider gateway | **Pattern** | MIT (core); restricted `enterprise/` subtree = **Avoid** | Routing strategy shapes, typed fallback, cooldown, budget gates |
 | `SRC-007` | Minimal TS coding agent | **Pattern** | MIT | Provider-quirk isolation, cross-provider context handoff, abort-everywhere, split tool results, scrollback-native differential rendering |
 | `SRC-008` | Repo-map ranking | **Adapt** | Apache-2.0 | Tree-sitter tag graph + PageRank ranking. In-tree provenance is mandatory and concrete: upstream identity, pinned commit, Apache-2.0 license reference + upstream copyright line, and a statement of modifications (ranking logic ported/reorganized; our graph construction, budget model, and session personalization differ from upstream). No upstream identity appears in shipped docs beyond what the license requires. |
-| `SRC-009` | Model catalog dataset + client | **Data** | MIT | Provider/model metadata consumed at runtime; snapshot for offline. **Data-license hard gate:** the exact source and its data license MUST be confirmed with evidence before any snapshot is committed (see `TODO.md` Open decisions); do not close without evidence. |
+| `SRC-009` | Model catalog dataset + client | **Data** | **MIT — confirmed with evidence** (see §5) | Provider/model metadata. Grant verified from primary sources: upstream repository `LICENSE` is MIT, `Copyright (c) 2025 models.dev`; the typed client package declares `"license": "MIT"`; no data-specific license, no proprietary-subdirectory carve-out, and no non-commercial or share-alike clause found. Redistribution is permitted **provided the copyright line and permission notice travel with the distribution** — enforced via `THIRD-PARTY-NOTICES` + `--credits` (`AX-010`). Residual and unresolved upstream: pseudonymous holder, no contributor agreement, unaddressed database rights, no accuracy warranty, and **third-party marks (provider/model logos) that the grant cannot convey**. Posture in `DEC-021`. |
 | `SRC-010` | ACP protocol SDK | **Depend** | Apache-2.0 | JSON-RPC stdio transport + schema |
 | `SRC-011` | MCP protocol SDK | **Depend** | MIT/Apache-2.0 | Host-side client, stdio + streamable HTTP |
 | `SRC-012` | Sandbox crates | **Depend** | MIT/Apache-2.0 | Landlock bindings, seccomp bindings; bubblewrap invoked as subprocess |
@@ -83,3 +83,41 @@ Never link, copy, or vendor: any copyleft (GPL/AGPL) project, any non-OSI/source
   without it fails the release check (`TODO.md` `AX-010`).
 - Mandatory legal attribution is exempt from the brand-neutral rule; stripping or
   paraphrasing required notices is itself a build failure (`DEC-011`).
+
+## 5. Model catalog provenance record (`SRC-009`)
+
+**Grant verified from primary sources.**
+
+- Upstream repository `LICENSE`: MIT, `Copyright (c) 2025 models.dev`; the repository
+  license API reports `spdx: MIT`.
+- The typed client package metadata declares `"license": "MIT"`.
+- No data-specific license, no proprietary-subdirectory carve-out, and no
+  non-commercial or share-alike clause was found in the repository tree, the package
+  metadata, or the published terms.
+- Upstream repository identity is in flux across organization renames. Any snapshot
+  MUST pin a commit hash and record the remote URL together with the retrieval date.
+
+**What the grant does and does not cover.**
+
+- It permits redistribution, sublicensing, and inclusion in a proprietary or
+  permissively licensed binary on one condition: the copyright line and the
+  permission notice travel with the distribution. That condition is enforced
+  mechanically through `THIRD-PARTY-NOTICES` and a `--credits` / `about` surface
+  (`AX-010`, `DEC-011`).
+- It grants **no trademark rights**. Provider and model logos inside the dataset are
+  third-party marks that the grant cannot convey, so they are never redistributed.
+- It provides **no accuracy warranty**; upstream disclaims fitness entirely. Pricing
+  and limit errors are our operational liability, not a license breach.
+- The holder is a project pseudonym and no contributor agreement was found; EU sui
+  generis database rights are unaddressed by the grant text. Accepted as residual
+  risk, bounded by per-row provenance rather than by a stronger license claim.
+
+**Posture.** See `DEC-021`: a curated subset as the built-in primary, opt-in runtime
+enrichment, no full dataset snapshot, no bundled marks, and unconditional notice
+retention.
+
+**Secondary references — cross-check only, never bundled as primary.** A permissively
+licensed community model-cost map maintained outside its proprietary subdirectory is
+used solely to cross-verify curated rows; provider-published documentation is the
+authority of record. Aggregator model listings that carry no dataset license are
+runtime-only and MUST NOT be bundled.
