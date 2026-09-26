@@ -1,0 +1,31 @@
+[package]
+name = "agentx-cli"
+description = "The agentx binary: headless one-shot runs and the ACP stdio server."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "agentx"
+path = "src/main.rs"
+
+[dependencies]
+agentx-types.workspace = true
+agentx-session.workspace = true
+agentx-provider.workspace = true
+agentx-tools.workspace = true
+agentx-runner.workspace = true
+agentx-acp.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+agentx-provider = { workspace = true, features = ["testing"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

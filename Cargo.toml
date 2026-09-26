@@ -1,0 +1,93 @@
+# agentX workspace.
+#
+# A single Rust workspace producing the `agentx` binary. Crate boundaries mirror
+# the architecture component IDs (`CMP-*`) documented in `ARCH/03-ARCHITECTURE.md`.
+
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+repository = "https://example.invalid/agentx"
+description = "Standalone, protocol-native command-line coding agent."
+authors = ["agentX contributors"]
+
+[workspace.dependencies]
+# Internal crates.
+agentx-types = { path = "crates/agentx-types", version = "0.1.0" }
+agentx-session = { path = "crates/agentx-session", version = "0.1.0" }
+agentx-provider = { path = "crates/agentx-provider", version = "0.1.0" }
+agentx-tools = { path = "crates/agentx-tools", version = "0.1.0" }
+agentx-runner = { path = "crates/agentx-runner", version = "0.1.0" }
+agentx-acp = { path = "crates/agentx-acp", version = "0.1.0" }
+agentx-cli = { path = "crates/agentx-cli", version = "0.1.0" }
+
+# Async runtime.
+tokio = { version = "1.48", features = [
+    "rt-multi-thread",
+    "macros",
+    "io-std",
+    "io-util",
+    "process",
+    "sync",
+    "time",
+    "signal",
+    "net",
+    "fs",
+] }
+
+# Serialization.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Errors.
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Identifiers.
+uuid = { version = "1.18", features = ["v7"] }
+
+# CLI.
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# HTTP provider transport.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "stream",
+    "rustls-tls",
+] }
+futures = "0.3"
+bytes = "1.10"
+httpdate = "1.0"
+
+# Async traits.
+async-trait = "0.1"
+
+# Retry jitter.
+rand = "0.8"
+
+# Tool implementations.
+regex = "1.11"
+globset = "0.4"
+walkdir = "2.5"
+
+# Home directory resolution.
+dirs = "6.0"
+
+# Protocol SDK (Agent Client Protocol), Apache-2.0. Stable v1 API only; the
+# JSON-schema feature is not needed by the server. See `crates/agentx-acp`.
+agent-client-protocol = { version = "2.2", default-features = false }
+
+# Test support.
+tempfile = "3.14"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
