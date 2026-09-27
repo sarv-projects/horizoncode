@@ -19,8 +19,8 @@
 > `main`. The new GitHub repository already had an Apache-2.0 LICENSE-only
 > initial commit (`e41b670`); local `main` now merges that history at
 > `1c1e755`, preserving the license. `origin` uses the configured SSH alias
-> and points to `sarv-projects/horizoncode`. Push is pending after this handoff
-> update is committed.
+> and points to `sarv-projects/horizoncode`. The merged `main` branch was
+> pushed successfully and now tracks `origin/main`.
 >
 > Read `ARCH/24` for findings, `ARCH/25` for the integrated design, and
 > `ARCH/26` for the source-pattern crosswalk. The user's confirmed priority is
