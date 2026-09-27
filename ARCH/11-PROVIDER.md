@@ -9,7 +9,7 @@ Turn a vendor-neutral model request into provider traffic and back, and choose w
 ## Responsibilities
 
 **Owned.**
-- **Catalog service.** Fetch, cache, refresh, and snapshot provider/model metadata from an external source of truth; project it into resolvable records. The catalog *code* is external data, not a vendored registry (`REQ-PROV-002`).
+- **Catalog service.** Load a small, curated, versioned primary catalog offline; optionally enrich it from an explicitly enabled source, validate and record provenance, and project records into resolvable descriptors. External metadata is advisory data, never an endpoint/auth/credential authority (`REQ-PROV-002`, `REQ-SEC-017`, `DEC-021`).
 - **Route abstraction.** The orthogonal tuple `Protocol × Endpoint × Auth × Framing` plus per-route defaults; vendor quirks live only in protocol adapters (`REQ-PROV-003`).
 - **Wire protocol adapters.** A fixed, small adapter set plus one generic compatible adapter for arbitrary endpoints. Adding a provider is route data, not a new code path.
 - **Executor.** Request send, bounded retries, watchdogs, `Retry-After` handling, full secret redaction, typed error classification.
@@ -77,17 +77,17 @@ Route {
 | `tool_calling` | `none · basic · parallel` |
 | `reasoning_modes[]` | normalized effort levels the model supports |
 | `vision`, `streaming`, `structured_output` | transport/normalization flags |
-| `cost{in,out,cache_read,cache_write,tiers[],over_200k?,reported_actual?}` | cache-class-aware; estimates unless provider-reported |
-| `latency_class`, `locality` | ranking inputs; `locality: local` means zero egress |
+| `cost{in,out,cache_read,cache_write,tiers[],currency,basis,over_200k?,reported_actual?}` | source-currency-aware; each value has currency and `actual | estimated | included | unknown` basis; never combine unlike currencies (`REQ-ANALYTICS-007`) |
+| `latency_class`, `locality` | ranking inputs; `local` describes configured endpoint placement only and does not prove zero egress, privacy, or offline behavior |
 | `tokenizer` | tokenizer ref for budget estimation |
 | `status`, `family`, `release_date` | lifecycle and visibility |
 | `variants`, `options`, `headers`, `prompt_cache`, `privacy` | per-model overrides and disclosure |
 
 **ProviderRecord** — id, base api, environment key names, auth-method enum (`api-key · oauth · well-known`), models map, and one or more `transport_ref`s for gateways that expose several wire protocols per model.
 
-**Catalog cache** — a cache file with a short TTL, a cross-process lock, atomic `tmp`+rename writes, a small curated primary catalog with per-row provenance, and opt-in enrichment. No full upstream dataset is bundled by default (`DEC-021`). Refresh failures leave the validated primary available and show staleness.
+**Catalog data and cache** — the curated primary is bundled as HorizonCode-owned records with per-row source/retrieval/method/revision provenance and a content hash. Optional enrichment is opt-in and cached with a short TTL, cross-process lock, atomic temp+rename writes, validation, and a visible freshness state. Do not bundle a full upstream snapshot or third-party marks. Refresh failure retains the curated primary plus any still-valid cache, marks their source/freshness separately, and never blocks inference; missing enrichment must not be described as a cached full catalog (`DEC-021`).
 
-**Usage record** — inclusive totals plus a non-overlapping breakdown (`non_cached_input · cache_read · cache_write · reasoning`), clamped, with unnormalized provider fields retained only for billing audit. Show billed amount, quota impact, estimate, and unknown fields separately; an included plan may bill zero while still consuming a finite quota.
+**Usage record** — inclusive totals plus a non-overlapping breakdown (`non_cached_input · cache_read · cache_write · reasoning`), clamped, with unnormalized provider fields retained only for billing audit. Preserve source amount/currency and pricing version. Show billed amount, quota impact, estimate, and unknown fields separately; an included plan may bill zero while still consuming a finite quota. Any display conversion is separately labeled and cannot mutate the recorded amount.
 
 **Router state** — per-deployment health, cooldown expiry, latency estimate, in-flight count, observed rate-limit hints, and (optional) published eval scores.
 
@@ -115,14 +115,14 @@ Route {
 | Transport / timeout / idle watchdog | Typed `transport`; explicit abort reason; step retried only per the single-owner rule |
 | Unknown | Typed `unknown`; contains no secret and no raw body beyond the redacted, truncated cap |
 | Route absent | Typed `no-route`; guidance, not a crash |
-| Catalog fetch failure | Served from cache/snapshot; failure logged and swallowed; never blocks the loop |
+| Catalog enrichment fetch failure | Keep the curated primary and any valid cached enrichment; expose stale/unavailable provenance and log a redacted diagnostic; never invent rows or block a request whose route is already configured |
 | Malformed provider output | Adapter validates before anything is applied; typed failure, deployment marked degraded, nothing partial applied |
 | Egress denial | Typed denial from `CMP-guard`; audited; never a silent fallback |
-| Cost mismatch | Provider-reported actual overrides estimate; mismatch emitted as an audit event |
+| Cost mismatch | Preserve provider-reported actual and prior estimate with provenance; do not overwrite history; mismatch emitted as an audit event |
 
 ## Configuration
 
-- `catalog.source`, `catalog.ttl`, `catalog.refresh_interval`, `catalog.offline_snapshot`.
+- `catalog.primary_revision`, `catalog.enrichment.enabled` (false by default), `catalog.enrichment.source`, `catalog.enrichment.ttl`, `catalog.enrichment.refresh_interval`, `catalog.cache_path`; there is no bundled full-dataset `offline_snapshot` setting.
 - Provider entries: id, base endpoint, auth-method ref, env key names, per-model overrides, extra headers (values are secret refs).
 - `routing.strategy`, `routing.weights`, `routing.fallbacks[]`, `routing.cooldown`, `routing.eval{gates,threshold,scores_ref}`.
 - `retry.max`, `retry.base_delay_ms`, `retry.max_delay_ms`, `retry.respect_retry_after`.
@@ -134,11 +134,12 @@ Route {
 | REQ | How this module satisfies it |
 |---|---|
 | `REQ-PROV-001` | Hosted compatible endpoints, local runtimes, a broad catalog, and arbitrary custom endpoints via the generic adapter |
-| `REQ-PROV-002` | Catalog is external data with cache/refresh/offline snapshot; its code is never vendored |
+| `REQ-PROV-002` | Curated primary data works offline; opt-in enrichment is validated, provenance-carrying advisory input and cannot silently replace pinned fixtures or route/auth policy |
 | `REQ-PROV-003` | Quirk handling (thinking passthrough, reasoning fields, streaming framing) isolated inside each protocol adapter |
 | `REQ-PROV-004` | Credentials are refs; redaction covers headers, query, and echoed body values; nothing reaches logs/prompts/telemetry/audit |
 | `REQ-PROV-005` | Policy-configurable, optionally eval-gated routing with an observable decision record |
 | `REQ-HORIZON-003` | Token/cost ceilings evaluated pre-send and fail closed |
+| `REQ-ANALYTICS-007` | Preserve source currency and amount basis; mixed-currency totals are bucketed or explicitly converted with provenance |
 | `REQ-CTX-004` | Overflow surfaced as a terminal typed flag so the context engine performs exactly one compact-and-retry |
 | `REQ-LOOP-005` | Cancellation promptly aborts in-flight streaming, leaving partial work inspectable |
 | `REQ-AUDIT-003` | Redaction runs before any request/response detail can reach audit |
@@ -147,7 +148,7 @@ Route {
 ## Open questions
 
 1. **Wire-shape naming.** Adapters are named by framing grammar to preserve `DEC-011`; confirm this is acceptable in code identifiers versus assigning neutral protocol ids in the schema. The upstream identity mapping stays in `ARCH/05-SOURCE-LEDGER.md`.
-2. **Catalog data license.** The exact external catalog source and its data license must be confirmed before any snapshot is committed (tracked in `TODO.md`).
+2. **Enrichment source operations.** `DEC-021` resolves the catalog source/license posture. Still specify refresh concurrency, cache expiry under wall-clock rollback, primary-catalog release cadence, and degraded UI wording; these details must not weaken the offline curated primary.
 3. **Cross-provider failover invalidation.** Semantics for failing over mid-stream with prompt-cache breakpoints, signed/opaque reasoning blocks, and in-flight tool-call ids are unresolved.
 4. **Tokenizer strategy.** Per-provider exact tokenizers versus one conservative estimate shared with `CMP-context`.
 5. **Reasoning partial support.** Whether a model that supports *some* normalized effort levels ignores, maps, or errors on the rest.

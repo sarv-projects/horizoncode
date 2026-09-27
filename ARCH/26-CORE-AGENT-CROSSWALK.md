@@ -1,8 +1,9 @@
 # 26 — Core coding-agent source crosswalk
 
-Reviewed 2026-09-27. This is the explicit read-through of the five root notes
-the user named: [Claude Code](../claude.md), [Codex](../codex.md),
-[OpenCode](../opencode.md), [Cline](../cline.md), and [Aider](../aider.md).
+Reviewed 2026-09-27. This is the explicit read-through of the five core agent notes
+the user named: [Claude Code](../research%20docs/claude.md),
+[Codex](../research%20docs/codex.md), [OpenCode](../research%20docs/opencode.md),
+[Cline](../research%20docs/cline.md), and [Aider](../research%20docs/aider.md).
 Each note was read end to end for this crosswalk. Their pinned commits, upstream
 links and coverage limits live in the notes. This document records a design
 disposition, not a claim that every upstream file or every ARCH line was audited.
@@ -27,6 +28,9 @@ documented behavior. No upstream code has been copied.
 | Cline: agenda task/revision/run/claim/lease schema and automation caps | Adopt task revisions, claim fencing and bounded admission; unlock dependencies only after verification | `ARCH/16`, `ARCH/25`, `AX-309..313`. |
 | Cline: distinct team events, snapshots, outcomes and manifests | Keep event, projection and artifact ownership explicit; reconcile cross-stream mismatch | `ARCH/25` schema and cross-stream rule. |
 | Cline: local-model output-limit recovery and concurrent subagents | Probe actual model/template limits; parallelism remains bounded by leases and parent budget | `REQ-PROV-006`, `ARCH/16`, `AX-327`. |
+| DeepSeek-Reasonix: explicit plan-first workflow, restricted research tools, structured plan evidence/assumptions/risks/acceptance, and user approval | Offer plan-first as a selectable workflow for ambiguous/high-impact requests; enforce read-only research at tool/policy boundaries; block execution if plan validation/approval fails; do not insert a planner on every task | `ARCH/02` intent/spec requirements, `ARCH/16`, `ARCH/22`, `ARCH/25`, `REQ-ORCH-006`, `AX-317`, `AX-336`. |
+| DeepSeek-Reasonix: immutable prompt prefix, bounded provider context, transcript JSONL with BM25 retrieval, MCP session recreation after 404 | Keep canonical local history and compacted prompt projection separate; carry source refs and retrieval probes; retry MCP discovery only when effect completion is known, otherwise reconcile before replay | `ARCH/07`, `ARCH/09`, `ARCH/19`, `ARCH/21`, `ARCH/25`, `AX-311`, `AX-320`, `AX-332`. |
+| DeepSeek-Reasonix: VS Code ACP extension supplies editor context, approval and session/model UI | Implement editor integration through negotiated ACP capabilities and explicit context provenance; editor contribution cannot grant policy authority or turn activity into completion evidence | `ARCH/06`, `ARCH/15`, `ARCH/18`, `ARCH/23`, `AX-112`, `AX-323`. |
 | Aider: small, graph-ranked Tree-sitter repository map | Keep a task-relevant map with source revision, symbol provenance and direct-read fallback | `ARCH/09`, `ARCH/25`, `REQ-REPO-001`, `AX-320`. |
 | Aider: model-specific edit formats and bounded repair feedback | Offer conformance-gated parser paths where useful; preflight all edits and keep a durable retry budget | `REQ-PROV-007`, `ARCH/25`, `AX-333`. |
 | Aider: optional automatic lint/tests and Git commits/undo | Use fast diagnostics for repair, then independent revision-bound evidence; Git is a code checkpoint | `ARCH/25`, `ARCH/23`, `AX-333`. |
@@ -40,7 +44,7 @@ attempts, effects, budget and independent evidence outside the worker session.
 That addition is a design hypothesis until `ACC-H1-01..06` and the same-model,
 same-budget comparison in `AX-330` are executed.
 
-The five notes do **not** establish an exhaustive map of every upstream schema,
+The five core notes do **not** establish an exhaustive map of every upstream schema,
 UI screen, provider adapter or platform branch. They also do not prove that
 HorizonCode already implements the proposed controller. The source/license
 ledger in `ARCH/05` remains the gate before any adapted code or dependency.

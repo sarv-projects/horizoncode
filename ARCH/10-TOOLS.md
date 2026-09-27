@@ -157,7 +157,7 @@ Behavioral rules per tool:
   path-shaped arguments as additional `fs.*` resources for the guard request; the
   scan may escalate, never de-escalate; it is not the control (`REQ-SEC-003`,
   `REQ-SEC-025`, `DEC-024`). The hard target control is spawn-time confinement —
-  scoped roots plus kernel-enforced deny globs over the whole process tree.
+  scoped roots plus the selected backend's tested read/write denial over the confined process tree.
   Timeout is bounded; output is captured up to a byte cap.
 - **`question` / `skill` / `task`** — `question` gathers user decisions
   (unavailable headless, see below); `skill` injects instructions as data; `task`

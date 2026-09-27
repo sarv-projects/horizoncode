@@ -1,6 +1,6 @@
 # 05 — Source Ledger
 
-What HorizonCode **builds**, **vendors**, or only **draws patterns from**. Entries are organized by role; concrete upstream identities and pinned revisions live in provenance records and the research archive. Factual provider/model names may appear where needed for configuration and billing (`DEC-030`). Attribution that a license requires is generated into `THIRD-PARTY-NOTICES.md` at release and **shipped with the binary** (`TODO.md` `AX-010`).
+What HorizonCode **builds**, **depends on**, or only **studies**. Entries are organized by role; concrete upstream identities and pinned revisions live in provenance records and [`research docs/`](../research%20docs/). Factual provider/model names may appear where needed for configuration and billing (`DEC-030`). Attribution that a license requires is generated into `THIRD-PARTY-NOTICES.md` at release and **shipped with the binary** (`TODO.md` `AX-010`).
 
 Legend: **Build** = first-party code · **Depend** = consume a library/SDK · **Pattern** = study only, no code · **Data** = consume data, not code · **Avoid** = never link, copy, or vendor.
 
@@ -8,7 +8,7 @@ Legend: **Build** = first-party code · **Depend** = consume a library/SDK · **
 
 | Layer | Disposition | Source role | License |
 |---|---|---|---|
-| Agent loop & scheduler | **Build** | Pattern from two Rust agent CLIs + one TS harness | pattern only |
+| Agent loop & scheduler | **Build** | Patterns evaluated across Rust, TypeScript, and Go harnesses | pattern only |
 | Turn/stream event vocabulary | **Pattern** | Two agent CLIs | pattern only |
 | Tool plane (native tools) | **Build** | Pattern from multiple harnesses | pattern only |
 | Tool registry + permission-filtered materialization | **Build** | Pattern from TS harness | pattern only |
@@ -38,9 +38,10 @@ shipped-doc convention, not a licence shield: for every entry marked **Adapt** o
 identity, the pinned commit/revision, the license, the upstream copyright line, and a
 plain statement of what was modified — satisfying the attribution and change-notice
 obligations of permissive licenses such as Apache-2.0 §4. Mandatory legal attribution
-is exempt from the brand-neutral rule (`DEC-011`). Each row below is backed by a
-`/home/sarvesh/business_Dev/REPO-COMPARE/` clone or a public URL recorded in the
-research archive.
+is exempt from the brand-neutral rule (`DEC-011`). Each row below is backed by a public
+URL and a dated research note when available. A local clone is not reproducible evidence
+unless its remote and pinned commit are recorded; machine-specific checkout paths are
+deliberately excluded.
 
 > **Pattern note.** The anchored compaction-summary structure in `ARCH/09` §4 and the
 > output-formatter strategy in `ARCH/19` are **patterns we implement in our own words
@@ -48,7 +49,7 @@ research archive.
 
 | ID | Role | Disposition | License | What we take |
 |---|---|---|---|---|
-| `SRC-001` | Primary TS reference harness ("base" for logic/HLD/LLD) | **Pattern** | MIT | Loop shape, tool registry + permission materialization, compaction budgets, provider catalog approach, ACP mapping, headless CLI shape |
+| `SRC-001` | TypeScript reference harness | **Pattern** | MIT | Candidate patterns for loop, tool registry, context budgets, providers, ACP mapping, and headless CLI; compare with other systems rather than treating as the baseline |
 | `SRC-002` | Rust agent CLI (control plane) | **Pattern** | Apache-2.0 | Turn/steer model, OS sandbox types, policy-as-data + amendment-with-scope, app-server protocol v2, approval taxonomy, secret-env filtering |
 | `SRC-003` | Rust TUI agent | **Pattern** | Apache-2.0 | ratatui TUI structure, checkpoint/rewind, sandbox profile matrix, folder-trust gate, goal subsystem, two-pass compaction |
 | `SRC-004` | Plugin-kernel agent runtime | **Pattern** | MIT | Profile/bundle/patch composition, waterfall taxonomy, guarded sub-call, migration discipline |
@@ -70,6 +71,15 @@ research archive.
 ## 3. Hard no-go
 
 Never link, copy, or vendor: any copyleft (GPL/AGPL) project, any non-OSI/source-available TUI, any restricted-dual-license `enterprise`/`ee` subtree, any repository with no or empty license, and any closed product (patterns and interfaces only).
+
+**Pattern reuse is not code reuse.** Research notes may inspire behavior and record
+trade-offs, but source code, generated schemas, tests, fixtures, documentation, and
+assets are separate copyright/licensing surfaces. Before adapting material, pin the
+exact repository revision and path, inspect the applicable license and notices, check
+compatibility with the intended distribution, record modifications, and obtain review
+under `AX-010`/`AX-012`. Do not infer a license from a repository badge or copy across a
+different-license subdirectory. Where source is private or unavailable, record the
+boundary and use public documentation/research only.
 
 ## 4. Enforcement
 

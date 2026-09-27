@@ -4,7 +4,7 @@ Module LLD for `CMP-orch`. Sub-agent delegation, the durable long-horizon task g
 
 ## Purpose
 
-Run many units of work — sub-agents, background jobs, and their dependencies — under one scheduler, without a second state machine. Every child is a normal durable session; every return is a bounded receipt, never a transcript; every write is scoped or arbitrated; every budget fails closed. The orchestrator owns *coordination and evidence*, not agent reasoning, not capability execution, and not the turn loop.
+Run units of work — native workers, external agents, background jobs, and dependencies — under one durable controller, without a second state machine. Delegation is optional: use it only when independence, workspace separation, evidence value, and remaining budget justify its prompt/context replay and integration overhead (`DEC-036`). Every child is a normal durable session or a tracked opaque external attempt; every return is a bounded receipt, never authority; every write is scoped or arbitrated; every budget fails closed. The orchestrator owns *coordination and evidence*, not agent reasoning, capability execution, or the turn loop.
 
 ## Responsibilities
 
@@ -13,7 +13,7 @@ Run many units of work — sub-agents, background jobs, and their dependencies �
 - **Depth/count guard.** Enforce max depth, max total per tree, max parallel, and per-lane concurrency from configuration; a spawn may narrow these but never widen them (`REQ-ORCH-005`).
 - **Permission derivation.** A child's effective authority is the parent's ceiling intersected with the spawn's declared scope; no child ever exceeds its parent.
 - **Receipts.** Schema-validated summaries (status, scope, summary, findings, changed files, tests, artifacts, blockers, confidence, usage, partial marker) delivered under a no-authority header. Full transcripts stay in the child's own log.
-- **Isolation.** In-process (default), git worktree, or ACP as per-spawn options; concurrent writers get isolated checkouts with write leases (`REQ-ORCH-002`).
+- **Isolation.** Read-only in-process, git worktree, or ACP as per-spawn options; write-capable workers MUST use a fenced worktree or a serialized governed write channel. `inprocess` is never the default for concurrent mutation (`REQ-ORCH-002`).
 - **Background jobs.** Fire-and-forget children that do not block the parent turn; completion wakes the parent at a boundary only when it is live and the child was not cancelled.
 - **Durable task graph.** A persisted DAG with dependencies, per-node budgets (tokens, cost, wall-clock, tool-calls), attempts, artifacts, and resumability across compaction and restart (`REQ-HORIZON-002`).
 - **Worktree lifecycle.** Create, key, lease, diff, merge, and reap worktrees.
@@ -59,7 +59,7 @@ SubagentOptions {
   context: { fork: none|bounded|full, refs[] },
   tools?: loadout_ref,
   model?: ModelRef|inherit,
-  isolation: inprocess|worktree|acp,          # default inprocess
+  isolation: readonly_inprocess|worktree|acp, # write isolation is explicit
   limits?: { max_steps?, max_tokens?, max_spend?, wall_time_ms? },
   delivery: { await?: bounded(ms)|none, wake?: bool = true, surface?: parent|ui }
 }
@@ -72,7 +72,7 @@ SubagentRef { agent_id, nickname?, session_ref, work_id, status, parent_turn_id 
 
 | Mode | Cost | Use | Write scope |
 |---|---|---|---|
-| `inprocess` (default) | lowest | read-only children, cheap analysis | shared workspace under lease |
+| `readonly_inprocess` | lowest | read-only analysis when the live context is useful | no writes; shared workspace is read-only |
 | `worktree` | medium | concurrent writers, risky refactors | isolated checkout, merged later |
 | `acp` | highest | external peer agent as subordinate | peer-managed; receipt only |
 
@@ -90,6 +90,7 @@ Tool scope for any child is `parent ceiling ∩ loadout ∩ agent rules`; limits
 ## Lifecycle & flows
 
 1. **Spawn.** Validate against depth/count/concurrency bounds → derive permission ceiling → create the child session → return `SubagentRef` immediately. Spawn is never coupled to child completion unless a bounded `await` is requested.
+   Before spawning, estimate prompt/context replay, expected wall-time, verification and merge cost. If the task is not independent or its projected overhead exceeds its budget/value, run sequentially or decline delegation (`REQ-ORCH-006`).
 2. **Run.** The child runs an ordinary turn loop with its own context and tools. A background child emits typed progress; it does not steal parent focus.
 3. **Completion.** Two modes: a bounded foreground wait (park the parent on the child) or a queue-only wake at a turn boundary. Wake is suppressed unless the parent is live and the child was not cancelled. A bounded wait that overruns its budget auto-backgrounds rather than freezing the parent.
 4. **Cancellation.** Parent cancel cascades to descendants; session teardown cancels without rebuffering; a cancelled child never wakes the parent.
@@ -122,12 +123,15 @@ Tool scope for any child is `parent ceiling ∩ loadout ∩ agent rules`; limits
 | Budget exhausted | Node fails closed; graph records the exhausted term |
 | Crash mid-graph | Resume from the persisted graph; settled nodes reused |
 | Duplicate receipt delivery | At-most-once per parent incarnation |
+| Child asks permission with no connected/authorized UI | Route to a durable root request with deadline; deny/cancel and settle on expiry (`REQ-HORIZON-012`) |
+| External worker reports success with hidden child work/usage | Record opaque child state and unknown usage; never infer pass or zero cost (`REQ-HORIZON-009`) |
+| Background work continuously consumes slots | Fair lane reservations; interactive steer/cancel/approval have bounded dispatch latency (`REQ-HORIZON-014`) |
 | CI red | Result fed back as evidence; worker re-plans or escalates |
 
 ## Configuration
 
 - `orch.max_depth`, `orch.max_parallel`, `orch.max_total_per_tree`, `orch.per_lane_defaults`.
-- `orch.default_isolation` (`inprocess`), `orch.wake_default`.
+- `orch.default_isolation` (`readonly_inprocess`), `orch.wake_default`, fairness quotas and maximum wait age.
 - `orch.limits.{max_worker_tokens, max_session_spend, wall_time_ms}` (Core-owned ceilings; spawns narrow only).
 - `orch.receipt.max_bytes`, `orch.receipt.correction_retries` (≤1).
 - `worktree.root`, `worktree.lease_seconds`, `worktree.reap_interval`.
@@ -143,6 +147,7 @@ Tool scope for any child is `parent ceiling ∩ loadout ∩ agent rules`; limits
 | `REQ-ORCH-003` | Non-overlapping write scopes enforced by leases, or an explicit merge step |
 | `REQ-ORCH-004` | Merge arbitration is deterministic given identical inputs |
 | `REQ-ORCH-005` | Depth and count bounded by configuration |
+| `REQ-ORCH-006` | Delegation is optional and bounded by evidence value, isolation, and resource cost |
 | `REQ-HORIZON-001` | A session (and its graph) resumes after an arbitrary gap without task-state loss |
 | `REQ-HORIZON-002` | Durable task graph survives compaction and restart |
 | `REQ-HORIZON-003` | Token/cost/wall budgets enforceable per node and session; fail closed |

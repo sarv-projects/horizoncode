@@ -2,6 +2,11 @@
 
 `CMP-runner` is the control plane of the HorizonCode binary. This document is the LLD for the turn/step engine: the canonical cycle, the turn-attempt lifecycle, input admission, scheduling and eager tool settling, interruption, overflow recovery, decline paths, the completion contract, and per-step accounting and events.
 
+**Implementation status:** the current runner implements a bounded single-turn loop, not
+the durable task/run controller described by `ARCH/25`. A turn's `completed` event is
+never evidence that the task or run is complete; only the independent verifier and
+controller can derive those states (`DEC-029`).
+
 ## Purpose
 
 - Drive a bounded, model-directed loop that a developer can trust for hours-long work (`ARCH/01-VISION.md`; `REQ-LOOP-001`, `REQ-HORIZON-001`).
@@ -101,9 +106,10 @@ Carried in the durable task graph (`DEC-009`): `goal`, `success_conditions[]`, `
 
 ### INPUT → ADMISSION
 
-- Input arrives as a prompt, a queued message, or a steer; each is durably admitted before admission is evaluated.
-- **Promotion order at a boundary:** drain **all** un-promoted steers admitted up to the current log sequence, then promote **exactly one** queued turn. Steers consume the next step; a queued turn opens a fresh turn.
+- Input arrives as a prompt, a queued message, or a steer; each is durably admitted before admission is evaluated. The durable receipt contains delivery ID, payload digest, lane, sequence, admission result, and promotion status. Limits cover payload size, pending count, and age; same ID/same digest is idempotent, while same ID/different digest is a conflict (`REQ-LOOP-007`).
+- **Promotion order at a boundary:** preserve original order within each lane. A steer may interrupt only at a safe step boundary; queued prompts advance fairly and cannot starve behind an unlimited stream of steers. Promote at most the configured batch per boundary and persist the cursor. This refines the earlier “drain all steers” wording, which could starve queued user tasks under sustained steering (`REQ-HORIZON-014`).
 - Admission checks the guard decision and the session/step budgets. A `deny` ends the turn `declined`; an `ask` parks the turn in a durable awaiting-approval wait and resumes on the recorded decision; an exhausted budget fails closed (`REQ-HORIZON-003`).
+- Stop/continue decisions use persistent attempt and failure fingerprints across model changes, compaction, and process restarts. Reopening a session does not reset retry count. Repeating a failure without new evidence requires a different strategy, clarification, or a typed pause.
 - A forced run performs one attempt even when no input is eligible.
 - Injected (non-user) context uses the same `next-step` boundary and never interleaves mid-step (`REQ-LOOP-002`).
 

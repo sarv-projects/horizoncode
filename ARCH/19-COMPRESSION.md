@@ -4,22 +4,20 @@ This document answers *"check, don't just implement"* for context compression. I
 
 ## 1. The named tool, identified
 
-The user named **"RTK compression"**. Investigated and identified: it is a widely shared, Apache-2.0 **Rust CLI output-filter proxy** that rewrites common developer commands (VCS status/log/diff, `ls`/tree, file reads, search, test/build/lint runners, container and cloud CLIs) into a filtered form before execution. Its mechanism is four **deterministic, model-free** transforms per command family:
+The user named **"RTK compression"**. The current upstream README describes an Apache-2.0 Rust command-output proxy that filters supported shell command results before they enter model context, with per-command transformations and optional hooks. It explicitly says its advertised reductions apply to command output and are not equivalent to invoice savings; its token estimate uses `bytes / 4` ([upstream README](https://github.com/rtk-ai/rtk)). This is the upstream's description, not an independent measurement.
+
+The documented transform families include:
 
 - **filtering** — keep the signal fields, drop boilerplate;
 - **grouping** — collapse repeated findings by file/module;
 - **truncation** — bound long lines and windows;
 - **deduplication**.
 
-Full output is retained in a local store and recoverable on demand (a `recall` command), and it emits self-reported "savings" analytics. Token accounting is a `bytes/4` estimate. It integrates via an editor/agent pre-tool hook that rewrites `command → rtk command`.
+Output recall and hook coverage are features described by upstream documentation; before any interoperability or implementation decision, verify current behavior against the pinned source and test it. Hooks may only rewrite the command the user/agent requested through an explicitly governed route: the wrapper must preserve argv boundaries, exit status, stderr/stdout semantics, cwd and environment, and must not bypass HorizonCode's guard, sandbox, or audit.
 
-**This is a real, well-engineered pattern. It is not a cost panacea.** Two independent, later benchmarks (a paired IDE-vendor study and a Terminal-Bench run by an unrelated vendor) both found **no per-task cost reduction** — parity at the best-tested effort level and *increases* at another — with task quality statistically tied. Reasons identified by both:
+**Evidence limit.** This audit found no independently reproducible task-level benchmark sufficient to conclude that an output filter lowers cost per verified task. Do not repeat marketing reduction percentages as savings. Measure total input/output/cache tokens, task success, output recall, retries, latency, and invoice amount on the same tasks. A formatter is a lossy projection and must keep the exact full output retrievable; missing or expired source output makes a filtered result unsuitable as sole verification evidence.
 
-1. Only a minority of input characters ever flow through the compressible channel; large input shares come from cached context re-reads and uncovered commands (editors' own file reads bypass the hook; piped/heredoc/interpreter invocations are excluded).
-2. Cached re-reads are billed at a fraction of fresh input, so shrinking fresh output barely moves the bill.
-3. The tool's self-reported "saved" counter compares against a counterfactual (whole-file) that the host truncates or caches anyway — **it overcounts**. One run reported hundreds of millions "saved" while the measured bill rose.
-
-**Conclusion — adopt the pattern, not the dependency.** Reimplement deterministic per-command observation formatters natively in Rust with a full-output recall store; **do not** shell out to the external binary, and **never** present a compressor-internal counter as a saving. The pattern is complementary to compaction and caching, not a substitute.
+**Conclusion — adopt a pattern for evaluation, not a dependency by default.** Prototype deterministic per-command formatters with a full-output recall store; do not shell out to an external binary from inside the trusted core. An optional external tool integration is separately permissioned and audited. Compaction, prompt caching, and output formatting affect different portions of cost and must be evaluated together and separately.
 
 ## 2. The field, ranked by evidence strength
 
@@ -36,17 +34,17 @@ Full output is retained in a local store and recoverable on demand (a `recall` c
 | **Soft-prompt / gist compression, xRAG** | Prompt → dense vectors | Server (needs model control) | Yes, extreme | **Avoid** — impossible via remote APIs |
 | **KV-cache / attention compression** | KV tensors | Server (self-host only) | Yes | **Avoid** — no API surface |
 
-The only provider-exposed form of server-side KV reuse is **prompt caching**, which is therefore the actionable part of that whole family.
+Provider caching is provider-specific: some APIs expose prompt-cache usage/controls, others do not or report different accounting classes. Treat cache behavior as a negotiated adapter capability rather than a universal property or the only provider-side reuse mechanism.
 
 ## 3. Extractive vs abstractive (code vs prose)
 
-- **Extractive** (select spans verbatim) preserves identifiers, hashes, versions, exit codes, and line numbers. It reaches very high reduction on retrieval tasks with minimal quality loss precisely because it does not paraphrase. **For code, extraction and grouping are safe; rewording is not** — one dropped token can be a compile error.
+- **Extractive** (select spans verbatim) preserves identifiers, hashes, versions, exit codes, and line numbers. Whether it reduces cost or preserves task quality is an empirical question. **For code, extraction and grouping are safer than rewording; neither is automatically safe** — one omitted condition or log line can change a diagnosis.
 - **Abstractive** (generate a summary) is shorter and more readable for **prose** (issues, plans, discussions) but hallucinates: it merges versions, invents paths, and drops negations. Use it only for prose, **constrained by a schema** (decisions / open bugs with exact errors / file refs / next step / discarded-and-where-to-recover).
 - **Hierarchical**: parent summaries of child summaries, retrieved at the right altitude. Failure mode is error propagation — keep leaf recovery (full log in the store, original diff in VCS) and version summaries.
 
 ## 4. Chosen strategy (ordered)
 
-1. **Stable-prefix prompt caching.** Fixed order tools → system → messages; an explicit cache breakpoint at the end of static content; never mutate the cached prefix mid-run; track cache-read vs cache-creation tokens as the real metric.
+1. **Provider-adapter-aware stable prefixes.** Keep HorizonCode's internal context projection deterministic, but let each adapter render the ordering and supported cache controls required by its wire API. Pin the exact serialized static prefix per context epoch; never claim a cache hit without provider usage evidence.
 2. **Ranked repo map + JIT file access.** Do not load what you can select (`REQ-CTX-001`).
 3. **Native deterministic observation formatters + full-output recall store**, per command family, **eval-gated** (`REQ-CTX-006`). This is the adopted "RTK" pattern.
 4. **Keep-tail + structured-summary compaction, with tool-result clearing as the lightest first step** (`REQ-CTX-002`, `REQ-CTX-004`).
@@ -55,7 +53,7 @@ The only provider-exposed form of server-side KV reuse is **prompt caching**, wh
 
 ## 5. How compression is judged (no self-deception)
 
-- **Paired per-task A/B**, k ≥ 3, pre-registered endpoints; report the **paired per-task median delta and the pass-rate delta**, never totals (a single outlier flips totals — both cited benchmarks hit this).
+- **Paired per-task A/B** with a pre-registered sample size and endpoints. Three pairs are a smoke test only, not inferential evidence. Report all per-task observations, medians, pass-rate changes, uncertainty, resource use, and exclusions; do not present aggregate output-byte/token reduction as task-level cost savings.
 - Suites: software-engineering task suites, terminal/agent benchmarks, and repo-continuity probes (can a post-compaction agent still recover decision X, file Y, error Z?).
 - Operational metrics: cache-read %, turns-to-pass, summary-recovery hit rate, re-read rate.
 - **Compressor-internal counters are not evidence** (`REQ-CTX-009`).
@@ -66,7 +64,7 @@ The only provider-exposed form of server-side KV reuse is **prompt caching**, wh
 
 ## 7. Open questions
 
-1. **Budget objective** — is the primary target lower cost per task, fewer turns, or longer-horizon continuity? They trade off (smaller turns × more turns can raise the bill). Needs an explicit priority for default routing.
+1. **Budget objective** — priority is verified multi-hour completion; cost, latency, and breadth are constrained outcomes measured alongside it. No universal “best compression” threshold is established yet.
 2. **Local scorer allowed?** — whether a bundled small local model (for encoder-based pruning and extractive scoring) is acceptable, and its footprint budget.
 3. **Authoritative eval suite** — which suites are the gate for compression changes, and the approved paired-A/B budget.
 4. **Recall store lifecycle** — retention, size cap, and interaction with the audit log and session portability.

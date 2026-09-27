@@ -48,7 +48,7 @@ Architecture decision records. Each constrains the design until superseded by a 
 
 **Decision.** Permissions are ordered rules yielding allow/ask/deny with a fail-closed default. "Always allow" persists the exact remembered pattern. Every security-relevant effect appends to a hash-chained audit log with a verification command.
 
-**Rationale.** Deterministic, inspectable authority plus verifiable history is a differentiator no leading peer ships (`REQ-GUARD-001..004`, `REQ-AUDIT-001..003`).
+**Rationale.** Deterministic, inspectable authority plus verifiable history is a product requirement (`REQ-GUARD-001..004`, `REQ-AUDIT-001..003`). Comparative claims require a dated benchmark or capability matrix; this ADR makes no claim about peer coverage.
 
 ## DEC-006 — Context engine with evaluation-gated compaction
 
@@ -58,19 +58,19 @@ Architecture decision records. Each constrains the design until superseded by a 
 
 **Rationale.** Context survival at scale is a stated differentiator (`REQ-CTX-001..005`).
 
-## DEC-007 — Data-driven provider catalog, external source of truth
+## DEC-007 — Curated data-driven provider catalog (refined by DEC-021)
 
 **Status:** accepted.
 
-**Decision.** Consume provider/model metadata from an external catalog at runtime (cached, refreshed, snapshotted for offline), rather than vendoring a registry. Model routing is policy-configurable and may be eval-gated.
+**Decision.** Use a small curated provider/model primary with row-level provenance, and permit explicit opt-in runtime enrichment; do not bundle the full upstream catalog or third-party marks by default. `DEC-021` is the current source/license and catalog-posture decision. Model routing is policy-configurable and may be eval-gated.
 
-**Rationale.** Keeps the catalog current and avoids maintaining hundreds of models; provider parity with the field (`REQ-PROV-001..005`).
+**Rationale.** Maintains offline determinism while allowing opt-in freshness; catalog breadth is not a quality guarantee (`REQ-PROV-001..005`).
 
 ## DEC-008 — Tiered sandbox behind one interface
 
 **Status:** accepted.
 
-**Decision.** Local confinement via bubblewrap + Landlock + seccomp (network off, workspace-only writes) by default; container, micro-VM, and remote tiers behind one `SandboxProvider` interface; bubblewrap is invoked as a subprocess (never linked).
+**Decision.** The target local confinement is workspace-scoped with a request for no network; bubblewrap is invoked as a subprocess (never linked). Landlock/seccomp are additional target mechanisms only when implemented and accepted. Container, micro-VM, and remote tiers sit behind one `SandboxProvider` interface. Current implementation evidence is recorded by `DEC-037`.
 
 **Rationale.** Strong default safety without a copyleft link, with an escape hatch for hostile workloads (`REQ-GUARD-004`).
 
@@ -118,9 +118,9 @@ Architecture decision records. Each constrains the design until superseded by a 
 
 **Status:** accepted.
 
-**Decision.** Order context as tools → system → messages with an explicit cache breakpoint at the end of static content, never mutate the cached prefix mid-run, and treat the cache-read/creation/input token triple as the primary compression metric.
+**Decision.** Produce a deterministic, versioned internal context projection; each provider adapter renders the order and cache controls required by its wire API. Where supported, pin the static serialized prefix within a context epoch and record cache-read/creation/input usage separately. Do not assume every provider supports prompt caching or reports the same usage classes.
 
-**Rationale.** It is the only provider-exposed form of KV reuse and the largest proven cost lever for a remote-API agent (`REQ-CTX-007`).
+**Rationale.** Stable serialization permits providers that support prefix caching to reuse content without forcing one wire shape on every API. Cache savings remain provider-specific and must be measured (`REQ-CTX-007`).
 
 ## DEC-015 — Extractive for code, schema-bound abstractive for prose
 
@@ -134,11 +134,11 @@ Architecture decision records. Each constrains the design until superseded by a 
 
 **Status:** accepted.
 
-**Decision.** Every compression change ships only if a **paired per-task A/B** (k ≥ 3, pre-registered endpoints) shows task success ≥ baseline and cost/turn improved; results are reported as per-task median + pass-rate deltas, not totals. Compressor-internal "saved" counters are explicitly not evidence.
+**Decision.** Every compression change is evaluated by a paired per-task A/B with pre-registered sample size and endpoints; three paired runs are smoke evidence only. Report task success, all per-task outcomes, cost/turn, latency, recall, and uncertainty. Output-byte reduction and compressor-internal "saved" counters are not cost evidence.
 
 **Sequencing.** The pairing/eval harness is a prerequisite, not a follow-up: it MUST be built and working **before** the eval-gated features it judges are built or shipped. A gate that cannot be run at the moment a feature lands is not a gate (`TODO.md` `AX-307`, pulled ahead of the P2 gated features).
 
-**Rationale.** Both cited benchmarks were decided by this methodology; self-reported savings systematically overcount (`REQ-CTX-009`).
+**Rationale.** The method prevents a reduction in one output channel from being mistaken for a task-level cost improvement (`REQ-CTX-009`).
 
 ## DEC-017 — Analytics is local-first and separate from product telemetry
 
@@ -184,7 +184,7 @@ Architecture decision records. Each constrains the design until superseded by a 
 4. **No third-party marks are bundled.** Provider and model names appear as plain text (nominative use). Provider logos are NOT redistributed: the upstream grant conveys no trademark rights. Names MUST stay factually accurate and MUST NOT imply endorsement.
 5. **Attribution is unconditional.** Any bundled or derived catalog data ships the upstream copyright line and full permission notice through `THIRD-PARTY-NOTICES` and a `--credits` / `about` surface, satisfying the MIT notice condition for every row regardless of which tier supplied it.
 
-**Rationale.** The grant is permissive and verified from primary sources, so redistribution is legally available. The real risk is operational, not legal: a pseudonymous holder, no contributor agreement, unaddressed database rights, and third-party marks inside the data. A small verified primary keeps offline determinism and eval reproducibility, bounds staleness liability, and keeps provenance defensible per row rather than per dataset. Runtime enrichment restores breadth without making correctness depend on it. Excluding marks removes the one clearly unlicensed element (`SRC-009`, `DEC-011`, `AX-010`, `REQ-PROV-*`; detail in `ARCH/05` §5 and `ARCH/11`).
+**Rationale.** The grant is permissive and verified from primary sources, so redistribution is legally available subject to notice retention. Operational risk remains: a pseudonymous holder, no contributor agreement, unaddressed database rights, and no accuracy warranty. A small verified primary keeps offline resolution and eval reproducibility; opt-in enrichment adds breadth without making correctness depend on it. Excluding marks avoids assuming trademark rights (`SRC-009`, `DEC-011`, `AX-010`, `REQ-PROV-*`; detail in `ARCH/05` §5 and `ARCH/11`).
 
 **Residual risk (accepted).** Upstream title to every byte of a community-curated dataset is not fully provable from public sources; no contributor agreement exists upstream; EU sui generis database rights are not addressed by the grant; upstream disclaims accuracy entirely, so pricing and limit errors are our operational liability. Mitigation is the per-row provenance record plus cross-verification — not a stronger license claim.
 
@@ -272,8 +272,10 @@ specify the canonical token and are unchanged.
 **Decision.** A lexical scan of a shell command's arguments is a **resource-extraction and
 escalation signal only**. It may raise an `ask` or a `deny`; it may never lower one, and it
 is never the sole control. The hard target control for a spawned command is
-**spawn-time confinement**: the resolved profile's scoped roots plus kernel-enforced deny
-globs applied to the whole process tree. Specifically:
+**spawn-time confinement**: the selected backend applies the resolved profile's scoped
+roots and deny set to its actual process boundary. The exact filesystem and network
+mechanism and residual are per-tier; this decision does not claim every backend uses
+kernel-enforced glob evaluation or confines every descendant (`DEC-037`). Specifically:
 
 - a `bash` command naming a path outside the workspace is **asked** by default, through
   the existing `external_directory` approval;
@@ -290,7 +292,7 @@ Calling the scan "advisory" without naming the hard control left `REQ-SEC-003`
 aspirational. This keeps the stricter rule (`REQ-SEC-005`: kernel-level containment) as
 the floor and scopes the weak statement to the role where it is true: a conservative
 pre-filter that may only *raise* a decision. "Asked" rather than "denied" preserves the
-documented `external_directory` capability while the kernel still bounds reach
+documented `external_directory` capability while the selected OS boundary still bounds reach
 (`REQ-SEC-010`: authorization is not reach).
 
 **Consequences.** `external_directory` becomes a built-in floor rule with effect `ask`
@@ -340,37 +342,37 @@ Tracked by `TODO.md` `AX-115`, `AX-121`.
 
 ## DEC-026 — Per-tier network guarantee levels; no universal "no network" claim
 
+**Status note (2026-09-27).** The per-tier disclosure and fail-closed requirements
+remain in force. `DEC-037` supersedes its mechanism-specific statements about Linux
+syscall denial, macOS descendant behavior, and Windows implementation/availability.
+
 **Status:** accepted. Resolves `ARCH/22` Open question 4, `ARCH/13` Open question 5, and
 `ARCH/23` Open question 8.
 
-**Decision.** Every supported tier MUST **declare** a network guarantee level — `enforced`
-(kernel/syscall or OS-capability denial of egress), `best_effort` (denial limited to the
-wrapped process; an escaped descendant is not separately confined), or `none` — together
-with its mechanism and its residual. The level MUST be surfaced wherever a
+**Decision.** Every supported tier MUST **declare** a network guarantee level —
+`enforced` (demonstrated OS-level denial of prohibited network reachability), `capability`
+(network denial by absence of an OS capability, not syscall filtering), `best_effort`
+(a scoped mechanism with an explicitly recorded residual), or `none` (no network denial
+is claimed) — together with its mechanism and
+residual. The level MUST be surfaced wherever a
 network-restricted profile is presented and recorded in that tier's acceptance record. A
 caller that **requires** a level the tier does not provide MUST be **refused (fail
 closed)**, never silently degraded, and a tier MUST NOT claim a level stronger than it can
 prove.
 
 **Rationale.** `REQ-GUARD-004` claimed "no outbound network" universally, but the
-mechanisms differ: Linux is a real syscall/namespace denial (`enforced`); Windows is an
-application-container **capability absence** (`capability` — deny-by-absence, not a
-syscall filter, and job objects do not deny network); macOS is a Seatbelt rule for the
-wrapped process with no separate confinement of an escaped descendant (`best_effort`).
-Restating per level keeps the strict floor where it is real (Linux must prove the syscall
-bar) and scopes the weaker statement to where it is true, with mandatory disclosure — the
-treatment `RR-07`/`RR-08` already hint at. Preserving capability matters: macOS is **not**
-forced to declare itself unsupported; it is honest about its level, and a caller requiring
-`enforced` gets a refusal, never a silent downgrade.
+mechanisms differ and must be measured. Linux currently uses an unshared network
+namespace, not a syscall filter. Windows confined execution is unavailable in this
+source baseline. macOS emits a Seatbelt network rule, but descendant and IPC behavior
+has not been accepted on a host. A caller requiring an unproven level gets a refusal,
+never a silent downgrade (`DEC-037`).
 
 **Consequences.** `ResolvedProfile` carries `network_guarantee_level` and
-`network_residual` (surfaced as `ResolvedProfile.applied` notes). `ACC-P1-01(d)` asserts
-the tier's **declared** level: the syscall assertion for `enforced`, the capability-
-absence assertion plus a failing outbound attempt for `capability`, and the Seatbelt rule
-assertion **plus** proof that the residual is disclosed for `best_effort`. A tier claiming
-a stronger level than it proves fails its acceptance row. `DEC-008`'s "network off"
-wording is read through this decision: the phrase states the *request*, and the tier's
-declared level states what is enforced.
+`network_residual` (surfaced as `ResolvedProfile.applied` notes). `ACC-P1-01(d)` probes
+actual reachable paths and the recorded residual for the exact backend. Syscall policy,
+capability state, and network reach are separate pieces of evidence. A tier claiming a
+stronger level than it proves fails its acceptance row. `DEC-008`'s "network off"
+wording states the *request*, and the tier record states the proven boundary.
 
 **Governs:** `REQ-GUARD-004`, `REQ-VER-014`; evidence in `ACC-P1-01` and gate `G-4`;
 residual risks `RR-07`, `RR-08`. Detail in `ARCH/13` §Platform notes. Tracked by
@@ -378,8 +380,13 @@ residual risks `RR-07`, `RR-08`. Detail in `ARCH/13` §Platform notes. Tracked b
 
 ## DEC-027 — Formal read-through of `DEC-008`..`DEC-026`: "network off" is a request, never a uniform claim
 
-**Status:** accepted. A read-through, not a rewrite: no earlier record is edited, and
-`DEC-008` remains in force and intact. Discharges the remaining `DEC-026` consequences.
+**Status note (2026-09-27).** The distinction between requested posture and proven
+enforcement remains in force. Its former Linux syscall-bar and cross-platform support
+claims are superseded by `DEC-037`.
+
+**Status:** accepted. The requested-versus-enforced distinction remains; mechanism
+details were corrected in `DEC-037`, and the historical wording is not normative where
+it conflicts with that correction.
 
 **Question read through.** `DEC-008` records the default local profile as
 "bubblewrap + Landlock + seccomp (**network off**, workspace-only writes)". `DEC-026`
@@ -392,30 +399,28 @@ across the requirement set, the delivery tasks, and the acceptance rows?
    requests no outbound network on every tier; what each tier *enforces* is the
    `network_guarantee_level` it declares (`DEC-026`). The phrase is never a universal
    factual claim about the host.
-2. **The strict floor is preserved, not averaged away.** Linux remains `enforced`: any
-   profile advertised as network-restricted MUST be proven at the syscall/namespace
-   bar, and a Linux tier that cannot reach that bar MUST refuse the profile rather than
-   claim a weaker level as if it were the same thing. macOS (`best_effort`) and Windows
-   (`capability`) remain **supported** tiers with disclosed levels — neither is
-   declared unsupported, and neither is described as equivalent to the Unix
-   path/syscall bar.
+2. **The required level is evidence-based.** Linux namespace reach isolation is not
+   syscall denial. macOS and Windows guarantees are not assumed from their backend
+   names; in the reviewed source Windows confinement is unavailable, while macOS host
+   acceptance is absent. A tier that cannot prove the caller's required boundary refuses
+   it rather than claiming an equivalent level (`DEC-037`).
 3. **A required level the tier cannot provide is refused.** The difference between
    levels is enforced by a typed refusal, never by a silent downgrade (`DEC-026`).
 4. **Mechanism and residual travel with the level.** A record for a tier that confines
    a process carries `network_guarantee_level`, `network_mechanism`, and
    `network_residual` (`ARCH/23` §Data / state model), and the level is surfaced
    wherever a network-restricted profile is presented.
-5. **History is preserved.** `DEC-008` is left exactly as written; this record is the
-   read-through. A later decision supersedes `DEC-008` only where it says so.
+5. **History is explicit.** `DEC-008` records the original target choice; current
+   source and mechanism status are governed by `DEC-037`.
 
 **Where each of the five residual items is now governed.**
 
 | Item | Tier-honest statement now in force |
 |---|---|
-| `REQ-VER-005` (`ARCH/02`) | The network sub-check asserts the tier's **declared** level per `ACC-P1-01(d)` — `enforced` proves `connect`-class denial with only `AF_UNIX` succeeding, `capability` proves a failing outbound attempt because the capability is absent, `best_effort` proves wrapped-process denial **and** that the residual is disclosed. The record stores `network_guarantee_level` / `network_mechanism` / `network_residual`; `ACC-P1-01(j)` is the refusal half. Linux `enforced` is the floor for a network-restricted profile. |
+| `REQ-VER-005` (`ARCH/02`) | Probe network reachability and residual using the declared backend. A syscall-policy check is separate and is not a reachability substitute. Allowlist tests require a forced broker; the record stores `network_guarantee_level` / `network_mechanism` / `network_residual`; `ACC-P1-01(j)` is the refusal half. |
 | `REQ-SEC-016` (`ARCH/02`) | Extension processes are confined with no ambient network **to the level the tier declares**, with the level, mechanism, and residual recorded and surfaced, and a stronger requirement refused. |
 | `REQ-SEC-008` (`ARCH/02`) | Content still cannot create a rule, ticket, grant, or decision — and now explicitly cannot create, widen, or satisfy a **network** grant either; a network permission is a user act (`TB-0`) enforced at the declared level. |
-| `AX-102` (`TODO.md`) | Linux tier 1 is the `enforced` tier and the level it must prove. The mechanism is stated as what it is: namespace isolation is the enforcement present in the current build (`bwrap --unshare-all` with the network namespace off); Landlock/seccomp stacking is still pending and namespace isolation MUST NOT be described as syscall-level denial. |
+| `AX-102` (`TODO.md`) | Linux uses bubblewrap namespace isolation in the current source; Landlock/seccomp are absent. Prove the actual network and filesystem reach boundary, including IPC and descendant paths; do not describe namespace isolation as syscall-level denial. |
 | `AX-119` (`TODO.md`) | Extension-process confinement declares the tier's level with its residual, and a caller requiring a stronger level is refused. |
 
 **Rationale.** The residual was a wording layer, not a design layer: after `DEC-026` the
@@ -426,10 +431,12 @@ only Linux proves. That is exactly the over-claim `ARCH/22` §Purpose exists to 
 `REQ-SEC-008`, was not over-claiming — it was *silent* on network, which is its own
 hazard: a requirement that says content cannot create "a grant" without saying which
 grants are in scope leaves the network grant ambiguous. It therefore now states the rule
-instead of inheriting it. Rewording to the tier where the statement is demonstrably true
-keeps the strict floor where it is real and preserves the macOS and Windows capability
-instead of declaring them unsupported. The requirement set is narrowed in wording only:
-no control was removed, and the Linux bar is unchanged.
+instead of inheriting it. Rewording keeps the per-tier contract strict without
+inventing platform guarantees. No security requirement was removed: the caller must
+still refuse a tier that has not proven the required boundary. Linux namespace
+isolation is described as reachability isolation, not syscall filtering; macOS and
+Windows remain product targets but are not reported as accepted in the current source
+snapshot.
 
 **Consequences.** `ARCH/13` §Network guarantee levels, `ARCH/22` `TB-6`/`N-06`/`X-05`
 and the `REQ-SEC-008`/`REQ-SEC-016` mapping rows, and `ARCH/23`'s `REQ-VER-005` row cite
@@ -514,3 +521,99 @@ name with old binary, environment and persistence paths.
 research notes and active architecture text use HorizonCode. The compatibility
 choice for any publicly released predecessor remains an explicit migration
 decision before release; no automatic state import is claimed.
+
+## DEC-034 — Preserve money as typed, source-currency evidence
+
+**Decision (2026-09-27).** A monetary observation is an amount plus ISO-4217 currency,
+basis (`actual | estimated | included | unknown`), source, pricing version, and
+observation time. Aggregation never adds unlike currencies. A converted display is an
+optional view with an explicit exchange-rate source, timestamp, and rounding rule; it
+never rewrites the original amount or historical budget evidence. Token/quota usage
+remains separate from billed amount, including included or zero-billed plans.
+
+**Why.** One `cost_usd` field cannot faithfully represent provider invoices or hosted
+quotas denominated in other currencies, and a locale-based conversion can silently
+change history. [DeepSeek-Reasonix's billing model](https://github.com/esengine/DeepSeek-Reasonix/blob/main-v2/docs/BILLING.md)
+is a useful reference for separating source currency from valuations, not a schema to
+copy. The current `horizoncode-analytics` schema is USD-only and does not satisfy this
+decision.
+
+**Consequences.** `REQ-ANALYTICS-007`, provider pricing, run budgets, analytics exports,
+settings and UI require a migration and tests (`ARCH/11`, `ARCH/18`, `ARCH/20`,
+`ARCH/25`; `TODO.md` `AX-334`). Unknown conversion means no combined total, not an
+estimated zero.
+
+## DEC-035 — Bounded request lanes and explicit event gaps
+
+**Decision (2026-09-27).** Control-plane request classes use bounded, independently
+timed lanes; a request that reaches its deadline releases its slot and leaves a typed
+terminal result. Cancellation and permission responses cannot queue behind bulk
+catalog/history reads. Event consumers use a bounded queue plus durable cursor replay;
+overflow is an explicit gap requiring resnapshot/replay or a recoverable disconnect,
+never silent drop or unbounded buffering. Fairness budgets ensure background work does
+not starve interactive control.
+
+**Why.** Current peer issues report stuck ACP permission prompts for child sessions and
+app-server request lanes wedged by a hung call. Codex also documents an unbounded local
+notification consumer as a way to avoid blocking its response channel; that trade-off
+must not be adopted without a memory/backpressure bound. These reports are incident
+evidence for failure scenarios, not proof that all releases share the defect. See
+[OpenCode #48232](https://github.com/anomalyco/opencode/issues/48232),
+[Codex #47842](https://github.com/openai/codex/issues/47842), and the
+[Codex app-server client queue notes](https://github.com/openai/codex/blob/main/codex-rs/app-server-client/README.md).
+
+**Consequences.** `REQ-HORIZON-012..014`, adapter event schema, detached client attach,
+ACP permission relay and settings/UI status; `ARCH/15`, `ARCH/16`, `ARCH/22`,
+`ARCH/23`, `ARCH/25`; `TODO.md` `AX-335`.
+
+## DEC-036 — Treat delegation as a measured optimization
+
+**Decision (2026-09-27).** The controller may delegate only when task independence,
+write-scope isolation, expected evidence gain, and remaining budget justify it. A
+planner or subagent is not mandatory for every request. Compare delegated and
+non-delegated runs under the same model, repository, task, resource limit, and
+verification; account for prompt replay, wall time, failure variance, and integration
+cost. Keep sequential execution as the default where decomposition adds overhead.
+
+**Why.** DeepSeek-Reasonix's own small measured experiments show delegation cost varies
+by task shape and can consume more tokens and wall time even when success is unchanged
+([SPEC.md](https://github.com/esengine/DeepSeek-Reasonix/blob/main-v2/docs/SPEC.md)).
+The numbers are project-reported and not generalizable; they are evidence against
+assuming delegation always helps.
+
+**Consequences.** `REQ-ORCH-006`, `ARCH/16`, `ARCH/25`, `research docs/tests.md`, and
+`TODO.md` `AX-336`. Preserve user control, parent permission ceilings, and independent
+verification for every worker.
+
+## DEC-037 — State sandbox guarantees from reachable-path evidence and source status
+
+**Decision (2026-09-27).** A network guarantee describes which network destinations a
+confined process can reach under a named backend and configuration. It does not mean
+the `connect()` syscall is denied, and it does not establish that `AF_UNIX`, inherited
+descriptors, host services, VM sockets, helper processes, or descendants are confined.
+Those paths are distinct test obligations. An `allowlist` is available only when a
+forced broker is the sole possible egress path; mount/network namespace configuration
+alone cannot prove per-host allowlisting. The ACP-independent controller must refuse a
+requested guarantee the selected backend has not proven.
+
+At baseline `1c7a1c68bab9`, Linux uses bubblewrap namespaces and mount views; its source
+explicitly says Landlock and seccomp are not installed. macOS source invokes Seatbelt,
+but its process-tree/network residual has no host acceptance evidence. Windows confined
+execution is unavailable in source. These are the current source facts; acceptance
+status is separately bound to the build/platform record. No implementation is called
+supported merely because a module or interface exists.
+
+**Why.** The previous `DEC-026`/`DEC-027` wording incorrectly described Linux network
+namespace reach isolation as a syscall-level bar, treated `AF_UNIX` outcomes as the
+network proof, and carried forward unsupported macOS descendant and Windows support
+claims. The sandbox implementation itself distinguishes namespace isolation from the
+not-yet-installed filter layers. Reachability tests are the correct observable contract;
+syscall policy is supporting evidence and must be reported separately.
+
+**Consequences.** `DEC-026`/`DEC-027` remain in force for per-tier declaration,
+disclosure, and refusal, with their mechanism claims superseded here. Amend
+`REQ-GUARD-004`, `REQ-SEC-003`, `REQ-SEC-025`, `REQ-VER-005`, `ARCH/13`, `ARCH/22`, and
+`ARCH/23`; the implementation and platform acceptance gaps remain in `TODO.md`
+AX-101..AX-105 and AX-113..AX-114. No hard allowlist is accepted without an enforced
+broker. Each record names the exact revision, backend, host, requested policy, observed
+reachability, residual, and any syscall/capability evidence.

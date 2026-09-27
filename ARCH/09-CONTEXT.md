@@ -98,7 +98,7 @@ Requests are assembled in a fixed order so the prefix stays cache-stable
 (`REQ-CTX-005`, stable-prefix discipline):
 
 `tool definitions` (materialized by `CMP-tools`, counted) → `system sources` (typed, ordered, frozen for the generation: env, date,
-instructions, mode) → explicit cache breakpoint after the static prefix
+instructions, mode) → provider-specific rendering and cache boundary (if supported)
 → `history` (projected messages, oldest → newest, with tool results interleaved
 at their position) → `dynamic suffix` (current task, retrieved items, new
 observations).

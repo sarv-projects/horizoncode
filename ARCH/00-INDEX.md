@@ -12,6 +12,21 @@
 
 `TODO.md` is a delivery tracker, not a design authority. When it disagrees with `ARCH/`, `ARCH/` wins.
 
+## Implementation-status rule
+
+Architecture documents describe the intended contract unless a dated, source-backed
+status block says otherwise. A source file or interface is **present**, not thereby
+working. Use these distinct labels everywhere: `proposed`, `implemented` (source
+exists), `verified` (executable evidence names the exact revision/environment), and
+`accepted` (the applicable acceptance record exists). A worker's report, a passing mock,
+an ACP event, or a TODO checkbox cannot promote status. `TODO.md` is the live delivery
+ledger; [`research docs/tests.md`](../research%20docs/tests.md) is the test and benchmark
+plan; [`AGENTS.md`](../AGENTS.md) is the repository-wide operating contract.
+
+The implementation snapshot for this document set is recorded in `CURRENT_RUN.md`.
+When source changes, update both that snapshot and the affected delivery rows; do not
+rewrite design as though it had shipped.
+
 ## Identifier conventions
 
 | Prefix | Meaning | Example |

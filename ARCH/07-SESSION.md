@@ -17,7 +17,7 @@
 - The `Session` record and its lifecycle: `create` · `resume` · `list` · `fork` · `close`.
 - The append-only `SessionEvent` log (JSONL) and its monotonic per-session `seq` discipline.
 - The SQLite index derived from the log — session rows, model-visible message projection, input admission, context epoch, checkpoints, revert state, sub-agent catalog. Every table is rebuildable from logs.
-- The per-key run coordinator: at most one active run per session key; wakeups coalesce; interrupts settle.
+- The per-session turn coordinator: at most one active turn drain per session key within the store's ownership scope; wakeups coalesce; interrupts settle. It is not the lease authority for a detached multi-process run; `CMP-orch` owns the run lease and fencing epoch (`ARCH/25`).
 - The input-admission table and promotion order (steer drain, then the next queued turn).
 - Context-epoch storage (baseline text + snapshot + baseline sequence), as produced by `CMP-context`.
 - Checkpoint storage and rewind planning; snapshot file-tree references.
@@ -110,7 +110,7 @@ Representative vocabulary (additive evolution only):
 | `session` | `id` | list/search; mirrors the header |
 | `session_event` | `(session_id, seq)` unique | fast range reads; `type`, `time`, byte offset into the log |
 | `session_message` | `id`; idx `(session_id, seq)` | decoded model-visible projection built from the log |
-| `session_input` | `id`; partial unique on un-promoted `(session_id, delivery, admitted_seq)` | admission + promotion ordering |
+| `session_input` | `id`; unique delivery ID plus payload digest, lane, sequence, result and promotion state; partial unique for pending entries | durable admission receipt, dedupe, and promotion ordering |
 | `session_context_epoch` | `session_id` | `baseline`, `snapshot`, `baseline_seq` |
 | `session_checkpoint` | `id` | `scope`, `kind`, `content_ref`, `reconstructable`, `version` |
 | `session_revert` | `session_id` | active staged rewind (`message_id`, `snapshot`, `files`, `diff`) |
@@ -154,8 +154,8 @@ Append `session/closed`; refuse further admission; release any concurrency slot;
 ### 6. Input admission and promotion
 
 - Admitted input is durably recorded with a `delivery` of `steer` (interrupt-level redirection, the next step boundary) or `queue` (the next turn).
-- Admission is idempotent by input id: re-admitting the same id returns the stored record.
-- Promotion at a boundary: **steer first** (all un-promoted steers with `admitted_seq ≤ cutoff`, in admitted order), then **one** queued turn. A promoted steer resets the step counter; queued promotion starts a fresh turn.
+- Admission is idempotent by input id and payload digest: matching replays return the original receipt; a reused ID with changed content returns a typed conflict. Bound pending count, payload bytes, age, and per-lane service; never drop on compaction or client reconnect (`REQ-LOOP-007`).
+- Promotion at a boundary: service eligible steers before the next step but cap the batch; then promote queued turns using a persisted fair cursor and age/deadline policy. An infinite steer stream must not starve queued prompts, and background work must not starve control/cancel/approval actions (`REQ-HORIZON-014`). A promoted steer resets the step counter; queued promotion starts a fresh turn.
 - Promotion is itself an event (`input/promoted`), so replay reconstructs exactly which inputs were consumed and when. Injected context (not user-facing) waits behind the same `next-step` boundary; it never interleaves mid-step (`REQ-LOOP-002`).
 
 ### 7. Per-key run coordinator
@@ -166,7 +166,7 @@ The coordinator serializes execution for each session key while allowing differe
 - `wake(key)` — request a coalesced follow-up; repeated wakeups collapse to one.
 - `interrupt(key)` — mark stopping, clear the pending wake, and cancel the active drain; idle interrupt is a no-op.
 - A follow-up drain starts only after the current drain settles, and `pendingWake` is cleared at start so a late wake cannot double-run.
-- Ownership is process-local in v1; a durable multi-node owner is future work (see Open questions).
+- This coordinator is local to one session-store process. A detached run across client disconnects requires the separate durable owner lease/fencing protocol in `CMP-orch`; process-local mutual exclusion alone does not authorize safe recovery or multi-process writes (`ARCH/25`).
 
 ### 8. Context epoch snapshots
 

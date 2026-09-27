@@ -45,8 +45,12 @@ These are logical records. `CMP-session` must assign versioned event types and a
 | `Task` | `task_id`, `run_id`, `spec_digest`, `title`, `inputs[]`, `output_contract`, `acceptance_ids[]`, `deps[]`, `state`, `priority`, `write_scope`, `permission_ceiling`, `budget_id`, `attempt_limit`, `workspace_id`, `evidence_ids[]`. `deps` must be acyclic. |
 | `Attempt` | `attempt_id`, `task_id`, `strategy_id`, `model_route`, `base_commit`, `workspace_id`, `environment_digest`, `state`, `started_at`, `ended_at`, `failure_fingerprint`, `usage_status`. Attempts are append-only; retries create a new ID. |
 | `ExternalAttempt` | `attempt_id`, `peer_identity`, `adapter_kind`, `protocol_version`, `capabilities_digest`, `external_session_id?`, `event_cursor?`, `resume_mode`, `opaque_children`, `workspace_id`, `scope_digest`, `cancel_state`, `last_heartbeat`, `usage_provenance`. Never infer unsupported fields. |
+| `InputReceipt` | `delivery_id`, `run_id`, `session_id`, `payload_digest`, `lane`, `admitted_seq`, `result`, `promoted_seq?`, `expires_at?`, `actor`, `created_at`. Same ID/digest is idempotent; same ID/different digest is a conflict. Receipts and pending input survive compaction. |
+| `PermissionBridge` | `bridge_id`, `run_id`, `root_session_id`, `child_attempt_id`, `child_session_id?`, `request_id`, `requester_identity`, `action_digest`, `resource_digest`, `guard_policy_digest`, `deadline`, `state`, `decision_ref?`. One terminal answer; parent policy reauthorization is mandatory. |
+| `RequestLane` | `lane_id`, `class`, `capacity`, `queue_limit`, `request_deadline`, `active_count`, `expired_count`, `last_progress_seq`. Interactive cancel/permission/control are isolated from catalog/history and bulk event streams. |
+| `EventCursor` | `run_id`, `client_id`, `last_acked_seq`, `snapshot_seq`, `gap_state`, `expires_at`. Client events replay from durable sequence; a retention gap requires a fresh snapshot, never silent continuity. |
 | `Workspace` | `workspace_id`, `repo_id`, `path`, `base_commit`, `head_commit`, `dirty_digest`, `writer_epoch`, `lease_until`, `status`, `cleanup_state`. A lease alone is insufficient; every write checks fencing epoch. |
-| `Budget` | `budget_id`, `parent_id?`, ceilings for money/tokens/time/tool calls/output/storage/concurrency, `reserved`, `spent`, `unknown_usage`, `verification_reserve`, `recovery_reserve`. Atomic reservation rows prevent concurrent overspend. |
+| `Budget` | `budget_id`, `parent_id?`, ceilings for money (`amount`, `currency`, `rate_snapshot?`), tokens/time/tool calls/output/storage/concurrency, `reserved`, `spent`, `unknown_usage`, `verification_reserve`, `recovery_reserve`. Atomic reservation rows prevent concurrent overspend; unlike currencies are never added. |
 | `EffectIntent` | `effect_id`, `attempt_id`, `kind`, `canonical_resource_digest`, `idempotency_key?`, `authorization_ref`, `workspace_base`, `state`, `audit_prepare_ref`, `terminal_receipt_ref`, `reconciliation`. One stable ID from prepare through outcome. |
 | `Evidence` | `evidence_id`, `task_id`, `spec_digest`, `repo_commit`, `workspace_digest`, `scenario_ids[]`, `producer`, `environment_digest`, `artifact_refs[]`, `verdict`, `limitations`, `created_at`. `verdict = PASS | FAIL | INSUFFICIENT_EVIDENCE`; only current `PASS` unlocks a dependency. |
 | `Decision` | `decision_id`, `question`, `alternatives[]`, `answer`, `actor`, `evidence_refs[]`, `affected_ids[]`, `supersedes`. User and model decisions are distinguishable. |
@@ -59,6 +63,7 @@ These are logical records. `CMP-session` must assign versioned event types and a
 ```rust
 trait RunController {
     fn submit_intent(&self, request: OriginalRequest) -> Result<RunId, ControlError>;
+    fn admit_input(&self, guard: MutationGuard, input: InputEnvelope) -> Result<InputReceipt, ControlError>;
     fn approve_spec(&self, guard: MutationGuard, expected_parent: Digest, spec: SpecDraft,
                     actor: UserActor) -> Result<SpecDigest, ControlError>;
     fn claim_ready(&self, guard: MutationGuard, worker: WorkerIdentity,
@@ -67,6 +72,9 @@ trait RunController {
                       -> Result<AttemptState, ControlError>;
     fn submit_evidence(&self, guard: MutationGuard, task: TaskId, evidence: EvidenceDraft)
                        -> Result<TaskState, ControlError>;
+    fn route_permission(&self, guard: MutationGuard, request: ChildPermissionRequest)
+                        -> Result<PermissionBridgeId, ControlError>;
+    fn attach(&self, run: RunId, cursor: Option<EventSeq>) -> Result<SnapshotAndReplay, ControlError>;
     fn decide_next(&self, run: RunId) -> Result<StopDecision, ControlError>;
     fn recover(&self, guard: RecoveryGuard)
                -> Result<RecoveryPlan, ControlError>;
@@ -93,7 +101,8 @@ returns a bounded claim with attempt ID, workspace fence, spec digest, deadline,
 permission ceiling and budget reservation; the worker cannot enlarge it.
 
 **Projection migration order.** Add `run`, `spec_version`, `intent_item`, `task`,
-`task_dependency`, `attempt`, `external_attempt`, `workspace`, `lease`, `budget`,
+`task_dependency`, `attempt`, `external_attempt`, `input_receipt`, `permission_bridge`,
+`request_lane`, `event_cursor`, `workspace`, `lease`, `budget`,
 `reservation`, `effect_intent`, `evidence`, `decision`, `artifact_ref`, and `delivery`
 tables with foreign keys, unique IDs, current-state check constraints, and indexes
 on `(run_id,state,priority,task_id)`, `(task_id,attempt_no)`, `(task_id,depends_on)`,
@@ -142,7 +151,7 @@ happened.
 
 ## Dispatch, resource use, and stop control
 
-At each dispatch boundary, the controller: (1) checks approved spec and graph acyclicity; (2) selects `READY` tasks by stable priority and task ID; (3) checks permission and capability requirements; (4) atomically reserves expected attempt cost **plus** mandatory verification and recovery reserve against task/run/provider quotas; (5) claims a fenced workspace; (6) launches a bounded attempt. Real provider usage is reconciled to the reservation after every response, including failed/fallback responses. Estimated, included-plan, and unknown costs remain distinct. Unknown pricing under a money cap blocks dispatch or requires an explicit token-only policy. A zero-dollar subscription label does not prove zero quota impact.
+At each dispatch boundary, the controller: (1) checks approved spec and graph acyclicity; (2) selects `READY` tasks by stable priority, fair-lane quota, age, and task ID; (3) checks permission and capability requirements; (4) atomically reserves expected attempt cost **plus** mandatory verification and recovery reserve against task/run/provider quotas; (5) claims a fenced workspace; (6) launches a bounded attempt. Real provider usage is reconciled to the reservation after every response, including failed/fallback responses. Estimated, included-plan, unknown, and actual costs remain distinct and carry currency. Unknown pricing or unavailable currency conversion under a monetary cap blocks dispatch or requires a separately approved token-only policy. A zero-dollar subscription label does not prove zero quota impact. User cancel and permission responses receive reserved service capacity.
 
 The stop controller returns `CONTINUE | CHANGE_STRATEGY | PAUSE | STOP | COMPLETE`. It runs before costly actions and after task, verification, budget, permission, cancellation, or external-status events. `COMPLETE` requires every mandatory current criterion to have current `PASS` evidence, integrated diff checks, no unknown effect, and required acceptance. `PAUSE` names a recoverable dependency or user decision. `STOP` names a hard bound or non-recoverable cause. No ready task is `PAUSE` or a graph defect until proved otherwise, never `COMPLETE` by default. A repeated failure fingerprint without new evidence requires a different strategy; the attempt counter persists across new model sessions.
 
@@ -155,6 +164,12 @@ The stop controller returns `CONTINUE | CHANGE_STRATEGY | PAUSE | STOP | COMPLET
 **Planning or intent failure:** suspend dependent tasks, record the contradicted assumption, revise plan or open clarification. A user-visible change requires a new approved `SpecVersion`; affected evidence becomes `STALE`. Preserve the previous spec and decisions for audit.
 
 **Disconnect or cancellation:** persist the external peer capability snapshot and last event cursor. Ask for resume/load only if negotiated and supported; otherwise use a fresh session with a bounded handoff package. Terminate descendants according to the adapter's actual control surface, then reconcile workspace and effects. A heartbeat only proves a live connection, not progress or completion.
+
+**Permission request from a child:** persist the `PermissionBridge` before forwarding. Route to an attached, authorized surface using the root session identity while retaining child/requester IDs locally. If routing fails, the client disconnects, or the deadline expires, deny/cancel and settle the child with a receipt. A parent turn may not remain indefinitely blocked on an orphan request.
+
+**Queued user input:** persist a bounded `InputReceipt` before acknowledging acceptance. Duplicate delivery retries return the same receipt. On crash, replay admission/promotion events and preserve pending items. Apply fair service across steer and queued lanes; cap steer batches so new prompts cannot starve. Expired entries receive a visible terminal result; none silently vanish during compaction.
+
+**RPC/event backpressure:** use bounded request lanes and event buffers. A deadline or cancellation frees request capacity; control messages cannot wait behind slow catalog/history reads. If a client cannot drain events, retain the durable cursor and report an explicit gap/disconnect, then require snapshot plus ordered replay. Never hide lost events behind a live spinner or grow an unbounded buffer.
 
 **Client detach and reattach:** a run is owned by the controller, not its TUI or IDE
 connection. A detached multi-hour run requires a supervised controller process with
@@ -192,9 +207,9 @@ PR preparation checks intended paths, staged versus unstaged diff, generated fil
 
 ## Operator experience and settings
 
-Every UI client uses one typed settings schema with `value`, effective scope (`user | project | session | managed`), source, validation error, policy lock, and whether change applies immediately, next turn, or after restart. Settings include theme/accent and colour depth, contrast, reduced motion, keyboard map, screen-reader output, layout, model/provider and local endpoint, worker agent/adapter, reasoning level, routing preference, compaction auto/threshold/keep-tail, repo-map budget, approval posture, run/task cost and time ceilings, cost currency/display mode, notifications, and evidence retention. Project files may narrow authority but never grant it. Switching model or compaction policy creates a new context epoch and records actual capabilities; it does not mutate old evidence.
+Every UI client uses one typed settings schema with `value`, effective scope (`user | project | session | managed`), source, validation error, policy lock, and whether change applies immediately, next turn, or after restart. Settings include theme/accent and colour depth, contrast, reduced motion, keyboard map, screen-reader output, layout, model/provider and local endpoint, worker agent/adapter, reasoning level, routing preference, compaction auto/threshold/keep-tail, repo-map budget, approval posture, run/task cost and time ceilings, budget currency and optional view currency, notifications, and evidence retention. Project files may narrow authority but never grant it. Switching model or compaction policy creates a new context epoch and records actual capabilities; it does not mutate old evidence.
 
-The run header displays task state, selected model and worker, active workspace/branch, verified criteria count, pending approvals, elapsed time, tokens and cache classes, estimated/actual/unknown spend, and remaining budget. A drill-down shows attempts, raw-versus-filtered tool output links, test and reviewer evidence, unresolved assumptions, external-agent visibility limits, and recovery action. User-controlled colour palettes never encode state without text or glyphs. Cost and progress are not inferred from a spinner or heartbeat. `ARCH/06` owns layout and key behavior; `ARCH/18` owns effective configuration.
+The run header displays task state, selected model and worker, active workspace/branch, verified criteria count, pending approvals, elapsed time, tokens and cache classes, spend grouped by source currency/basis and remaining budget. A converted view names its rate snapshot. A drill-down shows attempts, input receipts and queue position, raw-versus-filtered tool output links, test and reviewer evidence, unresolved assumptions, external-agent visibility limits, and recovery action. User-controlled colour palettes never encode state without text or glyphs. Cost and progress are not inferred from a spinner or heartbeat. `ARCH/06` owns layout and key behavior; `ARCH/18` owns effective configuration.
 
 ## Acceptance and measurement
 
@@ -210,6 +225,10 @@ The run header displays task state, selected model and worker, active workspace/
 | PR delivery | Review exact integrated diff/tests/CI → governed PR effect → record remote ID. | Network failure after create triggers lookup by idempotency marker; missing permission waits; merge/deploy remains a separate authorized effect. |
 | Process restart | Lock/epoch → replay run and session streams → reconcile effects/worktree → resume eligible tasks. | Corrupt/newer state refuses safely; unanchored or missing audit receipt is surfaced; no blind replay of migrations/deployments. |
 | Resource exhaustion | Controller stops dispatch, retains evidence and resumable state. | Money, tokens, time, quota, disk or process cap produces `STOPPED` or explicit resource `WAITING`, never `COMPLETED`; recovery reserve preserves a final handoff. |
+| Child permission | Parent human approves or denies a child tool action. | Missing child mapping, stale policy, duplicate reply, detached UI, or timeout produces typed denial/cancel and releases all waiting capacity. |
+| Queue saturation | Inputs receive durable receipts and visible position/status. | Duplicate retry is idempotent; queue cap returns a receipt showing rejection; an expired or canceled item is visible; steer flood cannot starve queued work. |
+| Slow client / hung request | Client attaches at a sequence cursor and sees ordered events. | Slow client gets a gap/resnapshot condition; one RPC timeout does not wedge other lanes or hold all event memory. |
+| Currency uncertainty | Budgets and analytics show exact original currency and basis. | Mixed-currency totals stay bucketed; missing FX is unknown; no spend is rounded into apparent zero or silently converted. |
 
 For each workflow, acceptance fixtures include invalid input, authorization denial,
 network/dependency failure, timeout, cancellation, partial execution, process kill,
@@ -220,4 +239,4 @@ The architecture is a proposal until measured. Compare the same models, reposito
 
 ## Evidence consulted
 
-Internal source snapshot: `dacca604` plus uncommitted working-tree changes on 2026-09-27; [review and exact findings](24-ARCHITECTURE-REVIEW.md). Research notes in the repository root contain pinned source links for the named coding agents and related tools. External primary sources checked on 2026-09-27: [Anthropic long-running harness](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents), [Anthropic planner/generator/evaluator](https://www.anthropic.com/engineering/harness-design-long-running-apps), [ACP changelog](https://github.com/agentclientprotocol/agent-client-protocol/blob/main/CHANGELOG.md), [OpenCode provider implementation](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/provider/provider.ts), [models.dev schema and API](https://github.com/anomalyco/models.dev/blob/dev/README.md), [Cline task schema](https://github.com/cline/cline/blob/main/sdk/packages/core/src/tasks/store/task-schema.ts), [Codex app-server protocol](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/thread.rs), and [Serena symbol edits](https://github.com/oraios/serena/blob/main/src/serena/tools/symbol_tools.py). These sources support patterns and interfaces, not an HorizonCode performance claim.
+Internal source snapshot: `1c7a1c68bab9`, clean at audit start, plus this document-only review diff on 2026-09-27; [review findings](24-ARCHITECTURE-REVIEW.md). Research notes are being moved to `research docs/`. Current primary-source checks include [Cline SDK architecture](https://github.com/cline/cline/blob/main/sdk/ARCHITECTURE.md), [ACP changelog](https://github.com/agentclientprotocol/agent-client-protocol/blob/main/CHANGELOG.md), [OpenCode child permission issue](https://github.com/anomalyco/opencode/issues/48232), [Codex request queue issue](https://github.com/openai/codex/issues/47842), [Reasonix SPEC](https://github.com/esengine/DeepSeek-Reasonix/blob/main-v2/docs/SPEC.md), and [Reasonix billing model](https://github.com/esengine/DeepSeek-Reasonix/blob/main-v2/docs/BILLING.md). These sources support candidate patterns and failure scenarios, not a HorizonCode performance claim.

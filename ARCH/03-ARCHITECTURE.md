@@ -1,5 +1,12 @@
 # 03 — Architecture
 
+**Status:** target architecture, not a claim about the current executable. At the
+2026-09-27 code snapshot, the workspace contains 11 Rust crates; TUI, configuration,
+repository intelligence, secret broker, MCP, ACP client, and durable orchestration are
+not yet implemented as their target components. `TODO.md` tracks the implementation;
+`CURRENT_RUN.md` records the inspected revision. Source presence is not verification
+(`ARCH/00`).
+
 ## 1. Shape
 
 A **single Rust workspace** producing one core binary per platform. Required host capabilities are probed and disclosed per feature: the current Linux confinement path invokes `bwrap`, and Git/LSP/local inference or detached execution can need external processes. A missing required backend refuses that feature; one-binary packaging is not a claim that every capability works without host tools. Protocols (ACP, MCP) are edges, not a second engine. `DEC-029..031` and `ARCH/25` define the durable run controller inside the existing `CMP-orch` boundary.
@@ -56,7 +63,7 @@ A **single Rust workspace** producing one core binary per platform. Required hos
 | `CMP-provider` | Provider router | Capability | Catalog, route resolution, transports, retries, usage accounting |
 | `CMP-orch` | Durable run controller | Control plane | Task DAG, budget reservations, fenced leases, stop/recovery, sub-agent scheduling, merge arbitration; invokes independent verifier (`ARCH/25`) |
 | `CMP-guard` | Policy guard | Trust | Ordered allow/ask/deny rules; approval lifecycle |
-| `CMP-sandbox` | Sandbox | Trust | Platform confinement (namespaces/Landlock/seccomp; Seatbelt; AppContainer + restricted token/job objects); egress control |
+| `CMP-sandbox` | Sandbox | Trust | Platform confinement through explicitly selected backends; current Linux namespaces and macOS Seatbelt source; Windows backend unavailable; Landlock/seccomp remain target layers, not current guarantees |
 | `CMP-secrets` | Secret broker | Trust | Credential resolution; redaction; never-log guarantees |
 | `CMP-audit` | Audit log | Trust | Append-only hash-chained execution record; verification |
 | `CMP-acp` | ACP edge | Surface | ACP server (stdio) and client modes; protocol mapping |
@@ -97,7 +104,7 @@ Terminal states: `completed | failed | interrupted | declined`. Exactly one per 
 
 | Concern | Choice | Rationale |
 |---|---|---|
-| Language | Rust (single workspace) | One static binary; syscall-level sandbox; strong concurrency/cancellation correctness |
+| Language | Rust (single workspace) | One native runtime; tiered OS isolation with each guarantee limited to the mechanism and acceptance evidence actually available; strong concurrency/cancellation correctness |
 | TUI | `ratatui` + `crossterm` | Mature; retained control of cells; one binary |
 | Async runtime | Tokio | Cancellation, timers, process and network IO |
 | HTTP | `reqwest` | Provider transports |
@@ -106,7 +113,7 @@ Terminal states: `completed | failed | interrupted | declined`. Exactly one per 
 | Parsing | `tree-sitter` | Repo map, syntax highlight |
 | Language servers | LSP client | Symbols and diagnostics |
 | Indexing | SCIP ingest | Precise cross-repo symbol data where available |
-| Sandbox | `landlock`, seccomp, bubblewrap-as-subprocess; Seatbelt; AppContainer APIs | Tiered confinement without linking copyleft |
+| Sandbox | bubblewrap subprocess; Seatbelt source; future Landlock/seccomp and native AppContainer implementation | Tiered confinement only after per-tier acceptance; do not infer linked or enforced from a dependency name |
 | Hashing | `blake3` | Audit chain and content hashing |
 | Plugins/skills | WASM (`wasmtime`) | Sandboxed extensibility |
 | ACP/MCP | Protocol SDKs (permissive) | Avoid re-implementing wire protocol |
@@ -114,7 +121,7 @@ Terminal states: `completed | failed | interrupted | declined`. Exactly one per 
 
 ## 6. Provider model
 
-- **One catalog, external source of truth.** Provider/model metadata is fetched, cached, refreshed, and snapshotted for offline use; the catalog code is not vendored (`REQ-PROV-002`).
+- **One catalog, curated primary and opt-in enrichment.** The executable can resolve its curated, provenance-bearing primary without network; optional refresh is explicit and policy checked. No full upstream dataset or logos are bundled by default (`DEC-021`).
 - **One route abstraction.** A route is the orthogonal tuple `Protocol × Endpoint × Auth × Framing`, plus defaults. Vendor quirks live in protocol adapters, not in the loop (`REQ-PROV-003`).
 - **One executor.** Bounded retries with exponential jitter and `Retry-After`; typed failure reasons; full secret redaction.
 - **One router.** Policy-driven selection (cost, latency, capability, tags), optionally eval-gated; every decision observable (`REQ-PROV-005`).
@@ -124,7 +131,7 @@ Terminal states: `completed | failed | interrupted | declined`. Exactly one per 
 - **Default deny.** Guard posture fails closed; ambiguous actions ask or deny (`REQ-GUARD-002`).
 - **Sandbox by default.** Writes scoped to the workspace; egress closed unless
   granted, up to the **tier's declared network guarantee level** — `enforced`,
-  `best_effort`, or `none` — and a caller requiring a level the tier cannot provide
+  `capability`, `best_effort`, or `none` — and a caller requiring a level the tier cannot provide
   is refused (`REQ-GUARD-004`, `DEC-026`).
 - **Untrusted input.** Web, files, tool output, and MCP responses are data, never instructions (`REQ-SEC-002`).
 - **No secret leakage.** The broker never emits credentials to prompts, logs, telemetry, or audit (`REQ-PROV-004`, `REQ-AUDIT-003`).
@@ -134,27 +141,27 @@ Terminal states: `completed | failed | interrupted | declined`. Exactly one per 
 
 | Tier | Backend | Use |
 |---|---|---|
-| Local (default) | Linux: bubblewrap + Landlock + seccomp · macOS: Seatbelt profile · Windows: AppContainer + restricted token/job objects — network off at the tier's declared guarantee level, workspace reads and writes only | Everyday repo work |
+| Local (default) | Each backend discloses its actual mechanism. Current source provides Linux bubblewrap namespace isolation; Landlock/seccomp stacking is target work. macOS and Windows backends exist in source but have no host acceptance evidence in this audit. | Everyday repo work |
 | Container | OCI runtime (Docker/Podman) | Reproducible toolchains |
 | Micro-VM | Firecracker-class or lightweight VM sandbox | Untrusted/unsafe tasks |
 | Remote | Managed sandbox behind one interface | Hostile or elastic workloads |
 
-Linux and macOS are the **first enforcement targets** — each has a kernel mechanism
-that denies filesystem paths and restricts syscalls, so real containment is an
-acceptance target there. Windows is a **fully supported target but a distinct tier**:
-AppContainer plus a restricted token and job objects, with its own acceptance tests;
-job objects alone do **not** equal Landlock + seccomp path/egress denial, and its
-limits are stated honestly (`ARCH/13` §Platform notes).
+Linux and macOS are **implementation targets**, with distinct acceptance obligations.
+At baseline `1c7a1c68bab9`, the Linux source invokes bubblewrap with user/mount/PID/IPC/
+UTS/cgroup/network namespaces and a scoped mount view; it explicitly says Landlock and
+seccomp are not installed. The macOS source emits and invokes Seatbelt rules, but no
+host acceptance evidence exists. The Windows confined backend returns unavailable;
+only explicit `full-access` runs bare. `check_path` is a shared in-process gate, not OS
+containment for the controller. Source code alone does not establish containment.
 
-**"Network off" is a declared level, not one universal claim** (`DEC-026`,
-`REQ-GUARD-004`). Linux is `enforced` (seccomp + network namespace); Windows is
-`capability` (application-container capability absence — deny-by-absence, not a
-syscall filter); macOS is `best_effort` (a Seatbelt rule on the wrapped process; an
-escaped descendant is not separately confined). Each tier declares its level,
-mechanism, and residual, the level is surfaced wherever a network-restricted profile is
-presented, and a caller requiring a stronger level than the tier provides is refused
-rather than silently degraded. All tiers implement one `SandboxProvider` interface so
-callers never branch on backend.
+**"Network off" is a request, with backend-specific reach evidence** (`DEC-026`,
+`DEC-027`, `DEC-037`). A backend record names the tested destinations, mechanism,
+descendant/IPC residuals, and build/platform. Namespace isolation is reach isolation,
+not a claim that `connect()` is denied. Windows capability denial and macOS descendant
+semantics are not asserted until their backend and acceptance evidence exist. All
+backends implement one `SandboxProvider` interface, but this does not make their
+guarantees equivalent. Until the exact platform acceptance row exists, report the
+capability as unverified or unavailable.
 
 ## 9. Deployment and distribution
 
