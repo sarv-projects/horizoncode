@@ -67,11 +67,11 @@ The user-owned untracked uipics/ screenshots are preserved and must not be stage
 
 - The focused cross-document consistency review through F-64 is complete across requirements, decisions, HLD/LLD, schemas, APIs, UI, settings, verification, tests plan, and TODO ownership links.
 - Document-only validation passed: `git diff --check`; 56 active Markdown files checked with zero broken local links; root Markdown inventory is exactly `AGENTS.md`, `CURRENT_RUN.md`, and `TODO.md`.
-- A post-closeout readiness check removed duplicate session-log settings, aligned the session requirement mapping with segmented logs/explicit recovery, and made AX-350..353 source/dependency boundaries explicit in TODO.
+- A post-closeout readiness check removed duplicate session-log settings, aligned the session requirement mapping with segmented logs/explicit recovery, made AX-350..353 source/dependency boundaries explicit in TODO, and removed a stale statement from the research snapshot.
 - Historical `archives/` files were excluded from active-link validation; they retain old references to retired ADR paths. They were not changed as part of the current architecture set.
 - No Rust/source changes, tests, builds, benchmarks, fault-injection, or platform acceptance runs occurred. All new acceptance criteria remain proposed evidence requirements, not achieved results.
 - Commit the intended architecture/research/handoff documents as requested. Preserve untracked `uipics/` and `.code-intelligence/`; do not push or alter remotes.
 
 ## Next implementation work
 
-Begin with the highest-risk proposed storage migration: bounded segmented event logs, explicit non-mutating read paths and recovery, crash-durable commits, and typed session enumeration (`AX-350..353`). Implement and verify these in dependency order against `ACC-P1-06` and `ACC-P1-11..13`, then continue the remaining proposed TODO tasks. Do not treat this audit or its design documents as implementation evidence.
+Do not hand AX-350..353 to one worker as a single batch. AX-353 is a source-grounded independent first slice: specify the exact `SessionListIssue` payload and ACP error/result mapping in `ARCH/07`/`ARCH/15`, then implement typed, read-only enumeration and its tests. AX-351's non-mutating read portion can proceed independently; its explicit effect-reconciling recovery depends on AX-311. Establish AX-352's durability backend before AX-350 session-log migration. AX-350's run-log integration additionally waits for AX-309 and AX-312 because the current source has no run-event store. Do not treat this documentation audit as implementation or acceptance evidence.
