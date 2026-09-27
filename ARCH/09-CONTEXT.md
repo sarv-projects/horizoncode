@@ -97,11 +97,20 @@ rewritten; the checkpoint is a projection boundary.
 Requests are assembled in a fixed order so the prefix stays cache-stable
 (`REQ-CTX-005`, stable-prefix discipline):
 
-`system sources` (typed, ordered, frozen for the generation: env, date,
-instructions, mode) → `tool definitions` (materialized by `CMP-tools`, counted)
+`tool definitions` (materialized by `CMP-tools`, counted) → `system sources` (typed, ordered, frozen for the generation: env, date,
+instructions, mode) → explicit cache breakpoint after the static prefix
 → `history` (projected messages, oldest → newest, with tool results interleaved
 at their position) → `dynamic suffix` (current task, retrieved items, new
 observations).
+
+The tool-definition term contains only the currently selected and permitted tools.
+For large MCP/plugin catalogs, discovery metadata stays in a searchable catalog;
+full schemas load on demand under a token allowance before a model step. The selected
+names, schema digests, policy snapshot and catalog generation are pinned for that
+step. A later catalog update starts a new context epoch; it cannot change the
+meaning of a tool call already emitted. If the model names a tool absent from that
+step's selection, return a typed unavailable-tool result and replan without
+executing a similarly named replacement (`REQ-CTX-010`).
 
 System sources render through one `combine` with duplicate-key rejection; each
 source contributes its baselines in declared order. The output is the model
@@ -213,7 +222,7 @@ against captured sessions, not on the live critical path.
 1. Read the **global** config instruction file (`<config>/AGENTS.md`).
 2. Walk **up** from the working directory to the project root, collecting each
    `AGENTS.md` along the way; stop at the project root, never above it.
-3. Deduplicate by absolute path, global first, then nearest → outermost.
+3. Deduplicate by canonical absolute path, global first, then outermost → nearest. A nearer instruction overrides only conflicting advice within its lower-trust project-instruction scope; it never changes system policy or grants authority (`ARCH/18`, `DEC-031`).
 4. Render each as `Instructions from: <absolute path>\n<content>`, joined by a
    blank line, as one typed `core/instructions` source.
 

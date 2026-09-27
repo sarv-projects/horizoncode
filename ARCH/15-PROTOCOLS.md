@@ -4,13 +4,13 @@ Module LLD for the three edge components `CMP-acp`, `CMP-mcp`, and `CMP-headless
 
 ## Purpose
 
-Let external editors and peer agents drive agentX, let agentX drive peer agents and consume external tools, and let CI run agentX non-interactively — all against the same control interface used by the TUI. Every surface is a thin projection; the durable session, guard, and audit remain single-owner.
+Let external editors and peer agents drive HorizonCode, let HorizonCode drive peer agents and consume external tools, and let CI run HorizonCode non-interactively — all against the same control interface used by the TUI. Every surface is a thin projection; the durable session, guard, and audit remain single-owner.
 
 ## Responsibilities
 
 **`CMP-acp` — own.**
 - ACP **server** over stdio using newline-delimited JSON-RPC: `initialize`/capabilities, session `new`/`load`/`resume`/`list`/`close`/`fork`, `prompt`, `cancel`, `set-mode`, `set-model`, `set-config-option`, streamed session updates, permission requests to the client via the canonical `session/request_permission` method (`DEC-023`, `REQ-PROTO-002`), and client-side fs/terminal calls.
-- ACP **client** mode: agentX dials a peer ACP agent as a subordinate and maps its updates onto the control plane. This is the transport behind `CMP-orch`'s ACP isolation mode.
+- ACP **client** mode: HorizonCode dials a peer ACP agent as a subordinate and maps its updates onto the control plane. This is the transport behind `CMP-orch`'s ACP isolation mode.
 - Capability negotiation: advertise only implemented methods; a client that does not support permission prompts is treated as reject-by-default, never auto-allow.
 
 **`CMP-mcp` — own.**
@@ -154,6 +154,6 @@ Signals (`SIGINT`/`SIGTERM`) map to cooperative cancel; the run always emits its
 1. **Multiple concurrent ACP clients.** Whether one process serves several editors simultaneously or enforces a single controlling connection per session.
 2. **MCP spec-revision strategy.** How far the modern stateless revision is preferred over the legacy handshake, and the exact force-legacy escape hatch semantics.
 3. **Headless exit-code table.** The precise numeric mapping and whether declined and guarded-deny share a code.
-4. **ACP client authentication.** How agentX authenticates to a peer ACP agent (none, bearer, or negotiated) is not yet specified.
+4. **ACP client authentication.** How HorizonCode authenticates to a peer ACP agent (none, bearer, or negotiated) is not yet specified.
 5. **Edge SDK generation.** Whether the TS client is generated from the protocol schemas or hand-maintained, and how drift is verified.
 6. **MCP resource/prompt injection budget.** How mirrored resources and prompts are bounded before entering `CMP-context`.

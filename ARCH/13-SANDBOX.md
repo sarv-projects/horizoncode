@@ -116,7 +116,7 @@ SandboxOutcome  = { exit, stdout_ref, stderr_ref, denied?, violations[] }
   naming an absolute path outside the granted roots is **rejected**, or masked so the
   target does not exist in the child's view.
 - **`network_guarantee_level`** is the tier's declared level (`enforced` |
-  `best_effort` | `none`) together with `network_mechanism` and `network_residual`;
+  `capability` | `best_effort` | `none`) together with `network_mechanism` and `network_residual`;
   all three are surfaced as `ResolvedProfile.applied` notes wherever a
   network-restricted profile is presented, and recorded in that tier's acceptance
   record (`DEC-026`, `REQ-GUARD-004`, `REQ-VER-014`).
@@ -126,21 +126,25 @@ SandboxOutcome  = { exit, stdout_ref, stderr_ref, denied?, violations[] }
 
 ### Once at startup
 1. **Probe** each candidate backend for the platform and record availability.
-2. Listen/apply the sandbox for the **whole process lifetime** for the agent's own
-   file operations (in-process Landlock + `no_new_privs` + seccomp on Linux; a
-   Seatbelt profile on macOS), so tool reads/writes are covered without per-call
-   wrapping. On the Windows tier the AppContainer/restricted-token confinement is
-   applied at spawn time.
-3. Freeze the resolved profile: it is **immutable for the process lifetime**; a
-   running session cannot relax it. Resuming a session re-applies the profile it was
-   started with, and a request to *widen* a resumed session's profile is refused.
+2. Keep the controller/provider process outside a child tool's no-network profile;
+   provider and MCP HTTP traffic needs its own mediated egress. Agent-owned file I/O
+   uses checked, handle-relative paths; untrusted tool and extension execution runs
+   in a separately confined child. A future in-process sandbox may constrain the
+   controller only if its provider/broker and dynamic-grant topology is proven.
+3. Freeze each **child execution** profile for that process lifetime. A running
+   child cannot relax it; a later grant requires a new authorization and a new
+   child profile. Resuming a session re-resolves and proves the requested profile
+   before any new child effect (`DEC-031`).
 4. Child commands are spawned through the tier backend (e.g. a `bubblewrap`
    subprocess that constructs the filesystem view, then re-enters to apply seccomp
    and `exec`), all deriving from the same frozen profile.
 
 ### Per effect
 1. `CMP-tools` receives a Guard `allow` and the resolved profile.
-2. In-process fs operations call `check_path`; command execution calls `spawn`.
+2. In-process fs operations call `check_path` and use a handle-relative/no-follow
+   open or rename where available; `check_path` alone is not a kernel boundary or
+   a complete TOCTOU defense. Command execution calls `spawn` with a frozen child
+   profile. A platform lacking the required safe path primitive refuses the effect.
 3. On Linux the local backend: creates user/mount/PID namespaces, mounts the scoped
    filesystem view, sets `--network=none` unless granted, drops capabilities
    (`capget` verified empty), sets `no_new_privs`, and installs the seccomp filter.
@@ -165,8 +169,10 @@ SandboxOutcome  = { exit, stdout_ref, stderr_ref, denied?, violations[] }
   wrapped process, and an escaped descendant is **not** separately confined. In both
   cases the residual is recorded on the resolved profile and disclosed; neither tier
   claims `enforced`.
-- **Allowlist** grants specific `host:port` + protocol; the egress path is single and
-  mediated, so an allowed host still cannot be reached by a disallowed protocol.
+- **Allowlist** grants specific `host:port` + protocol through the mediated agent
+  egress. A child with network access must be forced through an unbypassable broker;
+  a broad child network namespace plus an application HTTP check is insufficient.
+  If forced mediation is unavailable, that child profile is refused.
 - **Process/child-network blocking** is the same filter applied to every descendant;
   there is no "trusted child" exemption.
 - **A required level the tier cannot provide is refused (fail closed)**
@@ -270,7 +276,7 @@ JSONC profile definitions, discovered global → project (nearest wins). A proje
   "sandbox": {
     "profile": "workspace-write",          // read-only | workspace-write | full-access
     "tier": "local",                        // local | container | remote
-    "workspace": { "writable": ["**"], "protected": [".git/hooks", ".agentx"] },
+    "workspace": { "writable": ["**"], "protected": [".git/hooks", ".horizoncode"] },
     "deny": ["**/.env", "**/*.pem", "**/.ssh/**"],
     "network": { "mode": "none" }           // none | allowlist | full
   }

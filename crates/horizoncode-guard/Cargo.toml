@@ -1,0 +1,29 @@
+[package]
+name = "horizoncode-guard"
+description = "Policy guard: ordered allow/ask/deny rules, approval lifecycle, scoped tickets, and plan/act/yolo modes."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The policy fingerprint recorded on sessions, tickets, and audit entries uses
+# the same digest as the audit chain, so it is stable across toolchain releases.
+blake3.workspace = true
+async-trait.workspace = true
+dirs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+# The policy fingerprint must be the audit chain's own digest; the test proves it
+# by recomputing the value with that primitive rather than trusting the shape.
+horizoncode-audit = { path = "../horizoncode-audit", version = "0.1.0" }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

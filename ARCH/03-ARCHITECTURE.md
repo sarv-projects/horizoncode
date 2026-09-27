@@ -2,11 +2,11 @@
 
 ## 1. Shape
 
-A **single Rust workspace** producing one binary per platform. The binary contains every layer; nothing is a required external process except the tools the user's work actually invokes. Protocols (ACP, MCP) are edges, not a second engine.
+A **single Rust workspace** producing one core binary per platform. Required host capabilities are probed and disclosed per feature: the current Linux confinement path invokes `bwrap`, and Git/LSP/local inference or detached execution can need external processes. A missing required backend refuses that feature; one-binary packaging is not a claim that every capability works without host tools. Protocols (ACP, MCP) are edges, not a second engine. `DEC-029..031` and `ARCH/25` define the durable run controller inside the existing `CMP-orch` boundary.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                            agentX binary                            │
+│                            HorizonCode binary                            │
 │                                                                     │
 │  Surfaces                          Control plane (first-party)      │
 │  ┌───────────────┐                 ┌──────────────────────────────┐ │
@@ -54,7 +54,7 @@ A **single Rust workspace** producing one binary per platform. The binary contai
 | `CMP-context` | Context engine | Capability | Assembly, budget, repo map, selection, compaction, pins/excludes |
 | `CMP-tools` | Tool registry | Capability | Tool definitions, permission-filtered materialization, execution, settle |
 | `CMP-provider` | Provider router | Capability | Catalog, route resolution, transports, retries, usage accounting |
-| `CMP-orch` | Orchestrator | Capability | Sub-agent spawn/isolation/receipts, parallel scheduling, merge arbitration |
+| `CMP-orch` | Durable run controller | Control plane | Task DAG, budget reservations, fenced leases, stop/recovery, sub-agent scheduling, merge arbitration; invokes independent verifier (`ARCH/25`) |
 | `CMP-guard` | Policy guard | Trust | Ordered allow/ask/deny rules; approval lifecycle |
 | `CMP-sandbox` | Sandbox | Trust | Platform confinement (namespaces/Landlock/seccomp; Seatbelt; AppContainer + restricted token/job objects); egress control |
 | `CMP-secrets` | Secret broker | Trust | Credential resolution; redaction; never-log guarantees |

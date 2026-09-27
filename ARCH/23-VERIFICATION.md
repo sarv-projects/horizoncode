@@ -107,6 +107,12 @@ a skipped sub-check fails the row.
 | `ACC-P1-07` | **Compaction continuity** | after compaction the post-compaction context still contains every fact in the pre-registered probe set; a boundary never splits an assistant tool call from its result; an unbalanced span is rejected in favor of a safe adjacent range; a provider overflow triggers **exactly one** compact-and-retry of the same step and a second overflow is terminal; a failed summarize call leaves the turn un-compacted rather than half-compacted; the checkpoint records the shadowed range and count and the log is never rewritten; the stable prefix is byte-stable until a real change | L3 (mock provider) + the offline retrieval probe | probe recall = 100% on the pre-registered set; zero unbalanced spans; the exactly-one-retry assertion holds; prefix-stability holds | probe-set results keyed by strategy version; paired A/B report when a strategy changes (`DEC-016`) |
 | `ACC-P1-08` | **Headless exit codes** | every terminal state maps to exactly one documented code; `declined`/guarded-deny and `completed` differ; an interrupt emits its terminal event **before** exit; `--format json`/`ndjson` emits one typed event per line and a bounded buffer surfaces a typed error rather than dropping events; a configuration error is distinct from an internal error; a resume of a nonexistent session is a configuration error; a signal mid-turn yields `interrupted` plus the documented code; the numeric mapping in `--help` matches the implementation | L4 on the release build | the code table is asserted per terminal state; a test fails if the table and `--help` disagree; the NDJSON stream is schema-validated line by line | exit-code matrix artifact + the `--help` contract snapshot |
 
+**`ACC-P1-04` amendment (`DEC-031`).** In addition to its class census, inject two
+effects of the **same** class and omit one terminal receipt; verification must fail
+on that exact `effect_id`. Also inject a duplicate terminal receipt and an effect
+prepared before a process kill; the former fails, and the latter remains `unknown`
+until reconciliation proves its outcome. A class with one entry is insufficient.
+
 **Forward-declared (later phases, not P1 gates).** `P2`: repo-map/LSP/indexing
 determinism; checkpoint/rewind round-trip; deterministic merge arbitration given
 identical inputs; routing eval-gate evidence (`ARCH/11` §5). `P3`: worktree lease and
@@ -214,14 +220,26 @@ A release is blocked unless **all** of these pass and their records are retained
 | `G-2` | `THIRD-PARTY-NOTICES` is generated from the resolved dependency graph and shipped with the binary (`DEC-011`, `AX-010`) |
 | `G-3` | Full suite green with zero quarantined tests across ≥5 consecutive runs; the determinism-sensitive suites across ≥20 repetitions |
 | `G-4` | Containment acceptance (`ACC-P1-01`) passes for **every** supported tier, with a record per tier, and each record **names that tier's `network_guarantee_level`**, its mechanism, and its residual (`DEC-026`); a tier claiming a stronger level than it proves fails |
-| `G-5` | `audit verify` and the coverage census pass on a fresh run; the record stores the anchoring **level** in force, root anchoring is configured per the declared trust model, the rendered claim boundary matches that level (`REQ-AUDIT-007`), and a configured-but-unreachable anchor **fails** rather than degrading |
+| `G-5` | `audit verify`, class census, and per-effect ID reconciliation pass on a fresh run and a crash-injection run; the record stores the actual anchoring level and rendered claim boundary (`REQ-AUDIT-001/005/007`, `DEC-031`). An unknown effect or unreachable required anchor blocks release. |
 | `G-6` | The headless exit-code contract matches `--help` (`ACC-P1-08`) |
 | `G-7` | The session-format migration chain compiles, round-trips, and refuses a newer stored version |
 | `G-8` | Performance budgets are measured with a recorded baseline, or an unmeasured budget is explicitly disclosed and is **not** a P1 exit criterion |
-| `G-9` | No forbidden brand name in source, help text, shipped docs, or the notices bundle (excluding license-mandated attribution) — `REQ-VISION-003`, `DEC-011` |
+| `G-9` | Product copy makes no unsupported peer comparison; factual provider/model names and required attribution are accurate and provenance-linked (`REQ-VISION-003`, `DEC-011`, `DEC-030`). |
 | `G-10` | Fuzz corpus is clean for the current cycle, with no new crash/unbounded-allocation finding |
 | `G-11` | Every eval-gated feature that ships has a runnable gate **at the time it shipped** (`DEC-016`); the paired-eval report is retained |
 | `G-12` | Every `REQ-*` in a shipped capability has a traceability row naming its evidence, or is explicitly marked unimplemented |
+| `G-13` | A long-horizon completion claim has `ACC-H1-01..06` evidence at the exact integrated revision and current specification; worker completion, an isolated-worktree pass, or a PR URL alone does not pass. |
+
+### Long-horizon acceptance matrix (required before a multi-hour-autonomy claim)
+
+| ID | Scenario and required observation | Evidence |
+|---|---|---|
+| `ACC-H1-01` | An ambiguous request produces an assumption/clarification ledger; a later user-visible correction creates a spec version and invalidates only affected tasks/evidence. A worker cannot approve its own interpretation. | Original-request digest, spec versions, invalidation graph and verifier verdicts. |
+| `ACC-H1-02` | Kill the controller before effect, after effect but before receipt, during external PR creation, and during task settlement. Recovery fences old workers, reconciles effects, and never duplicates a non-idempotent operation or marks an unknown outcome passed. | Repeated kill matrix, effect-ID joins, remote/worktree observations and audit receipts. |
+| `ACC-H1-03` | Concurrent ready tasks cannot overspend the run ceiling; each dispatch reserves verification and recovery. Retry counters and costs survive restart, model switch and ACP reconnect; exhausted budget ends as `STOPPED`, never `COMPLETED`. | Reservation ledger and repeated concurrent schedule traces. |
+| `ACC-H1-04` | A peer disconnect, unsupported resume, hidden nested agents, and missing cost data retain explicit unknowns; HorizonCode can still inspect diff and verify an exact integrated commit. A stale lease cannot write. | Capability snapshots, external attempt timeline, fence failures and integrated test record. |
+| `ACC-H1-05` | A multi-hour task passes only after independent spec and intent scenarios, regression checks and combined-worktree tests at the final commit. A deliberately wrong but internally consistent spec is rejected or returns `INSUFFICIENT_EVIDENCE`. | Same-model/same-budget baseline report with raw failures, exact commits, cost/time, and acceptance artifacts. |
+| `ACC-H1-06` | A TUI client detaches while work continues under a supervised controller; another authenticated client reattaches with snapshot plus ordered events. A cursor gap resnapshots, a host/controller stop shows last-confirmed time, and neither disconnect nor display reconnect duplicates a worker or effect. | Client/cursor trace, event sequence and replay digest, process/lease observations, and exact effect IDs. |
 
 ### Definition of done
 
@@ -287,9 +305,11 @@ appears.
 
 **Explicitly not owned:**
 
-- Any effect, policy decision, or record — verification **observes**; it never
-  authors an effect and never decides policy. The verification plane is a test-only
-  consumer and must never become a runtime dependency.
+- Any effect or policy decision — this release-verification process observes and
+  never grants authority. It is distinct from the **runtime task verifier** in
+  `ARCH/25`, which the controller invokes before a task may enter `PASSED`.
+  The runtime verifier records evidence but does not itself execute an unguarded
+  effect or decide policy.
 - Test implementation details per component; those live with the component.
 - The compression and routing evaluation methodology (`ARCH/19`, `ARCH/09` §5,
   `ARCH/11`), which this document requires to be run and recorded.

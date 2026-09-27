@@ -1,0 +1,41 @@
+[package]
+name = "horizoncode-cli"
+description = "The horizoncode binary: headless one-shot runs and the ACP stdio server."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "horizoncode"
+path = "src/main.rs"
+
+[dependencies]
+horizoncode-types.workspace = true
+horizoncode-audit.workspace = true
+horizoncode-analytics.workspace = true
+dirs.workspace = true
+horizoncode-session.workspace = true
+horizoncode-provider.workspace = true
+horizoncode-tools.workspace = true
+horizoncode-runner.workspace = true
+horizoncode-acp.workspace = true
+horizoncode-guard.workspace = true
+horizoncode-sandbox.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+horizoncode-provider = { workspace = true, features = ["testing"] }
+horizoncode-audit.workspace = true
+horizoncode-analytics.workspace = true
+horizoncode-sandbox.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,8 +1,8 @@
 # 01 — Vision
 
-## What agentX is
+## What HorizonCode is
 
-A standalone command-line coding agent that a developer runs in a repository and trusts with **long-running, multi-step work**. It is one self-contained binary, it speaks open protocols (ACP, MCP), and its differentiating layers are built first-party rather than assembled from another product's core.
+A terminal-first coding agent that a developer runs in a repository and can trust with **long-running, multi-step work only after the acceptance evidence exists**. Its core is packaged as one Rust binary per platform; sandbox, Git, language-server, local-model, and detached-worker capabilities may require host services that are probed and disclosed. It speaks open protocols (ACP, MCP), and its differentiating control plane is built first-party (`DEC-029..031`).
 
 ## Who it is for
 
@@ -10,15 +10,15 @@ A standalone command-line coding agent that a developer runs in a repository and
 - Teams that require deterministic policy, verifiable execution history, and self-hosting.
 - Users who want provider freedom: any hosted model, any local model, any OpenAI-compatible endpoint.
 
-## Why it wins (the five axes)
+## Candidate differentiators to prove
 
-Every major peer converges on the same commodity shape: a reasoning loop, native tools, and MCP. Parity there is table stakes. agentX wins by owning five things the field either ships closed or does not ship at all:
+These are product hypotheses, not current benchmark results. The priority is verified multi-hour completion; cost, latency, integrations and usability are measured alongside it (`DEC-029`, `ARCH/25`). Public peer research is summarized in `ARCH/24` with its evidence limits.
 
-1. **Long-horizon persistence.** Durable, event-sourced sessions that survive crash and restart; checkpoint and rewind; a persistent task graph; resumable work. *Built for hours, not turns.*
-2. **Deterministic policy-as-code + verifiable audit.** An allow/ask/deny guard expressed as configuration, failing closed; plus an append-only, tamper-evident (hash-chained/Merkle) execution log. No leading peer ships both.
-3. **Context that survives scale.** A repository map, language-server symbols, and indexed navigation feeding an eval-gated compaction engine — so a fifty-file cross-repo task completes without losing the thread.
-4. **Eval-gated routing with published numbers.** Cheap models for locate, mid-tier for edit, frontier for plan/verify — chosen by measured results, with the scores public.
-5. **Open, self-hosted parallel orchestration.** Isolated sub-agents on worktrees, receipts instead of transcripts, deterministic merge arbitration, and CI feedback — capabilities currently locked inside closed products.
+1. **Long-horizon persistence.** Durable, event-sourced sessions, a separately persisted run/task graph, checkpoints and reconciled restart.
+2. **Deterministic policy and inspectable audit.** An allow/ask/deny guard, confinement and per-effect receipts with explicit anchoring limits.
+3. **Repository context with freshness.** Revision-bound maps, symbol navigation and eval-gated compaction that preserve task evidence across large changes.
+4. **Measured model routing.** Route selection by demonstrated task outcomes, capabilities and total cost, including local models when conformance is proven.
+5. **Open parallel orchestration.** Isolated worktrees, external-agent attempt tracking, fenced leases, independent verification and integration checks.
 
 ## Signature surfaces
 

@@ -1,6 +1,6 @@
 # 07 — Session Store
 
-`CMP-session` is the persistence owner of the agentX binary. This document is the LLD for durable, event-sourced sessions: the append-only JSONL log that is the source of truth, the SQLite index derived from it, session lifecycle, parent/child linkage, input admission, context epochs, checkpoints, portability and replay, and the session-format migration chain.
+`CMP-session` is the persistence owner of the HorizonCode binary. This document is the LLD for durable, event-sourced sessions: the append-only JSONL log that is the source of truth, the SQLite index derived from it, session lifecycle, parent/child linkage, input admission, context epochs, checkpoints, portability and replay, and the session-format migration chain.
 
 ## Purpose
 
@@ -53,7 +53,7 @@ All surfaces and services read/write through the store; no module opens the JSON
 ### Session artifact (portable unit)
 
 ```
-$AGENTX_HOME/sessions/<session-id>/
+$HORIZONCODE_HOME/sessions/<session-id>/
   header.json          # id, format_version, workspace_id, parent_id, created_at, lineage
   log.jsonl            # one SessionEvent per line; seq dense from 0
   checkpoints/         # checkpoint content refs (see below)

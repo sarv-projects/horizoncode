@@ -53,179 +53,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentx-acp"
-version = "0.1.0"
-dependencies = [
- "agent-client-protocol",
- "agentx-analytics",
- "agentx-guard",
- "agentx-provider",
- "agentx-runner",
- "agentx-sandbox",
- "agentx-session",
- "agentx-tools",
- "agentx-types",
- "async-trait",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "agentx-analytics"
-version = "0.1.0"
-dependencies = [
- "agentx-audit",
- "dirs",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "agentx-audit"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "dirs",
- "rand 0.8.8",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "agentx-cli"
-version = "0.1.0"
-dependencies = [
- "agentx-acp",
- "agentx-analytics",
- "agentx-audit",
- "agentx-guard",
- "agentx-provider",
- "agentx-runner",
- "agentx-sandbox",
- "agentx-session",
- "agentx-tools",
- "agentx-types",
- "async-trait",
- "clap",
- "dirs",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "agentx-guard"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "blake3",
- "dirs",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "agentx-provider"
-version = "0.1.0"
-dependencies = [
- "agentx-types",
- "async-trait",
- "bytes",
- "futures",
- "httpdate",
- "rand 0.8.8",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "agentx-runner"
-version = "0.1.0"
-dependencies = [
- "agentx-analytics",
- "agentx-audit",
- "agentx-provider",
- "agentx-sandbox",
- "agentx-session",
- "agentx-tools",
- "agentx-types",
- "async-trait",
- "futures",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "agentx-sandbox"
-version = "0.1.0"
-dependencies = [
- "globset",
- "tempfile",
- "thiserror",
- "walkdir",
-]
-
-[[package]]
-name = "agentx-session"
-version = "0.1.0"
-dependencies = [
- "agentx-types",
- "dirs",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "agentx-tools"
-version = "0.1.0"
-dependencies = [
- "agentx-guard",
- "agentx-sandbox",
- "agentx-types",
- "async-trait",
- "globset",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
- "walkdir",
-]
-
-[[package]]
-name = "agentx-types"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1051,6 +878,181 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "horizoncode-acp"
+version = "0.1.0"
+dependencies = [
+ "agent-client-protocol",
+ "async-trait",
+ "horizoncode-analytics",
+ "horizoncode-guard",
+ "horizoncode-provider",
+ "horizoncode-runner",
+ "horizoncode-sandbox",
+ "horizoncode-session",
+ "horizoncode-tools",
+ "horizoncode-types",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "horizoncode-analytics"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "horizoncode-audit",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "horizoncode-audit"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "dirs",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "horizoncode-cli"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "clap",
+ "dirs",
+ "horizoncode-acp",
+ "horizoncode-analytics",
+ "horizoncode-audit",
+ "horizoncode-guard",
+ "horizoncode-provider",
+ "horizoncode-runner",
+ "horizoncode-sandbox",
+ "horizoncode-session",
+ "horizoncode-tools",
+ "horizoncode-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "horizoncode-guard"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "dirs",
+ "horizoncode-audit",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "horizoncode-provider"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures",
+ "horizoncode-types",
+ "httpdate",
+ "rand 0.8.8",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "horizoncode-runner"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "horizoncode-analytics",
+ "horizoncode-audit",
+ "horizoncode-provider",
+ "horizoncode-sandbox",
+ "horizoncode-session",
+ "horizoncode-tools",
+ "horizoncode-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "horizoncode-sandbox"
+version = "0.1.0"
+dependencies = [
+ "globset",
+ "tempfile",
+ "thiserror",
+ "walkdir",
+]
+
+[[package]]
+name = "horizoncode-session"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "horizoncode-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "horizoncode-tools"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "globset",
+ "horizoncode-audit",
+ "horizoncode-guard",
+ "horizoncode-sandbox",
+ "horizoncode-types",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "walkdir",
+]
+
+[[package]]
+name = "horizoncode-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
 
 [[package]]
 name = "http"

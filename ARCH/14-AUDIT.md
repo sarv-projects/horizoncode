@@ -7,8 +7,8 @@ security-relevant effect and every decisive moment — policy decisions, tool ca
 approvals, file writes, sandbox denials, model/provider calls, and cost — is recorded
 in a hash-chained log with periodic Merkle roots that are **signed; anchored at a
 declared level (`local-sink` default, `off-box` when required)**, so history can be
-verified rather than merely trusted. A first-class **coverage census** turns "every
-effect is recorded" from an assertion into a checkable deliverable (`DEC-005`,
+verified rather than merely trusted. A class-coverage census checks declared wiring;
+per-effect ID reconciliation checks runtime completeness (`DEC-005`, `DEC-031`,
 `DEC-022`, `REQ-AUDIT-001`, `REQ-AUDIT-002`, `REQ-AUDIT-004`, `REQ-AUDIT-005`,
 `REQ-AUDIT-007`).
 
@@ -19,7 +19,9 @@ with operational events. Audit reads are themselves access-controlled
 
 ## Responsibilities
 
-- Append one immutable entry per recorded decision/effect, chained to its predecessor.
+- Append immutable, chained lifecycle entries: one prepared intent and exactly one
+  terminal receipt per `effect_id`, plus any intermediate decision or violation
+  entries. A missing terminal receipt remains `unknown` pending reconciliation.
 - Compute and persist periodic **Merkle roots** over entry batches.
 - Provide a **verify** command that recomputes the chain and roots and reports any
   tampering, deletion, reorder, or truncation.
@@ -35,8 +37,8 @@ with operational events. Audit reads are themselves access-controlled
 - **Render the claim boundary**: `verify` states, per level, what is and is not
   detected, and never presents a weaker level as a stronger one
   (`REQ-AUDIT-007`).
-- Publish a first-class **coverage census** mapping every declared security-relevant
-  effect class to at least one recorded entry (`REQ-AUDIT-005`).
+- Publish a first-class class-coverage census **and** per-effect ID reconciliation.
+  One entry per class does not prove that every runtime effect has a receipt (`DEC-031`).
 - Maintain the **cross-store consistency invariant** with the session log and the
   analytics ledger (`REQ-AUDIT-006`, `DEC-020`).
 - Keep the record portable with the session bundle.
@@ -127,7 +129,7 @@ are first-class entries, never omitted.
 
 ### Verify
 ```
-agentx audit verify [--session <id>] [--all]
+horizoncode audit verify [--session <id>] [--all]
 ```
 Recomputes each `entry_hash` from stored bytes and `prev_hash`, checks contiguity of
 `seq`, recomputes every segment Merkle root, and confirms root linkage across
@@ -151,7 +153,7 @@ never renders `local-sink` as `off-box`. A run with only a local anchor is repor
 
 ### Replay
 ```
-agentx audit replay --session <id> [--from <seq>] [--to <seq>]
+horizoncode audit replay --session <id> [--from <seq>] [--to <seq>]
 ```
 Prints the reconstructable decision/effect timeline (decisions, tickets, tool
 outcomes, approvals, cost) in order. Replay reads evidence; it does not re-execute
@@ -258,6 +260,14 @@ The census proves *that* every declared class is represented; it does not by its
 prove that no undeclared class exists — the declared registry is reviewed as part of
 the security boundary.
 
+**Runtime completeness.** Every governed attempt prepares a durable `effect_id`
+before execution, then settles that same ID to exactly one terminal receipt. Lifecycle
+entries may be multiple; the terminal receipt is unique. The verifier joins prepared
+IDs, terminal IDs, session references and external/workspace observations; duplicates,
+missing outcomes and unrecognized external effects are incidents. A crash leaves
+`unknown`, which blocks automatic replay until reconciliation. The class census remains
+a static wiring check and cannot discharge this invariant by itself (`ARCH/25`).
+
 ## Cross-store consistency (single store vs. multiple)
 
 `DEC-020` fixes the answer: **multiple append-only stores, one invariant.** The stores
@@ -332,11 +342,11 @@ Invariant (`REQ-AUDIT-006`):
 
 | REQ | How this module satisfies it |
 |---|---|
-| `REQ-AUDIT-001` | Every declared security-relevant effect class appends exactly one entry; the coverage census checks the mapping. |
+| `REQ-AUDIT-001` | Every individual effect has a prepared intent and one terminal receipt under a stable ID; reconciliation checks the mapping. |
 | `REQ-AUDIT-002` | Hash chain + Merkle roots with an `audit verify` command that states what it does and does not prove. |
 | `REQ-AUDIT-003` | `CMP-secrets` redaction pass before any entry is chained. |
 | `REQ-AUDIT-004` | Segment roots are signed with a `CMP-secrets` device key (signing is not configurable off) and anchored at a declared level: `local-sink` (default), or `off-box` where a trust requirement is declared; a configured-but-unreachable sink fails closed. |
-| `REQ-AUDIT-005` | First-class coverage census maps every declared effect class to entries and fails on a gap. |
+| `REQ-AUDIT-005` | Class census and per-effect reconciliation both fail on gaps. |
 | `REQ-AUDIT-006` | Cross-store consistency invariant with the session log and analytics ledger (`DEC-020`). |
 | `REQ-AUDIT-007` | Every level states and `verify` renders its detection boundary — modification of already-anchored history only; no content authenticity, no fabrication detection, no coverage of the unanchored tail; only the three level names are used and `local-sink` is never rendered as `off-box` (`DEC-022`). |
 | `REQ-PROV-004` | Credentials never appear in audit entries; provider calls logged as counts/refs only. |

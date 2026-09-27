@@ -1,6 +1,6 @@
 # 05 — Source Ledger
 
-What agentX **builds**, **vendors**, or only **draws patterns from**. Identities are by role per the vendor-neutral rule (`DEC-011`); the concrete upstream mapping is recorded in the non-shipped research archive. Attribution that a license requires is generated into `THIRD-PARTY-NOTICES.md` at release and **shipped with the binary** (`TODO.md` `AX-010`).
+What HorizonCode **builds**, **vendors**, or only **draws patterns from**. Entries are organized by role; concrete upstream identities and pinned revisions live in provenance records and the research archive. Factual provider/model names may appear where needed for configuration and billing (`DEC-030`). Attribution that a license requires is generated into `THIRD-PARTY-NOTICES.md` at release and **shipped with the binary** (`TODO.md` `AX-010`).
 
 Legend: **Build** = first-party code · **Depend** = consume a library/SDK · **Pattern** = study only, no code · **Data** = consume data, not code · **Avoid** = never link, copy, or vendor.
 
@@ -55,7 +55,7 @@ research archive.
 | `SRC-005` | Editor-embedded agent | **Pattern** | Apache-2.0 | MCP hub (transports, OAuth, debounce/dedupe), plan/act guard, checkpoint/restore transactions, retry guards |
 | `SRC-006` | Multi-provider gateway | **Pattern** | MIT (core); restricted `enterprise/` subtree = **Avoid** | Routing strategy shapes, typed fallback, cooldown, budget gates |
 | `SRC-007` | Minimal TS coding agent | **Pattern** | MIT | Provider-quirk isolation, cross-provider context handoff, abort-everywhere, split tool results, scrollback-native differential rendering |
-| `SRC-008` | Repo-map ranking | **Adapt** | Apache-2.0 | Tree-sitter tag graph + PageRank ranking. In-tree provenance is mandatory and concrete: upstream identity, pinned commit, Apache-2.0 license reference + upstream copyright line, and a statement of modifications (ranking logic ported/reorganized; our graph construction, budget model, and session personalization differ from upstream). No upstream identity appears in shipped docs beyond what the license requires. |
+| `SRC-008` | Repo-map ranking | **Adapt** | Apache-2.0 | Tree-sitter tag graph + PageRank ranking. In-tree provenance is mandatory and concrete: upstream identity, pinned commit, Apache-2.0 license reference + upstream copyright line, and a statement of modifications (ranking logic ported/reorganized; our graph construction, budget model, and session personalization differ from upstream). Shipped references are factual attribution or user-relevant provenance, never an unsupported comparison. |
 | `SRC-009` | Model catalog dataset + client | **Data** | **MIT — confirmed with evidence** (see §5) | Provider/model metadata. Grant verified from primary sources: upstream repository `LICENSE` is MIT, `Copyright (c) 2025 models.dev`; the typed client package declares `"license": "MIT"`; no data-specific license, no proprietary-subdirectory carve-out, and no non-commercial or share-alike clause found. Redistribution is permitted **provided the copyright line and permission notice travel with the distribution** — enforced via `THIRD-PARTY-NOTICES` + `--credits` (`AX-010`). Residual and unresolved upstream: pseudonymous holder, no contributor agreement, unaddressed database rights, no accuracy warranty, and **third-party marks (provider/model logos) that the grant cannot convey**. Posture in `DEC-021`. |
 | `SRC-010` | ACP protocol SDK | **Depend** | Apache-2.0 | JSON-RPC stdio transport + schema |
 | `SRC-011` | MCP protocol SDK | **Depend** | MIT/Apache-2.0 | Host-side client, stdio + streamable HTTP |
@@ -65,7 +65,7 @@ research archive.
 | `SRC-015` | Skill file convention | **Adopt** (convention) | open standard | `SKILL.md` discovery, frontmatter, description routing, progressive disclosure |
 | `SRC-016` | Plugin + hook convention | **Pattern** | — | Manifest + component dirs + marketplace install + hook-matching shape |
 | `SRC-017` | Analytics CLI shape | **Pattern** | permissive | Local usage ledger with `stats`/`export`/insights surfaces; priced locally |
-| `SRC-018` | MCP registry listing model | **Reference** | — | Enumeration model only; never auto-installed, trust defined by agentX |
+| `SRC-018` | MCP registry listing model | **Reference** | — | Enumeration model only; never auto-installed, trust defined by HorizonCode |
 
 ## 3. Hard no-go
 
@@ -81,8 +81,8 @@ Never link, copy, or vendor: any copyleft (GPL/AGPL) project, any non-OSI/source
 - `THIRD-PARTY-NOTICES.md` (or an equivalent generated bundle) is generated at release
   from the resolved dependency graph **and shipped with the binary**; a release
   without it fails the release check (`TODO.md` `AX-010`).
-- Mandatory legal attribution is exempt from the brand-neutral rule; stripping or
-  paraphrasing required notices is itself a build failure (`DEC-011`).
+- Mandatory legal attribution is unconditional; stripping or paraphrasing required
+  notices is itself a build failure (`DEC-011`, `DEC-030`).
 
 ## 5. Model catalog provenance record (`SRC-009`)
 

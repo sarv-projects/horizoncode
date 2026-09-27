@@ -143,7 +143,12 @@ A manifest may only claim surfaces from this closed set, and each claim passes t
 
 ## Configuration
 
-This document *is* the configuration surface. Key groups: `providers.*`, `models.*`, `routing.*`, `budget.*`, `permissions.*`, `instructions.*`, `skills.*`, `hooks.*`, `plugins.*`, `memory.*`, `mcp.servers[]`, `orch.*`, `ui.*`. Every field is schema-versioned; migration notes accompany renames.
+This document *is* the configuration surface. Key groups: `providers.*`, `models.*`, `routing.*`, `budget.*`, `permissions.*`, `instructions.*`, `skills.*`, `hooks.*`, `plugins.*`, `memory.*`, `mcp.servers[]`, `orch.*`, `ui.*`, `compaction.*`, `repository.*`, `verification.*`, `delivery.*`. Every field is schema-versioned; migration notes accompany renames. Settings expose effective value, provenance, lock reason, and apply boundary (`immediate | next_turn | restart`). User-facing settings cover theme/colour/contrast, layout/keymap, model/provider/agent, reasoning, local endpoint, compaction, task/run budgets, routing, notification, evidence retention, and cost display. A source-scope or policy-locked value cannot be widened by project content (`REQ-UI-010..011`, `DEC-030`).
+
+Security-relevant parse/read failure blocks activation of the new configuration. A
+previously validated snapshot may be retained only with an explicit stale warning and
+without widening authority; a silently restored broader rule is prohibited. Effective
+config digest is pinned to the run and changes create a new context/policy epoch.
 
 ## Requirements mapping
 
@@ -156,7 +161,7 @@ This document *is* the configuration surface. Key groups: `providers.*`, `models
 | `REQ-SEC-001` | Plugin/dependency provenance and the license allowlist gate plugin admission |
 | `REQ-SEC-002` | Instruction files, skills, and plugin content are untrusted data, never instructions |
 | `REQ-VISION-002` | Migration and validation surface actionable guidance; no silent failure |
-| `REQ-VISION-003` | Configuration keys, help text, and docs carry no vendor names |
+| `REQ-VISION-003` | Product copy remains neutral; factual provider/model names and mandatory attribution have provenance and never imply an unmeasured comparison (`DEC-030`) |
 | `REQ-HORIZON-002` | Durable memory and config-versioned task state survive restart |
 | `REQ-PERF-001` | Effective config is resolved within the warm-cache startup bound |
 

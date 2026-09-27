@@ -1,6 +1,6 @@
-# agentX workspace.
+# HorizonCode workspace.
 #
-# A single Rust workspace producing the `agentx` binary. Crate boundaries mirror
+# A single Rust workspace producing the `horizoncode` binary. Crate boundaries mirror
 # the architecture component IDs (`CMP-*`) documented in `ARCH/03-ARCHITECTURE.md`.
 
 [workspace]
@@ -12,23 +12,23 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
-repository = "https://example.invalid/agentx"
+repository = "https://github.com/sarv-projects/horizoncode"
 description = "Standalone, protocol-native command-line coding agent."
-authors = ["agentX contributors"]
+authors = ["HorizonCode contributors"]
 
 [workspace.dependencies]
 # Internal crates.
-agentx-types = { path = "crates/agentx-types", version = "0.1.0" }
-agentx-session = { path = "crates/agentx-session", version = "0.1.0" }
-agentx-provider = { path = "crates/agentx-provider", version = "0.1.0" }
-agentx-tools = { path = "crates/agentx-tools", version = "0.1.0" }
-agentx-guard = { path = "crates/agentx-guard", version = "0.1.0" }
-agentx-sandbox = { path = "crates/agentx-sandbox", version = "0.1.0" }
-agentx-audit = { path = "crates/agentx-audit", version = "0.1.0" }
-agentx-analytics = { path = "crates/agentx-analytics", version = "0.1.0" }
-agentx-runner = { path = "crates/agentx-runner", version = "0.1.0" }
-agentx-acp = { path = "crates/agentx-acp", version = "0.1.0" }
-agentx-cli = { path = "crates/agentx-cli", version = "0.1.0" }
+horizoncode-types = { path = "crates/horizoncode-types", version = "0.1.0" }
+horizoncode-session = { path = "crates/horizoncode-session", version = "0.1.0" }
+horizoncode-provider = { path = "crates/horizoncode-provider", version = "0.1.0" }
+horizoncode-tools = { path = "crates/horizoncode-tools", version = "0.1.0" }
+horizoncode-guard = { path = "crates/horizoncode-guard", version = "0.1.0" }
+horizoncode-sandbox = { path = "crates/horizoncode-sandbox", version = "0.1.0" }
+horizoncode-audit = { path = "crates/horizoncode-audit", version = "0.1.0" }
+horizoncode-analytics = { path = "crates/horizoncode-analytics", version = "0.1.0" }
+horizoncode-runner = { path = "crates/horizoncode-runner", version = "0.1.0" }
+horizoncode-acp = { path = "crates/horizoncode-acp", version = "0.1.0" }
+horizoncode-cli = { path = "crates/horizoncode-cli", version = "0.1.0" }
 
 # Tamper-evident hashing for the audit chain and its Merkle roots
 # (`ARCH/14-AUDIT.md` §Data / state model).
@@ -90,7 +90,7 @@ walkdir = "2.5"
 dirs = "6.0"
 
 # Protocol SDK (Agent Client Protocol), Apache-2.0. Stable v1 API only; the
-# JSON-schema feature is not needed by the server. See `crates/agentx-acp`.
+# JSON-schema feature is not needed by the server. See `crates/horizoncode-acp`.
 agent-client-protocol = { version = "2.2", default-features = false }
 
 # Test support.

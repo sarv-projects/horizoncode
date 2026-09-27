@@ -31,7 +31,7 @@ Out of scope: being a source of truth for sessions or audit. `CMP-session` and `
 
 ## Data / state model
 
-Append-only **event ledger** `~/.agentx/analytics/events.jsonl` (source of truth, rebuildable) plus an SQLite rollup index.
+Append-only **event ledger** `~/.horizoncode/analytics/events.jsonl` (source of truth, rebuildable) plus an SQLite rollup index.
 
 `analytics_event` (one per turn/step/tool): `{turn_id, session_id, project, agent, model, kind, ts, tokens{input,output,cache_read,cache_creation,reasoning}, cost_usd, cost_status, tool{name,outcome,latency_ms,bytes}, retry{reason,attempt}, error_class}`.
 

@@ -2,13 +2,13 @@
 
 ## Authority chain
 
-1. **`ARCH/01-VISION.md`** — what agentX is and why it wins. Root intent.
+1. **`ARCH/01-VISION.md`** — what HorizonCode intends to be and which outcomes matter. Root intent; competitive superiority is an evaluation question.
 2. **`ARCH/02-REQUIREMENTS.md`** — the testable `REQ-*` surface.
 3. **`ARCH/03-ARCHITECTURE.md`** — the architectural "how".
 4. **`ARCH/04-DECISIONS.md`** — `DEC-*` records that constrain the architecture.
 5. **`ARCH/05-SOURCE-LEDGER.md`** — `SRC-*` provenance and licensing dispositions.
-6. Module-level documents (`ARCH/06`–`ARCH/23`) — the "LLD" layer:
-   - `06-UI.md` · `07-SESSION.md` · `08-LOOP.md` · `09-CONTEXT.md` · `10-TOOLS.md` · `11-PROVIDER.md` · `12-GUARD.md` · `13-SANDBOX.md` · `14-AUDIT.md` · `15-PROTOCOLS.md` · `16-ORCH.md` · `18-CONFIG.md` · `19-COMPRESSION.md` · `20-ANALYTICS.md` · `21-DISCOVERY.md` · `22-SECURITY.md` (consolidated threat model) · `23-VERIFICATION.md` (verification strategy). (`17` is intentionally unused.)
+6. Module-level documents (`ARCH/06`–`ARCH/26`) — the "LLD" layer:
+   - `06-UI.md` · `07-SESSION.md` · `08-LOOP.md` · `09-CONTEXT.md` · `10-TOOLS.md` · `11-PROVIDER.md` · `12-GUARD.md` · `13-SANDBOX.md` · `14-AUDIT.md` · `15-PROTOCOLS.md` · `16-ORCH.md` · `18-CONFIG.md` · `19-COMPRESSION.md` · `20-ANALYTICS.md` · `21-DISCOVERY.md` · `22-SECURITY.md` · `23-VERIFICATION.md` · `24-ARCHITECTURE-REVIEW.md` (dated evidence and defects) · `25-LONG-HORIZON-CONTROL.md` (integrated run/task LLD) · `26-CORE-AGENT-CROSSWALK.md` (five-agent reuse and limits). (`17` is intentionally unused.)
 
 `TODO.md` is a delivery tracker, not a design authority. When it disagrees with `ARCH/`, `ARCH/` wins.
 
@@ -23,7 +23,7 @@
 | `AX-<nnn>` | Delivery task in `TODO.md` | `AX-012` |
 | `AX-<MISSION>-<nnn>` | Coding task bound to an architecture decision | `AX-ARCH-003` |
 
-Area codes: `VISION`, `REQ`, `ARCH`, `LOOP`, `TOOL`, `CTX`, `PROV`, `GUARD`, `AUDIT`, `SBX`, `PROTO`, `SESS`, `ORCH`, `UI`, `HORIZON`, `MEM`, `SKILL`, `PLUGIN`, `ANALYTICS`, `SEC`, `PERF`, `VER`.
+Area codes: `VISION`, `REQ`, `ARCH`, `LOOP`, `TOOL`, `CTX`, `PROV`, `GUARD`, `AUDIT`, `SBX`, `PROTO`, `SESS`, `ORCH`, `UI`, `HORIZON`, `REPO`, `RESEARCH`, `DELIVERY`, `MEM`, `SKILL`, `PLUGIN`, `ANALYTICS`, `SEC`, `PERF`, `VER`.
 
 ## Requirement quality bar
 
@@ -44,7 +44,7 @@ A requirement is accepted only if it is:
 
 ## Vendor-neutral rule
 
-This repository must contain **no vendor, competitor, or assistant brand names** in source, commit messages, help text, or documentation. Upstream dependencies are referenced by role and license in `ARCH/05-SOURCE-LEDGER.md`. Attribution that a license legally requires is carried in a generated `THIRD-PARTY-NOTICES.md` at release time, not prose.
+Product copy remains neutral. Factual provider/model names are permitted where a user must identify a route, configure a local runtime, inspect a bill, or understand source provenance; research notes may name their subjects. No peer's name is used as an unsupported quality claim. License-required attribution is unconditional. `DEC-030` records this scoped correction to the older absolute ban.
 
 ## Change control
 

@@ -1,8 +1,33 @@
-# CURRENT_RUN — agentX
+# CURRENT_RUN — HorizonCode
+
+> **2026-09-27 update.** The five core research notes were read end to end and
+> crosswalked in `ARCH/26-CORE-AGENT-CROSSWALK.md`. The architecture now includes
+> the integrated long-horizon controller (`ARCH/25`), 29 findings
+> (`ARCH/24`), and follow-up tasks `AX-309..333`. Product identity was renamed
+> from agentX to HorizonCode, including Rust crate directories/names, binary,
+> CLI/environment labels, default state/config paths, and active documentation;
+> `DEC-033` records the naming and state migration boundary.
+>
+> Verification performed for this pass: `git diff --check`, offline Cargo
+> metadata resolution, and `cargo check --offline --workspace` passed after
+> crate renaming. No test suite or `ACC-P1-*` acceptance run was executed.
+> These checks do not verify the proposed multi-hour controller, which remains
+> unimplemented. The root checkout directory still has its old filesystem name;
+> it is recorded accurately below.
+>
+> All non-ignored worktree changes are committed as `abf007e` on local branch
+> `main`; `origin` points to `sarv-projects/horizoncode`. Push status is
+> recorded in the final handoff after remote synchronization.
+>
+> Read `ARCH/24` for findings, `ARCH/25` for the integrated design, and
+> `ARCH/26` for the source-pattern crosswalk. The user's confirmed priority is
+> **verified multi-hour completion**. Packaging and surface decisions may be
+> reconsidered when evidence supports the change. Do not turn an earlier test
+> result or a crate's presence into an acceptance claim.
 
 ## Active Goal
 
-Build **agentX**: a standalone, ACP-native, Rust coding CLI agent that is
+Build **HorizonCode**: a standalone, ACP-native, Rust coding CLI agent that is
 protocol-first (usable by editors *and* able to drive other ACP agents),
 model-agnostic, local-first, and built for long-horizon work. The full capability set
 is in scope; nothing is to be cut. Quality and verified-working behaviour are the
@@ -27,17 +52,17 @@ Committed at **`f4a8afa`** (HEAD). **11 crates**, ~33k added lines.
 
 | Area | Crate | State |
 |---|---|---|
-| Types/cancel/ids | `agentx-types` | done |
-| Session log | `agentx-session` | done — append-only JSONL, replay, resume, deterministic interrupted-turn repair |
-| Provider | `agentx-provider` | one chat-completions-compatible transport; SSE framing, retry + `Retry-After`, redaction, `SecretString`, mock transport |
-| Tools | `agentx-tools` | read, glob, grep, list, write, edit, apply-patch, bash, todo, question; bounded output, guard gate, permission-filtered materialization |
-| Runner | `agentx-runner` | bounded step loop, last-step tool disabling, token ceiling that fails closed, cancel → `interrupted` |
-| ACP | `agentx-acp` | **server** only: stdio, `initialize`, session lifecycle, streamed `session/update`, `session/request_permission` |
-| CLI | `agentx-cli` | headless `-p` (default + json/ndjson), `acp` server, documented exit-code table |
-| Guard | `agentx-guard` | ordered rules, fail-closed, outer-deny ceiling, plan mode, catastrophic gate, tickets, approvals, saved rules, config layers |
-| Sandbox | `agentx-sandbox` | Linux `bwrap` namespace backend, macOS Seatbelt backend, Windows AppContainer/restricted-token backend, unsupported backend, profile resolution |
-| Audit | `agentx-audit` | BLAKE3 hash-chained append-only entries, canonical `BodyRef` under a domain-separated label, periodic segment Merkle roots, roots signed with a keyed MAC and sealed to `roots.jsonl`, coverage census, `verify`/`replay`, redaction before hashing |
-| Analytics | `agentx-analytics` | local append-only ledger + SQLite rollups, `CostStatus` actual/estimated/included/unknown, `/usage`, `/insights`, `stats`, `export --sanitize` |
+| Types/cancel/ids | `horizoncode-types` | done |
+| Session log | `horizoncode-session` | done — append-only JSONL, replay, resume, deterministic interrupted-turn repair |
+| Provider | `horizoncode-provider` | one chat-completions-compatible transport; SSE framing, retry + `Retry-After`, redaction, `SecretString`, mock transport |
+| Tools | `horizoncode-tools` | read, glob, grep, list, write, edit, apply-patch, bash, todo, question; bounded output, guard gate, permission-filtered materialization |
+| Runner | `horizoncode-runner` | bounded step loop, last-step tool disabling, token ceiling that fails closed, cancel → `interrupted` |
+| ACP | `horizoncode-acp` | **server** only: stdio, `initialize`, session lifecycle, streamed `session/update`, `session/request_permission` |
+| CLI | `horizoncode-cli` | headless `-p` (default + json/ndjson), `acp` server, documented exit-code table |
+| Guard | `horizoncode-guard` | ordered rules, fail-closed, outer-deny ceiling, plan mode, catastrophic gate, tickets, approvals, saved rules, config layers |
+| Sandbox | `horizoncode-sandbox` | Linux `bwrap` namespace backend, macOS Seatbelt backend, Windows AppContainer/restricted-token backend, unsupported backend, profile resolution |
+| Audit | `horizoncode-audit` | BLAKE3 hash-chained append-only entries, canonical `BodyRef` under a domain-separated label, periodic segment Merkle roots, roots signed with a keyed MAC and sealed to `roots.jsonl`, coverage census, `verify`/`replay`, redaction before hashing |
+| Analytics | `horizoncode-analytics` | local append-only ledger + SQLite rollups, `CostStatus` actual/estimated/included/unknown, `/usage`, `/insights`, `stats`, `export --sanitize` |
 
 **Test count: 272 passing across 37 suites, 0 failures** at `f4a8afa` (baseline 129 +
 143 added by the audit/analytics lane). This is an **executed verdict**, not a static
@@ -93,7 +118,7 @@ timeout was deliberately **not** widened, because that would mask genuine hangs.
 
 **Stale finding corrected:** an earlier report listed a `session_store()` writability-probe
 order-dependence defect. Verified by grep, **no such code exists at HEAD** (no
-`session_store()`, no `OnceLock` in `agentx-cli`, no `agentx-runner/src/main.rs`, no
+`session_store()`, no `OnceLock` in `horizoncode-cli`, no `horizoncode-runner/src/main.rs`, no
 `agent::Kind`, no `content::Text::new`). It was a phantom from a stale lane report; the
 audit lane instead shipped a `TestHome` helper with order-independence regression tests.
 Do not go looking for it.
@@ -124,8 +149,8 @@ Do not go looking for it.
 7. **Then MCP host, skills, plugins, orchestrator/subagents, and the TUI cockpit** - none
    of these exist in code yet, and all of them are in scope. Do not cut them.
 8. **The rename is still parked by explicit user instruction.** All evidence is at
-   `/tmp/opencode/agentx-naming.md`; `DEC-028` is deliberately unwritten and every
-   `agentx-*` identifier is unchanged. When the user picks, the sweep is mechanical and
+   `/tmp/opencode/horizoncode-naming.md`; `DEC-028` is deliberately unwritten and every
+   `horizoncode-*` identifier is unchanged. When the user picks, the sweep is mechanical and
    must run as a single owner lane with no other code lane live.
 
 ## Decisions & Gotchas (do not undo)
@@ -196,7 +221,7 @@ Do not go looking for it.
 
 ## Environment / Tooling Incident (2026-09-27) — engram MCP "Connection closed"
 
-Not part of the agentX codebase; recorded only as an operator note. The OpenCode MCP
+Not part of the HorizonCode codebase; recorded only as an operator note. The OpenCode MCP
 server `engram` (`mcp.servers.engram` → `~/.local/share/mcp-servers/mneme/mneme mcp
 --tools=agent,graph`, a fork of engram) intermittently reports status `failed` with
 error `Connection closed`. **Root cause (reproduced):** OpenCode spawns one `mneme mcp`

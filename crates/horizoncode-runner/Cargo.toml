@@ -1,0 +1,30 @@
+[package]
+name = "horizoncode-runner"
+description = "The bounded agent loop: model step, scheduler, execute, observe, continue."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+horizoncode-types.workspace = true
+horizoncode-audit.workspace = true
+horizoncode-analytics.workspace = true
+horizoncode-session.workspace = true
+horizoncode-provider.workspace = true
+horizoncode-tools.workspace = true
+horizoncode-sandbox.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+horizoncode-provider = { workspace = true, features = ["testing"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

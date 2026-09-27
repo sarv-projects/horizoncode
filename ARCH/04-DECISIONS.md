@@ -160,9 +160,9 @@ Architecture decision records. Each constrains the design until superseded by a 
 
 **Status:** accepted.
 
-**Decision.** agentX implements ACP as a first-class **server** (usable by clients) and a first-class **client** (driving peer agents as subordinates) with equal standing. This supersedes the "later" qualifier in `DEC-003`. Capability negotiation gates every optional call in both roles.
+**Decision.** HorizonCode implements ACP as a first-class **server** (usable by clients) and a first-class **client** (driving peer agents as subordinates) with equal standing. This supersedes the "later" qualifier in `DEC-003`. Capability negotiation gates every optional call in both roles.
 
-**Rationale.** Being both usable and composable is a stated product priority and the seam that lets agentX orchestrate peers without a second engine (`REQ-PROTO-004`, `REQ-PROTO-006`).
+**Rationale.** Being both usable and composable is a stated product priority and the seam that lets HorizonCode orchestrate peers without a second engine (`REQ-PROTO-004`, `REQ-PROTO-006`).
 
 ## DEC-020 — Multiple append-only stores under one cross-store invariant
 
@@ -178,7 +178,7 @@ Architecture decision records. Each constrains the design until superseded by a 
 
 **Decision.**
 
-1. **The built-in catalog is a small, internally curated subset** covering only the providers and models agentX actually supports. Every row carries provenance: source URL, retrieval date, generating method or script, and a pinned upstream commit wherever a value is derived. Limits and pricing are verified against provider-published documentation and cross-checked against a second permissively licensed community map.
+1. **The built-in catalog is a small, internally curated subset** covering only the providers and models HorizonCode actually supports. Every row carries provenance: source URL, retrieval date, generating method or script, and a pinned upstream commit wherever a value is derived. Limits and pricing are verified against provider-published documentation and cross-checked against a second permissively licensed community map.
 2. **Runtime enrichment is opt-in.** With network permission, the catalog MAY be refreshed from the upstream public API through an explicit `catalog refresh` command, with opt-in, timeout, schema validation, and offline-by-default behavior. The cache records source URL, retrieval timestamp, content hash, and upstream commit when known. Live data **MUST NOT** silently overwrite pinned eval fixtures.
 3. **No full dataset snapshot in the binary by default.** The grant permits it with the notice retained, but it is rejected as the default posture: it imports daily staleness, community-data accuracy liability that upstream explicitly disclaims, and binary bloat — for no compliance benefit over (1) + (2).
 4. **No third-party marks are bundled.** Provider and model names appear as plain text (nominative use). Provider logos are NOT redistributed: the upstream grant conveys no trademark rights. Names MUST stay factually accurate and MUST NOT imply endorsement.
@@ -296,8 +296,8 @@ documented `external_directory` capability while the kernel still bounds reach
 **Consequences.** `external_directory` becomes a built-in floor rule with effect `ask`
 (overridable toward `deny`, never to a silent allow). The tool plane extracts
 path-shaped arguments as additional `fs.*` resources on the guard request
-(`crates/agentx-tools/src/registry.rs` `resources_from_input`,
-`crates/agentx-tools/src/path.rs` are the future implementation touchpoints) rather than
+(`crates/horizoncode-tools/src/registry.rs` `resources_from_input`,
+`crates/horizoncode-tools/src/path.rs` are the future implementation touchpoints) rather than
 judging them. `audit verify` and the guard decision table record the combined decision.
 An acceptance assertion covers the deny/ask/refuse split per tier, including per-tier read
 scoping.
@@ -320,7 +320,7 @@ MUST NOT carry path-shaped resources; a path named by a shell argument is expres
 path-shaped `exec.run` resource is a **configuration error, rejected at load**.
 
 **Rationale.** `ARCH/12` already defines `exec.run` resources as "a command token prefix",
-while `ARCH/10` and `agentx-tools::resources_from_input` push the raw `command` string
+while `ARCH/10` and `horizoncode-tools::resources_from_input` push the raw `command` string
 into the guard request. Nothing today implements a second path policy; this decision
 prevents one from appearing. Forbidding path-shaped `exec.run` resources gives exactly one
 path grammar and exactly one command matcher, and satisfies `REQ-SEC-023` ("no permission
@@ -439,3 +439,78 @@ three record fields, so no acceptance row changed meaning.
 **Governs:** `REQ-VER-005`, `REQ-SEC-016`, `REQ-SEC-008`; `TODO.md` `AX-102`, `AX-119`.
 Evidence in `ACC-P1-01(d)` and `ACC-P1-01(j)` and gate `G-4`; residual risks `RR-07`,
 `RR-08`. Tracked by `TODO.md` `AX-102`, `AX-113`, `AX-114`, `AX-119`.
+
+## DEC-029 — One durable run controller with independent verification
+
+**Decision (2026-09-27).** `CMP-orch` becomes the deterministic controller for a long-horizon run. It owns the task DAG, state transitions, budget reservations, leases, retry history, stop decisions, and recovery. `CMP-session` owns the canonical append-only run/task events and rebuildable projections; `CMP-runner` continues to own a bounded model turn. A runtime verifier is a separately authorized service invoked by the controller. Its result may be `PASS`, `FAIL`, or `INSUFFICIENT_EVIDENCE`; the worker cannot mark its own task passed. `ARCH/25` defines the records and transitions. A multi-process daemon is an optional deployment mode when detached work requires it, not a second scheduler or separate product core.
+
+**Why.** `ARCH/16` currently unlocks dependencies when they merely settle, and `ARCH/07` has no durable task, attempt, evidence, or effect schema. Both allow false completion after a restart. The existing turn loop cannot close that gap by longer prompts. The independent evaluation role is supported as an experiment by [long-running harness research](https://www.anthropic.com/engineering/harness-design-long-running-apps), but its value must be measured on our own tasks.
+
+**Alternatives.** A Markdown TODO cannot provide atomic claims or leases. A separate orchestration framework would duplicate the existing control plane and increase consistency risk. A permanent team of specialist agents is not required; the roles may run sequentially and are routed by measured need.
+
+**Consequences.** `REQ-HORIZON-005..010`, `REQ-REPO-001..002`, `REQ-DELIVERY-001`; tasks in `TODO.md`. Priority is verified multi-hour completion, as the user confirmed. Latency, cost, and breadth remain measured constraints rather than reasons to weaken verification.
+
+## DEC-030 — Configurable operator surfaces and truthful source naming
+
+**Decision (2026-09-27).** Keep a terminal-first native surface but allow IDE/ACP, headless, and future API clients to share the same state and settings. Theme, accessible colour palettes, layout, model/agent choice, compaction, budgets, routing, and usage/cost visibility are ordinary typed settings. A thin client may detach from an owned run without stopping it. Factual provider/model and source names are allowed in configuration, provenance, and usage screens. Product claims remain neutral and evidence-bound. An embedded editor is optional to complete coding work; governed external-editor handoff and semantic edits are supported paths.
+
+**Why.** Verified long work requires an inspectable run and usable recovery controls. The prior absolute brand ban conflicts with named provider/model selection and license notices. An embedded editor cannot be the only edit path for files beyond its safety bound. This revises the terminal-first and single-binary constraints only where a detached controller or thin client proves necessary; deployment packaging remains one core executable where feasible.
+
+**Consequences.** `REQ-UI-010..011`, `REQ-PROV-006`, `ARCH/06`, `ARCH/18`, `ARCH/25`. The older `G-9` brand scan becomes a claim/attribution validation gate rather than a ban on factual names. No peer-source code is copied without an allowed license and provenance record.
+
+## DEC-031 — Correct contracts that overstate implemented mechanisms
+
+**Decision (2026-09-27).** The network-level enum is `enforced | capability | best_effort | none`; each value has a mechanism-specific proof and residual, so `capability` is neither omitted nor silently equated to syscall denial. A model-supplied shell script executed as `sh -c` is an explicit shell effect, shown and authorized as such. Agent-owned HTTP follows one mediated egress; child network is separately denied or forced through an unbypassable broker. Multi-file patches preflight before mutation and use an effect journal for crash reconciliation. Audit uses a stable effect ID with prepare and terminal receipts: class coverage is only a static check, never proof that every runtime effect was recorded. A release claim must match what tests on that tier actually prove.
+
+**Why.** `ARCH/02` omits `capability` from one enum while `ARCH/13` and `ARCH/23` use it; `ARCH/10` and the built `bash` tool execute `sh -c` despite an argv-only requirement; `ARCH/14`'s class census can pass with missing individual effects; current patch code loops through file operations after authorization and may stop mid-patch. These are contract bugs, not stylistic preferences.
+
+**Consequences.** `REQ-GUARD-004`, `REQ-SEC-006..007`, `REQ-SEC-022`, `ARCH/10`, `ARCH/13`, `ARCH/14`, `ARCH/22`, `ARCH/23`, and the acceptance matrix require aligned implementation and evidence.
+
+## DEC-032 — Progressive tool contracts and measured edit feedback
+
+**Decision (2026-09-27).** Keep a searchable extension-tool catalog and select
+only permitted, relevant schemas within the model step's token budget. Pin that
+selection and policy snapshot until the step settles. Local/model-specific routes
+may use a versioned text-edit parser when structured tool calls are unreliable,
+but parser conformance, all-file preflight, bounded repair, and independent
+revision-bound verification remain required. A detached run belongs to a
+supervised controller process; clients attach by authenticated snapshot and
+ordered event cursor rather than owning worker lifetime.
+
+**Why.** [Claude Code public documentation](https://code.claude.com/docs/en/how-claude-code-works)
+describes progressive context and deferred tool loading; [Aider's repository
+map](https://aider.chat/docs/repomap.html), [edit formats](https://aider.chat/docs/more/edit-formats.html)
+and [lint/test feedback](https://aider.chat/docs/usage/lint-test.html) demonstrate
+small, targeted context and quick repair feedback. [Cline's documented hub/spoke
+design](https://github.com/cline/cline/blob/787ad1b077d8b697892dc3bfcd42e7c65b88789e/docs/sdk/architecture/hub-spoke.mdx)
+separates client lifetime from worker lifetime. These are useful patterns, not
+proof that their performance or implementation is best for HorizonCode.
+
+**Alternatives.** Sending every MCP schema on every request wastes context on
+large catalogs. Relying only on one edit format excludes models that can reason
+but fail its parser. Letting a TUI own the run makes closing the terminal stop
+multi-hour work. All three alternatives remain possible in a constrained mode,
+but must not be advertised as the detached long-horizon capability.
+
+**Consequences.** `REQ-CTX-010`, `REQ-PROV-007`, `REQ-HORIZON-011`,
+`ARCH/09`, `ARCH/21`, `ARCH/25`, and `TODO.md` `AX-331..333`.
+
+## DEC-033 — HorizonCode product and runtime identity
+
+**Decision (2026-09-27).** The final product and GitHub repository name is
+HorizonCode at `sarv-projects/horizoncode`. The executable is `horizoncode`,
+internal crate prefix is `horizoncode-`, and new environment/config/state
+names use `HORIZONCODE_*` and `~/.horizoncode`. Existing state is not moved
+implicitly; `HORIZONCODE_HOME` can point at a previously created directory
+when the operator intentionally resumes it. Historical Git commits, archived
+documents and the current local checkout path retain their original identity.
+Stable task IDs such as `AX-309` are not renumbered.
+
+**Why.** The user named the final repository and requested a coherent rename.
+Changing package and runtime identifiers together avoids shipping a new product
+name with old binary, environment and persistence paths.
+
+**Consequences.** Build metadata, source imports, CLI help, root documentation,
+research notes and active architecture text use HorizonCode. The compatibility
+choice for any publicly released predecessor remains an explicit migration
+decision before release; no automatic state import is claimed.

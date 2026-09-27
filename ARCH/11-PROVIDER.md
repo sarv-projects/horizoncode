@@ -85,15 +85,15 @@ Route {
 
 **ProviderRecord** — id, base api, environment key names, auth-method enum (`api-key · oauth · well-known`), models map, and one or more `transport_ref`s for gateways that expose several wire protocols per model.
 
-**Catalog cache** — a cache file with a short TTL, a cross-process lock, atomic `tmp`+rename writes, a compiled/offline snapshot fallback, and a scheduled refresh that logs and swallows failures so a refresh never blocks the UI.
+**Catalog cache** — a cache file with a short TTL, a cross-process lock, atomic `tmp`+rename writes, a small curated primary catalog with per-row provenance, and opt-in enrichment. No full upstream dataset is bundled by default (`DEC-021`). Refresh failures leave the validated primary available and show staleness.
 
-**Usage record** — inclusive totals plus a non-overlapping breakdown (`non_cached_input · cache_read · cache_write · reasoning`), clamped, with unnormalized provider fields retained only for billing audit. Provider-reported actual overrides the estimate; included plans are exactly `0`.
+**Usage record** — inclusive totals plus a non-overlapping breakdown (`non_cached_input · cache_read · cache_write · reasoning`), clamped, with unnormalized provider fields retained only for billing audit. Show billed amount, quota impact, estimate, and unknown fields separately; an included plan may bill zero while still consuming a finite quota.
 
 **Router state** — per-deployment health, cooldown expiry, latency estimate, in-flight count, observed rate-limit hints, and (optional) published eval scores.
 
 ## Lifecycle & flows
 
-1. **Catalog load.** On boot, load the snapshot, then refresh asynchronously under the lock. Resolve records lazily. Projection merges provider and model fields (`provider.api` defaults overlaid by model overrides).
+1. **Catalog load.** On boot, load the curated primary and validated cache, then refresh enrichment only when opted in. Resolve records lazily. Projection merges provider and model fields (`provider.api` defaults overlaid by model overrides).
 2. **Model step.** `Router.resolve` picks a route → `Executor.prepare` applies auth, lowers tool schemas, and builds the protocol body → transport sends → framing decodes bytes → protocol translates frames into the common typed stream (`step-start · text/reasoning/tool-input deltas · tool-call · tool-result · step-finish · finish · usage · provider-error`) → usage is recorded. Consumers never branch on provider id.
 3. **Retry ownership (single-owner rule).** Transport retries only for request-start failures, bounded with exponential backoff + jitter, honoring `Retry-After` in seconds, milliseconds, or HTTP-date. Pre-content stream interruptions retry via buffer-until-proven, summing discarded-attempt usage. Post-content failures are handed to `CMP-runner`'s turn-level recovery. A user abort anywhere vetoes retry. Context overflow is **terminal** here: the adapter surfaces a typed overflow flag and does not re-request; `CMP-context` owns the single compact-and-retry.
 4. **Routing.** Filter (policy-allowed, healthy, not cooling down, meets task requirements: context size, vision, tool-calling, reasoning) → rank by configured strategy → pick → declare a fallback chain → record an observable decision. On a typed retryable failure the chain advances; cooldown is applied to the failed deployment.

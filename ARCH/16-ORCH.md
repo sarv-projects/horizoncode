@@ -78,12 +78,12 @@ SubagentRef { agent_id, nickname?, session_ref, work_id, status, parent_turn_id 
 
 Tool scope for any child is `parent ceiling ∩ loadout ∩ agent rules`; limits may only narrow.
 
-**Budget vocabulary.** Each node carries ceilings for `tokens`, `cost`, `wall_ms`, and `tool_calls`, plus a `spent` accumulator. A ceiling is evaluated before dispatch and before each step commit; exhaustion fails the node closed and records the exhausted term. The tree-wide totals are the sum of node ceilings capped by the session ceiling.
+**Budget vocabulary.** Each node carries ceilings for `tokens`, `cost`, `wall_ms`, and `tool_calls`, plus `reserved` and `spent`. The controller atomically reserves the attempt, mandatory verification, and recovery allowance against the run and node ceilings before dispatch, then reconciles actual and unknown usage. Concurrent node reservations cannot oversubscribe the parent; exhaustion fails closed and records the term (`ARCH/25`).
 
 
-**TaskNode** — `{id, kind, deps[], state, budgets{tokens,cost,wall_ms,tool_calls}, spent, attempts, artifacts[], owner, lease?, evidence_refs[]}`. State is `pending → ready → running → waiting|paused|awaiting_approval → completed|failed|cancelled|expired`, mirroring the one Work lifecycle; there is no second enum.
+**TaskNode** — `{id, run_id, spec_digest, kind, deps[], acceptance_ids[], state, budgets{tokens,cost,wall_ms,tool_calls}, reserved, spent, attempt_ids[], artifacts[], owner, workspace_id?, evidence_refs[]}`. Task, attempt, turn, and run use distinct state machines (`ARCH/25`). Worker completion moves a task to `VERIFYING`; only current independent `PASS` evidence moves it to `PASSED`.
 
-**Worktree record** — `{id, path, base_ref, branch, lease_owner, lease_expiry, status}`. Worktrees are keyed by child id; a stale lease is reaped.
+**Worktree record** — `{id, path, base_ref, head_ref, branch, lease_owner, lease_expiry, fence_epoch, status}`. A stale lease is reaped only after external writes are reconciled; every write and settlement checks the fence epoch.
 
 **MergeResult** — `{applied[], conflicts[]{path, base, ours, theirs, evidence_ref}, method, deterministic_key}`. Conflicts carry evidence, never a silent overwrite.
 
@@ -95,8 +95,8 @@ Tool scope for any child is `parent ceiling ∩ loadout ∩ agent rules`; limits
 4. **Cancellation.** Parent cancel cascades to descendants; session teardown cancels without rebuffering; a cancelled child never wakes the parent.
 5. **Receipt intake.** Validate the receipt against schema; allow at most one bounded correction retry, then a raw-text fallback with a typed note. Roll usage up to the parent.
 6. **Worktree flow.** Create an isolated checkout at the base ref → grant a write lease → run → compute a diff → merge.
-7. **Merge arbitration.** Order candidate merges by a deterministic key (node id + completion order + content hash) → apply clean patches → on conflict, stop that branch, record a `MergeResult` with evidence, and surface it for a decision. Identical inputs produce identical results.
-8. **Task graph.** Nodes become ready when deps settle; budgets are checked before dispatch; a node that exhausts a budget fails closed. The graph persists and resumes after compaction or restart; a resumed node reuses any settled result.
+7. **Merge arbitration.** Order candidates by a stable topological order then task ID from pinned base revisions; completion timing is not an input. Apply clean patches; on conflict, stop that branch and record evidence. Reverify the combined integration revision.
+8. **Task graph.** Nodes become ready only when every dependency has current independent `PASS` evidence bound to the approved spec and tested revision. The graph persists and resumes after compaction or restart; a resumed node reuses an effect or result only after reconciliation.
 9. **Team run + CI.** Fan out a backlog within concurrency bounds; feed CI results back as node evidence; clean work applies, conflicts surface.
 
 **Scheduling & concurrency.**

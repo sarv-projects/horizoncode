@@ -1,6 +1,6 @@
 # 08 — Agent Loop
 
-`CMP-runner` is the control plane of the agentX binary. This document is the LLD for the turn/step engine: the canonical cycle, the turn-attempt lifecycle, input admission, scheduling and eager tool settling, interruption, overflow recovery, decline paths, the completion contract, and per-step accounting and events.
+`CMP-runner` is the control plane of the HorizonCode binary. This document is the LLD for the turn/step engine: the canonical cycle, the turn-attempt lifecycle, input admission, scheduling and eager tool settling, interruption, overflow recovery, decline paths, the completion contract, and per-step accounting and events.
 
 ## Purpose
 
@@ -109,7 +109,7 @@ Carried in the durable task graph (`DEC-009`): `goal`, `success_conditions[]`, `
 
 ### PLAN
 
-Lightweight, durable, and bounded: update the task graph and todo from the current goal. agentX has no second workflow engine; deterministic multi-step processes are not modeled here. A plan is advisory state on which CONTINUATION and the completion gate operate.
+Lightweight, durable, and bounded: update the task graph and todo from the current goal. HorizonCode has no second workflow engine; deterministic multi-step processes are not modeled here. A plan is advisory state on which CONTINUATION and the completion gate operate.
 
 ### MODEL STEP
 
