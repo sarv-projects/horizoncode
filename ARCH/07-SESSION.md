@@ -375,9 +375,6 @@ Checkpoints and portable-session export include a closed-world blob manifest. Cr
 | `session.log.durability_profile` | session | `run_durable` for any multi-hour run; `interactive` only where policy permits | Effective backend/profile is recorded; a multi-hour run refuses unsupported durability or disabled sync |
 | `session.log.max_event_bytes` / `max_segment_bytes` / `max_segment_events` / `max_session_event_bytes` | session | finite generated-schema defaults; exact values required before implementation | Bound each record, file, and session stream; event bytes have a separate ledger from blob bytes |
 | `session.log.control_reserve_bytes` / `replay_batch_events` | session | finite generated-schema defaults; exact values required before implementation | Preserve terminal/reconciliation capacity and bound replay allocations |
-| `session.log.durability_profile` | session | `run_durable` for any multi-hour run; `interactive` only where policy permits | Effective backend/profile is recorded; a multi-hour run refuses unsupported durability or disabled sync |
-| `session.log.max_event_bytes` / `max_segment_bytes` / `max_segment_events` / `max_session_event_bytes` | session | finite generated-schema defaults, exact values required before implementation | Bound each record, file, and session stream; event bytes have a separate ledger from blob bytes |
-| `session.log.control_reserve_bytes` / `replay_batch_events` | session | finite generated-schema defaults, exact values required before implementation | Preserve terminal/reconciliation capacity and bound replay allocations |
 | `session.migrate.strict` | session | `true` | Refuse unknown/newer versions rather than best-effort |
 | `session.artifacts.max_object_bytes` / `max_session_bytes` | session | bounded product defaults (exact values published in generated schema) | Encoded payload ceilings; managed policy may lower them, never raise compiled safety ceilings |
 | `session.artifacts.max_decoded_pixels` / `max_expansion_ratio` | session | bounded product defaults (exact values published in generated schema) | Decoder resource ceiling before image/media render or model use |
@@ -392,8 +389,8 @@ Session-level configuration is layered (`defaults → user → workspace → age
 
 | Requirement | How this document satisfies it |
 |---|---|
-| `REQ-SESS-001` | Durable JSONL log + index; resume after restart. |
-| `REQ-SESS-002` | Replay folds the log into identical projections; repair is deterministic. |
+| `REQ-SESS-001` | Bounded, digest-linked segmented event stream with a verified committed head and rebuildable index; resume only from committed state. |
+| `REQ-SESS-002` | Streaming replay of committed segments yields identical projections; inspection is read-only, while interrupted-tail recovery is explicit, byte-preserving, and effect-reconciled. |
 | `REQ-SESS-003` | Checkpoint storage and staged rewind to a turn boundary. |
 | `REQ-SESS-004` | Model, mode and permission snapshot persisted on the session record. |
 | `REQ-SESS-005` | Immutable per-session blobs, digest references, replay validation, copy-on-write migration, safe GC and visible unavailable states. |
