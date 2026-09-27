@@ -27,7 +27,8 @@ verified by themselves.
   status says otherwise.
 - Use only these status meanings: **proposed** (design only), **implemented** (code is
   present), **verified** (a repeatable check passed on an exact revision/environment),
-  and **accepted** (the relevant acceptance record exists). A file, interface, worker
+  **accepted** (the relevant acceptance record exists), and **blocked** (a named
+  dependency or external condition prevents progress). A file, interface, worker
   report, benchmark score, or passing mock cannot promote status on its own.
 - `ARCH/` owns design; `TODO.md` owns delivery status and task dependencies;
   `research docs/tests.md` owns the test/benchmark plan; `CURRENT_RUN.md` owns the

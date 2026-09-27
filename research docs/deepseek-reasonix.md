@@ -1,6 +1,6 @@
 # DeepSeek-Reasonix: Go agent harness, plans, context and ACP editor bridge
 
-> INTERNAL RESEARCH — reviewed 2026-09-27. Audited branch `main-v2`, commit `29c8349c3a489546285b092b166a72c2d127ea39`. This is branch-specific documentation/code, not a claim about a tagged stable release.
+> INTERNAL RESEARCH — reviewed 2026-09-27. Audited the Go `main-v2` branch at commit `29c8349c3a489546285b092b166a72c2d127ea39`. The maintainer announced this Go rewrite as the repository default on 2026-05-31; the prior TypeScript 0.x line is maintained separately on branch `v1`. The release page carries independent CLI, Desktop and Studio channels, so a release number alone does not identify the source tree this map describes. Check the release tag's target before transferring a source claim.
 
 ## HLD
 
@@ -25,6 +25,7 @@ CLI/ACP request → config/provider registry → context builder → model strea
 - MCP session rebuilding after 404 must distinguish safe discovery retry from ambiguous tool-call completion.
 - `readOnlyHint` is advisory metadata, not sandbox containment; installed MCP servers are trusted code.
 - One planner and one executor improve role separation but do not guarantee an independent evaluator or user-intent alignment.
+- A 2026-09-27 Studio pre-release disclosed a long-session data-integrity defect: inline image data URLs inflated an event log past the reader's 128 MiB refusal limit, after which replay and subsequent save failed. The fix moved images into digest-addressed blobs, kept references in the event stream, made missing/corrupt blobs recoverable from checkpoints where possible, and added schema-version refusal across old Studio clients. This is a project release note, not an independent reproduction; it is a strong design/test case for any portable session store.
 
 ## Relevance to HorizonCode
 
@@ -32,4 +33,6 @@ Study the lean Go interfaces, append-only transcript, explicit two-model plan ga
 
 ## Primary references
 
-[Spec](https://github.com/esengine/DeepSeek-Reasonix/blob/main-v2/docs/SPEC.md) · [Architecture](https://github.com/esengine/DeepSeek-Reasonix/blob/main-v2/docs/ARCHITECTURE.md) · [Transcript architecture](https://github.com/esengine/DeepSeek-Reasonix/blob/main-v2/docs/TRANSCRIPT_ARCHITECTURE.md) · [Session reference architecture](https://github.com/esengine/DeepSeek-Reasonix/blob/main-v2/docs/SESSION_REFERENCE_ARCHITECTURE.md) · [VS Code extension](https://github.com/esengine/DeepSeek-Reasonix/tree/main-v2/vscode-extension)
+[Spec](https://github.com/esengine/DeepSeek-Reasonix/blob/29c8349c3a489546285b092b166a72c2d127ea39/docs/SPEC.md) · [Architecture](https://github.com/esengine/DeepSeek-Reasonix/blob/29c8349c3a489546285b092b166a72c2d127ea39/docs/ARCHITECTURE.md) · [Transcript architecture](https://github.com/esengine/DeepSeek-Reasonix/blob/29c8349c3a489546285b092b166a72c2d127ea39/docs/TRANSCRIPT_ARCHITECTURE.md) · [Session reference architecture](https://github.com/esengine/DeepSeek-Reasonix/blob/29c8349c3a489546285b092b166a72c2d127ea39/docs/SESSION_REFERENCE_ARCHITECTURE.md) · [VS Code extension](https://github.com/esengine/DeepSeek-Reasonix/tree/29c8349c3a489546285b092b166a72c2d127ea39/vscode-extension)
+
+[Maintainer branch transition](https://github.com/esengine/DeepSeek-Reasonix/discussions/2397) · [Current per-surface release page](https://github.com/esengine/DeepSeek-Reasonix/releases)

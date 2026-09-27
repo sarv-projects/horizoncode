@@ -85,17 +85,40 @@ Route {
 
 **ProviderRecord** — id, base api, environment key names, auth-method enum (`api-key · oauth · well-known`), models map, and one or more `transport_ref`s for gateways that expose several wire protocols per model.
 
+**Per-deployment termination profile** — not model-catalog metadata, because local
+server behavior depends on server build, model, template, context configuration and
+adapter. `RouteTerminationProfile = { profile_id, route_fingerprint,
+output_cap_semantics: requested_cap | remaining_context_cap | unknown,
+evidence_ref, adapter_version, validated_at }`. A profile that declares
+`remaining_context_cap` is usable only when it is produced by a version-pinned
+adapter contract or a passing route-conformance record; user-entered labels and model
+catalog claims alone are not evidence. Any relevant fingerprint change invalidates
+the profile. If the server version or effective context configuration cannot be
+identified, semantics stay `unknown`.
+
+**Normalized termination schema.** Every finished generation carries
+`FinishRecord = { finish: completed | context_overflow | explicit_output_cap |
+remaining_context_cap | unknown_truncation | provider_error,
+raw_reason_code?, reason_source: protocol | validated_route_profile | unknown,
+model_attempt_id, logical_step_id, route_fingerprint, usage_ref? }`. Raw finish codes are retained as
+bounded, redacted metadata for diagnosis, not interpreted by UI or loop code. A
+generic `length`/`max_tokens` response is `explicit_output_cap` only when the
+request's configured output ceiling is the demonstrated limiting cap; it is
+`remaining_context_cap` only under a matching validated profile and the route's
+observed semantics; otherwise it is `unknown_truncation`. It is never promoted to
+normal completion because content parses as plausible prose or JSON.
+
 **Catalog data and cache** — the curated primary is bundled as HorizonCode-owned records with per-row source/retrieval/method/revision provenance and a content hash. Optional enrichment is opt-in and cached with a short TTL, cross-process lock, atomic temp+rename writes, validation, and a visible freshness state. Do not bundle a full upstream snapshot or third-party marks. Refresh failure retains the curated primary plus any still-valid cache, marks their source/freshness separately, and never blocks inference; missing enrichment must not be described as a cached full catalog (`DEC-021`).
 
-**Usage record** — inclusive totals plus a non-overlapping breakdown (`non_cached_input · cache_read · cache_write · reasoning`), clamped, with unnormalized provider fields retained only for billing audit. Preserve source amount/currency and pricing version. Show billed amount, quota impact, estimate, and unknown fields separately; an included plan may bill zero while still consuming a finite quota. Any display conversion is separately labeled and cannot mutate the recorded amount.
+**Usage record** — inclusive totals plus a non-overlapping breakdown (`non_cached_input · cache_read · cache_write · reasoning`), clamped, with unnormalized provider fields retained only for billing audit. Preserve source amount/currency and pricing version. Each `model_attempt_id`, including partial and recovered model generations, gets its own usage evidence; compaction calls and retry calls are separate debits. For media, retain only counts/encoded bytes and route-reported or clearly estimated token usage, never artifact bytes in analytics. Show billed amount, quota impact, estimate, and unknown fields separately; an included plan may bill zero while still consuming a finite quota. Any display conversion is separately labeled and cannot mutate the recorded amount.
 
 **Router state** — per-deployment health, cooldown expiry, latency estimate, in-flight count, observed rate-limit hints, and (optional) published eval scores.
 
 ## Lifecycle & flows
 
 1. **Catalog load.** On boot, load the curated primary and validated cache, then refresh enrichment only when opted in. Resolve records lazily. Projection merges provider and model fields (`provider.api` defaults overlaid by model overrides).
-2. **Model step.** `Router.resolve` picks a route → `Executor.prepare` applies auth, lowers tool schemas, and builds the protocol body → transport sends → framing decodes bytes → protocol translates frames into the common typed stream (`step-start · text/reasoning/tool-input deltas · tool-call · tool-result · step-finish · finish · usage · provider-error`) → usage is recorded. Consumers never branch on provider id.
-3. **Retry ownership (single-owner rule).** Transport retries only for request-start failures, bounded with exponential backoff + jitter, honoring `Retry-After` in seconds, milliseconds, or HTTP-date. Pre-content stream interruptions retry via buffer-until-proven, summing discarded-attempt usage. Post-content failures are handed to `CMP-runner`'s turn-level recovery. A user abort anywhere vetoes retry. Context overflow is **terminal** here: the adapter surfaces a typed overflow flag and does not re-request; `CMP-context` owns the single compact-and-retry.
+2. **Model step.** `Router.resolve` picks a route → `Executor.prepare` applies auth, lowers tool schemas, and builds the protocol body → transport sends → framing decodes bytes → protocol translates frames into the common typed stream (`step-start · text/reasoning/tool-input deltas · tool-call · tool-result · step-finish · FinishRecord · usage · provider-error`) → usage is recorded against immutable `model_attempt_id` and `logical_step_id`, including partial attempts. These IDs are distinct from orchestration's task-attempt ID. Consumers branch on normalized capability/evidence, never raw provider id/reason text.
+3. **Retry ownership (single-owner rule).** Transport retries only for request-start failures, bounded with exponential backoff + jitter, honoring `Retry-After` in seconds, milliseconds, or HTTP-date. Pre-content stream interruptions retry via buffer-until-proven, summing discarded-attempt usage. Post-content transport failures are handed to `CMP-runner`'s turn-level recovery. A user abort anywhere vetoes retry. Context overflow is **terminal** here: the adapter surfaces typed `context_overflow` and does not re-request; `CMP-context` owns the existing single compact-and-retry. Output truncation is classified in the `FinishRecord`; only `CMP-runner`/the durable controller may request the separate bounded remaining-context recovery in `ARCH/08`/`DEC-054`.
 4. **Routing.** Filter (policy-allowed, healthy, not cooling down, meets task requirements: context size, vision, tool-calling, reasoning) → rank by configured strategy → pick → declare a fallback chain → record an observable decision. On a typed retryable failure the chain advances; cooldown is applied to the failed deployment.
 5. **Eval gating.** When enabled, selection is bounded by published per-model suite scores and a configured threshold; the gate is deterministic and the score set is versioned.
 6. **Budget gates.** Token/cost ceilings are evaluated before sending; an exhausted budget fails closed with a typed reason and no silent downgrade.
@@ -117,6 +140,7 @@ Route {
 | Route absent | Typed `no-route`; guidance, not a crash |
 | Catalog enrichment fetch failure | Keep the curated primary and any valid cached enrichment; expose stale/unavailable provenance and log a redacted diagnostic; never invent rows or block a request whose route is already configured |
 | Malformed provider output | Adapter validates before anything is applied; typed failure, deployment marked degraded, nothing partial applied |
+| Generation ends at output limit | Persist a typed `FinishRecord`, partial attempt and usage. Explicit output cap or unknown cause returns incomplete output; proven remaining-context cap is eligible only for the controller's once-only safe recovery. Never dispatch partial tool arguments or call this a completed answer. |
 | Egress denial | Typed denial from `CMP-guard`; audited; never a silent fallback |
 | Cost mismatch | Preserve provider-reported actual and prior estimate with provenance; do not overwrite history; mismatch emitted as an audit event |
 
@@ -141,6 +165,7 @@ Route {
 | `REQ-HORIZON-003` | Token/cost ceilings evaluated pre-send and fail closed |
 | `REQ-ANALYTICS-007` | Preserve source currency and amount basis; mixed-currency totals are bucketed or explicitly converted with provenance |
 | `REQ-CTX-004` | Overflow surfaced as a terminal typed flag so the context engine performs exactly one compact-and-retry |
+| `REQ-CTX-011` | Preserve provider finish evidence and partial usage; expose version-bound termination semantics to the loop, without retrying in the adapter |
 | `REQ-LOOP-005` | Cancellation promptly aborts in-flight streaming, leaving partial work inspectable |
 | `REQ-AUDIT-003` | Redaction runs before any request/response detail can reach audit |
 | `REQ-SEC-002` | Provider output is decoded as untrusted data and schema-validated before use |

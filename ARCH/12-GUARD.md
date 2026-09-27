@@ -6,7 +6,8 @@
 action: *may this run now?* It is policy-as-code: ordered rules that evaluate to
 `allow | ask | deny`, with a **fail-closed default deny** for anything unmatched.
 It owns the rule model, rule sources and precedence, the approval lifecycle,
-scoped/TTL'd authorization tickets, and the plan/act/yolo modes.
+scoped/TTL'd authorization tickets, plan/act posture, and explicitly activated
+run-scoped reduced-approval grants.
 
 Guard **decides**; it never executes. Filesystem, network, and process effects are
 performed by `CMP-sandbox`/`CMP-tools`; credentials live in `CMP-secrets`. There is no
@@ -58,7 +59,10 @@ Pending     = { id, session, action, resources[], save[], deferred, created_at, 
 SavedRule   = { project, action, resource }   // persisted "always" memory
 Ticket      = { id, action, scope[], uses, expires_at, provider_epoch,
                 approval_ref?, policy_hash, single_use }
-GuardMode   = Plan | Act | Yolo
+GuardMode   = Plan | Act                 // execution posture, never project-settable
+ApprovalPosture = Standard | AutoApproveEligibleAsks
+RunPostureGrant = { run_id, actor, classes[], scope_digest, policy_digest,
+                    sandbox_profile, expires_at, composed_full_access, ack_digest }
 ```
 
 - **Actions** are dotted capability verbs: `fs.read`, `fs.write`, `fs.delete`,
@@ -101,7 +105,9 @@ GuardMode   = Plan | Act | Yolo
 2. Parse each source into a `Ruleset`, preserving order; reject a malformed layer and
    fall back to the previous valid layer with a warning — never fail open.
 3. Concatenate `[global, project, agent, session]`; compute and freeze `policy_hash`.
-4. Record mode (default `act`) and the snapshot to `CMP-session`/`CMP-audit`.
+4. Record the requested safe posture (default `act`) and the policy snapshot to
+   `CMP-session`/`CMP-audit`; create a reduced-approval grant only after run-scoped
+   user acknowledgement.
 
 ### Evaluate
 
@@ -152,23 +158,34 @@ Effects never execute without a valid ticket. Validation checks scope match, `us
 `expires_at`, and `provider_epoch`; a provider restart or cancellation revokes the
 ticket and bumps the epoch so stale handles fail closed.
 
-### Plan / act / yolo
+### Plan / act / reduced-approval
 - **Plan** — the hard guard: every mutating action class (`fs.write`, `fs.delete`,
   `fs.move`, `exec.run` with side effects, `net.connect` mutations, `mcp.call`
   mutations) is forced to `deny` regardless of rules. Read-only actions proceed.
   Plan mode is a ceiling, applied after rule evaluation.
 - **Act** — normal evaluation.
-- **Yolo** — `ask` for non-catastrophic actions is auto-resolved to `allow`; `deny`
-  rules and the **irreducible catastrophic gate** (permanent deletion, disk
-  operations, security/OS changes, destructive VCS) still apply. Entering yolo
-  requires explicit, audited opt-in. `allow` is never the default posture.
+- **Auto-approve eligible asks** (historical alias: “yolo” / “bypass approvals”) —
+  transforms only eligible `ask` results into scoped, expiring, audited grants inside
+  a user-confirmed run ceiling. It never overrides explicit `deny`, catastrophic
+  operations, full-access acknowledgement, unavailable enforcement, managed locks,
+  production/external-effect requirements, or configured network boundaries
+  (`REQ-GUARD-005`, `DEC-040`). Store a preference separately from activation. Project,
+  agent, plugin, prompt, or model content cannot activate or widen this posture.
+  Activation displays affected classes, sandbox/network tier and residual, child
+  inheritance, external actions that remain gated, and expiry. Active posture is
+  visibly labeled in every effect-capable surface; turning it off fences new dispatch
+  and revokes unused tickets. The combination with `full-access` requires one
+  composed local acknowledgement stating the combined scope (`ARCH/22 G-05`).
+- `allow` is never the default posture. A persistent “always” rule is not the same as
+  auto-approval mode and remains an exact, visible, scoped pattern.
 
 ### Sandbox interaction (defense in depth)
-Guard authorizes and passes the resolved confinement profile to `CMP-sandbox`; the
-kernel independently enforces read/write/network limits. A Guard `allow` does **not**
-imply filesystem or network reach — the sandbox may still deny it at the kernel, and
-a sandbox denial is recorded by `CMP-audit`. Neither layer may be disabled by the
-other's configuration.
+Guard authorizes and passes the resolved confinement profile to `CMP-sandbox`. The
+selected backend enforces only the reach boundary it declares and has acceptance
+evidence for; no generic kernel guarantee is inferred. A Guard `allow` does **not**
+imply filesystem or network reach — the sandbox may still deny it, and a sandbox
+denial is recorded by `CMP-audit`. Neither layer may be disabled by the other's
+configuration (`DEC-037`).
 
 ### Deny removes tool definitions
 At materialization, `CMP-tools` calls `materialize_filter()`: any tool whose action is
@@ -186,7 +203,7 @@ for approval.
 | Saved-rule store corrupt | Ignore the saved layer (drop to stricter rules); warn; audited. |
 | Ticket replay / stale epoch | `InvalidState`; audited; re-authorize normally. |
 | Concurrent bounded-use tickets | Atomic decrement; loser fails `InvalidState`; both audited. |
-| Unknown mode | Fall back to `plan` (most restrictive). |
+| Unknown or project-supplied authority mode | Reject that field/layer; remain at `plan` or the previous stricter effective posture. Never infer auto-approval. |
 | Secret in an approval display | `CMP-secrets` redacts before display and before audit append. |
 
 ## Configuration
@@ -198,7 +215,6 @@ overrides. Precedence for evaluation is global → project → agent → session
 ```jsonc
 {
   "guard": {
-    "mode": "act",                       // plan | act | yolo
     "unmatched": "deny",                 // deny | ask — never "allow"
     "approval": { "default_timeout_ms": 120000 },
     "rules": [
@@ -214,8 +230,13 @@ overrides. Precedence for evaluation is global → project → agent → session
 ```
 
 Rule sources: global config → project config → agent-level policy → session
-overrides. Session overrides are ephemeral; "always" persists to the project-scoped
-saved-rule store, never into a shipped config file.
+overrides. The example deliberately contains no active `mode` or reduced-approval
+field: project configuration may not select `plan`/`act` authority or activate
+auto-approval. A user setting may store a preference, but activation is a local,
+audited `RunPostureGrant` created at run start with expiry and scope. Session overrides
+are ephemeral; "always" persists only the exact reviewed pattern to the
+project-scoped saved-rule store, never into a shipped config file. Project rules may
+constrain but cannot enable or widen the local run grant.
 
 **Load-time validation (reject, never normalize).** A rule whose resource is
 path-shaped while its action is `exec.run` makes its config layer **invalid** and is
@@ -249,7 +270,7 @@ than the guard evaluates path policy (`REQ-SEC-023`, `AX-121`).
 3. **Saved-rule scope key** — project identity vs. workspace path when a repository
    is moved or opened through a symlink.
 4. **Catastrophic-gate catalogue** — the exact deny-by-default action list that
-   survives yolo, and how it is versioned.
+   survives reduced-approval mode, and how it is versioned.
 5. **Wildcard/glob unification** — **Resolved by `DEC-025`:** there is exactly one
    path grammar. `fs.*` resources are matched with the shared path grammar
    (`MatchMode::Path`) and `exec.run` with the raw command matcher

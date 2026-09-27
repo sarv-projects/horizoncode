@@ -95,15 +95,31 @@ ConfinementProfile = {
   limits:          { cpu, memory, disk, wall_clock }
 }
 ResolvedProfile = { backend, applied_at, mounts[], seccomp_mode, epoch,
-                    network_guarantee_level, network_mechanism, network_residual }
+                    worker_identity, worker_view_digest, private_roots_excluded,
+                    control_endpoint_unreachable, network_guarantee_level,
+                    network_mechanism, network_residual }
 SandboxOutcome  = { exit, stdout_ref, stderr_ref, denied?, violations[] }
 ```
 
-- **Profiles:** `read-only` (write only to session state + temp; network off at the
-  tier's declared level), `workspace-write` (default; write to workspace + session +
-  temp; network off at the tier's declared level), `full-access` (no fs restriction,
+- **Profiles:** `read-only` (write only to per-attempt scratch + temp; network off at
+  the tier's declared level), `workspace-write` (default; write to the assigned
+  workspace + per-attempt scratch + temp; network off at the tier's declared level),
+  `full-access` (broad access to the explicitly selected worker environment and
   network allowed — still subject to Guard and the catastrophic gate, and still one
-  egress path).
+  egress path). Per-attempt scratch is disposable tool output, **not** canonical
+  session/run state. No tool child may write session events, task/evidence projections,
+  audit records, credentials, budgets, policy, or operator-control state.
+- **Private controller boundary:** canonical HorizonCode state, credential material,
+  operator IPC/control capabilities, and the controller's home/config roots are never
+  mounted into tool, hook, plugin, MCP, or peer processes. The controller and provider
+  broker stay in the trusted host process; worker children receive only bounded task
+  data and narrow effect capabilities. This boundary also applies to `full-access`:
+  offer that profile only when the backend places the worker under a distinct OS
+  identity or isolated VM/container view that excludes controller-private roots and
+  credentials while exposing only the user-selected worker environment. If the tier
+  cannot prove this, refuse `full-access`; same-UID unrestricted execution does not
+  qualify. Never pass operator-control tokens through environment variables, prompt
+  context, config, or shell arguments.
 - **Protected subpaths:** VCS metadata/hooks and agent-owned configuration stay
   read-only inside any writable root so a write grant cannot rewrite the policy or
   install a hook that runs outside confinement.
@@ -136,6 +152,12 @@ SandboxOutcome  = { exit, stdout_ref, stderr_ref, denied?, violations[] }
    uses checked, handle-relative paths; untrusted tool and extension execution runs
    in a separately confined child. A future in-process sandbox may constrain the
    controller only if its provider/broker and dynamic-grant topology is proven.
+   Keep the controller's private state and operator-control endpoint outside the
+   child view at every tier; the worker receives a separate per-attempt scratch path.
+   A child that invokes HorizonCode CLI or scans common state paths still has only its
+   worker identity and cannot connect to the operator control API. Verify this through
+   the concrete mount/ACL/VM boundary; a hidden socket path or prompt convention alone
+   is not containment.
 3. Freeze each **child execution** profile for that process lifetime. A running
    child cannot relax it; a later grant requires a new authorization and a new
    child profile. Resuming a session re-resolves and proves the requested profile
@@ -192,12 +214,15 @@ SandboxOutcome  = { exit, stdout_ref, stderr_ref, denied?, violations[] }
 
 | Profile | FS read | FS write | Network | Use |
 |---|---|---|---|---|
-| `read-only` | scoped to granted roots | session state + temp only | off at the tier's declared level | Exploration, review, untrusted analysis |
-| `workspace-write` (default) | scoped to granted roots | workspace + session + temp | off at the tier's declared level | Everyday repo work |
-| `full-access` | unrestricted | unrestricted | allowed | Explicit, audited user activation only |
+| `read-only` | scoped to granted roots | per-attempt scratch + temp only | off at the tier's declared level | Exploration, review, untrusted analysis |
+| `workspace-write` (default) | scoped to granted roots | assigned workspace + per-attempt scratch + temp | off at the tier's declared level | Everyday repo work |
+| `full-access` | explicit worker environment; controller-private roots denied | explicit worker environment; controller-private roots denied | allowed | Explicit, audited user activation, only under isolated worker identity/VM |
 
 `full-access` widens capability but never bypasses Guard: the catastrophic gate and
-the single-egress rule still apply.
+the single-egress rule still apply. It is not an unrestricted same-UID host process;
+canonical controller state and operator-control authority remain outside the worker
+view. A backend that cannot prove this boundary refuses the profile, including bare
+execution on a platform that lacks the required isolation.
 
 **"Off" is a per-tier declared level, not a universal claim** (`DEC-026`). The matrix
 row says the profile *requests* no network; §Platform notes states what each tier can
@@ -333,6 +358,7 @@ network policy.
 | `REQ-TOOL-003` | Denied tools are absent via Guard; the sandbox independently confines the rest. |
 | `REQ-SEC-003` | This module is the sole path-reach enforcer: in-process operations use `check_path`; spawned tools use the selected OS boundary. The profile is refused when that boundary cannot establish required scope. |
 | `REQ-SEC-025` | Sole path-reach owner: scoped roots and deny/protected paths are checked at use and applied by the selected tier. Acceptance records name whether evidence is in-process, mount-view, or kernel policy; a tier that cannot enforce the required boundary refuses the effect (`DEC-024`, `DEC-025`). |
+| `REQ-SEC-026` | The worker view excludes canonical run/session/audit state, credentials, operator-control IPC, and the trusted controller home on every profile. `full-access` requires a distinct worker identity or isolated view; otherwise it is unavailable. |
 | `REQ-LOOP-005` | Cancellation propagates to process trees; partial state stays inspectable. |
 | `REQ-ORCH-003` | Per-subagent writable scopes are non-overlapping worktrees or explicitly merged. |
 | `REQ-PERF-001` | Startup probe is bounded; the warm-cache prompt target is unaffected. |
@@ -350,11 +376,13 @@ in this audit.
 
 The macOS backend invokes a Seatbelt profile and emits path/network rules, but this host
 audit has no macOS execution evidence. The Windows backend returns `Unavailable` for
-confined profiles; only explicit `full-access` runs bare. The common `check_path` logic
-is a caller-side reach gate for HorizonCode's in-process tools, not a kernel sandbox for
-the controller and not proof that a hostile process cannot race path resolution. These
-source facts do not satisfy the platform acceptance rows. See `ARCH/24` F-01..F-05 and
-`TODO.md` AX-101..AX-105.
+confined profiles; source permits explicit `full-access` runs bare. That current path
+does **not** satisfy the target private-controller boundary: the target must refuse
+this mode until a distinct worker identity or isolated VM can exclude state, secrets,
+and control IPC. The common `check_path` logic is a caller-side reach gate for
+HorizonCode's in-process tools, not a kernel sandbox for the controller and not proof
+that a hostile process cannot race path resolution. These source facts do not satisfy
+the platform acceptance rows. See `ARCH/24` F-01..F-05 and `TODO.md` AX-101..AX-105.
 
 ## Open questions
 

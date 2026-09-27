@@ -6,11 +6,13 @@ Module LLD for the three edge components `CMP-acp`, `CMP-mcp`, and `CMP-headless
 handles `initialize`, `session/new`, `session/close`, `session/prompt`, and
 `session/cancel`; it does not currently implement session `load/list/resume/fork`,
 `set-mode`, `set-model`, `set-config-option`, client-side ACP transport, MCP, or an edge
-SDK. The method tables below specify target behavior, not shipped support. Only methods
-actually implemented and tested may be advertised in ACP `initialize`. The Rust SDK
-crate's semver is not the ACP wire protocol version. At this document date, ACP
-changelog 1.9.1 is the latest stable v1 release and v2 is explicitly unstable; negotiate
-wire versions and feature-gate drafts ([official changelog](https://github.com/agentclientprotocol/agent-client-protocol/blob/main/CHANGELOG.md)).
+SDK, durable-goal preparation/approval, or ACP elicitation handling. The method tables
+below specify target behavior, not shipped support. Only methods actually implemented
+and tested may be advertised or invoked. The Rust SDK crate's semver and upstream
+changelog version are not the ACP wire protocol version. The upstream changelog is at
+1.9.1 as of this document date; it marks v2 changes unstable. Negotiate the actual
+wire version and capabilities at runtime, pin a released v1 schema in fixtures, and
+feature-gate drafts ([official changelog](https://github.com/agentclientprotocol/agent-client-protocol/blob/main/CHANGELOG.md)).
 
 ## Purpose
 
@@ -124,6 +126,62 @@ Signals (`SIGINT`/`SIGTERM`) map to cooperative cancel; the run always emits its
 5. **MCP connect.** On session start, connect configured servers, discover capabilities (paginated), and mirror tools. On tool-list change, debounce and refresh. On disconnect, reconnect with backoff; a failed server is isolated and does not block the session.
 6. **MCP OAuth.** An unauthorized connect triggers the authorize flow; tokens are stored via `CMP-secrets`; the transport is retained to finish auth; failures surface as `needs-auth`.
 7. **Headless run.** Parse flags → resolve/create session → submit one prompt (or resume/fork) → stream events (or NDJSON) → exit with the contract code. Interruption via signal terminates in the `interrupted` state and still emits the terminal event.
+
+### Goal approval and ACP elicitation
+
+ACP has no standard goal/task-graph lifecycle method. HorizonCode exposes its existing
+typed goal controls through its session/controller, not by inventing ACP task methods.
+`session/prompt` input is submitted to a deterministic ingress router first. On a new
+goal, `/goal set` semantics only persist the original request; a separate user action
+invokes bounded `GoalPreparation` (read-only repository discovery plus planner
+inference), and a separate exact approval is required before coding dispatch. The
+current server must not imply these target paths exist.
+
+Before activation, the ACP **agent server** persists a `GoalApprovalChallenge` before
+sending the full canonical review bundle to its connected client. The challenge is
+bound to the authenticated control session/connection, exact bundle digest, and
+expiry; a disconnect before a durable response invalidates the challenge, and a
+changed review always requires a new challenge. If
+`initialize.clientCapabilities.elicitation.form` was explicitly
+advertised, HorizonCode may send the agent-to-client `elicitation/create` request with
+`mode: form`, the current `sessionId`, the challenge ID, expiry, and review-bundle
+digest in the message,
+and a restricted-schema `activate` enum (`yes`, `no`). Validate both the ACP response
+action and submitted value. Only `accept` plus exact `yes` can mint a
+`GoalApprovalReceipt`, and only when that receiving client is configured as a trusted
+interactive connector with authenticated operator scope. Bind the receipt to the
+receiving client connection, session, authentication context, request ID, and all
+review digests. If identity/authentication is absent, elicitation may collect ordinary
+clarification but cannot approve goal activation. ACP elicitation is optional:
+`session/request_permission` answers remain scoped to a specific governed effect and
+cannot approve a goal. The capability and response semantics are protocol-versioned;
+as of this review, ACP v1.9.1 is the latest changelog release and elicitation's schema
+was stabilized in v1.7.0 (2026-08-20). Pin the exact protocol schema in fixtures and
+use the [official ACP v1 overview](https://github.com/agentclientprotocol/agent-client-protocol/blob/main/docs/protocol/v1/overview.mdx),
+[elicitation RFD](https://github.com/agentclientprotocol/agent-client-protocol/blob/main/docs/rfds/elicitation.mdx),
+and [official changelog](https://github.com/agentclientprotocol/agent-client-protocol/blob/main/CHANGELOG.md),
+not guessed methods. ACP connection/session binding prevents replay but is not user
+authentication or proof of a human interaction. When HorizonCode is an ACP client
+delegating work, peer-originated elicitation is untrusted input, never operator
+approval.
+
+If form elicitation is absent, the trusted connector renders a one-use canonical
+`HC-GOAL-START <response-delivery-id> <challenge-id> <review-bundle-digest> {ACCEPT|DECLINE|CANCEL}`
+string to its authenticated operator. The next `session/prompt` can produce a
+`GoalConfirmation` only if it consists of exactly one text block matching that grammar
+and the current pending challenge; intercept it, map it to `GoalConfirmation`, and
+persist it in the control lane before model dispatch. Only the exact `ACCEPT` response
+can activate. Any other input while the start review is pending
+invalidates that challenge and becomes a draft clarification requiring a new explicit
+prepare/review cycle. A denial, cancel, disconnect, timeout, malformed response,
+identity/connection change before the response is durably accepted, reused delivery
+ID, or stale digest leaves the goal inactive. After acceptance, the same durable start
+intent may finish across client disconnect only while its receipt is unexpired and
+policy/digests remain current; a new connection cannot confirm or replay it. Otherwise
+recovery rejects the intent and requires a new challenge. Typed control receipts are
+the generic-client fallback and do not add a custom ACP method. See `ARCH/25` for
+challenge idempotency/expiry and `ARCH/27` for the common TUI/CLI/ACP approval UX and
+grammar.
 
 ## Failure modes
 

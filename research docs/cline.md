@@ -2,6 +2,8 @@
 
 > INTERNAL RESEARCH — source snapshot: Cline v4.1.21 at **787ad1b077d8b697892dc3bfcd42e7c65b88789e**, released 2026-09-24. Includes VS Code product, CLI, SDK and shared packages. This map follows primary runtime/schema paths; it does not enumerate every UI component or test fixture.
 
+The project ships independently versioned channels. The 2026-09-27 release page lists core v4.1.21, SDK 0.0.86, CLI 3.0.65, and Desktop 0.0.37; the source map below pins core v4.1.21, while desktop-only changes must be checked at their own tag. The v4.1.21/SDK 0.0.86 notes report a one-time compact-and-retry for local-model responses truncated at the remaining-context ceiling, preservation of the partial reply, and no replay of turns that produced tool calls; they also persist terminal errors across navigation/resume. Treat these as versioned release behavior, not as proof for every host or model.
+
 ## High-level architecture
 
 Cline has evolved from an editor extension into a set of clients over a layered agent SDK. The same reusable agent loop is separated from Node session/orchestration services and model integrations.
@@ -49,6 +51,8 @@ Pinned source: [SDK package architecture](https://github.com/cline/cline/blob/78
 7. Hub clients can detach and reconnect to an owned spoke session; a scheduler can launch eligible tasks without an attached client.
 
 The September 2026 v4.1.21 release notes describe concurrent subagent tool calls within a step and recovery when long replies from local models reach output limits; those are release facts for that version, not universal guarantees for every provider/model.
+
+The separately versioned Desktop v0.0.37 notes add SSH remotes, worktrees, PR status, and parallel subagents to its onboarding summary. These are product-surface changes and do not change the scope or trust boundary of HorizonCode's own SSH/Git profile.
 
 ## Session and task schemas
 

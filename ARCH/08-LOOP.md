@@ -1,6 +1,6 @@
 # 08 — Agent Loop
 
-`CMP-runner` is the control plane of the HorizonCode binary. This document is the LLD for the turn/step engine: the canonical cycle, the turn-attempt lifecycle, input admission, scheduling and eager tool settling, interruption, overflow recovery, decline paths, the completion contract, and per-step accounting and events.
+`CMP-runner` owns one bounded model turn at a time; the durable controller described by `ARCH/25` owns run continuation. This document is the LLD for the turn/step engine: the canonical cycle, turn-attempt lifecycle, input admission, bounded response-batch assembly/admission, scheduling, interruption, overflow recovery, decline paths, completion, and per-step accounting/events.
 
 **Implementation status:** the current runner implements a bounded single-turn loop, not
 the durable task/run controller described by `ARCH/25`. A turn's `completed` event is
@@ -15,7 +15,7 @@ controller can derive those states (`DEC-029`).
 - Terminate every turn in exactly one durable terminal state (`REQ-LOOP-004`).
 - Interrupt promptly and leave partial work inspectable rather than discarding it (`REQ-LOOP-005`).
 - Persist events incrementally so no committed step is lost to a crash (`REQ-LOOP-006`).
-- Reach "done" only through a satisfied completion contract, never on a plain non-tool finish.
+- End turns truthfully; the durable controller, not the turn runner or a plain non-tool finish, decides whether the task/run is complete.
 
 ## Responsibilities
 
@@ -25,10 +25,10 @@ controller can derive those states (`DEC-029`).
 - The turn, step and turn-attempt state machines; the step counter and step limit.
 - Input admission and promotion ordering at turn/step boundaries.
 - Model-step assembly orchestration (calls `CMP-context` and `CMP-provider`; owns no assembly or transport logic itself).
-- Tool scheduling: parallel-safe partitioning, ordering barriers, eager start and settlement.
+- Bounded response assembly and batch admission before tool scheduling; parallel-safe partitioning, ordering barriers, and settlement after admission.
 - Continuation decisions: continue, compact, re-plan, or terminate.
 - The single terminal state per turn and its reason.
-- The completion contract gate and the running task-graph projection it consults.
+- Turn-end classification and revision-bound evidence references; the durable completion gate and task-graph transitions belong to `CMP-orch`.
 - Per-step usage accounting and per-step event emission.
 
 **Never owns**
@@ -74,12 +74,12 @@ controller can derive those states (`DEC-029`).
 | INPUT | prompts, queued input, steers | admitted input rows |
 | ADMISSION | guard decision, budget, step limit | admitted/denied step; promotion |
 | PLAN | task graph, todo, goal | plan/task-graph update |
-| MODEL STEP | route, context, tools | streamed assistant turn |
-| SCHEDULER | streamed tool calls | parallel groups + barriers |
+| MODEL STEP | route, context, tools | streamed display events + complete bounded response |
+| SCHEDULER | admitted complete tool batch | parallel groups + barriers |
 | EXECUTE | grouped calls | governed effects |
 | OBSERVE | settlements | model-content + UI-detail results |
 | UPDATE | results, usage | log events, task graph, cost |
-| CONTINUATION | completion contract, budget | continue · compact · terminate |
+| CONTINUATION | controller disposition, budget | continue · compact · yield · terminate turn |
 
 ### Completion contract
 
@@ -99,18 +99,26 @@ Carried in the durable task graph (`DEC-009`): `goal`, `success_conditions[]`, `
 8. **Request.** Build the request: system parts, translated history, tool definitions, tool choice, session-affinity headers.
 9. **Pre-step compaction.** Ask `CMP-context` whether compaction is needed; if it compacted, transition to a continuation that rebuilds the request at the same step.
 10. **Snapshot.** Capture the start file-tree snapshot.
-11. **Stream.** Run exactly one provider turn. Publish events incrementally. On the first un-executed tool call, mark `needsContinuation` and eagerly start its settlement.
-12. **Settle.** Join all tool settlements (or cancel on interruption); handle provider error, overflow, decline and interruption.
-13. **Close the step.** Record `step/end` with usage, cost, end snapshot and changed files.
-14. **Return.** `{ needsContinuation, step }` to the outer loop.
+11. **Stream and collect.** Run exactly one provider turn and publish bounded display events. Tool-call proposals and partial arguments are provisional only; assemble them under per-response call-count, argument-byte, and retained-response-byte caps. Nothing from this response executes while the stream remains open.
+12. **Admit batch.** On the completed response, validate IDs, schemas, sizes, ordering metadata, permissions, workspace fences, and aggregate reservations. A malformed or over-cap response receives one durable rejection outcome and dispatches none of its calls. Do not replay the same rejected batch unchanged.
+13. **Settle.** After batch admission, schedule independent calls and honor barriers; join settlements or cancel/reconcile on interruption. Once admitted effects begin, the batch is not transactional: each call has its own effect journal and may settle independently. Handle provider error, overflow, decline, cancellation, and interruption.
+14. **Close the step.** Record `step/end` with usage, cost, batch digest/outcome, end snapshot and changed files.
+15. **Return.** `{ needsContinuation, step }` to the outer loop/controller.
 
 ### INPUT → ADMISSION
+
+Natural-language pause/cancel/stop directives are checked on the control lane before
+normal prompt admission. When the directive or target run is ambiguous, the controller
+fences new dispatch and asks for clarification; it does not send the ambiguous stop
+request to the worker to decide whether to continue (`DEC-042`). Empty assistant output,
+an empty tool batch, a heartbeat, or a successful deterministic background process
+never creates a continuation by itself.
 
 - Input arrives as a prompt, a queued message, or a steer; each is durably admitted before admission is evaluated. The durable receipt contains delivery ID, payload digest, lane, sequence, admission result, and promotion status. Limits cover payload size, pending count, and age; same ID/same digest is idempotent, while same ID/different digest is a conflict (`REQ-LOOP-007`).
 - **Promotion order at a boundary:** preserve original order within each lane. A steer may interrupt only at a safe step boundary; queued prompts advance fairly and cannot starve behind an unlimited stream of steers. Promote at most the configured batch per boundary and persist the cursor. This refines the earlier “drain all steers” wording, which could starve queued user tasks under sustained steering (`REQ-HORIZON-014`).
 - Admission checks the guard decision and the session/step budgets. A `deny` ends the turn `declined`; an `ask` parks the turn in a durable awaiting-approval wait and resumes on the recorded decision; an exhausted budget fails closed (`REQ-HORIZON-003`).
-- Stop/continue decisions use persistent attempt and failure fingerprints across model changes, compaction, and process restarts. Reopening a session does not reset retry count. Repeating a failure without new evidence requires a different strategy, clarification, or a typed pause.
-- A forced run performs one attempt even when no input is eligible.
+- Stop/continue decisions belong to `CMP-orch` and use persistent progress signatures, attempt/failure fingerprints, and batch digests across model changes, compaction, peer replacement, and process restarts. Reopening a session does not reset retry/no-progress counts. A strategy label alone is not new evidence; record the changed evidence or method. The model cannot override a controller pause/stop.
+- A forced run performs one bounded attempt even when no input is eligible; force never bypasses budget, policy, pause, or stop state.
 - Injected (non-user) context uses the same `next-step` boundary and never interleaves mid-step (`REQ-LOOP-002`).
 
 ### PLAN
@@ -121,11 +129,12 @@ Lightweight, durable, and bounded: update the task graph and todo from the curre
 
 - Route resolution is `CMP-provider`'s; the loop never names a vendor.
 - Context assembly is `CMP-context`'s: stable prefix + dynamic suffix, budgeted before the request (`REQ-CTX-004`).
-- Exactly one provider turn is streamed per step attempt. Assistant text, reasoning, tool-call proposals, provider errors and usage are published incrementally; token deltas are ephemeral and not persisted individually (`REQ-LOOP-006`).
+- Exactly one provider turn is streamed per step attempt. Assistant text/reasoning may be shown provisionally; tool-call proposals are buffered and capped until the provider marks the response complete. Never dispatch a partial response. Persist a bounded response digest, final usage, and batch admission/rejection; individual token deltas remain ephemeral (`REQ-LOOP-006`, `REQ-LOOP-008`). A call/byte cap limits dispatch, not generated-token billing; provider max-output controls and usage reconciliation are separate.
 
 ### SCHEDULER
 
-- Partition streamed tool calls into parallel-safe groups and explicit ordering barriers. Independent calls run concurrently; a declared barrier is honored (`REQ-LOOP-003`).
+- Partition only a fully assembled, admitted batch into parallel-safe groups and ordering barriers. Independent calls run concurrently; a declared barrier is honored (`REQ-LOOP-003`).
+- Batch admission is not an atomic transaction across effects. Preflight calls and reserve resources before dispatch; then each effect separately receives a guard decision/ticket, durable prepare record, and terminal receipt. A batch-level defect (invalid encoding/schema, duplicate ID, oversized response, or stale workspace fence) dispatches none. Per-call authorization denial is a typed result for that call; other independently authorized calls may proceed, with partial batch settlement made explicit.
 - Modifying calls with overlapping write scope serialize (workspace lease); read-only path-scoped calls may fan out.
 - Provider-executed tool calls are recorded but not locally settled.
 
@@ -139,7 +148,7 @@ Lightweight, durable, and bounded: update the task graph and todo from the curre
 
 - Collect settlements; separate model-visible content from UI-only detail (`REQ-TOOL-004`).
 - Record typed outcomes: success, failure, or provider-executed.
-- Settlements are eagerly started and all awaited before continuation so the next request sees complete results.
+- Settlements start only after complete-batch admission and are all awaited/reconciled before continuation so the next request sees final results.
 
 ### UPDATE
 
@@ -148,9 +157,9 @@ Lightweight, durable, and bounded: update the task graph and todo from the curre
 
 ### CONTINUATION
 
-- **Continue** when the step produced local tool calls that need results, or when a steer is pending at the step boundary.
+- **Continue** only when the controller authorizes it, the step has settled, and a durable progress signature or newly admitted input justifies another model action.
 - **Compact** when the context budget requires it, then rebuild the request (same step).
-- **Terminate** only per the completion contract (below) or on a decline/failure/interruption.
+- **End the bounded turn** normally, or end it with decline/failure/interruption; the caller/controller determines whether another turn is admitted.
 - If the step limit is reached, the next attempt is the tool-less wrap-up (below).
 
 ### Step limit and last-step forcing
@@ -162,10 +171,11 @@ When `step ≥ configured maximum`:
 - Any tool call that still arrives fails unsettled with reason "tools are disabled after the maximum steps".
 - An overrun (work not finished) marks the last step `partial` — resumable by the next user input, never a silent stop (`REQ-HORIZON-001`).
 
-### Parallel eager tool settling
+### Bounded response batches and tool settling
 
-- The first non-provider-executed tool call sets `needsContinuation` and starts its settlement immediately in a tracked fiber; later calls start as they stream.
-- Continuation waits for **all** settlements (join) or for the fiber set to drain (`awaitEmpty`), whichever the scheduler selects for the current mix.
+- No tool call starts while response streaming is open. Once response completion is observed, all call IDs, schemas, argument bytes, and response bytes are validated against hard caps before any dispatch.
+- Preflight and reserve all calls as far as local policy allows; persist batch digest/admission. Execute calls in bounded parallel groups, recording each effect independently. A valid but partially denied batch may have successful peer calls; the event/timeline must show this explicitly.
+- Continuation waits for **all** settlements or cancellation reconciliation; never start a follow-up model response while admitted calls from the prior response remain unresolved.
 - Failure paths call a fail-unsettled pass so no call is left `pending`/`running` at the boundary (`REQ-LOOP-004`).
 
 ### Interruption, cancellation and fail-unsettled
@@ -193,12 +203,51 @@ A declining decision (permission denied or question rejected) halts the loop rat
 - A second overflow is surfaced as a typed failure; the loop never silently starts a new conversation (`REQ-CTX-004`).
 - If content has already started, overflow is handled at the turn level like any post-content provider failure — not retried mid-stream.
 
-### The completion contract (hard to reach)
+### Remaining-context output truncation recovery
 
-- Termination with `completed` requires the completion contract to be satisfied: `goal` met, every `success_condition` verified, and `verification[]` executed before "done".
-- The loop does **not** stop merely because it read a file, wrote an edit, ran a command, or finished one subtask.
-- Genuine blockers that may end a turn without completion: a missing capability, a required user decision, an exhausted budget, or an irrecoverable failure. Each ends with an explicit terminal state and reason.
-- Verification is risk-proportional to the changed effect; a claimed completion without recorded verification is a defect.
+This is separate from a request rejected for context overflow. It applies only after a
+generation stream ends with typed `FinishRecord.finish = remaining_context_cap`
+(`ARCH/11`, `DEC-054`), never to a transport interruption or generic `length` reason.
+The provider adapter records cause evidence; it does not retry.
+
+1. Append an incomplete `assistant/attempt` with its `attempt_id`, `logical_step_id`,
+   `FinishRecord`, usage, and bounded `partial_ref` when partial output exists. Keep
+   this visible and bill/account for it, but exclude it as a completed assistant turn
+   from the next model context. The log is append-only.
+2. Admit exactly one recovery attempt for that `logical_step_id` only if no tool call
+   was dispatched, the route had no provider-executed tools or other hidden side
+   effects enabled, no new user/control/cancel input arrived, the task/spec/policy and
+   workspace revisions still match, and the controller can reserve compaction, the
+   same route/model retry, and required verification inside the existing budgets.
+3. Compact the completed conversation prefix; do not summarize the partial attempt as
+   fact. Rebuild the provider request from that same logical step and pinned route.
+   Re-check all preconditions after compaction immediately before retry dispatch.
+4. If a precondition changes, the route becomes unavailable, compaction fails, or the
+   retry is itself truncated, return a typed incomplete result with the partial
+   artifact and evidence. Do not nudge, switch routes, replay, or auto-retry again.
+   A user cancellation always fences the retry.
+
+An explicit requested output cap and an unknown/ambiguous finish cause retain partial
+output and usage, show a bounded recovery choice (for example, raise the cap for a
+future attempt or split the operation), and do not silently compact or retry. Partial
+tool-call JSON is inert until the complete response has been validated and admitted as
+a whole batch (`ARCH/10`); provider-managed tool execution makes the response ineligible
+for automatic recovery. Per-logical-step depth is persisted across restart and model
+session changes; there is no retry-counter reset on a new context window.
+
+### Turn completion versus run completion
+
+- `turn/end: completed` means the bounded provider turn ended normally. It does not
+  mean the run goal or a task is complete; only `CMP-orch` may transition those after
+  current independent verification evidence satisfies the durable completion contract
+  (`ARCH/25`, `DEC-029`).
+- The runner does not stop the run merely because it read a file, wrote an edit, ran a
+  command, finished one subtask, or emitted plausible final prose.
+- A turn can end as `declined`, `interrupted`, `failed`, or normally `completed`; a
+  run-level blocker, budget exhaustion, user pause, or hard stop is recorded by the
+  controller with a separate reason and state.
+- Verification is risk-proportional to the changed effect. A task/run completion
+  claim without revision-bound verifier evidence is a defect.
 
 ### Cost and token accounting per step
 
@@ -235,10 +284,15 @@ Events are appended before the phase's work is considered settled (`REQ-LOOP-006
 | Post-content provider failure | Handled at the turn level; the step is not retried mid-stream. |
 | Tool failure | Recovery pipeline: retry (idempotent/read-only), alternate path, or re-plan; typed failure recorded. |
 | Context overflow | Compact-after-overflow once, retry the same step; a second overflow escalates (`REQ-CTX-004`). |
+| Remaining-context output truncation | Preserve typed incomplete attempt/partial usage; controller may compact and retry same step once only with validated route evidence, no side effects or revision change, and budget reservation (`REQ-CTX-011`, `DEC-054`). |
+| Explicit or unknown output cap | Keep partial response; mark incomplete and offer bounded user-directed recovery; never infer completion or auto-retry (`REQ-CTX-011`). |
 | Interrupt mid-step | Stream cancelled, unsettled tools failed, partial work retained, `turn/end` = `interrupted`. |
 | Declined permission/question | Loop halts; `turn/end` = `declined`; not turned into model-facing output. |
 | Step limit reached | Tool-less wrap-up; overrun marked `partial` and resumable. |
-| No progress across N steps | Stuck detector escalates via the guard/question primitive; never an unbounded spin. |
+| No progress across N steps | Durable controller compares task/spec/evidence/workspace/event signatures and repeated batch fingerprints. It changes strategy or pauses at a finite ceiling; model text cannot assert progress or override the stop. |
+| Tool-call flood / oversized response | Cancel collection, retain bounded diagnostics/usage, reject the entire unstarted batch, and persist its signature so identical output is not replayed. |
+| Explicit user pause | Fence future dispatch through the reserved control lane, cancel supported in-flight work, reconcile effects, persist `PAUSED`, and require explicit `/resume`. |
+| Future-time / external-event wait | Persist a typed wait condition and sleep without model calls. Timer/event wakes are idempotent; polling is a separately authorized and budgeted task. |
 | Budget exhausted | Fail closed: pause or terminate with a typed reason; no silent overrun. |
 | Provider restart / stale handle | Epoch bump invalidates handles; the step restarts cleanly rather than replaying provider-bound state. |
 | Sub-agent fails/stalls | Receipt with blockers (untrusted data); the parent re-plans or escalates. |
@@ -250,14 +304,17 @@ Events are appended before the phase's work is considered settled (`REQ-LOOP-006
 |---|---|---|
 | `loop.maxSteps` | bounded (per agent) | Step limit and last-step wrap-up |
 | `loop.maxTurnRetries` | small, bounded | Turn-level retries before block/re-plan |
-| `loop.stuckThreshold` | N steps | No-progress escalation trigger |
+| `loop.maxToolCallsPerResponse` | finite, versioned default | Reject an oversized response before any of its calls execute |
+| `loop.maxToolArgumentBytesPerResponse` | finite, versioned default | Aggregate serialized-argument cap per response |
+| `loop.maxResponseBytes` | finite, versioned default | Bound retained text/reasoning/tool payload before parsing/persistence |
+| `loop.noProgressLimit` | finite; controller-enforced hard maximum | Automatic no-progress pause/stop threshold, durable across restarts |
 | `loop.parallelTools` | on | Independent tool calls run concurrently |
 | `loop.toolBarriers` | declared per call | Ordering barriers honored by the scheduler |
 | `loop.overflowRecovery` | `once` | Single compact-after-overflow retry |
 | `loop.maxToolOutput` | ~2000 lines / 50 KiB | Bounded preview plus artifact ref |
 | `budget.tokens` / `budget.cost` / `budget.wallClock` | per session | Hard maxima enforced at admission |
 
-Configuration is layered (`defaults → user → workspace → agent profile → session`) and the effective model/mode/permission snapshot is persisted with the session (`REQ-SESS-004`).
+Configuration is layered (`defaults → user → workspace → agent profile → session`) and the effective model/mode/permission snapshot is persisted with the session (`REQ-SESS-004`). Security ceilings, no-progress ceilings, output limits and budget caps cannot be widened by less trusted layers.
 
 ## Requirements mapping
 
@@ -269,6 +326,10 @@ Configuration is layered (`defaults → user → workspace → agent profile →
 | `REQ-LOOP-004` | Exactly one terminal state per turn, and fail-unsettled at every boundary. |
 | `REQ-LOOP-005` | Interruption cancels streaming and retains partial work. |
 | `REQ-LOOP-006` | Incremental event append before each phase settles. |
+| `REQ-LOOP-008` | Whole-response bounded batch assembly and rejection before dispatch; model-generation token usage is charged separately from tool-call caps. |
+| `REQ-HORIZON-015` | Durable progress signatures and hard, restart-stable no-progress/retry ceilings govern every automatic continuation. |
+| `REQ-HORIZON-016` | Timer and event waits persist and wake without model inference; polling remains a separate bounded action. |
+| `REQ-HORIZON-017` / `REQ-UI-016` | User pause fences dispatch and requires explicit resume through a priority control lane. |
 | `REQ-TOOL-003` | Tool materialization is permission-filtered; denied tools are absent. |
 | `REQ-TOOL-004` | Tool results split model-visible content from UI-only detail. |
 | `REQ-CTX-004` | Overflow compacts and retries the same step once. |

@@ -19,11 +19,13 @@ documented behavior. No upstream code has been copied.
 | Codex: Rust core plus app-server stable/experimental schemas | Keep one core and versioned client contracts; negotiate optional methods | `ARCH/03`, `ARCH/15`, `ARCH/21`; schema gate `ACC-P1-05`. |
 | Codex: JSONL rollout and SQLite index; thread/turn/item separation | Separate canonical events from rebuildable projections and run/task/attempt identity | `ARCH/07`, `ARCH/25`, `AX-309`. |
 | Codex: persisted parent/child thread graph, lifecycle and budget controls | Track external IDs and usage, but require task DAG and independent evidence for completion | `ARCH/16`, `ARCH/25`, `AX-310`, `AX-318`. |
+| Codex Goals: persistent thread-scoped objective, `/goal` lifecycle commands, event-driven idle-boundary continuation, queued-input checks, budget stop, and suppression after no-tool-call continuation | Reuse explicit goal/status/budget visibility and safe-boundary scheduling; bind HorizonCode activation to exact approved digests, preserve a task graph/evidence gate, and let the deterministic controller—not prompt text—own stop state | [Current Goals guide](https://developers.openai.com/cookbook/examples/codex/using_goals_in_codex), `research docs/codex.md`, `ARCH/25`, `ARCH/27`, `DEC-039`, `DEC-042`, `DEC-047`, `DEC-048`, `AX-337`. |
 | Codex: review command, diff and Git/worktree workflow | Add exact-revision review and governed PR lifecycle | `ARCH/25`, `REQ-DELIVERY-001`, `AX-326`. |
 | OpenCode: models.dev provider metadata separated from connectors | Use a pinned, curated catalog as data; probe real route capabilities and cost provenance | `ARCH/11`, `REQ-PROV-006`, `AX-324`, `AX-327`. |
 | OpenCode: typed message parts, input admission sequence and context epoch | Preserve queued/steered input order and epoch-bound prompt/tool snapshots; task truth remains separate | `ARCH/07`, `ARCH/09`, `ARCH/25`. |
 | OpenCode: dynamic permission-filtered tool registry and child sessions | Permission-filter before materialization; child completion does not pass parent task | `ARCH/10`, `ARCH/16`, `REQ-TOOL-003`. |
 | OpenCode: local retry/doom-loop guard | Use its signal as one attempt fingerprint; persistent controller changes strategy across sessions | `ARCH/25`, `AX-310`. |
+| MiMo-Code: OpenCode-derived memory, goal, task/actor workflows and response-flood recovery | Study the fork-specific deltas without counting it as an independent OpenCode peer; use bounded whole-response admission and durable recovery evidence | `ARCH/08`, `ARCH/25`, `research docs/mimo-code.md`, `research docs/tests.md`, `AX-338`, `AX-345`. |
 | Cline: hub owns workers while clients detach/reconnect | Require supervised detached controller, authenticated attach, cursor replay and truthful last-seen status | `REQ-HORIZON-011`, `ARCH/25`, `AX-331`. |
 | Cline: agenda task/revision/run/claim/lease schema and automation caps | Adopt task revisions, claim fencing and bounded admission; unlock dependencies only after verification | `ARCH/16`, `ARCH/25`, `AX-309..313`. |
 | Cline: distinct team events, snapshots, outcomes and manifests | Keep event, projection and artifact ownership explicit; reconcile cross-stream mismatch | `ARCH/25` schema and cross-stream rule. |
@@ -41,7 +43,7 @@ The useful common core is a bounded model/tool loop, repository retrieval,
 permission-aware tools, inspectable session history and Git-aware changes.
 HorizonCode's proposed addition is a controller that persists intent, tasks,
 attempts, effects, budget and independent evidence outside the worker session.
-That addition is a design hypothesis until `ACC-H1-01..06` and the same-model,
+That addition is a design hypothesis until `ACC-H1-01..10` and the same-model,
 same-budget comparison in `AX-330` are executed.
 
 The five core notes do **not** establish an exhaustive map of every upstream schema,

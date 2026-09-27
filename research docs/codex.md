@@ -96,6 +96,78 @@ For an HorizonCode adapter, capture the child thread ID, parent ID, role/nicknam
 - Git status/diff and worktree support help isolate and review changes. App-server includes Git metadata and file-change item families.
 - PR creation, review comments, and merge are external effects handled through integrations/tools and their own permissions; they are not the same as thread completion.
 
+## Long-horizon work: durable plan plus incremental evidence
+
+OpenAI's Feb. 23, 2026 long-horizon report describes an approximately 25-hour experiment
+with GPT-5.3-Codex. The reported setup used a detailed spec, a plan and status files,
+reviewable milestones, and tests/lint/typecheck after each milestone. The report also
+highlights skills for repeatable procedures, automations for recurring work, and Git
+worktrees to isolate parallel runs. This is a reported experiment, not a guarantee that
+Codex or a Markdown plan will remain coherent for 25 hours on arbitrary tasks.
+
+The [Codex ExecPlan convention](https://github.com/openai/openai-cookbook/blob/main/articles/codex_exec_plans.md)
+is particularly useful as an execution handoff. Each plan is meant to stand alone for a
+new agent with only the current checkout and the plan. It records purpose, exact files,
+commands and expected outputs, observable milestones, progress, surprises, decisions,
+and retrospective outcomes; it is revised as work changes. The cookbook explicitly
+describes it as a living design/execution document. That reduces the cost of context
+loss and makes the plan reviewable before implementation.
+
+Codex also has a persisted **thread goal** record and goal UI. The current Rust contract
+stores an objective, status, optional token budget, tokens used, time used, and
+timestamps; its statuses include active, paused, blocked, usage-limited, budget-limited,
+and complete. This is valuable user-visible goal/accounting state, but it is not a
+task DAG, approved requirements bundle, per-task budget ledger, or evidence-bound
+acceptance schema. Keep those concepts separate in HorizonCode. Source: [goal state
+store](https://github.com/openai/codex/blob/main/codex-rs/state/src/runtime/goals.rs),
+[goal tool schema](https://github.com/openai/codex/blob/main/codex-rs/ext/goal/src/spec.rs),
+[goal status UI](https://github.com/openai/codex/blob/main/codex-rs/tui/src/chatwidget/goal_status.rs).
+
+The official [Codex Goals guide](https://developers.openai.com/cookbook/examples/codex/using_goals_in_codex),
+checked 2026-09-27, documents `/goal`, `/goal pause`, `/goal resume`, and `/goal clear`
+for Codex builds from 0.128.0. It describes persisted thread-scoped objectives,
+continuation only at an idle boundary with no queued input or pending work, no
+continuation for plan-only work, suppression after a no-tool-call continuation, and
+budget-limited stopping. Treat this as the published workflow contract; it is not a
+promise that every backend reports exact usage or that the Goal replaces a task DAG
+and independent acceptance evidence.
+
+### Failure reports to convert into tests
+
+The following are public user reports, not proof of a general defect in all current
+Codex versions. They are still useful adversarial scenarios for a long-running
+controller:
+
+| Report | Reported failure | HorizonCode control |
+|---|---|---|
+| [#40929](https://github.com/openai/codex/issues/40929) | A resumed goal reportedly kept obeying an older chat-level pause and immediately auto-continued through seven no-progress turns, consuming reported tokens before manual pause. | Resume is a durable, explicit control event; it invalidates older pause intent only for the named run/action. Before each continuation, a deterministic controller checks a persisted progress signature and pauses on repeated no-progress. |
+| [#28923](https://github.com/openai/codex/issues/28923) | A goal reportedly spun over 100 automatic turns while waiting for a future time rather than yielding to a timer/automation. | Persist a wait condition, release execution capacity, make no model call while idle, and issue one idempotent wake event when due. Polling is separate permissioned work. |
+| [#37800](https://github.com/openai/codex/issues/37800) | A long-running goal reportedly emitted repeated “continuing” text without edits or progress while consuming time/tokens. | Model prose, heartbeat, repeated reads, compaction, and tool-call volume do not count as progress. Persist no-progress and retry counters across model/session restarts. |
+| [#37869](https://github.com/openai/codex/issues/37869) | A report describes automatic continuations despite a displayed paused goal state. | Pause writes a dispatch fence before acknowledging; status and scheduler share one transactionally maintained source of truth. No continuation after pause until explicit user resume. |
+
+These cases expose two implementation boundaries: (1) the goal UI/prompt must not be
+the authority that controls the scheduler, and (2) a “wait” needs a timer/event
+handoff rather than another inference turn. HorizonCode's proposed contracts are in
+[`ARCH/25-LONG-HORIZON-CONTROL.md`](../ARCH/25-LONG-HORIZON-CONTROL.md), especially
+`ProgressSignature`, `WaitCondition`, pause fences, resume events, tool-batch admission,
+and persisted no-progress ceilings.
+
+### HorizonCode disposition
+
+Adopt Codex's self-contained milestone plan as a readable projection for the human and
+for a fresh worker, alongside the existing structured event/task/evidence store. The
+plan cannot grant permission, change accepted requirements, or declare task completion;
+it must be reproducible from canonical state and carries source event/spec digests.
+Use exact commands and expected results, but re-check the current checkout before
+running them. Keep a small next-safe-action field, not a copy of the entire transcript.
+
+Borrow worktree isolation and per-milestone verification. Keep task graph dependencies,
+actual/external usage provenance, cancellation reconciliation, explicit user pause,
+wait scheduling, and stop decisions in the HorizonCode controller. A new session or a
+new model is not a fresh retry allowance. A strong evaluator can propose an assessment,
+but it cannot override a hard budget, a user stop, missing evidence, or an external
+effect's unknown outcome.
+
 ## Strengths, limitations, and HorizonCode lessons
 
 **Patterns worth comparing:** schema-generated app-server contract; separate rollout history and SQLite index; capability-negotiated stable/experimental API; typed parent-child agent graph; lifecycle APIs for child status/input/resume/close; budget admission/reminders; OS-specific sandbox crates and approval taxonomy.
@@ -103,6 +175,11 @@ For an HorizonCode adapter, capture the child thread ID, parent ID, role/nicknam
 **Limits to preserve:** a persisted child edge says a child exists/is closed, not that its work passed. A thread-level goal does not replace validated requirements and acceptance criteria. Some APIs are experimental. Local telemetry and remote-backend usage may differ in fidelity. The model/tool loop still needs an independent verifier.
 
 **HorizonCode lessons:** keep ExternalAttempt and task graph in HorizonCode even when delegating to Codex; pin app-server version/capabilities; map child thread IDs to an external attempt; record actual commit and test evidence; do not inherit broader permissions; verify changes on the integrated worktree.
+
+**Long-run lesson:** steal the user-facing clarity and resumability of ExecPlans, not the
+assumption that repeated model turns are inherently useful. Codex's Goal record is a
+useful precedent for visible objective/status/budget fields; the scheduler still needs
+deterministic pause/wait/stop/no-progress control that survives restart.
 
 ## Source index
 
@@ -112,3 +189,6 @@ For an HorizonCode adapter, capture the child thread ID, parent ID, role/nicknam
 - [Generated app-server schemas](https://github.com/openai/codex/tree/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/app-server-protocol/schema)
 - [Rollout storage and readers](https://github.com/openai/codex/tree/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/rollout/src)
 - [Execution and sandbox crates](https://github.com/openai/codex/tree/67a709665ac7b50311b93e32612c9a8281684787/codex-rs)
+- [Codex long-horizon experiment](https://developers.openai.com/blog/run-long-horizon-tasks-with-codex)
+- [Codex ExecPlans cookbook](https://github.com/openai/openai-cookbook/blob/main/articles/codex_exec_plans.md)
+- [Codex goal source](https://github.com/openai/codex/blob/main/codex-rs/state/src/runtime/goals.rs)

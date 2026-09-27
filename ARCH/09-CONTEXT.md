@@ -14,8 +14,11 @@ reconstructable model request. Two properties are non-negotiable:
 
 1. **The log is truth; the prompt is a projection.** Nothing the engine emits is
    authoritative, and nothing the engine drops is lost — the event log retains it.
-2. **Budget honesty.** The engine estimates cost before every request and never
-   discovers overflow from the provider (`REQ-CTX-004`).
+2. **Budget honesty.** The engine proactively estimates cost before every request to
+   avoid predictable overflow (`REQ-CTX-004`). Estimation cannot guarantee provider
+   acceptance: if a provider still reports overflow before streamed content begins,
+   the runner permits exactly one bounded compact-and-retry of the same step; a
+   second overflow becomes a typed failure. No mid-stream retry is allowed.
 
 ## Responsibilities
 

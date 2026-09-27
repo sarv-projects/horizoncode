@@ -132,7 +132,7 @@ definitions into the token budget; the registry never sends them itself.
 | `glob` | `pattern`, `path?`, `limit?` | no | `glob` | newline-joined relative paths |
 | `grep` | `pattern`, `path?`, `include?`, `limit?` | no | `grep` | per-file grouped line previews |
 | `bash` / shell | `command`, `workdir?`, `timeout?` | yes | `bash` | captured output + exit/timeout line |
-| `todowrite` | `todos[]` | session state | `todowrite` | serialized todo list |
+| `todowrite` | `todos[]` | controller-managed attempt-local progress | `todowrite` | validated progress snapshot |
 | `webfetch` | `url`, `format?`, `timeout?` | no | `webfetch` | fetched text/markdown/html |
 | `websearch` | `query`, `numResults?`, … | no | `websearch` | search result text |
 | `question` | `questions[]` | no | `question` | answered labels (interactive only) |
@@ -210,7 +210,11 @@ Model-visible content is bounded so one tool cannot exhaust the window
 - Otherwise the full content is written to a managed `tool-output` file and the
   model receives a head/marker/tail preview citing the saved path; the path is
   returned in `outputPaths` for the UI.
-- Media parts are always retained.
+- Media is bounded before context assembly by provider- and format-aware byte, pixel,
+  frame, and item caps. Oversized media is rejected or deterministically resized /
+  sampled when that transformation is supported; the durable artifact and digest stay
+  available through a managed reference. A preview or pointer MUST NOT be represented
+  as the full original media, and transformations are recorded in the request receipt.
 - Structured output is retained even when text is previewed.
 - Managed files are pruned by retention (default 7 days).
 - Transport-specific caps apply before bounding: shell capture, fetch body,
@@ -231,6 +235,13 @@ Model-visible content is bounded so one tool cannot exhaust the window
   partitions calls into parallel-safe groups separated by barriers.
 
 The declaration is fixed per tool definition; it cannot be overridden per call.
+
+`todowrite` is a typed, bounded progress update for the current attempt, not a
+filesystem or general session-store write. `CMP-runner` validates and appends the
+attempt-local progress event; workers cannot write canonical session/run events,
+change task/evidence states, approve requirements, or mint verification evidence
+through this tool. Its projection is recoverable from the event and never becomes the
+completion source of truth.
 
 ## Step / loop guards
 
@@ -265,9 +276,12 @@ non-interactive mode:
 
 - `question` is not advertised in headless runs; the model is instructed to
   proceed or fail explicitly rather than wait.
-- Permission prompts become the configured headless posture (auto-approve the
-  allowed set, deny the rest) and never block on stdin. Under ACP, permission
-  requests are forwarded to the client and the decision is honored.
+- Permission prompts use the run's explicit headless policy and never block on stdin.
+  The default is deny for effectful actions requiring an interactive decision; only
+  actions already eligible under an explicitly configured, run-scoped approval policy
+  may proceed. No headless `allow all` fallback exists. Under ACP, permission requests
+  are forwarded to the client when supported and the returned decision is honored;
+  unavailable, timed-out, or malformed replies fail closed.
 - `task`/subagent and background jobs are bounded by configuration; headless
   runs surface receipts through structured stdout/JSON rather than a UI panel.
 

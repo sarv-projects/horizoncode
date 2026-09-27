@@ -10,12 +10,12 @@ declared level (`local-sink` default, `off-box` when required)**, so history can
 verified rather than merely trusted. A class-coverage census checks declared wiring;
 per-effect ID reconciliation checks runtime completeness (`DEC-005`, `DEC-031`,
 `DEC-022`, `REQ-AUDIT-001`, `REQ-AUDIT-002`, `REQ-AUDIT-004`, `REQ-AUDIT-005`,
-`REQ-AUDIT-007`).
+`REQ-AUDIT-007`..`REQ-AUDIT-011`).
 
 The audit store is **not** the session event log. `CMP-session` owns replayable
 session events; `CMP-audit` owns independently verifiable evidence and is not pruned
-with operational events. Audit reads are themselves access-controlled
-(`REQ-AUDIT-003`).
+with operational events. Audit reads and exports are themselves access-controlled
+(`REQ-AUDIT-008`).
 
 ## Responsibilities
 
@@ -27,6 +27,10 @@ with operational events. Audit reads are themselves access-controlled
   tampering, deletion, reorder, or truncation.
 - Provide a **replay** command that reconstructs the decision/effect timeline of a
   session from its entries.
+- Authorize audit reads by actor, run/session scope, and destination; write a
+  non-recursive access receipt to a separately verifiable access-evidence stream
+  before disclosing audit content. If that receipt cannot be made durable, refuse the
+  disclosure (`REQ-AUDIT-008`, `DEC-044`).
 - Guarantee **secret redaction**: credentials never enter an entry
   (`REQ-PROV-004`, `REQ-AUDIT-003`).
 - Reference durable receipts for effects rather than duplicating payloads.
@@ -64,11 +68,18 @@ with operational events. Audit reads are themselves access-controlled
 
 ```
 AuditEntry = {
-  seq:          u64,              // monotonic within the segment
-  session:      SessionId,
+  audit_seq:    u64,              // globally monotonic; authoritative cross-store order
+  segment_id:   u32,
+  segment_seq:  u32,              // monotonic within the segment
+  event_id:     EventId,          // stable idempotency key for one lifecycle record
+  session_id?:  SessionId,
+  run_id?:      RunId,
+  task_id?:     TaskId,
+  attempt_id?:  AttemptId,
   ts:           epoch_ms,         // UTC
   actor:        user | agent | system | workflow,
-  kind:         decision | tool | approval | fs_write | sandbox | model | cost | ticket,
+  kind:         run | step | decision | tool | approval | fs_write | sandbox |
+                model | cost | ticket | record_access,
   action?:      string,
   resource?:    string,           // ref/glob form, never raw payload
   effect?:      allow | ask | deny,
@@ -79,7 +90,13 @@ AuditEntry = {
   prev_hash:    blake3,           // previous entry_hash in the chain
   entry_hash:   blake3            // blake3(canonical(entry \ entry_hash) || prev_hash)
 }
-SegmentRoots = { segment: u32, first_seq, last_seq, count, merkle_root, prev_root? }
+SegmentRoots = { segment_id: u32, first_audit_seq, last_audit_seq, count, merkle_root, prev_root? }
+AuditAccessReceipt = {
+  access_id: AccessId, actor, action: verify | replay | census | export,
+  run_scope?, session_scope?, destination?, decision: allow | deny,
+  target_store_id, observed_head_digest?, created_at, access_chain_seq,
+  access_prev_hash, access_hash
+}
 ```
 
 - `blake3` is the hashing dependency (`ARCH/03` §5). Entries are canonicalized
@@ -122,25 +139,62 @@ are first-class entries, never omitted.
 ### Append
 1. Producer submits an event with refs and bounded metadata.
 2. Canonicalize and run the redaction pass.
-3. Read the current chain head; compute `entry_hash` from the entry and `prev_hash`.
-4. Persist the entry and advance the head under an exclusive append lock.
-5. When a segment reaches its rollover threshold, finalize it and persist its
-   `SegmentRoots` record.
+3. Acquire the validated OS-backed writer lock **before** reading or reconciling any
+   head, segment, root, or sequence. A lock timeout/loss fences this writer.
+4. If `event_id` already exists with the same canonical digest, return its original
+   receipt; if the same ID has different content, return `idempotency_conflict`.
+   Reconcile stored head against required segment/root state. A torn tail, malformed
+   head, inaccessible entry, or ambiguous mismatch returns `recovery_required`;
+   ordinary startup never repairs or guesses.
+5. Allocate the next global `audit_seq` and segment-local `segment_seq`, append and
+   durably flush the entry, then atomically replace `AuditHead`. Persist segment roots
+   at rollover before accepting a later sequence.
+6. Release the lock only after durable writes succeed. Partial failure returns a typed
+   unknown outcome and requires reconciliation before another append.
+
+### Read authorization and evidence
+
+1. Resolve the authenticated actor, action, requested run/session scope, and output
+   destination. Policy denial creates a bounded deny receipt without returning data.
+2. Persist an `AuditAccessReceipt` to `<state-dir>/audit-access/` using that stream's
+   own sequence, hash chain, and OS lock. It references the target store and the
+   observed target-head digest when available; it contains no prompt, credential, or
+   audit payload. This stream is not appended to the chain it describes.
+3. If the access receipt cannot be persisted, fail before exposing entries, replay,
+   census details, or export bytes. Then open the target store read-only and pin the
+   exact head/segment snapshot being checked.
+4. `verify`, `replay`, and `census` return typed errors for missing, malformed,
+   unreadable, or incompletely enumerated state. A genuinely initialized empty store
+   has an explicit empty-store marker and is not inferred from an I/O failure.
 
 ### Verify
 ```
 horizoncode audit verify [--session <id>] [--all]
 ```
 Recomputes each `entry_hash` from stored bytes and `prev_hash`, checks contiguity of
-`seq`, recomputes every segment Merkle root, and confirms root linkage across
+`audit_seq` and `segment_seq`, recomputes every segment Merkle root, and confirms root linkage across
 segments.
+
+`verify` is read-only and never truncates, repairs, or rewrites an input segment.
+Corruption produces a non-zero verdict and a stable finding ID. A separate operation
+may create a recovery artifact only after explicit authorization:
+
+```text
+horizoncode audit repair --segment <segment-id> --output <new-artifact>
+```
+
+Repair first preserves the original bytes and their digest, records the failure range,
+and writes a new derived chain/artifact with a `repair_of` reference. It cannot
+retroactively authenticate the repaired content; the verifier reports the original
+chain as corrupt and the derived artifact as reconstructed. Repair is not an automatic
+startup action and never overwrites the original segment.
 
 **What verify proves:** given a trusted anchor, no entry has been added, removed,
 reordered, truncated, or modified without detection, every entry is included in its
 segment root, and every root signature verifies.
 **What verify does not prove:** that the recorded content is truthful, that no
-unrecorded effect occurred elsewhere, or who authored an entry. On top of that, per
-`REQ-AUDIT-007` (`DEC-022`): it does NOT prove content authenticity, does NOT detect
+unrecorded effect occurred elsewhere, or who authored an entry. Per
+`REQ-AUDIT-007` (`DEC-022`), it does NOT prove content authenticity, does NOT detect
 **fabrication** by a principal holding local write access (and, at the `local-sink`
 level, sink-write access), and does NOT cover entries written **after the last anchored
 root**. Tamper-evidence covers modification of **already-anchored** history by a
@@ -148,8 +202,9 @@ principal that does not hold the anchoring credential, and nothing beyond that.
 Coverage is a separate **census** (`REQ-AUDIT-005`), and root-anchoring is only as strong
 as the trusted key/sink it anchors to (`REQ-AUDIT-004`). Verify names the **level** it
 evaluated — `local-trust`, `local-sink`, or `off-box` — alongside that boundary, and
-never renders `local-sink` as `off-box`. A run with only a local anchor is reported as
-**local-trust**, never as independently anchored.
+never renders `local-sink` as `off-box`. A run with a configured, validated local
+append-only sink is `local-sink`; only a run without a sink is `local-trust`. Neither
+local level is independently off-box anchored.
 
 ### Replay
 ```
@@ -174,16 +229,40 @@ moved session remains reconstructable and its decisions reproducible
   segments/0000.jsonl      # append-only, one canonical entry per line
   segments/0001.jsonl
   roots.jsonl              # one SegmentRoots record per finalized segment
-  head                     # current segment + last entry hash (atomic replace)
+  head                     # AuditHead (atomic replace under an OS writer lock)
+  lock                     # validated cross-process append lock
 ```
 
 - Segments roll over at a fixed entry count or byte budget (configurable).
 - Finalized segments are immutable; rotation never rewrites or compacts a segment.
+- Exactly one process may allocate an `audit_seq` at a time. An OS-backed lock is
+  acquired before reading the head, scanning/reconciling segments, sealing a root, or
+  allocating a sequence. The entry is appended and durably flushed before `AuditHead`
+  advances. Lock loss fences the writer; a process-local mutex alone is insufficient.
+- A missing head on a genuinely new empty store is distinct from an unreadable or
+  malformed head. The latter is a recovery-required error; it is never replaced by an
+  inferred pointer during ordinary startup. Recovery preserves the original head and
+  segment bytes and records the derived state separately.
+- Directory enumeration and per-entry reads distinguish an empty store from an
+  inaccessible or malformed store. `verify`, `replay`, and `census` fail visibly on
+  incomplete enumeration; they never return a clean empty result after an I/O error.
 - The audit store is **excluded from operational-event retention**; it is pruned only
   by an explicit archival/retention policy that preserves verifiability.
-- The `head` pointer is updated by atomic replace so a crash cannot silently drop the
-  chain; a torn tail is detected at verify and truncated to the last valid entry with
-  an audit note.
+- The `head` pointer is updated by atomic replace. A torn tail is detected by
+  read-only `verify` and remains untouched. The append-capable open path refuses to
+  append while a torn tail or corrupt/missing head requires recovery; only the explicit
+  repair flow may produce a separately preserved recovery artifact. No ordinary
+  surface repairs evidence as a side effect.
+
+**Current source gap (2026-09-27).** `AuditLog::open` currently calls
+`repair_torn_tail` while opening for writes; `crates/horizoncode-cli/src/surfaces.rs`
+also calls that writable open in `note_access` before `audit verify`/`replay`/`census`.
+Thus the CLI read path can mutate a torn segment before the read-only verifier runs.
+`read_head` currently maps both missing and invalid/unreadable head files to `None`,
+and `read_segments`/`segment_indices` can map directory-read errors to an empty list.
+The in-process `Mutex<Head>` does not serialize separate processes. These are source
+gaps, not target behavior; track and close them under `AX-346` before describing audit
+inspection as read-only or multi-process safe.
 
 ## Root anchoring (signed / declared level)
 
@@ -275,7 +354,7 @@ are:
 
 | Store | Owner | Role | Ordering |
 |---|---|---|---|
-| `log.jsonl` (session event log) | `CMP-session` | replay source of truth | per-session dense `seq` |
+| `events/segment-*.jsonl` + `events/head.json` (session event stream) | `CMP-session` | committed replay source of truth | per-session dense `seq`; bounded digest-linked segments and committed head (`ARCH/07`) |
 | `segments/*.jsonl` + `roots.jsonl` | `CMP-audit` | independently verifiable evidence | global audit `seq`; chain-linked roots |
 | `events.jsonl` (analytics ledger) | `CMP-analytics` | rebuildable rollups | derived; coalesced appends |
 
@@ -309,8 +388,8 @@ Invariant (`REQ-AUDIT-006`):
 |---|---|
 | Append I/O error | Fail the guarded action closed; surface the error; do not proceed unrecorded |
 | Redaction error | Refuse the entry; never chain a possibly-secret payload |
-| Torn tail after crash | Verify truncates to the last valid entry and records the repair as a new entry |
-| Tamper detected | Verify reports the failing `seq` and stops; replay refuses to assert trusted history |
+| Torn tail after crash | Verify reports the first invalid byte/entry and does not mutate; explicit repair preserves original bytes and creates a separate derived artifact |
+| Tamper detected | Verify reports the failing `audit_seq` and stops; replay refuses to assert trusted history |
 | Root store missing | Segment treated as unanchored; verify reports the gap; never fabricates a root |
 | Disk full / rotation failure | Bounded error; the effect is denied rather than committed unrecorded |
 | Portable bundle fails verify | Reject or quarantine; surface the reason; never silently import |
@@ -349,6 +428,10 @@ Invariant (`REQ-AUDIT-006`):
 | `REQ-AUDIT-005` | Class census and per-effect reconciliation both fail on gaps. |
 | `REQ-AUDIT-006` | Cross-store consistency invariant with the session log and analytics ledger (`DEC-020`). |
 | `REQ-AUDIT-007` | Every level states and `verify` renders its detection boundary — modification of already-anchored history only; no content authenticity, no fabrication detection, no coverage of the unanchored tail; only the three level names are used and `local-sink` is never rendered as `off-box` (`DEC-022`). |
+| `REQ-AUDIT-008` | Read/replay/verify/export requests pass actor, run/session, and destination-scoped read authorization; the access event avoids recursive export. |
+| `REQ-AUDIT-009` | `audit_seq` is globally monotonic; `segment_seq` is local to a segment; verify is read-only and authorized repair creates a separate, provenance-linked artifact. |
+| `REQ-AUDIT-010` | The OS-backed lock serializes writers across processes before head/segment/sequence reads; lock loss fences the writer. |
+| `REQ-AUDIT-011` | Missing/corrupt/inaccessible/incompletely enumerated state is distinct from a new empty store; readers fail typed and normal writer startup refuses implicit repair. |
 | `REQ-PROV-004` | Credentials never appear in audit entries; provider calls logged as counts/refs only. |
 | `REQ-SESS-002` | Replay reconstructs a session timeline from persisted evidence. |
 | `REQ-SESS-004` | Model, mode, and permission configuration recorded with the session. |

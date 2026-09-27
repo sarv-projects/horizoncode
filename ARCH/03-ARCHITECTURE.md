@@ -9,7 +9,7 @@ not yet implemented as their target components. `TODO.md` tracks the implementat
 
 ## 1. Shape
 
-A **single Rust workspace** producing one core binary per platform. Required host capabilities are probed and disclosed per feature: the current Linux confinement path invokes `bwrap`, and Git/LSP/local inference or detached execution can need external processes. A missing required backend refuses that feature; one-binary packaging is not a claim that every capability works without host tools. Protocols (ACP, MCP) are edges, not a second engine. `DEC-029..031` and `ARCH/25` define the durable run controller inside the existing `CMP-orch` boundary.
+A **single Rust workspace** producing one core executable per platform where feasible. The user may run it interactively on a laptop/workstation or headlessly on a user-managed server; no HorizonCode-operated control service is required. A detached-run supervisor may be a local helper process, but it uses the same controller and durable state. Required host capabilities are probed and disclosed per feature: the current Linux confinement path invokes `bwrap`, and Git/LSP/local inference or detached execution can need external processes. A missing required backend refuses that feature; one-binary packaging is not a claim that every capability works without host tools. Protocols (ACP, MCP) are edges, not a second engine. Remote UI attachment is not implied by server deployment. `DEC-029..031`, `DEC-046`, and `ARCH/25` define the durable run controller inside the existing `CMP-orch` boundary.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -44,6 +44,7 @@ A **single Rust workspace** producing one core binary per platform. Required hos
 │                                    │  Persistence                 │ │
 │                                    │   · event log (JSONL)        │ │
 │                                    │   · SQLite state / index     │ │
+│                                    │   · scoped artifact store    │ │
 │                                    │   · worktrees / checkpoints   │ │
 │                                    └──────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────┘
@@ -57,11 +58,12 @@ A **single Rust workspace** producing one core binary per platform. Required hos
 | ID | Component | Owner layer | Responsibility |
 |---|---|---|---|
 | `CMP-runner` | Runner / Loop | Control | Turn lifecycle, admission, step loop, scheduler, continuation, cancellation |
-| `CMP-session` | Session store | Persistence | Durable sessions, event log, replay, resume, checkpoint |
+| `CMP-session` | Session store | Persistence | Durable sessions, segmented event log, committed head, bounded replay, read-only listing, explicit recovery, checkpoints and canonical session artifact references (`ARCH/07`) |
+| `CMP-artifact` | Artifact store | Persistence | Scoped immutable payload bytes, digest verification, bounded reads, physical emergency-space reservation, owner pins, import/export staging and safe garbage collection (`ARCH/28`) |
 | `CMP-context` | Context engine | Capability | Assembly, budget, repo map, selection, compaction, pins/excludes |
 | `CMP-tools` | Tool registry | Capability | Tool definitions, permission-filtered materialization, execution, settle |
 | `CMP-provider` | Provider router | Capability | Catalog, route resolution, transports, retries, usage accounting |
-| `CMP-orch` | Durable run controller | Control plane | Task DAG, budget reservations, fenced leases, stop/recovery, sub-agent scheduling, merge arbitration; invokes independent verifier (`ARCH/25`) |
+| `CMP-orch` | Durable run controller | Control plane | Task DAG, budget/event-storage reservations, physically allocated control reserve, fenced leases, stop/recovery, sub-agent scheduling, merge arbitration; invokes independent verifier (`ARCH/25`) |
 | `CMP-guard` | Policy guard | Trust | Ordered allow/ask/deny rules; approval lifecycle |
 | `CMP-sandbox` | Sandbox | Trust | Platform confinement through explicitly selected backends; current Linux namespaces and macOS Seatbelt source; Windows backend unavailable; Landlock/seccomp remain target layers, not current guarantees |
 | `CMP-secrets` | Secret broker | Trust | Credential resolution; redaction; never-log guarantees |
@@ -72,6 +74,9 @@ A **single Rust workspace** producing one core binary per platform. Required hos
 | `CMP-headless` | Headless | Surface | Non-interactive run, structured output, CI use |
 | `CMP-config` | Configuration | Capability | Discovery precedence, validation, instructions, skills, plugins, hooks, memory |
 | `CMP-analytics` | Analytics | Observability | Usage/cost/tool/session metrics, local ledger, `stats`/`export` surfaces |
+| `CMP-command` | Command registry | Surface adapter | Typed slash-command descriptors, completion/help, parse and dispatch to owning services; no business state or permission decisions |
+| `CMP-agent-directory` | Agent profiles | Capability | Built-in/local/catalog profile records, provenance, install staging, probing, trust/enable state and adapter selection; no run/task truth |
+| `CMP-reference` | Composer references | Capability | Namespaced resolution of agents, files, tasks, runs, symbols and skills against current registries and revision-bound repository context; no launch or grant |
 
 ## 3. The agent loop (contract)
 
@@ -97,8 +102,10 @@ Terminal states: `completed | failed | interrupted | declined`. Exactly one per 
 1. **Surfaces ↔ control.** TUI, headless, and ACP are thin clients of one control interface. No surface contains loop logic (`REQ-PROTO-005`).
 2. **Tools ↔ policy.** Tools are pure definitions; the registry materializes a permission-filtered set; the guard authorizes effects. A denied tool is absent, not merely blocked (`REQ-TOOL-003`).
 3. **Capability ↔ trust.** Every effectful capability call passes through the guard and sandbox and appends to audit. No privileged shortcut exists.
-4. **Data ↔ control.** Persistence is event-sourced; the model-visible context is a projection, never the source of truth.
-5. **Protocols are edges.** ACP/MCP adapt to the control plane; they never re-implement it.
+4. **Data ↔ control.** Persistence is event-sourced; the model-visible context is a projection, never the source of truth. Session/run logs own artifact references; `CMP-artifact` owns immutable bytes and rebuildable indexes, not run or session truth.
+5. **Protocols are edges.** ACP/MCP adapt to the control plane; they never re-implement it. ACP communicates with an agent after it is found and enabled; it is not itself the profile registry or installer.
+6. **Commands are dispatch descriptors, not another command engine.** `CMP-command` resolves a stable command ID and typed arguments, then invokes the owning control/config/analytics/guard service. TUI and headless syntax stays separate where appropriate.
+7. **Extension families stay distinct.** Agent adapters, provider adapters, MCP servers, skills, plugins, tools, panels, and commands have different trust and lifecycle contracts even when discovered through a shared catalog UI.
 
 ## 5. Technology choices
 
@@ -151,8 +158,11 @@ At baseline `1c7a1c68bab9`, the Linux source invokes bubblewrap with user/mount/
 UTS/cgroup/network namespaces and a scoped mount view; it explicitly says Landlock and
 seccomp are not installed. The macOS source emits and invokes Seatbelt rules, but no
 host acceptance evidence exists. The Windows confined backend returns unavailable;
-only explicit `full-access` runs bare. `check_path` is a shared in-process gate, not OS
-containment for the controller. Source code alone does not establish containment.
+current source permits explicit `full-access` runs bare. That behavior violates the
+target private-controller boundary: the target design refuses broad access until the
+backend isolates worker identity and state from canonical controller data. `check_path`
+is a shared in-process gate, not OS containment for the controller. Source code alone
+does not establish containment.
 
 **"Network off" is a request, with backend-specific reach evidence** (`DEC-026`,
 `DEC-027`, `DEC-037`). A backend record names the tested destinations, mechanism,

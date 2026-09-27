@@ -7,8 +7,8 @@
 3. **`ARCH/03-ARCHITECTURE.md`** — the architectural "how".
 4. **`ARCH/04-DECISIONS.md`** — `DEC-*` records that constrain the architecture.
 5. **`ARCH/05-SOURCE-LEDGER.md`** — `SRC-*` provenance and licensing dispositions.
-6. Module-level documents (`ARCH/06`–`ARCH/26`) — the "LLD" layer:
-   - `06-UI.md` · `07-SESSION.md` · `08-LOOP.md` · `09-CONTEXT.md` · `10-TOOLS.md` · `11-PROVIDER.md` · `12-GUARD.md` · `13-SANDBOX.md` · `14-AUDIT.md` · `15-PROTOCOLS.md` · `16-ORCH.md` · `18-CONFIG.md` · `19-COMPRESSION.md` · `20-ANALYTICS.md` · `21-DISCOVERY.md` · `22-SECURITY.md` · `23-VERIFICATION.md` · `24-ARCHITECTURE-REVIEW.md` (dated evidence and defects) · `25-LONG-HORIZON-CONTROL.md` (integrated run/task LLD) · `26-CORE-AGENT-CROSSWALK.md` (five-agent reuse and limits). (`17` is intentionally unused.)
+6. Module-level documents (`ARCH/06`–`ARCH/28`, with `17` intentionally unused) — the "LLD" layer:
+   - `06-UI.md` · `07-SESSION.md` · `08-LOOP.md` · `09-CONTEXT.md` · `10-TOOLS.md` · `11-PROVIDER.md` · `12-GUARD.md` · `13-SANDBOX.md` · `14-AUDIT.md` · `15-PROTOCOLS.md` · `16-ORCH.md` · `18-CONFIG.md` · `19-COMPRESSION.md` · `20-ANALYTICS.md` · `21-DISCOVERY.md` · `22-SECURITY.md` · `23-VERIFICATION.md` · `24-ARCHITECTURE-REVIEW.md` (dated evidence and defects) · `25-LONG-HORIZON-CONTROL.md` (integrated run/task LLD) · `26-CORE-AGENT-CROSSWALK.md` (agent-pattern reuse and limits) · `27-COMMANDS-AGENTS-SETTINGS.md` (command/mention registry, agent directory, quota visibility, and operator settings) · `28-ARTIFACT-STORE.md` (shared session/run payload lifecycle and integrity).
 
 `TODO.md` is a delivery tracker, not a design authority. When it disagrees with `ARCH/`, `ARCH/` wins.
 
@@ -16,12 +16,14 @@
 
 Architecture documents describe the intended contract unless a dated, source-backed
 status block says otherwise. A source file or interface is **present**, not thereby
-working. Use these distinct labels everywhere: `proposed`, `implemented` (source
-exists), `verified` (executable evidence names the exact revision/environment), and
-`accepted` (the applicable acceptance record exists). A worker's report, a passing mock,
-an ACP event, or a TODO checkbox cannot promote status. `TODO.md` is the live delivery
-ledger; [`research docs/tests.md`](../research%20docs/tests.md) is the test and benchmark
-plan; [`AGENTS.md`](../AGENTS.md) is the repository-wide operating contract.
+working. Use these distinct labels everywhere: `proposed` (design exists, no relevant
+implementation), `implemented` (some or all source exists, with gaps stated), `verified`
+(executable evidence names the exact revision/environment), `accepted` (the applicable
+acceptance record exists), and `blocked` (a named dependency or external condition
+prevents progress). A worker's report, a passing mock, an ACP event, or a TODO checkbox
+cannot promote status. `TODO.md` is the live delivery ledger;
+[`research docs/tests.md`](../research%20docs/tests.md) is the test and benchmark plan;
+[`AGENTS.md`](../AGENTS.md) is the repository-wide operating contract.
 
 The implementation snapshot for this document set is recorded in `CURRENT_RUN.md`.
 When source changes, update both that snapshot and the affected delivery rows; do not

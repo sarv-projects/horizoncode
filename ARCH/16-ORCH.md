@@ -50,17 +50,22 @@ merge(worktree_ref) -> MergeResult
 
 ## Data / state model
 
-**SubagentOptions / SubagentRef.**
+**SubagentOptions / SubagentRef.** `worker` resolves to an `AgentProfile` in
+`ARCH/27`; a role is a selection policy that yields a profile or native role adapter,
+not an arbitrary executable path. The resolved profile revision and capability
+snapshot are pinned to every `AgentAttempt`.
 
 ```
 SubagentOptions {
-  worker: role|profile,
+  worker: role|profile_id,
   task: { objective, prompt?, success_conditions? },
   context: { fork: none|bounded|full, refs[] },
   tools?: loadout_ref,
-  model?: ModelRef|inherit,
+  model?: ModelRef|inherit|peer_managed, # accepted only if adapter can apply/report it
   isolation: readonly_inprocess|worktree|acp, # write isolation is explicit
-  limits?: { max_steps?, max_tokens?, max_spend?, wall_time_ms? },
+  limits?: { max_steps?, max_tokens?, max_spend{amount,currency}?, wall_time_ms?,
+             max_tool_calls?, max_output_bytes?, max_disk_bytes?, max_children?,
+             max_depth?, max_concurrent? },
   delivery: { await?: bounded(ms)|none, wake?: bool = true, surface?: parent|ui }
 }
 SubagentRef { agent_id, nickname?, session_ref, work_id, status, parent_turn_id }
@@ -77,6 +82,13 @@ SubagentRef { agent_id, nickname?, session_ref, work_id, status, parent_turn_id 
 | `acp` | highest | external peer agent as subordinate | peer-managed; receipt only |
 
 Tool scope for any child is `parent ceiling ∩ loadout ∩ agent rules`; limits may only narrow.
+The run controller atomically reserves the parent's resource ceilings before any child
+launch and rolls up observed usage by stable attempt/provider response IDs. A profile
+can enforce only the limits its adapter exposes. Opaque ACP/CLI peers may have unknown
+internal model, token, cost, quota, nested-child, or cancellation state; those fields
+stay `unknown` and an enforceable hard provider-spend policy refuses an unmetered route.
+Warnings and hard caps are distinct settings (`ARCH/27`); a muted notification never
+changes scheduler behavior.
 
 **Budget vocabulary.** Each node carries ceilings for `tokens`, `cost`, `wall_ms`, and `tool_calls`, plus `reserved` and `spent`. The controller atomically reserves the attempt, mandatory verification, and recovery allowance against the run and node ceilings before dispatch, then reconciles actual and unknown usage. Concurrent node reservations cannot oversubscribe the parent; exhaustion fails closed and records the term (`ARCH/25`).
 
@@ -102,8 +114,12 @@ Tool scope for any child is `parent ceiling ∩ loadout ∩ agent rules`; limits
 
 **Scheduling & concurrency.**
 - Independent nodes dispatch in parallel up to `max_parallel`; dependent nodes wait on a settle barrier.
-- Slots are held until a child is closed, not merely until it finishes, so a waiting child cannot starve admission.
-- A waiting child (guard ask, question, bounded wait) parks without holding a running slot.
+- `max_live_children` and workspace leases bound the full child lifecycle and remain
+  held until the child is closed or reconciled. `max_running` is a separate execution
+  semaphore: it is released when a child enters a durable `WAITING` state (permission,
+  clarification, or external dependency) and reacquired on resume. Thus parked children
+  consume a bounded pending-child allowance, not active execution capacity; reaching
+  either limit queues or rejects admission according to the configured policy.
 - Admission is queue-on-limit by default with an explicit fail-fast opt-in.
 - The parent does non-overlapping work while children run; it never blocks on a background child.
 - Cancellation is cooperative and token-based and cascades to descendants; a cancelled child is terminal and never wakes the parent.
@@ -125,6 +141,9 @@ Tool scope for any child is `parent ceiling ∩ loadout ∩ agent rules`; limits
 | Duplicate receipt delivery | At-most-once per parent incarnation |
 | Child asks permission with no connected/authorized UI | Route to a durable root request with deadline; deny/cancel and settle on expiry (`REQ-HORIZON-012`) |
 | External worker reports success with hidden child work/usage | Record opaque child state and unknown usage; never infer pass or zero cost (`REQ-HORIZON-009`) |
+| Profile model override not supported by peer | Reject the override or record `peer_managed`; never claim the requested model ran (`REQ-ORCH-008`) |
+| Child usage event duplicates parent roll-up | Deduplicate by stable observation ID or report overlapping rows separately (`REQ-ORCH-009`) |
+| Local agent executable changes after profile approval | Refuse launch and quarantine until the canonical path/digest is re-probed and trust is re-reviewed (`ARCH/27`) |
 | Background work continuously consumes slots | Fair lane reservations; interactive steer/cancel/approval have bounded dispatch latency (`REQ-HORIZON-014`) |
 | CI red | Result fed back as evidence; worker re-plans or escalates |
 
@@ -132,7 +151,9 @@ Tool scope for any child is `parent ceiling ∩ loadout ∩ agent rules`; limits
 
 - `orch.max_depth`, `orch.max_parallel`, `orch.max_total_per_tree`, `orch.per_lane_defaults`.
 - `orch.default_isolation` (`readonly_inprocess`), `orch.wake_default`, fairness quotas and maximum wait age.
-- `orch.limits.{max_worker_tokens, max_session_spend, wall_time_ms}` (Core-owned ceilings; spawns narrow only).
+- `orch.limits.{max_worker_tokens, max_session_spend{amount,currency}, wall_time_ms, max_tool_calls, max_output_bytes, max_disk_bytes, max_children, max_depth, max_concurrent}` (Core-owned ceilings; spawns narrow only).
+- Agent profile model-control, source/trust state, and per-attempt usage capability are specified in `ARCH/27`; a profile is not itself a budget or a verified task.
+- Warning thresholds are user-configurable per budget/resource in `ARCH/27`; warning delivery is best-effort, but dispatch ceilings are controller-enforced.
 - `orch.receipt.max_bytes`, `orch.receipt.correction_retries` (≤1).
 - `worktree.root`, `worktree.lease_seconds`, `worktree.reap_interval`.
 - `merge.strategy`, `merge.conflict_policy` (surface, never auto-discard).
@@ -148,6 +169,7 @@ Tool scope for any child is `parent ceiling ∩ loadout ∩ agent rules`; limits
 | `REQ-ORCH-004` | Merge arbitration is deterministic given identical inputs |
 | `REQ-ORCH-005` | Depth and count bounded by configuration |
 | `REQ-ORCH-006` | Delegation is optional and bounded by evidence value, isolation, and resource cost |
+| `REQ-ORCH-007..009` | Profile lifecycle, capability-aware model selection, and sourced per-agent usage/limits are defined in `ARCH/27` and enforced at dispatch |
 | `REQ-HORIZON-001` | A session (and its graph) resumes after an arbitrary gap without task-state loss |
 | `REQ-HORIZON-002` | Durable task graph survives compaction and restart |
 | `REQ-HORIZON-003` | Token/cost/wall budgets enforceable per node and session; fail closed |

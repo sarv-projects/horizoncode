@@ -168,7 +168,7 @@ Architecture decision records. Each constrains the design until superseded by a 
 
 **Status:** accepted.
 
-**Decision.** Keep **separate** append-only stores, each owned by exactly one component, rather than collapsing them into a single log: the session event log (`CMP-session`; replay source of truth), the tamper-evident audit chain (`CMP-audit`; independently verifiable evidence), and the analytics ledger (`CMP-analytics`; rebuildable rollup source). Each store owns its own ordering and retention. Where one effect appears in more than one store, the stores MUST satisfy a **cross-store consistency invariant**: a security-relevant effect is complete only once its audit entry is durably chained, and every session/analytics fact that references it carries the owning `session_id`, its monotonic session `seq`, and the audit `seq` (or `receipt_ref`). Ordering is defined by each store's own monotonic sequence; **cross-store ordering is never inferred from wall-clock time** — the audit `seq` is the authoritative tie-break for security-relevant ordering, and a reconciliation check flags any referenced effect that has no audit entry. Retention stays per-store: the audit chain is never pruned with the session log or the analytics ledger.
+**Decision.** Keep **separate** append-only stores, each owned by exactly one component, rather than collapsing them into a single log: the session event log (`CMP-session`; replay source of truth), the tamper-evident audit chain (`CMP-audit`; independently verifiable evidence), and the analytics ledger (`CMP-analytics`; rebuildable rollup source). Each store owns its own ordering and retention. Where one effect appears in more than one store, the stores MUST satisfy a **cross-store consistency invariant**: a security-relevant effect is complete only once its audit entry is durably chained, and every session/analytics fact that references it carries the owning `session_id`, its monotonic session `seq`, and the globally monotonic audit `audit_seq` (or `receipt_ref`). Ordering is defined by each store's own monotonic sequence; **cross-store ordering is never inferred from wall-clock time** — `audit_seq` is the authoritative tie-break for security-relevant ordering, and a reconciliation check flags any referenced effect that has no audit entry. Retention stays per-store: the audit chain is never pruned with the session log or the analytics ledger (`DEC-044`).
 
 **Rationale.** A single store would couple replay, tamper-evidence, and derived metrics: an analytics retention choice could put the audit chain at risk, and a corrupt session log could poison evidence. Separate stores keep each guarantee provable while an explicit invariant stops them drifting into disagreement (`REQ-AUDIT-001`, `REQ-AUDIT-006`, `DEC-004`, `DEC-005`, `DEC-017`; detail in `ARCH/14`).
 
@@ -289,11 +289,13 @@ kernel-enforced glob evaluation or confines every descendant (`DEC-037`). Specif
 *spawned* process the only sound validation is at the enforcement boundary, because a shell
 re-parses its arguments and a lexical scan cannot be sound (`ARCH/22` `E-03`, `RR-10`).
 Calling the scan "advisory" without naming the hard control left `REQ-SEC-003`
-aspirational. This keeps the stricter rule (`REQ-SEC-005`: kernel-level containment) as
-the floor and scopes the weak statement to the role where it is true: a conservative
-pre-filter that may only *raise* a decision. "Asked" rather than "denied" preserves the
-documented `external_directory` capability while the selected OS boundary still bounds reach
-(`REQ-SEC-010`: authorization is not reach).
+aspirational. The hard boundary is mechanism-specific: spawned children use the
+selected OS backend; in-process file operations use handle-relative/no-follow APIs and
+revalidation where the platform provides them. `REQ-SEC-005` does not claim a universal
+kernel boundary or equivalent containment across all tiers. "Asked" rather than
+"denied" preserves the documented `external_directory` capability while the selected
+enforcement path bounds reach to its declared, tested level (`REQ-SEC-010`: authorization
+is not reach; `DEC-045`).
 
 **Consequences.** `external_directory` becomes a built-in floor rule with effect `ask`
 (overridable toward `deny`, never to a silent allow). The tool plane extracts
@@ -596,7 +598,7 @@ forced broker is the sole possible egress path; mount/network namespace configur
 alone cannot prove per-host allowlisting. The ACP-independent controller must refuse a
 requested guarantee the selected backend has not proven.
 
-At baseline `1c7a1c68bab9`, Linux uses bubblewrap namespaces and mount views; its source
+At source baseline `53a2654` (unchanged from `1c7a1c68bab9`), Linux uses bubblewrap namespaces and mount views; its source
 explicitly says Landlock and seccomp are not installed. macOS source invokes Seatbelt,
 but its process-tree/network residual has no host acceptance evidence. Windows confined
 execution is unavailable in source. These are the current source facts; acceptance
@@ -617,3 +619,520 @@ disclosure, and refusal, with their mechanism claims superseded here. Amend
 AX-101..AX-105 and AX-113..AX-114. No hard allowlist is accepted without an enforced
 broker. Each record names the exact revision, backend, host, requested policy, observed
 reachability, residual, and any syscall/capability evidence.
+
+## DEC-038 — Separate agent discovery, installation, trust, enablement, and execution
+
+**Decision (2026-09-27).** Treat an agent profile as a versioned, provenance-bearing
+configuration record, not as proof that an executable or ACP peer is safe. Keep
+discovery, add/install, pin, probe, trust review, enablement, and launch as distinct
+operations. ACP is negotiated communication/session control; ACP Registry or another
+catalog is discovery/distribution metadata. A catalog result never installs, trusts,
+enables, launches, or widens permissions. Explicit local executable paths and remote
+catalog entries use the same digest/version/platform/license checks. Native workers
+and external agents share one panel and task-attempt view while retaining different
+control and observability guarantees.
+
+**Why.** ACP does not define general agent discovery or installation. Treating a
+registry ID as a trusted runtime or assuming a peer's model/quota/cancellation controls
+exist creates confused-deputy and false-observability risks. A single profile registry
+also avoids separate, inconsistent controls for native and external subagents.
+
+**Consequences.** `REQ-ORCH-007..009`, `ARCH/16`, `ARCH/25`,
+`ARCH/27-COMMANDS-AGENTS-SETTINGS.md`, `TODO.md` `AX-340..342`. Keep provider model
+metadata separate from agent profile identity; persist per-attempt capability and
+usage provenance; unknown peer internals remain unknown.
+
+## DEC-039 — The deterministic controller owns continuation and stopping
+
+**Decision (2026-09-27).** A model can propose work or a stop, but only the durable
+controller may dispatch, continue, pause, stop, or complete a run. Persist progress and
+failure signatures, attempt/budget counters, pause fences, external wait conditions,
+and tool-response batch outcomes across compaction, model/provider changes, peer
+replacement, and restart. Buffer and validate the whole bounded model response before
+dispatching any of its tool calls. A hard finite no-progress ceiling cannot be
+overridden by a model evaluator. Timer/user/approval/event waits do not consume
+inference while idle. Explicit user pause is distinct from condition wait, hard stop,
+cancellation, and successful completion.
+
+**Why.** Codex documents long-running work as a repeated plan/edit/execute/verify/
+repair loop supported by a durable objective, plan, runbook, and status artifacts; its
+~25-hour report is an experiment, not a universal reliability proof
+([Codex long-horizon report](https://developers.openai.com/blog/run-long-horizon-tasks-with-codex),
+[ExecPlans](https://github.com/openai/openai-cookbook/blob/main/articles/codex_exec_plans.md)).
+Public Codex issue reports describe runaway no-progress continuation and token-burning
+future-time waits; MiMo-Code issue reports describe rotating tool-call floods defeating
+adjacent-identical-call detection. These are version/user reports, not universal proof,
+but they are concrete adversarial fixtures: [Codex #40929](https://github.com/openai/codex/issues/40929),
+[#28923](https://github.com/openai/codex/issues/28923), [MiMo-Code #2482](https://github.com/XiaomiMiMo/MiMo-Code/issues/2482).
+
+**Consequences.** `REQ-LOOP-008`, `REQ-HORIZON-015..017`, `REQ-UI-016`,
+`ARCH/08`, `ARCH/16`, `ARCH/25`, `ARCH/27`, `ARCH/23`, and `TODO.md`
+`AX-337..339`. Treat model evaluators as advisory. Measure false stop and false continue
+rates, no-progress detection, lost work, repeated external effects, spend, and manual
+recovery.
+
+## DEC-040 — Commands and operator settings are typed projections over shared services
+
+**Decision (2026-09-27).** Built-in and extension `/commands`, `@references`, settings,
+keyboard actions, menus, and ACP/CLI control surfaces resolve through typed registries
+and shared domain services. Unknown/malformed/unavailable commands fail visibly and
+never fall through to model text. `@` references are typed context selectors and
+cannot launch agents or grant effects by mention alone. Theme, semantic colors,
+contrast/accessibility, notification channels, sound/bell, quiet hours, and warning
+thresholds are user preferences with clear effective scope; muting a notification
+cannot erase its durable event or mask a required approval/stop in the UI. User UI
+preferences do not change authorization policy.
+
+**Why.** Repeated ad hoc parsers create hidden command behavior and inconsistent
+permission paths. A shared catalog makes help/completion, capability checks, settings,
+and tests agree while preserving distinct terminal, headless, and protocol interaction
+semantics.
+
+**Consequences.** `REQ-UI-010..016`, `ARCH/06`, `ARCH/18`,
+`ARCH/27-COMMANDS-AGENTS-SETTINGS.md`, and `TODO.md` `AX-340..344`. Every setting has
+requested/effective values, source/lock, validation, apply boundary, schema version,
+and test coverage. Theme meaning is never color-only.
+
+## DEC-041 — Keep a self-contained living plan without making Markdown authoritative
+
+**Decision (2026-09-27).** Each substantial run exposes a versioned self-contained
+execution plan with goal/non-goals, repository orientation, task-linked milestones,
+exact verification commands and expected outputs, progress, discoveries, decisions,
+blockers, and outcome/retrospective notes. Store the canonical facts in the durable
+run event/task/spec/evidence system and render the plan from that state. A plan
+revision records its source event sequence and spec digest; it can explain and guide
+work but cannot approve requirements, grant permissions, alter budgets, or assert task
+completion. On resume, compare plan and workspace with the authoritative run log and
+reconcile before acting.
+
+**Why.** OpenAI's public long-horizon experiment and ExecPlans recipe demonstrate the
+usefulness of externalized goals, constraints, exact paths/commands, observable
+milestones, progress, surprises, decision logs, and handoffs. They are useful
+operational patterns but are not a transactional store or proof of completion. Keep
+the plan readable to a new worker while making stale-plan recovery deterministic.
+
+**Consequences.** `ARCH/25` `ExecutionPlan`, `ARCH/24`, `research docs/codex.md`,
+`research docs/long-horizon-architecture.md`, `research docs/tests.md`, and
+`TODO.md` `AX-339`.
+
+## DEC-042 — User stop intent enters the controller before agent continuation
+
+**Decision (2026-09-27).** Structured pause/cancel/stop controls and unambiguous
+natural-language directives are control-plane inputs, not ordinary prompts for the
+worker. The ingress adapter records the input, fences continuation, and resolves its
+target/action before any new model dispatch. If it cannot distinguish pause, cancel,
+or the intended run, it keeps the fence and asks the user; it does not invoke the
+worker to interpret whether the worker should stop. Negative or quoted references to
+stopping remain ordinary content when the parser can establish that no control was
+requested; uncertain cases prefer a temporary pause pending clarification.
+
+**Why.** Codex's public Goal documentation describes structured pause/resume, queued
+input checks, idle-boundary continuation, and no-tool-call suppression. Current public
+issue reports nevertheless describe stop acknowledgements followed by empty,
+repeated, or polling continuations, and goal context lost during compaction
+([#37304](https://github.com/openai/codex/issues/37304),
+[#32922](https://github.com/openai/codex/issues/32922),
+[#45974](https://github.com/openai/codex/issues/45974)). Reports are version-specific,
+but they show why prompt instructions alone cannot be the stop authority.
+
+**Consequences.** `REQ-HORIZON-018`, `ARCH/08`, `ARCH/25`, `ARCH/27`,
+`ARCH/23`, `research docs/codex.md`, `research docs/tests.md`, and `TODO.md`
+`AX-337`, `AX-345`. Tests cover exact commands, clear natural-language directives,
+negation/quotes, ambiguous scope, queued user input, compaction, pause/resume, empty
+model outputs, and concurrent control requests.
+
+## DEC-043 — Separate foreground task completion from maintenance drain
+
+**Decision (2026-09-27).** A run becomes `COMPLETED` only after its required terminal
+event and required evidence are durable. Once that boundary is crossed, optional
+checkpoint compaction, search-index rebuilds, analytics rollups, and non-critical
+cleanup may continue as separately supervised maintenance. Foreground commands must
+either exit promptly with a durable completion receipt and `maintenance_pending`
+details, or report a visible bounded wait while durability-critical work is pending;
+they must never silently wait after printing success. Maintenance failure cannot
+rewrite the task's verified result, but it remains visible and repairable.
+
+**Why.** MiMo-Code #2504 reports a headless command printing its final response and
+then waiting silently for a background checkpoint writer. This is a reported
+version-specific issue, not evidence that every checkpoint implementation behaves
+this way. The useful distinction is foreground contract versus maintenance lifecycle.
+
+**Consequences.** `REQ-HORIZON-019`, `ARCH/25`, `ARCH/27`, `ARCH/23`,
+`research docs/mimo-code.md`, `research docs/tests.md`, and `TODO.md` `AX-345`.
+Critical event/audit persistence remains a completion prerequisite.
+
+## DEC-044 — Audit sequence is global and verification is read-only
+
+**Decision (2026-09-27).** Every audit entry has one globally monotonic
+`audit_seq`; each segment also records `segment_id` and `segment_seq`. Cross-store
+references use `audit_seq` and `effect_id`, while a physical entry location uses
+`(segment_id, segment_seq)`. The current serialized `seq` already increases across
+segments under one process; schema migration preserves it as `audit_seq` and derives
+`segment_id` from the containing file and `segment_seq` from entry order. It MUST NOT
+invent a global order for legacy entries whose order is genuinely unrecoverable.
+
+`verify`, `replay`, and `census` are read-only over the evidence they inspect.
+Read-access events go to an independent access-evidence stream so recording a read
+does not open or mutate the store being inspected. Torn-tail repair is a separate,
+explicitly authorized operation that preserves original bytes and emits a linked
+recovery artifact; it never rewrites the original chain. Append-capable startup
+refuses torn or malformed state until recovery is explicitly resolved. Writers acquire
+an OS-backed cross-process lock before reading/reconciling the head or allocating a
+sequence; a process-local mutex is insufficient.
+
+**Why.** The LLD described sequence scope inconsistently and described verification
+as truncating a torn tail. Source inspection found a more direct operational defect:
+the audit CLI records access through writable `AuditLog::open` before calling the
+read-only verifier, and ordinary open silently repairs torn tails. It also ignores
+invalid head parsing and directory-enumeration errors, while its mutex is process-local.
+These paths can mutate or misreport evidence during forensic inspection.
+
+**Consequences.** Add `REQ-AUDIT-009..011`, update `ARCH/14`, `ARCH/23`,
+`research docs/tests.md`, and `TODO.md` `AX-346`. Migration preserves the legacy
+global `seq` as `audit_seq`, derives segment coordinates from file/order, and records
+any genuinely unrecoverable sequence ambiguity rather than fabricating order.
+
+## DEC-045 — State filesystem guarantees per enforcement mechanism
+
+**Decision (2026-09-27).** HorizonCode MUST distinguish in-process file operations
+from spawned-process containment. In-process operations use handle-relative and
+no-follow APIs plus revalidation where supported; spawned children use the selected
+OS backend. Architecture and product claims name the mechanism, platform, tested
+boundary, and residual limits. A lexical/path pre-check is defense in depth, not proof
+of kernel enforcement. If a caller requires a guarantee the selected path cannot
+provide, the operation is refused.
+
+**Why.** The source and tier contracts do not establish one universal kernel boundary
+for every file API and platform. The previous requirement overclaimed mount/bind
+containment and made the caller check and child sandbox appear to be equivalent. A
+stronger guarantee can be required, but it must be tied to an implementation and
+acceptance evidence rather than a generic component name.
+
+**Consequences.** Update `REQ-SEC-005`, `ARCH/13`, `ARCH/22`, `ARCH/23`, and `TODO.md`
+with mechanism-specific acceptance and platform scope. Keep Windows confined execution
+unavailable until its backend is linked and accepted; no other tier inherits its
+claims by interface similarity.
+
+## DEC-046 — Deploy on the user-selected host
+
+**Decision (2026-09-27).** HorizonCode's runtime, durable state, and workspaces are
+owned by the machine selected by the user: a laptop/workstation for interactive work
+or a user-managed server for headless and supervised long-running work. The product
+does not require a HorizonCode-operated cloud control plane. Provider/model calls are
+separate explicit egress routes; the UI and audit records identify the selected route
+and governed data-transfer scope. Same-host detach/attach may use an OS-user-restricted
+local control socket. Remote UI attachment, remote administration, hosted tenancy, and
+multi-user server isolation are separate capabilities and MUST NOT be inferred from
+headless server deployment.
+
+**Why.** The user chose deployment location as an operator choice and clarified that
+their SSH preference was for Git only; remote-agent access is outside the current
+contract. A laptop and a self-managed server share the same runtime/control plane but
+have different lifecycle, resource, and access surfaces. Treating “server” as an
+implicit remote UI feature would invent an authorization and network boundary.
+
+**Consequences.** `REQ-VISION-004`, `REQ-HORIZON-011`, `ARCH/01`, `ARCH/03`,
+`ARCH/25`, `ARCH/27`, `research docs/mimo-code.md`, `research docs/tests.md`, and
+`TODO.md` `AX-321`/`AX-331`. Remote attachment needs a later explicit requirement,
+threat model, protocol, authentication design, and acceptance suite.
+
+## DEC-047 — Separate goal selection from durable goal lifecycle
+
+**Decision (2026-09-27).** The currently selected goal is a session/UI pointer over a
+durable `RunGoal`, not a lifecycle state of that goal. `/goal clear` may remove that
+pointer only after the run is terminal or explicitly paused/blocked; it does not
+delete or rewrite the goal, run, task, attempt, budget, or evidence records. A paused
+run remains resumable by ID after the pointer is cleared or rebuilt after restart.
+
+**Why.** Combining “cleared from the current view” with the durable lifecycle made a
+paused run potentially non-resumable even though `/goal clear` promised otherwise.
+Selection is a UI projection; pause and completion are execution facts and have
+different recovery semantics.
+
+**Consequences.** `ARCH/25` adds `ActiveGoalPointer`; `ARCH/27` defines the clear
+command boundary; `ARCH/23` and `research docs/tests.md` require pointer-clear,
+restart, and resume-by-ID coverage. `TODO.md` `AX-337` tracks implementation.
+
+## DEC-048 — Require digest-bound activation before long-running work
+
+**Decision (2026-09-27).** A draft `RunGoal` is inert. Before any model, tool, or
+external-agent dispatch, the user must explicitly start the run against the exact
+displayed specification, task graph, and plan digests. The controller revalidates
+blocking ambiguity, workspace/base revision, dependency graph, policy/capability, and
+run plus verification/recovery budgets. Activation is idempotent by input delivery ID;
+the durable activation receipt and reservation must reconcile before work is dispatched.
+
+**Why.** `/goal set` created a draft and correctly prohibited dispatch, but the command
+contract did not say how a user approved it. Treating a later message, stale preview,
+or budget reservation as implicit approval could start work against a different spec
+or start it twice after a retry/restart.
+
+**Consequences.** `REQ-HORIZON-020`, `ARCH/25` `GoalStartIntent`/`GoalActivated`,
+`ARCH/27` `/goal start`, and `ARCH/23`/`research docs/tests.md` stale-digest and
+replay cases define the path. `TODO.md` `AX-337` tracks implementation.
+
+## DEC-049 — Separate inert goal creation, bounded preparation, and execution approval
+
+**Decision (2026-09-27).** `/goal set` stores only the original request and creates an
+inert draft. A separate explicit `/goal prepare` may spend a finite planning budget on
+read-only, revision-pinned repository discovery and planner inference. It cannot write
+the workspace, launch coding workers, or perform external effects. The resulting
+proposal is reviewed before `/goal start`; activation then requires a one-shot receipt
+bound to the exact spec, task graph, plan, base revision, model/agent route, permission
+scope, and budgets. Clarifications create new proposal digests. ACP uses negotiated
+form elicitation or the exact one-use input receipt, and never treats ordinary “yes”
+or a tool permission reply as task approval.
+
+**Why.** The previous command contract asked `/goal set` to produce model-derived
+success conditions despite promising no model inference, and `/goal start` required
+digests that had no explicit preparation operation to create. Keeping drafting,
+planning, and coding authorization as separate actions makes both intent validation
+and planning cost visible without handing the planner coding authority.
+
+**Consequences.** `REQ-HORIZON-020`, the `GoalPreparation` schema/transaction in
+`ARCH/25`, `/goal prepare` and `/goal clarify` in `ARCH/27`, the review card in
+`ARCH/06`, ACP interaction in `ARCH/15`, `ACC-H1-01`, and the preparation/approval
+tests specify this workflow. ACP `elicitation/create` is an agent-to-client request;
+only a configured trusted interactive connector with authenticated operator scope can
+answer as the approver. `TODO.md` `AX-337` tracks implementation.
+
+## DEC-050 — Keep operator control authority outside all worker process views
+
+**Decision (2026-09-27).** The run/session/audit stores, credentials, operator-control
+IPC, and trusted controller home remain outside all model-controlled tool, extension,
+MCP, and peer process views. A typed principal is assigned by authenticated ingress;
+only a trusted operator UI/CLI session or an authenticated, configured ACP connector
+paired with the root HorizonCode agent session can mint approval receipts or change
+control state. An outbound ACP peer/client process is never an operator. CLI
+arguments, environment, protocol text, model output, and peer receipts cannot grant
+the principal. Per-attempt scratch is separate from
+canonical session/run state. A broad-access worker profile is available only when a
+distinct worker identity or isolated VM/view proves this boundary; otherwise it is
+refused. This applies even when a user opts into broad workspace or network access.
+
+**Why.** A worker could otherwise invoke the CLI, reach a local socket, or edit local
+state and forge the very approval, budget, or evidence used to verify its work.
+Treating all same-UID processes as one trusted principal is incompatible with a
+model-controlled subprocess unless the sandbox keeps the controller boundary out of
+that subprocess. A bare unrestricted fallback therefore cannot support trustworthy
+multi-hour completion claims.
+
+**Consequences.** `REQ-SEC-026`, `ARCH/13` profile/ResolvedProfile rules,
+`ARCH/22` `FO-16`/`O-08`/`O-09`, the operator principal, sealed `MutationContext`, and
+approval receipt in `ARCH/25`,
+surface rules in `ARCH/06`/`ARCH/15`/`ARCH/27`, and process-level acceptance tests
+are mandatory. No controller API may accept caller-supplied actor/principal or a
+caller-forgeable authorization object. Linux/macOS/Windows backend claims remain
+unaccepted until the actual worker/control boundary is tested. `TODO.md` `AX-337` and
+`AX-316` track the work.
+
+## DEC-051 — Persist a one-use approval challenge and recoverable activation commit
+
+**Decision (2026-09-27).** Opening `/goal start` creates an expiring durable
+`GoalApprovalChallenge` bound to the canonical review-bundle digest, the exact
+specification/task graph/plan/base/route/permission/budget digests, one authenticated
+operator control session and connection, and an idempotent review delivery. At most
+one challenge may be pending for a goal. A same-payload retry returns that challenge;
+a changed payload under the same delivery ID conflicts. A newer review invalidates an
+older still-pending challenge and is refused while an accepted start intent is being
+reconciled. Consequential state changes, additional input, disconnection before
+confirmation, session change while pending, or expiry invalidate a pending challenge.
+Only an explicit response on the original trusted context can create a durable
+one-shot approval receipt; after that, the same unexpired intent may recover across a
+client disconnect, but not across a material policy/spec/budget change.
+
+Activation uses a recoverable commit protocol, not a fictional transaction across
+the event log, SQLite projection, budget ledger, and process launch. Persist accepted
+confirmation and `GoalStartIntent`, reserve budgets with stable idempotency keys,
+recheck policy/freshness, then append `GoalActivated` only after all required
+reservations are durably confirmed. `GoalActivated` is the commit point. Dispatch
+comes from a durable outbox keyed by that event and reuses stable attempt IDs. Before
+the commit event, recovery may reconcile or release reservations but cannot dispatch;
+after it, projection rebuild and outbox delivery are idempotent. Unknown launch state
+blocks another attempt until process/workspace reconciliation.
+
+**Why.** A digest-bound receipt without a persisted challenge does not establish
+which exact review was presented, to which authenticated control session, or whether
+it remains current after concurrent reviews, new input, expiry, or disconnection.
+Separately, a claim of atomic approval+reservation+activation is not supported by the
+documented multi-store architecture. A crash between reservation and dispatch could
+otherwise strand budget or launch duplicate work.
+
+**Consequences.** `REQ-HORIZON-021..024`, `ARCH/25` challenge/receipt/intent/outbox schemas,
+partial unique/idempotency constraints and recovery protocol, `ARCH/06` confirmation
+surface, `ARCH/27` `/goal start`/`/cancel`, `ACC-H1-07`, and `research docs/tests.md` race/crash
+cases define the contract. `ARCH/24` `F-56` records the design defect. `TODO.md`
+`AX-337` tracks implementation.
+
+## DEC-052 — Make cancellation target-scoped and independently reconcilable
+
+**Decision (2026-09-27).** `/cancel` carries an explicit `RUN`, `TASK`, or `ATTEMPT`
+target. The controller resolves its ancestry and authorizes the matching operation
+scope before writing a durable idempotent cancel request/fence. Run cancellation stops
+all new claims; task cancellation stops only that task and leaves its descendants
+blocked on the cancelled dependency; attempt cancellation stops only that attempt and
+permits a retry only when normal policy, budget, and attempt limits allow it. All
+scopes cooperate with in-flight work and reconcile effects before returning terminal
+`CANCELLED`; unknown peer/process/effect state stays `RECONCILING`. Already-terminal
+targets remain unchanged. `/stop-now` remains the explicit hard-stop path.
+
+**Why.** The command/receipt advertised three cancellation scopes, but the typed
+controller interface exposed only `cancel_run`, and natural-language `ControlIntent`
+had no target kind or ID. Without a typed target, least-scope authorization, or an
+idempotent persisted request, an adapter could cancel the wrong work, silently omit a
+task/attempt cancellation, or claim success while an external effect was still live.
+
+**Consequences.** `REQ-HORIZON-025`, the `CancelTarget`/`CancelRequest` schemas,
+controller API, target state transitions and projection migration in `ARCH/25`, the
+typed command grammar and status presentation in `ARCH/06`/`ARCH/27`, and
+`ACC-H1-08` define the contract. `ARCH/24` `F-57` records the defect;
+`TODO.md` `AX-337` and `AX-345` track implementation and control-intent routing.
+
+## DEC-053 — Keep large session payloads outside the canonical event log
+
+**Decision (2026-09-27).** Session events store bounded metadata and immutable
+session-scoped artifact references; they never inline unbounded text or binary data.
+Write and verify an artifact before appending the event that references it. The
+append-only log remains canonical; indexes, blob manifests and UI previews are
+rebuildable projections. Replay, provider rendering, export and verification must
+validate the digest, length, format version and applicable resource limits, and must
+surface unavailable/corrupt/unsupported content as typed state. Migrations are
+copy-on-write generations with parent-log digests; garbage collection requires a
+complete mark over retained owners plus expired leases, not refcounts alone.
+
+**Why.** The [DeepSeek-Reasonix Studio release notes](https://github.com/esengine/DeepSeek-Reasonix/releases)
+checked 2026-09-27 describe an upstream data-integrity failure in which base64 image
+data made event logs exceed 128 MiB and prevented session save/recovery (details and
+source scope in [`research docs/deepseek-reasonix.md`](../research%20docs/deepseek-reasonix.md)).
+This is a peer-reported issue, not a reproduced HorizonCode failure. HorizonCode's
+event log is also its replay/recovery authority;
+unbounded payloads can cause log-read failure, memory exhaustion and loss of unrelated
+committed work.
+
+**Consequences.** `REQ-SESS-005`, `ARCH/07`'s `BlobRef`, commit protocol, migration and
+projection schema, `ARCH/06` typed unavailable UI state, `ARCH/18`/`ARCH/27` bounded
+storage settings, `ACC-P1-09`, and `research docs/tests.md` define the contract. Numeric
+default ceilings and platform-specific durability guarantees remain implementation
+decisions that must be fixed before shipping; no unbounded default is allowed.
+`ARCH/24` `F-58` records the design gap; `TODO.md` `AX-348` tracks delivery.
+
+## DEC-054 — Recover only proven remaining-context output truncation once
+
+**Decision (2026-09-27).** Keep context-window rejection (`REQ-CTX-004`) distinct
+from a response cut off during generation. A provider adapter may classify a
+truncation as `remaining_context_limit` only when protocol evidence or an explicitly
+validated route capability proves that the server used the remaining context as its
+effective output cap. The controller may compact and retry the same logical step
+once only when the attempt produced no completed tool call or provider-side effect,
+the user/control/spec/policy revisions are unchanged, and the budget can reserve both
+compaction and retry plus required verification. Preserve partial bytes, finish
+reason, usage and attempt event for the UI/audit record; never treat partial output as
+a completed assistant message. Explicit configured output caps and unknown/ambiguous
+finish reasons do not trigger compaction retry. A second truncation is terminal for
+automatic recovery.
+
+**Why.** [Cline v4.1.21 (2026-09-24)](https://github.com/cline/cline/releases/tag/v4.1.21)
+reports compact-and-retry for long local-model replies when servers cap output at
+remaining context, while its release notes preserve the partial answer if recovery
+cannot help and do not replay tool-activity turns. This is useful peer evidence, not
+proof of a universal provider behavior. Retrying an indistinguishable `length`
+finish can repeat a deliberately bounded response, duplicate visible text, or replay
+an already-executed external tool. The adapter therefore needs trustworthy cause
+evidence and the controller owns the retry fence.
+
+**Consequences.** `REQ-CTX-011`, `ARCH/08`'s response-attempt state, `ARCH/11`'s
+normalized finish reason and route capability, `ARCH/06`'s partial/truncated UI state,
+`ACC-P1-10`, and the provider edge-case suite in `research docs/tests.md` define the
+contract. `ARCH/24` `F-59` records the design gap; `TODO.md` `AX-349` tracks delivery.
+
+## DEC-055 — Rotate canonical event logs without pruning their truth
+
+**Decision (2026-09-27).** Session and run event histories use bounded-size immutable
+segments plus one bounded active segment. Every event is sequence- and digest-linked;
+each sealed segment records its sequence range, count, byte length, first/last digest,
+and predecessor digest. A durable committed-head record identifies the last acknowledged
+sequence and digest. The SQLite/index/manifest is rebuildable; it cannot override a
+missing or mismatching committed head. Replay validates and streams segments in bounded
+batches instead of reading the full log into one string/vector. A crash tail beyond the
+head is preserved as uncommitted and reconciled by stable event/operation IDs before
+recovery; committed bytes missing before the head are corruption and block completion.
+No active run may prune canonical history. Event-log bytes are part of the same
+hierarchical storage budget as artifacts, but use a distinct quota/reservation so a
+large payload cannot consume the bytes needed for control and settlement records.
+Before model/tool/effect dispatch, reserve bounded event capacity for that step and
+retain a protected control/recovery reserve that the selected filesystem backend has
+physically allocated before run activation; a ledger-only reservation is not a disk
+reservation. The controller keeps the reserve file/journal inaccessible to workers
+and consumes it only for required control, reconciliation, or handoff records. When
+capacity is exhausted, fence new dispatch, reconcile in-flight work, and persist a
+truthful `WAITING`/`STOPPED` outcome. If physical reservation is unsupported, do not
+advertise the crash-durable multi-hour profile.
+Only a separately authorized post-terminal retention/export operation may archive or
+remove eligible history after digest verification and owner/evidence checks.
+
+**Rationale.** The current `horizoncode-session` implementation writes each session to
+one `<session-id>.jsonl` file and `read_events` materializes the entire file before
+parsing it. That file and read allocation have no total-size/record-count bound. A
+bounded artifact store fixes payload size but does not fix unbounded event count,
+whole-log replay memory, or disk exhaustion. Segmentation bounds per-file work and
+allows streaming replay; finite per-session/run quotas plus admission and emergency
+reserves are still required because rotation alone does not make storage infinite.
+
+**Consequences.** `REQ-SESS-006`, `REQ-HORIZON-027`, `ARCH/07`, `ARCH/25`, `ARCH/28`,
+`ACC-P1-11`, `ACC-H1-10`, and the log-growth/recovery cases in `research docs/tests.md`
+define the contract. `ARCH/24` `F-61` records the source/design defect; `TODO.md`
+`AX-350` tracks implementation and migration. This is a proposed design, not a claim
+that current code is segmented or bounded.
+
+## DEC-056 — Read paths never repair canonical session history
+
+**Decision (2026-09-27).** Listing, status, and read-only replay never mutate canonical
+session/run bytes, the committed head, or recovery state. Only the explicit recovery
+controller may reconcile an interrupted tail. It first preserves and hashes the
+original bytes, identifies the last committed head, correlates stable event/effect
+IDs, and records the recovery decision. It never truncates an uncommitted tail in
+place. If resumption is safe, recovery starts a new immutable generation/segment and
+appends deterministic synthetic turn closers only after the old tail is quarantined
+and side effects are reconciled. If evidence is insufficient, it leaves the source
+untouched and surfaces `RECONCILING`/`INSUFFICIENT_EVIDENCE` for operator review.
+
+**Rationale.** In the inspected source, `SessionStore::read_events` calls
+`fs::read_to_string`, then truncates a torn final line via `set_len`; `read_only`
+delegates to this path, and `list` calls `load`, which can also append repair events.
+Thus inspection can change the source of truth and silently remove bytes without
+reconciling whether the partial record followed an external effect. Read intent and
+recovery authority need distinct APIs and tests.
+
+**Consequences.** `REQ-SESS-006`, `ARCH/06`, `ARCH/07`, `ARCH/25`, `ACC-P1-06`,
+`ACC-P1-12`, and the non-mutation/recovery cases in `research docs/tests.md` define
+the contract. `ARCH/24` `F-62` records read-path mutation and `F-64` records listing
+errors hidden as absence; `TODO.md` `AX-351` and `AX-353` track the recovery and
+enumeration migrations. No current source implementation is changed by this design
+decision.
+
+## DEC-057 — A durable commit includes namespace durability
+
+**Decision (2026-09-27).** A `run_durable` commit is acknowledged only after the event
+bytes and committed-head bytes are synchronized and any newly created/renamed segment,
+seal, or head directory entry is synchronized using a platform backend that has a
+declared and accepted contract. Rust `File::sync_data` alone is not treated as proof
+that all metadata is durable; the platform backend must establish what it actually
+flushes and how parent-directory updates are made durable. If a platform cannot
+provide an acceptable mechanism, it cannot advertise the crash-durable profile.
+Configured interactive weaker modes remain visibly weaker and can never be used for
+a multi-hour run.
+
+**Rationale.** The current session store creates `<session-id>.jsonl` and calls
+`sync_data` on the file, but does not sync the containing directory. Rust documents
+that `sync_data` might not synchronize metadata, and Linux documents that syncing a
+file does not necessarily persist its directory entry. Windows and other platforms
+have different APIs and failure semantics, so one generic API call is not evidence
+of a universal durability guarantee. See [Rust `File::sync_data`](https://doc.rust-lang.org/std/fs/struct.File.html#method.sync_data),
+[Linux `fsync(2)`](https://man7.org/linux/man-pages/man2/fsync.2.html), and
+[SQLite's atomic-commit assumptions](https://sqlite.org/atomiccommit.html).
+
+**Consequences.** `REQ-SESS-006`, `ARCH/07`, `ARCH/25`, `ACC-P1-11`,
+`ACC-P1-13`, and per-platform acceptance in `research docs/tests.md` define the
+contract. `ARCH/24` `F-63` records the source durability gap; `TODO.md` `AX-352`
+tracks implementation. Source-level sync calls do not prove host hardware honors
+flushes, so evidence states the tested tier and residual assumptions.
