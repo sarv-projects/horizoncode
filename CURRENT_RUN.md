@@ -15,9 +15,12 @@
 > unimplemented. The root checkout directory still has its old filesystem name;
 > it is recorded accurately below.
 >
-> All non-ignored worktree changes are committed as `abf007e` on local branch
-> `main`; `origin` points to `sarv-projects/horizoncode`. Push status is
-> recorded in the final handoff after remote synchronization.
+> All non-ignored worktree changes are committed as `58569f4` on local branch
+> `main`. The new GitHub repository already had an Apache-2.0 LICENSE-only
+> initial commit (`e41b670`); local `main` now merges that history at
+> `1c1e755`, preserving the license. `origin` uses the configured SSH alias
+> and points to `sarv-projects/horizoncode`. Push is pending after this handoff
+> update is committed.
 >
 > Read `ARCH/24` for findings, `ARCH/25` for the integrated design, and
 > `ARCH/26` for the source-pattern crosswalk. The user's confirmed priority is
