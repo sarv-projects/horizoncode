@@ -23,7 +23,7 @@ priority.
 
 ## What Is Built and Verified
 
-Committed at `aee1e0b` (HEAD). **9 crates**, ~19k added lines.
+Committed at **`f4a8afa`** (HEAD). **11 crates**, ~33k added lines.
 
 | Area | Crate | State |
 |---|---|---|
@@ -36,15 +36,22 @@ Committed at `aee1e0b` (HEAD). **9 crates**, ~19k added lines.
 | CLI | `agentx-cli` | headless `-p` (default + json/ndjson), `acp` server, documented exit-code table |
 | Guard | `agentx-guard` | ordered rules, fail-closed, outer-deny ceiling, plan mode, catastrophic gate, tickets, approvals, saved rules, config layers |
 | Sandbox | `agentx-sandbox` | Linux `bwrap` namespace backend, macOS Seatbelt backend, Windows AppContainer/restricted-token backend, unsupported backend, profile resolution |
+| Audit | `agentx-audit` | BLAKE3 hash-chained append-only entries, canonical `BodyRef` under a domain-separated label, periodic segment Merkle roots, roots signed with a keyed MAC and sealed to `roots.jsonl`, coverage census, `verify`/`replay`, redaction before hashing |
+| Analytics | `agentx-analytics` | local append-only ledger + SQLite rollups, `CostStatus` actual/estimated/included/unknown, `/usage`, `/insights`, `stats`, `export --sanitize` |
 
-**Test count: 129** `#[test]` / `#[tokio::test]` functions in the committed tree
-(84 `#[test]` + 36 `#[tokio::test]` + 9 `#[tokio::test(flavor = "multi_thread", …)]`).
+**Test count: 272 passing across 37 suites, 0 failures** at `f4a8afa` (baseline 129 +
+143 added by the audit/analytics lane). This is an **executed verdict**, not a static
+count: the implementing lane ran the full suite twice and the orchestrator independently
+ran `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`
+(clean), and `cargo test --workspace` **twice more** — 272 passed / 0 failed both times,
+with 0 brand-name hits across `crates/`.
 
-**How that number was verified, precisely:** by a *static* count over the committed
-sources — `git ls-files 'crates/**/*.rs'` piped to an attribute grep — not by a test
-run performed by the documentation lane. The pass/fail verdict for these tests was
-produced by the implementation lane that authored them; the documentation lane did not
-re-run them. Treat 129 as "the suite has 129 named test functions", not as "129 passed".
+One flake was investigated rather than waved off: on a *cold*, I/O-starved 4-core box
+the first full run lost both pre-existing `e2e_acp.rs` tests to a 20s per-read timeout.
+Evidence that it is environmental, not a hang: 5/5 standalone (0.44–3.5s) and 3/3 at
+load average 9; a forced 114-file rebuild took 90s wall for 22s CPU; one analytics suite
+took 52.16s cold vs 0.43s warm (120× spread); `e2e_acp` then passed in 0.47s. The
+timeout was deliberately **not** widened, because that would mask genuine hangs.
 
 **What is *not* verified, and must not be described as verified:**
 
@@ -62,23 +69,46 @@ re-run them. Treat 129 as "the suite has 129 named test functions", not as "129 
 
 ## In Flight
 
-- **Code lane:** active on `crates/`, `Cargo.toml`, `Cargo.lock`. It owns an update to
-  the `session_store()` writability probe and an update to `Guard::policy_hash` (see
-  Open defects 1 and 2 in `TODO.md`).
-- **Docs lane (just completed):** per-tier network qualification — `REQ-VER-005`,
-  `REQ-SEC-016`, `REQ-SEC-008`, `AX-102`, `AX-119` reworded to `DEC-026`, plus the new
-  `DEC-027` read-through; `TODO.md` re-based on `git log` evidence with a new
-  **Open defects** section; `README.md` status corrected; this handover.
+- **gen-12 — security hardening (`crates/`), the only live code lane.** It owns
+  `Cargo.toml`/`Cargo.lock` and the cargo build lock, so no other code lane may start
+  until it reports. Scope is the independent-review findings, S1 first:
+  - **S1 (live containment gap):** the Linux/macOS sandbox scopes *writes* but not
+    *reads* — `--ro-bind / /` leaves the whole host readable, `FsOp::Read` returns `Ok`,
+    there is no `readable_roots` on any profile, the CLI default sets no deny globs, and
+    `default_rules()` allows `exec.run **` — so a default `bash` can read `~/.ssh/id_rsa`.
+    `ARCH/13` requires reads scoped to granted roots on **every** tier.
+  - S2 macOS Seatbelt never applies `resolved.deny` / `resolved.protected` globs.
+  - S3 symlink-parent TOCTOU on the write path; `check_sandbox_write` is a no-op when
+    `ctx.resolved` is `None`.
+  - S4 guard ignores `mode`/`unmatched` from the **global** config; dead
+    `approval.default_timeout_ms`.
+  - S5 path-shaped `exec.run` rules are accepted at load (violates `DEC-025`).
+  - S6 `bash` never extracts path-shaped argv into `fs.*` resources.
+  - S7 issued tickets are never validated and `allow once` issues an **unbounded** ticket.
+  - P3 redaction does not cover tool args / event payloads.
+  - T3 `write`/`edit` have no base-hash compare, so a concurrent change is overwritten.
+  - Each item must land with a test that **fails before the fix** and passes after.
+- No docs lane is live. `CURRENT_RUN.md` and `TODO.md` are the only non-crate files in
+  play.
+
+**Stale finding corrected:** an earlier report listed a `session_store()` writability-probe
+order-dependence defect. Verified by grep, **no such code exists at HEAD** (no
+`session_store()`, no `OnceLock` in `agentx-cli`, no `agentx-runner/src/main.rs`, no
+`agent::Kind`, no `content::Text::new`). It was a phantom from a stale lane report; the
+audit lane instead shipped a `TestHome` helper with order-independence regression tests.
+Do not go looking for it.
 
 ## Next Exact Steps
 
-1. **Land the audit component (`AX-104`).** It is the single largest gap and the P1
-   differentiator is "guard + **verifiable audit**" — the guard half ships, the audit
-   half does not exist. Hash chain + dense `seq` + periodic Merkle roots + an
-   `audit verify` command + redaction, per `ARCH/14` and `REQ-AUDIT-001..003`.
-2. **Finish the two in-flight fixes** (session-store writability probe, `policy_hash` →
-   a cryptographic digest) and land a regression test for each; `REQ-VER-017` says a fix
-   without a regression test is not complete.
+1. **Let gen-12 land the security hardening (S1-S7 + P3 + T3).** S1 is the one that
+   matters: until reads are scoped, the word *sandboxed* overstates what the code
+   enforces. Verify the lane's claim that each item has a test which fails **before** the
+   fix, then re-run `fmt` + `clippy -D warnings` + the full suite twice yourself before
+   committing.
+2. **`Guard::policy_hash` still uses `DefaultHasher`** - a non-cryptographic fingerprint
+   that lands on every authorization ticket. The audit lane already depends on BLAKE3, so
+   switch it to the same digest. This is the one real item from the old Open-defects list;
+   see the phantom note above for the other.
 3. **Build the verification harness (`AX-122`)** before claiming anything: injectable
    clock/rng/home, a loopback-only HTTP wrapper with a non-loopback tripwire, the 5×/20×
    repeat run, and the quarantine ledger.
@@ -87,13 +117,16 @@ re-run them. Treat 129 as "the suite has 129 named test functions", not as "129 
    `implemented`.
 5. **Commit the P1 decision table (`ACC-P1-02`)** and a static gate that no path
    decision is produced outside the guard (`DEC-025`, `REQ-SEC-025`).
-6. **Finish `AX-115`/`AX-118`:** the `external_directory` floor rule, bash
-   argument-path extraction into guard `fs.*` resources (today `resources_from_input`
-   still pushes the raw `command` string), canonicalize-and-re-validate at use, and the
-   guard↔sandbox pattern parity corpus.
-7. **Reconcile the catalog wording** (`TODO.md` Open defect 7): `ARCH/05`'s hard-gate
-   bullet against `DEC-021`, which already closed it.
-8. Then continue the tracker order, keeping every capability.
+6. **Then the context engine** (`CMP-context`): token budgets, typed system-context
+   sources, `AGENTS.md` discovery, the tree-sitter + PageRank repo map, and compaction
+   with the anchored summary template. The eval harness from step 3 is its prerequisite
+   (`DEC-016`).
+7. **Then MCP host, skills, plugins, orchestrator/subagents, and the TUI cockpit** - none
+   of these exist in code yet, and all of them are in scope. Do not cut them.
+8. **The rename is still parked by explicit user instruction.** All evidence is at
+   `/tmp/opencode/agentx-naming.md`; `DEC-028` is deliberately unwritten and every
+   `agentx-*` identifier is unchanged. When the user picks, the sweep is mechanical and
+   must run as a single owner lane with no other code lane live.
 
 ## Decisions & Gotchas (do not undo)
 
@@ -160,3 +193,22 @@ re-run them. Treat 129 as "the suite has 129 named test functions", not as "129 
   consecutive clean full-suite run and ≥20 repetitions for process/platform-sensitive
   suites, with retained records. Visual confidence, a single green run, or a mock is not
   evidence.
+
+## Environment / Tooling Incident (2026-09-27) — engram MCP "Connection closed"
+
+Not part of the agentX codebase; recorded only as an operator note. The OpenCode MCP
+server `engram` (`mcp.servers.engram` → `~/.local/share/mcp-servers/mneme/mneme mcp
+--tools=agent,graph`, a fork of engram) intermittently reports status `failed` with
+error `Connection closed`. **Root cause (reproduced):** OpenCode spawns one `mneme mcp`
+process per loaded project directory; every instance runs `store.New` →
+`migrate()`/`repairEnrolledProjectSyncMutations()` (a write transaction) against the
+single shared `~/.engram/engram.db`. On a write-lock collision past
+`PRAGMA busy_timeout=5000`, `migrate()` fails `SQLITE_BUSY` → `cmdMCP` calls
+`fatal(err)` → process exits → stdio closes mid-`initialize` → the MCP SDK throws
+`Connection closed`. With a held `BEGIN IMMEDIATE` on the DB, `mneme mcp` exited 1 in
+~7.5s with `engram: migration: database is locked (5) (SQLITE_BUSY)` and empty stdout.
+Contributing (not exit-causing): the fork runs a blocking GitHub update check on every
+startup before serving MCP. **Fix:** single-instance/less-fan-out engram, or
+patch/rebuild the fork to raise `busy_timeout` + retry migration and to skip the update
+check for `mcp`/`serve`. Raising OpenCode's client timeout does not help (the child
+exits, it does not time out).
