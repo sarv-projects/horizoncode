@@ -29,7 +29,9 @@ pub use error::ToolError;
 pub use guard_gate::GuardPermissionGate;
 pub use path::resolve_workspace_path;
 pub use policy::{
-    AskResolution, GateDecision, PermissionGate, PermissionRequest, PolicyGate, PolicyOutcome,
+    ApprovalObserver, ApprovalOutcome, ApprovalRecord, AskResolution, GateDecision,
+    NullApprovalObserver, PermissionGate, PermissionRequest, PolicyGate, PolicyOutcome,
+    TicketNotice,
 };
 pub use registry::{Materialization, Settlement, Tool, ToolContext, ToolOutput, ToolRegistry};
 

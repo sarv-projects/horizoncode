@@ -5,6 +5,7 @@
 //! posture fails closed (`REQ-GUARD-002`).
 
 use std::collections::BTreeSet;
+use std::fmt;
 use std::fmt::Debug;
 
 use agentx_types::{SessionId, ToolCallId};
@@ -79,6 +80,47 @@ pub trait PermissionGate: Send + Sync + Debug {
     }
 }
 
+/// A sink for resolved approvals.
+///
+/// The permission seam stays the single authorization path: an observer only
+/// *watches* it. `GuardPermissionGate` notifies exactly once per `ask`, on the
+/// one place a reply is produced, so exactly one approval record exists per
+/// request (`ACC-P1-03`).
+pub trait ApprovalObserver: Send + Sync + fmt::Debug {
+    /// Records how one approval resolved.
+    fn on_approval(&self, record: &ApprovalRecord);
+
+    /// Records that a scoped ticket was issued for an allowed effect.
+    ///
+    /// The default does nothing: an observer that does not track tickets pays
+    /// nothing.
+    fn on_ticket(&self, _record: &TicketNotice) {}
+}
+
+/// A scoped ticket issued for an allowed effect.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TicketNotice {
+    /// The tool name.
+    pub tool: String,
+    /// The canonical policy action.
+    pub action: String,
+    /// The exact resources the ticket is scoped to.
+    pub resources: Vec<String>,
+    /// The ticket reference, when the gate exposes one.
+    pub ticket_ref: Option<String>,
+    /// Whether the ticket came from an approval (`once`/`always`) or from a
+    /// rule that allowed the effect outright.
+    pub granted_by: &'static str,
+}
+
+/// An observer that discards everything.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NullApprovalObserver;
+
+impl ApprovalObserver for NullApprovalObserver {
+    fn on_approval(&self, _record: &ApprovalRecord) {}
+}
+
 /// How a request that would otherwise prompt is resolved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AskResolution {
@@ -86,6 +128,53 @@ pub enum AskResolution {
     Allow,
     /// Reject (the headless default; never blocks on stdin).
     Deny,
+}
+
+/// How an `ask` resolved.
+///
+/// This is the tool plane's own neutral vocabulary. `GuardPermissionGate`
+/// maps the guard's reply onto it, so a surface can observe the outcome —
+/// including `always` — without knowing which resolver answered. The default
+/// implementation notifies nobody, so a gate that is not interested pays
+/// nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ApprovalOutcome {
+    /// Approved for this call only.
+    AllowOnce,
+    /// Approved and remembered as a rule for later calls.
+    AllowAlways,
+    /// Refused.
+    Reject,
+}
+
+impl ApprovalOutcome {
+    /// Returns the stable wire name recorded in the audit trail.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AllowOnce => "allow_once",
+            Self::AllowAlways => "allow_always",
+            Self::Reject => "reject",
+        }
+    }
+}
+
+/// A resolved approval, as observed on the permission seam.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApprovalRecord {
+    /// The call the approval was for.
+    pub source: ToolCallId,
+    /// The tool name.
+    pub tool: String,
+    /// The canonical policy action.
+    pub action: String,
+    /// The exact resources the call would touch — the pattern a remembered
+    /// rule is built from, so what is persisted can be checked against what was
+    /// shown.
+    pub resources: Vec<String>,
+    /// How the approval resolved.
+    pub outcome: ApprovalOutcome,
 }
 
 /// A deterministic, ordered action policy.

@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1 as acp;
 use agent_client_protocol::{Agent, Client, ConnectionTo, Stdio};
+use agentx_analytics::AnalyticsLog;
 use agentx_guard::{Guard, default_rules};
 use agentx_provider::Provider;
 use agentx_runner::{RunConfig, Runner};
@@ -39,6 +40,11 @@ pub struct AcpOptions {
     pub server_name: String,
     /// The advertised implementation version.
     pub server_version: String,
+    /// The analytics ledger the surface reads cumulative usage and cost from.
+    ///
+    /// Optional: a surface with no ledger emits no `usage_update`, because an
+    /// invented context-window figure is worse than none.
+    pub analytics: Option<Arc<AnalyticsLog>>,
 }
 
 impl AcpOptions {
@@ -61,6 +67,7 @@ impl AcpOptions {
             sandbox_profile: None,
             server_name: "agentx".to_owned(),
             server_version: env!("CARGO_PKG_VERSION").to_owned(),
+            analytics: None,
         }
     }
 }
@@ -76,6 +83,7 @@ struct AcpState {
     sandbox_profile: Option<ConfinementProfile>,
     server_name: String,
     server_version: String,
+    analytics: Option<Arc<AnalyticsLog>>,
     active: Arc<Mutex<HashSet<String>>>,
     cancels: Arc<Mutex<HashMap<String, CancelToken>>>,
 }
@@ -92,6 +100,7 @@ impl AcpState {
             sandbox_profile: options.sandbox_profile,
             server_name: options.server_name,
             server_version: options.server_version,
+            analytics: options.analytics,
             active: Arc::new(Mutex::new(HashSet::new())),
             cancels: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -272,6 +281,7 @@ fn handle_prompt(
         }
         _ => None,
     };
+    let context_window = state.config.context_window;
     let config = RunConfig {
         workspace,
         sandbox: state.sandbox.clone(),
@@ -285,7 +295,10 @@ fn handle_prompt(
         gate,
         config,
     );
-    let observer = AcpObserver::new(cx.clone(), request.session_id.clone());
+    let observer = AcpObserver::new(cx.clone(), request.session_id.clone())
+        .with_context_window(context_window)
+        .with_analytics(state.analytics.clone())
+        .with_usage_session(session_id.to_string());
     let state = state.clone();
 
     cx.spawn(async move {

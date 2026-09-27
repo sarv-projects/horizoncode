@@ -24,9 +24,18 @@ agentx-provider = { path = "crates/agentx-provider", version = "0.1.0" }
 agentx-tools = { path = "crates/agentx-tools", version = "0.1.0" }
 agentx-guard = { path = "crates/agentx-guard", version = "0.1.0" }
 agentx-sandbox = { path = "crates/agentx-sandbox", version = "0.1.0" }
+agentx-audit = { path = "crates/agentx-audit", version = "0.1.0" }
+agentx-analytics = { path = "crates/agentx-analytics", version = "0.1.0" }
 agentx-runner = { path = "crates/agentx-runner", version = "0.1.0" }
 agentx-acp = { path = "crates/agentx-acp", version = "0.1.0" }
 agentx-cli = { path = "crates/agentx-cli", version = "0.1.0" }
+
+# Tamper-evident hashing for the audit chain and its Merkle roots
+# (`ARCH/14-AUDIT.md` §Data / state model).
+blake3 = "1.8"
+
+# Local rollup index for analytics; no network, no extensions.
+rusqlite = { version = "0.31", default-features = false, features = ["bundled"] }
 
 # Async runtime.
 tokio = { version = "1.48", features = [

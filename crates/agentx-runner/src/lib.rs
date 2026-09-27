@@ -12,11 +12,16 @@
 mod config;
 mod error;
 mod observer;
+mod recorder;
 mod runner;
 
 pub use config::RunConfig;
 pub use error::LoopError;
 pub use observer::{NullObserver, RecordingObserver, RunEvent, RunObserver};
+pub use recorder::{
+    ApprovalOptions, ApprovalRecorder, AuditedGate, PolicySnapshot, RecordError, Recorder,
+    RouteRef, tokens_of,
+};
 pub use runner::{RunOutcome, Runner};
 
 /// The step-limit wrap-up instruction appended when tools are disabled.

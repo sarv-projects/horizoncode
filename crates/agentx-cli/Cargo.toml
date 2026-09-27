@@ -13,6 +13,9 @@ path = "src/main.rs"
 
 [dependencies]
 agentx-types.workspace = true
+agentx-audit.workspace = true
+agentx-analytics.workspace = true
+dirs.workspace = true
 agentx-session.workspace = true
 agentx-provider.workspace = true
 agentx-tools.workspace = true
@@ -21,6 +24,7 @@ agentx-acp.workspace = true
 agentx-guard.workspace = true
 agentx-sandbox.workspace = true
 async-trait.workspace = true
+serde.workspace = true
 clap.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -28,6 +32,8 @@ tokio.workspace = true
 
 [dev-dependencies]
 agentx-provider = { workspace = true, features = ["testing"] }
+agentx-audit.workspace = true
+agentx-analytics.workspace = true
 agentx-sandbox.workspace = true
 tempfile.workspace = true
 

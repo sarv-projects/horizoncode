@@ -6,6 +6,8 @@ use std::sync::Arc;
 use agentx_sandbox::{ResolvedProfile, SandboxProvider};
 use agentx_tools::OutputBounds;
 
+use crate::recorder::Recorder;
+
 /// Configuration for one runner instance.
 #[derive(Clone, Debug)]
 pub struct RunConfig {
@@ -37,6 +39,13 @@ pub struct RunConfig {
     pub sandbox: Option<Arc<dyn SandboxProvider>>,
     /// The resolved confinement plan matching `sandbox`.
     pub sandbox_resolved: Option<Arc<ResolvedProfile>>,
+    /// The optional audit and analytics sinks the loop records into.
+    pub recorder: Recorder,
+    /// The advertised context-window size, when the deployment declares one.
+    ///
+    /// A surface that renders a context-window figure must not invent it: with
+    /// no declared window, no window is rendered.
+    pub context_window: Option<u64>,
 }
 
 impl Default for RunConfig {
@@ -56,6 +65,8 @@ impl Default for RunConfig {
             max_output_tokens: None,
             sandbox: None,
             sandbox_resolved: None,
+            recorder: Recorder::default(),
+            context_window: None,
         }
     }
 }

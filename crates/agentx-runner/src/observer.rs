@@ -52,6 +52,29 @@ pub enum RunEvent {
         /// The resources the call will touch.
         resources: Vec<String>,
     },
+    /// An approval request resolved on the permission seam.
+    ///
+    /// Emitted exactly once per `ask`, carrying the reply and — for an
+    /// `allow_always` — the exact pattern that will be remembered, so a
+    /// surface can show what was persisted (`ACC-P1-03`).
+    ApprovalResolved {
+        /// The call the approval was for.
+        tool_call_id: agentx_types::ToolCallId,
+        /// The reply: `allow_once`, `allow_always`, or `reject`.
+        outcome: String,
+        /// The exact remembered pattern, for `allow_always`.
+        remembered: Option<String>,
+    },
+    /// An audited effect class was recorded.
+    ///
+    /// A surface that shows the evidence surface renders this; it is how an
+    /// audit fact becomes visible without the surface reading the store.
+    AuditRecorded {
+        /// The declared effect class that was recorded.
+        class: String,
+        /// A bounded, ref-and-digest-only summary.
+        summary: String,
+    },
     /// A tool call settled.
     ToolFinished {
         /// The settlement.

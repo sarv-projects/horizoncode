@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# The policy fingerprint recorded on sessions, tickets, and audit entries uses
+# the same digest as the audit chain, so it is stable across toolchain releases.
+blake3.workspace = true
 async-trait.workspace = true
 dirs.workspace = true
 serde.workspace = true

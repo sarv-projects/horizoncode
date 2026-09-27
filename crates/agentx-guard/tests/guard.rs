@@ -322,3 +322,84 @@ async fn approval_resolvers_are_fail_closed_by_default() {
     };
     assert_eq!(auto.resolve(&catastrophic).await, ApprovalReply::Reject);
 }
+
+/// The policy fingerprint is quoted into the audit chain, so it must be a real
+/// cryptographic digest of a stable canonical form — not a
+/// `DefaultHasher` fingerprint, which changes between toolchain releases and is
+/// not collision-resistant.
+mod policy_hash {
+    use agentx_guard::{Effect, Guard, GuardMode, Rule, default_rules};
+
+    fn hash_of(rules: Vec<Rule>, unmatched: Effect) -> String {
+        Guard::from_rules(rules, GuardMode::Act, unmatched)
+            .policy_hash()
+            .to_owned()
+    }
+
+    #[test]
+    fn the_fingerprint_is_a_blake3_digest() {
+        let hash = hash_of(default_rules(), Effect::Deny);
+        assert!(hash.starts_with("ph_"), "{hash}");
+        assert_eq!(hash.len(), 3 + 64, "a 32-byte digest in hex: {hash}");
+        assert!(
+            hash[3..].chars().all(|c| c.is_ascii_hexdigit()),
+            "not hex: {hash}"
+        );
+    }
+
+    #[test]
+    fn the_fingerprint_is_stable_across_guard_instances() {
+        assert_eq!(
+            hash_of(default_rules(), Effect::Deny),
+            hash_of(default_rules(), Effect::Deny)
+        );
+    }
+
+    #[test]
+    fn every_effective_field_changes_the_fingerprint() {
+        let base = hash_of(default_rules(), Effect::Deny);
+        // A different action.
+        let mut changed_action = default_rules();
+        changed_action[0] = Rule::new("fs.readwrite", "**", Effect::Allow);
+        assert_ne!(base, hash_of(changed_action, Effect::Deny));
+        // A different resource.
+        let mut changed_resource = default_rules();
+        changed_resource[0] = Rule::new("fs.read", "src/**", Effect::Allow);
+        assert_ne!(base, hash_of(changed_resource, Effect::Deny));
+        // A different effect on a later rule, which find-last-wins can reach.
+        let mut changed_effect = default_rules();
+        changed_effect[1] = Rule::new("fs.write", "**", Effect::Deny);
+        assert_ne!(base, hash_of(changed_effect, Effect::Deny));
+        // A different unmatched default.
+        assert_ne!(base, hash_of(default_rules(), Effect::Ask));
+        // A different mode.
+        let act = Guard::from_rules(default_rules(), GuardMode::Act, Effect::Deny)
+            .policy_hash()
+            .to_owned();
+        let plan = Guard::from_rules(default_rules(), GuardMode::Plan, Effect::Deny)
+            .policy_hash()
+            .to_owned();
+        assert_ne!(act, plan);
+    }
+
+    #[test]
+    fn the_framing_prevents_field_boundary_collisions() {
+        // Without length-prefixed framing, ("ab", "c") and ("a", "bc") hash to
+        // the same byte stream. With it they must not.
+        let left = hash_of(
+            vec![
+                Rule::new("ab", "c", Effect::Allow),
+                Rule::new("d", "e", Effect::Allow),
+            ],
+            Effect::Deny,
+        );
+        let right = hash_of(
+            vec![
+                Rule::new("a", "bc", Effect::Allow),
+                Rule::new("d", "e", Effect::Allow),
+            ],
+            Effect::Deny,
+        );
+        assert_ne!(left, right);
+    }
+}

@@ -4,6 +4,7 @@ mod app;
 mod approval;
 mod args;
 mod output;
+mod surfaces;
 
 use std::process::ExitCode;
 

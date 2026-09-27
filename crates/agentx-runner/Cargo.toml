@@ -9,6 +9,8 @@ repository.workspace = true
 
 [dependencies]
 agentx-types.workspace = true
+agentx-audit.workspace = true
+agentx-analytics.workspace = true
 agentx-session.workspace = true
 agentx-provider.workspace = true
 agentx-tools.workspace = true

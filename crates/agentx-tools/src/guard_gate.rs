@@ -17,13 +17,17 @@ use agentx_guard::{
 };
 use async_trait::async_trait;
 
-use crate::policy::{GateDecision, PermissionGate, PermissionRequest, PolicyOutcome};
+use crate::policy::{
+    ApprovalObserver, ApprovalOutcome, ApprovalRecord, GateDecision, PermissionGate,
+    PermissionRequest, PolicyOutcome, TicketNotice,
+};
 
 /// A permission gate backed by the policy engine.
 pub struct GuardPermissionGate {
     guard: Arc<Guard>,
     resolver: Arc<dyn ApprovalResolver>,
     granted: Mutex<HashSet<String>>,
+    observer: Mutex<Option<Arc<dyn ApprovalObserver>>>,
 }
 
 impl std::fmt::Debug for GuardPermissionGate {
@@ -43,7 +47,18 @@ impl GuardPermissionGate {
             guard,
             resolver,
             granted: Mutex::new(HashSet::new()),
+            observer: Mutex::new(None),
         }
+    }
+
+    /// Attaches an observer that is told how each `ask` resolved.
+    ///
+    /// The observer watches the single authorization path; it cannot change a
+    /// decision.
+    #[must_use]
+    pub fn with_approval_observer(mut self, observer: Arc<dyn ApprovalObserver>) -> Self {
+        self.observer = Mutex::new(Some(observer));
+        self
     }
 
     /// Returns the underlying guard.
@@ -75,6 +90,41 @@ impl GuardPermissionGate {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(memo_key(source, action));
+    }
+
+    /// Tells the attached observer, if any, that a ticket was issued.
+    fn notify_ticket(
+        &self,
+        request: &PermissionRequest,
+        ticket_ref: Option<String>,
+        granted_by: &'static str,
+    ) {
+        let observer = self
+            .observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(observer) = observer {
+            observer.on_ticket(&TicketNotice {
+                tool: request.tool_name.clone(),
+                action: canonical_action(&request.action).to_owned(),
+                resources: request.resources.clone(),
+                ticket_ref,
+                granted_by,
+            });
+        }
+    }
+
+    /// Tells the attached observer, if any, how an approval resolved.
+    fn notify(&self, record: &ApprovalRecord) {
+        let observer = self
+            .observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(observer) = observer {
+            observer.on_approval(record);
+        }
     }
 
     async fn resolve_ask(
@@ -109,11 +159,26 @@ impl GuardPermissionGate {
             ),
             catastrophic: catastrophic(canonical, &request.resources).is_some(),
         };
-        match self.resolver.resolve(&approval).await {
+        let reply = self.resolver.resolve(&approval).await;
+        // One notification, on the single resolution point, so exactly one
+        // approval record exists per request (`ACC-P1-03`).
+        self.notify(&ApprovalRecord {
+            source: request.source.clone(),
+            tool: request.tool_name.clone(),
+            action: canonical.to_owned(),
+            resources: request.resources.clone(),
+            outcome: match reply {
+                ApprovalReply::Once => ApprovalOutcome::AllowOnce,
+                ApprovalReply::Always => ApprovalOutcome::AllowAlways,
+                ApprovalReply::Reject => ApprovalOutcome::Reject,
+            },
+        });
+        match reply {
             ApprovalReply::Once => {
-                let _ = self
+                let ticket = self
                     .guard
                     .issue_ticket(guard_request, Some("once".to_owned()));
+                self.notify_ticket(request, Some(ticket.id.clone()), "approval_once");
                 self.mark_granted(request.source.as_str(), &request.action);
                 GateDecision::Allow
             }
@@ -121,9 +186,10 @@ impl GuardPermissionGate {
                 for rule in &approval.save {
                     let _ = self.guard.persist_saved_rule(&rule.action, &rule.resource);
                 }
-                let _ = self
+                let ticket = self
                     .guard
                     .issue_ticket(guard_request, Some("always".to_owned()));
+                self.notify_ticket(request, Some(ticket.id.clone()), "approval_always");
                 self.mark_granted(request.source.as_str(), &request.action);
                 GateDecision::Allow
             }
@@ -138,12 +204,16 @@ impl GuardPermissionGate {
 impl PermissionGate for GuardPermissionGate {
     async fn authorize(&self, request: &PermissionRequest) -> GateDecision {
         if self.is_granted(request.source.as_str(), &request.action) {
+            // The gate was already satisfied for this call, so no second
+            // authorization ran. It is still a decision the record must show.
+            self.notify_ticket(request, None, "bypassed");
             return GateDecision::Allow;
         }
         let guard_request = self.guard_request(request);
         match self.guard.check(&guard_request) {
             agentx_guard::GuardDecision::Allow => {
-                let _ = self.guard.issue_ticket(&guard_request, None);
+                let ticket = self.guard.issue_ticket(&guard_request, None);
+                self.notify_ticket(request, Some(ticket.id.clone()), "rule");
                 self.mark_granted(request.source.as_str(), &request.action);
                 GateDecision::Allow
             }

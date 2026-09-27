@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use agentx_analytics::FailureClass;
 use agentx_provider::Provider;
 use agentx_session::{
     AssistantMessagePayload, InputPromotedPayload, SessionStatus, SessionStore, StepEndPayload,
@@ -23,6 +24,7 @@ use crate::WRAP_UP_INSTRUCTION;
 use crate::config::RunConfig;
 use crate::error::LoopError;
 use crate::observer::{RunEvent, RunObserver};
+use crate::recorder::{AuditedGate, RecordError};
 
 /// The outcome of one completed turn.
 #[derive(Clone, Debug)]
@@ -95,6 +97,26 @@ impl Runner {
         }
 
         let turn_id = TurnId::generate();
+        // The permission seam is wrapped so every decision it makes is
+        // recorded. The wrapper forwards unchanged: it is a watcher, not a
+        // second gate.
+        // The permission seam is created once per process, so its observers
+        // queue their surface events on the shared recorder; the loop drains
+        // them at the next boundary and forwards them to the borrowed observer.
+        let gate = Arc::new(AuditedGate::new(
+            self.gate.clone(),
+            self.config.recorder.clone(),
+            session_id.clone(),
+        ));
+        self.config.recorder.set_session(Some(session_id.clone()));
+        self.config.recorder.set_turn(Some(turn_id.clone()));
+        // The audit chain and the analytics ledger record the run boundary
+        // before the turn's first effect, so a run that is refused has already
+        // left evidence that it was attempted.
+        self.config
+            .recorder
+            .run_started(session_id, &turn_id, self.config.max_steps)?;
+        self.record_sandbox_profile(session_id, &turn_id)?;
         self.append(
             session_id,
             Event::payload(
@@ -161,7 +183,7 @@ impl Runner {
             let last_step = step == self.config.max_steps;
             let tools_enabled = !last_step;
             let materialization = if tools_enabled {
-                self.tools.materialize(self.gate.as_ref())
+                self.tools.materialize(gate.as_ref())
             } else {
                 Materialization::default()
             };
@@ -182,6 +204,9 @@ impl Runner {
             request.temperature = self.config.temperature;
             request.max_output_tokens = self.config.max_output_tokens;
 
+            self.config
+                .recorder
+                .step_started(session_id, &turn_id, step as u64)?;
             self.append(
                 session_id,
                 Event::payload(
@@ -208,6 +233,13 @@ impl Runner {
                 Ok(stream) => stream,
                 Err(error) => {
                     self.record_attempt(session_id, &turn_id, step, &error.to_string())?;
+                    self.config.recorder.retry(
+                        session_id,
+                        &turn_id,
+                        step as u64,
+                        1,
+                        failure_class_of(&error),
+                    )?;
                     self.close_step(
                         session_id,
                         &turn_id,
@@ -253,6 +285,13 @@ impl Runner {
 
             if let Some(error) = stream_error {
                 self.record_attempt(session_id, &turn_id, step, &error)?;
+                self.config.recorder.retry(
+                    session_id,
+                    &turn_id,
+                    step as u64,
+                    1,
+                    FailureClass::Timeout,
+                )?;
                 self.close_step(
                     session_id,
                     &turn_id,
@@ -415,9 +454,9 @@ impl Runner {
                 });
                 // Surface an approval request before the async authorization
                 // runs, so an interactive surface can show it (`REQ-GUARD-003`).
-                let ctx = self.tool_context(session_id, call);
+                let ctx = self.tool_context(session_id, &turn_id, &gate, call);
                 if let Some(request) = self.tools.permission_request(call, &ctx)
-                    && matches!(self.gate.classify(&request), Some(PolicyOutcome::Ask))
+                    && matches!(gate.classify(&request), Some(PolicyOutcome::Ask))
                 {
                     observer.on_event(RunEvent::ApprovalRequested {
                         tool_call_id: call.id.clone(),
@@ -428,8 +467,14 @@ impl Runner {
                 }
             }
 
-            let settlements = self.execute_calls(session_id, &calls).await;
+            let settlements = self
+                .execute_calls(session_id, &turn_id, &gate, &calls)
+                .await;
+            for event in self.config.recorder.drain_events() {
+                observer.on_event(event);
+            }
             for settlement in settlements {
+                self.record_settlement(session_id, &turn_id, &settlement)?;
                 self.append_tool_result(
                     session_id,
                     &turn_id,
@@ -469,14 +514,20 @@ impl Runner {
             .unwrap_or_else(|| name.to_owned())
     }
 
-    fn tool_context(&self, session_id: &SessionId, call: &ToolCall) -> ToolContext {
+    fn tool_context(
+        &self,
+        session_id: &SessionId,
+        turn_id: &TurnId,
+        gate: &Arc<AuditedGate>,
+        call: &ToolCall,
+    ) -> ToolContext {
         ToolContext {
             session_id: session_id.clone(),
-            turn_id: None,
+            turn_id: Some(turn_id.clone()),
             tool_call_id: call.id.clone(),
             workspace: self.config.workspace.clone(),
             output_dir: self.config.output_dir.clone(),
-            gate: Some(self.gate.clone()),
+            gate: Some(gate.clone()),
             sandbox: self.config.sandbox.clone(),
             resolved: self.config.sandbox_resolved.clone(),
         }
@@ -485,6 +536,8 @@ impl Runner {
     async fn execute_calls(
         &self,
         session_id: &SessionId,
+        turn_id: &TurnId,
+        gate: &Arc<AuditedGate>,
         calls: &[(ToolCall, Option<String>)],
     ) -> Vec<Settlement> {
         let all_parallel = calls
@@ -505,8 +558,14 @@ impl Runner {
                     let call = call.clone();
                     let error = error.clone();
                     let session_id = session_id.clone();
+                    let turn_id = turn_id.clone();
+                    let gate = gate.clone();
                     futures.push(async move {
-                        (index, self.settle_one(&session_id, &call, error).await)
+                        (
+                            index,
+                            self.settle_one(&session_id, &turn_id, &gate, &call, error)
+                                .await,
+                        )
                     });
                 }
                 results.extend(futures::future::join_all(futures).await);
@@ -519,7 +578,10 @@ impl Runner {
         } else {
             let mut settlements = Vec::with_capacity(calls.len());
             for (call, error) in calls {
-                settlements.push(self.settle_one(session_id, call, error.clone()).await);
+                settlements.push(
+                    self.settle_one(session_id, turn_id, gate, call, error.clone())
+                        .await,
+                );
             }
             settlements
         }
@@ -528,6 +590,8 @@ impl Runner {
     async fn settle_one(
         &self,
         session_id: &SessionId,
+        turn_id: &TurnId,
+        gate: &Arc<AuditedGate>,
         call: &ToolCall,
         argument_error: Option<String>,
     ) -> Settlement {
@@ -546,10 +610,37 @@ impl Runner {
                 error_code: Some("TOOL_INVALID_INPUT".to_owned()),
             };
         }
-        let ctx = self.tool_context(session_id, call);
+        let ctx = self.tool_context(session_id, turn_id, gate, call);
         self.tools
-            .settle(call, &ctx, self.gate.as_ref(), &self.config.output_bounds)
+            .settle(call, &ctx, gate.as_ref(), &self.config.output_bounds)
             .await
+    }
+
+    /// Records one settled tool call: the call, any file write, any confinement
+    /// denial, and the matching analytics measurement.
+    fn record_settlement(
+        &self,
+        session_id: &SessionId,
+        turn_id: &TurnId,
+        settlement: &Settlement,
+    ) -> Result<(), RecordError> {
+        let action = self.action_for(&settlement.tool);
+        let call = ToolCall::new(
+            settlement.tool_call_id.clone(),
+            settlement.tool.clone(),
+            serde_json::Value::Object(serde_json::Map::new()),
+        );
+        self.config.recorder.tool_settled(
+            session_id,
+            turn_id,
+            &settlement.tool,
+            &action,
+            &call.arguments,
+            settlement.status,
+            settlement.error_code.as_deref(),
+            settlement.structured.as_ref(),
+            &format!("rcpt_{turn_id}_{}", settlement.tool_call_id.as_str()),
+        )
     }
 
     fn append(&self, session_id: &SessionId, event: Event) -> Result<Event, LoopError> {
@@ -602,11 +693,38 @@ impl Runner {
                 },
             ),
         )?;
+        // A per-step receipt reference, derived from the session and step so it
+        // is stable and references the detail rather than duplicating it.
+        self.config.recorder.step_settled(
+            session_id,
+            turn_id,
+            step as u64,
+            usage,
+            &format!("rcpt_{turn_id}_{step}"),
+            usage_observed(usage),
+        )?;
         observer.on_event(RunEvent::StepFinished {
             step: step as u64,
             usage,
         });
         Ok(())
+    }
+
+    /// Records the confinement profile in force, or its typed absence.
+    fn record_sandbox_profile(
+        &self,
+        session_id: &SessionId,
+        turn_id: &TurnId,
+    ) -> Result<(), RecordError> {
+        let profile = self
+            .config
+            .sandbox_resolved
+            .as_ref()
+            .map(|resolved| resolved.profile.as_str().to_owned());
+        let applied = profile.is_some() && self.config.sandbox.is_some();
+        self.config
+            .recorder
+            .sandbox_profile(session_id, turn_id, profile.as_deref(), applied)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -661,6 +779,12 @@ impl Runner {
                 },
             ),
         )?;
+        // The terminal boundary is an audited boundary (`REQ-LOOP-004`), and
+        // sealing here is what anchors the segment so the run's evidence is
+        // covered by a signed root rather than left in the unanchored tail.
+        self.config
+            .recorder
+            .turn_finished(session_id, &turn_id, status, steps, usage)?;
         observer.on_event(RunEvent::TurnFinished {
             status,
             reason: reason.clone(),
@@ -674,6 +798,25 @@ impl Runner {
             steps,
             usage,
         })
+    }
+}
+
+/// Returns whether a step's usage was reported by the provider rather than
+/// defaulted. A provider that reports nothing is `false`, so analytics never
+/// renders a fabricated zero.
+fn usage_observed(usage: agentx_types::Usage) -> bool {
+    usage.total() > 0
+}
+
+/// Maps a provider error onto the analytics failure taxonomy. Only the class is
+/// recorded, never the message.
+fn failure_class_of(error: &agentx_types::ProviderError) -> FailureClass {
+    use agentx_types::ProviderErrorKind;
+    match error.kind {
+        ProviderErrorKind::Auth => FailureClass::Auth,
+        ProviderErrorKind::RateLimit | ProviderErrorKind::Quota => FailureClass::RateLimit,
+        ProviderErrorKind::Transport => FailureClass::Timeout,
+        _ => FailureClass::ToolError,
     }
 }
 

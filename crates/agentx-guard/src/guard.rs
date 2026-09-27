@@ -673,27 +673,55 @@ fn push_layer(layers: &mut Vec<RuleLayer>, ceiling: &mut Vec<Rule>, layer: RuleL
     layers.push(layer);
 }
 
+/// Computes the policy fingerprint recorded on every session, ticket, and
+/// audit entry.
+///
+/// The digest is **BLAKE3 over an explicit canonical byte form** — the same
+/// primitive and the same canonicalization discipline the audit chain uses
+/// (`ARCH/14-AUDIT.md` §Data / state model). It is deliberately *not*
+/// `std::collections::hash_map::DefaultHasher`: that is a 64-bit,
+/// SipHash-1-3-keyed, **not cryptographically stable across releases** hash
+/// whose output changes whenever the standard library's hashing internals
+/// change. A policy hash that is quoted into an audit chain must be stable
+/// forever, and an attacker must not be able to find two different policies
+/// that collide. `agentx-audit` is the owner of that digest, so it is reused
+/// rather than reimplemented.
 fn compute_policy_hash(
     layers: &[RuleLayer],
     ceiling: &[Rule],
     mode: GuardMode,
     unmatched: Effect,
 ) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    mode.as_str().hash(&mut hasher);
-    unmatched.as_str().hash(&mut hasher);
+    // A stable domain tag keeps a policy fingerprint from colliding with any
+    // other blake3 value in the same system.
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(POLICY_HASH_LABEL);
+    // Length-prefixed framing: no two distinct field sequences can produce the
+    // same byte stream, so "fs.write" + "x" cannot be read as "fs.writex" + "".
+    let field = |hasher: &mut blake3::Hasher, value: &str| {
+        hasher.update(&(value.len() as u64).to_be_bytes());
+        hasher.update(value.as_bytes());
+    };
+    field(&mut hasher, mode.as_str());
+    field(&mut hasher, unmatched.as_str());
+    hasher.update(&(layers.len() as u64).to_be_bytes());
     for layer in layers {
-        layer.source.as_str().hash(&mut hasher);
+        field(&mut hasher, layer.source.as_str());
+        hasher.update(&(layer.rules.len() as u64).to_be_bytes());
         for rule in &layer.rules {
-            rule.action.hash(&mut hasher);
-            rule.resource.hash(&mut hasher);
-            rule.effect.as_str().hash(&mut hasher);
+            field(&mut hasher, &rule.action);
+            field(&mut hasher, &rule.resource);
+            field(&mut hasher, rule.effect.as_str());
         }
     }
+    hasher.update(&(ceiling.len() as u64).to_be_bytes());
     for rule in ceiling {
-        rule.action.hash(&mut hasher);
-        rule.resource.hash(&mut hasher);
+        field(&mut hasher, &rule.action);
+        field(&mut hasher, &rule.resource);
+        field(&mut hasher, rule.effect.as_str());
     }
-    format!("ph_{:016x}", hasher.finish())
+    format!("ph_{}", hasher.finalize().to_hex())
 }
+
+/// The domain label hashed ahead of a policy fingerprint.
+const POLICY_HASH_LABEL: &[u8] = b"agentx/guard/policy/v1";
