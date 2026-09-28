@@ -10,6 +10,10 @@ on a volatile implementation detail.
 
 - [Project overview](PROJECT-OVERVIEW.md)
 - [Long-horizon coding-agent architecture landscape](long-horizon-architecture.md)
+- [Long-horizon harness source review](long-horizon-repo-review.md) — DeerFlow, LongHorizon-Harness, DeepSeek-Harness, DeepCode, and Plandex at pinned revisions.
+- [Agent ecosystem source review](agent-ecosystem-review.md) — Ruflo, Kilo, ECC, Hermes, Superset, CodeBurn, Nanobot, and wshobson/agents.
+- [UI, runtime, tools, and optimization review](ui-runtime-tools-review.md) — OpenHuman, OpenHands, AiderDesk, DeepSeek-Reasonix, code-review-graph, Serena, ripgrep, ast-grep, and related candidates.
+- [Warp and oh-my-pi runtime review](warp-ohmypi-review.md) — pinned orchestration, provider registry, persistence, compaction, permissions, and recovery paths; test-path coverage limitations are explicit.
 - [Research landscape and source index](research-landscape.md)
 - [Test strategy and benchmark plan](tests.md)
 
@@ -19,7 +23,9 @@ on a volatile implementation detail.
 - [Claude Code](claude.md) — public documentation only; implementation is not public.
 - [Cline](cline.md)
 - [Codex](codex.md)
+- [Codex memory pipeline](codex-memory.md) — memory-specific source review and limits.
 - [OpenCode](opencode.md)
+- [OpenCode provider and authentication inventory](opencode-provider-inventory.md) — pinned provider directory, auth-method/source map, and coverage limits.
 - [Qwen Code](qwen-code.md)
 - [MiMo-Code](mimo-code.md) — OpenCode-derived fork; compare its deltas separately.
 - [Open Interpreter](openinterpreter.md)
@@ -38,6 +44,8 @@ on a volatile implementation detail.
 - [Superset](superset.md)
 - [CodeBurn](codeburn.md)
 - [Command Code](command-code.md)
+- [Grok Build workflows](grok-build-workflows.md) — pinned authoring/runtime pattern review.
+- [Helix editor architecture](helix-editor.md) — module-boundary comparison only; no code reuse.
 
 ## Authority
 

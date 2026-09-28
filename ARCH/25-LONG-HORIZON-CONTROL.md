@@ -38,34 +38,95 @@ flowchart TD
 
 ## Logical schema and storage ownership
 
-These are logical records. `CMP-session` and `CMP-orch` assign versioned event types and projection migrations; `CMP-artifact` owns immutable scoped bytes and reference leases (`ARCH/28`). `runs/<run_id>/events/` contains the canonical **run/control** stream as bounded segments plus its committed head; per-session logs use the same framing for turns/model messages and link to the run by IDs and causation (`ARCH/07`). Each event carries a monotonic owner-local sequence and digest link; sealed segment ranges chain to their predecessor. The committed head binds the last acknowledged sequence/digest. Artifact references and event bytes are durably committed in their canonical owners before projections advance. A run is never reconstructed from a worker conversation alone. SQLite is a **rebuildable projection** over those streams; replay is bounded and streaming, and only committed events are folded. This is not an atomic transaction across files: artifact write leases, log heads, and reconciliation make uncertainty explicit. Cross-stream mismatches are incidents, not silently merged. Bytes are namespace-scoped with digest, size, media type, retention pins, and redaction status; there is no implicit cross-run/session deduplication. The audit chain is a separate security record linked by `effect_id`; recovery reconciles it rather than assuming a cross-file transaction.
+These are logical records. `CMP-session` and `CMP-orch` assign versioned event types and
+projection migrations; `CMP-artifact` owns immutable scoped bytes and reference leases
+(`ARCH/28`). `controller/events/` is the canonical, bounded `SupervisorControlStream`
+owned by `CMP-orch`. Under one cross-process admission lock, it sequences
+`RunAdmissionIntent/Granted/Settled`, `WorkAdmissionIntent/Granted/Settled`, and
+`MaintenanceIntent/Granted/Settled`. It owns only global admission decisions and
+fences, never task/run completion truth. Each `runs/<run_id>/events/` stream remains
+canonical for its Run, Task, Attempt, and evidence-control truth; per-Thread logs use
+the same framing for turns/model messages and link to the run by IDs and causation
+(`ARCH/07`). A run admission event references the exact initial per-run stream head;
+a work admission event references the Thread/turn or attempt execution. Unresolved
+intents block conflicting admission until the referenced stream or failed launch is
+reconciled. The maintenance permit event references the update operation and install
+identity. Each stream has a monotonic owner-local sequence and digest link; sealed
+segment ranges chain to their predecessor. Artifact references and event bytes are
+durably committed in their canonical owners before projections advance. A run is
+never reconstructed from a worker conversation alone. SQLite is a **rebuildable
+projection** over those streams; replay is bounded and streaming, and only committed
+events are folded. This is not an atomic transaction across files: admission locks,
+stable operation IDs, outboxes, log heads, and reconciliation make uncertainty
+explicit. Cross-stream mismatches are incidents, not silently merged. Bytes are
+namespace-scoped with digest, size, media type, retention pins, and redaction status;
+there is no implicit cross-run/session deduplication. The audit chain is a separate
+security record linked by `effect_id`; recovery reconciles it rather than assuming a
+cross-file transaction.
+
+Admission protocol under the supervisor lock:
+
+1. Append an idempotent `*AdmissionIntent` with a stable operation ID. While any such
+   intent is unresolved, conflicting run/work/maintenance operations fail closed.
+2. For activation of a prepared Run, durably commit the activation/reservation result
+   and canonical run-stream head (or reconcile the existing draft Run); draft creation
+   alone is not run admission. For work admission, durably create the direct-turn/session
+   record or worker execution/attempt dispatch record in its canonical owner. Do not
+   launch a worker or begin a provider request before this owner record exists.
+3. Reconcile that owner record against the intent, then append the matching `Granted`
+   event and return its receipt. If the caller disconnects after the grant, retrying
+   the same operation ID returns the same result.
+4. Hold an active `WorkAdmissionPermit` until its execution is known terminal. A
+   timeout, process loss, lease expiry, or missing peer response changes it to
+   `UNKNOWN` and continues to block maintenance; only an authoritative observation
+   can reconcile it to active or settled.
+5. Maintenance first writes an intent that fences new run/work grants, then checks
+   all canonical records and active hosts. The initial product contract grants only
+   when every Run is terminal and all work permits and effects are settled; otherwise
+   it returns `Busy`, settles the failed acquisition, and leaves ordinary admission
+   open. It does not pause or migrate active work. The fence is held only after a
+   successful grant and remains until helper outcome and the installed digest are
+   reconciled; expiry never reopens admission.
+
+The OS-backed lock serializes only each bounded state transition, not an entire model
+turn. The durable permit/fence prevents new admissions while an already-granted work
+permit represents active work. No read of the SQLite projection can replace a locked
+replay/validation of the committed control head. A corrupt/newer-schema head or
+unsupported locking/durability backend refuses new work and updates with a typed
+recovery/unsupported result.
 
 | Record | Required fields and constraints |
 |---|---|
+| `SupervisorControlEvent` | `{control_seq, event_id, kind: enum(RUN_ADMISSION_INTENT, RUN_ADMISSION_GRANTED, RUN_ADMISSION_SETTLED, WORK_ADMISSION_INTENT, WORK_ADMISSION_GRANTED, WORK_ADMISSION_SETTLED, MAINTENANCE_INTENT, MAINTENANCE_GRANTED, MAINTENANCE_SETTLED), operation_id, permit_id?, outcome?, run_id?, run_stream_head?, thread_id?, turn_id?, execution_id?, attempt_id?, update_operation_id?, install_id?, base_binary_digest?, owner_epoch, actor_ref?, causation_id?, payload_digest}`. Append under one cross-process admission lock before acknowledging the control decision. The stream sequences competing run/work/maintenance admissions; per-run streams still own run/task/attempt truth. Pending/unknown operations block conflicting admissions until reconciled. |
+| `WorkAdmissionPermit` | `{permit_id, operation_id, kind: enum(DIRECT_TURN, WORKER_EXECUTION), run_id?, thread_id, turn_id?, execution_id, attempt_id?, canonical_owner_ref, grant_control_seq, owner_epoch, state: enum(ACTIVE, UNKNOWN, SETTLED), outcome?, observation_ref?, created_at, settled_at?}`. A permit is a reference to a committed grant, not a transferable authority token. It remains open across disconnects and timeouts; `UNKNOWN` blocks maintenance until a reconciled host/session receipt proves terminal settlement. |
 | `Run` | `run_id`, `original_request_ref`, `repo_id`, `base_commit`, `integration_commit`, `spec_digest`, `active_plan_digest?`, `status`, `state_reason`, `policy_digest`, `config_digest`, `owner_epoch`, `budget_id`, `created_at`, `updated_at`. One active owner epoch per run. |
 | `OriginalRequest` | `request_id`, `run_id`, `source_surface`, scoped `ArtifactRef payload_ref`, `payload_digest`, `received_at`, `actor_ref`, `control_session_ref`. Exact request bytes are immutable and retained with their source; normalized intent never replaces them. |
 | `GoalDraftReceipt` | `delivery_id`, `run_id`, `goal_id`, `input_digest`, `base_commit`, `pointer_revision`, `event_seq`. Returned by inert `/goal set`; idempotent for the same delivery/payload. It proves draft persistence only and never proves planning or approval. |
 | `OperatorControlSession` | `control_session_id`, `principal_ref`, `principal_kind: USER_OPERATOR | WORKER | PEER | PLUGIN | SYSTEM`, `surface`, `connection_ref`, `authentication: IN_PROCESS_TRUSTED_UI | LOCAL_PEER_CREDENTIALS | VERIFIED_CONNECTOR | NONE`, `authenticated_subject?`, `ingress_policy_digest?`, `scopes[]`, `capability_hash?`, `issued_at`, `expires_at`, `revoked_at?`. The controller derives principal and authentication context from the authenticated ingress; request fields cannot supply or upgrade them. `NONE` can support non-privileged interaction but never operator approval. ACP connection/session binding prevents cross-connection replay; by itself it does not authenticate a user. Operator control capability is short-lived, scope-bound, held only by trusted TUI/CLI/approved ACP connector processes, and never enters model/tool context or child environments. |
 | `MutationCapability` (ephemeral) | `capability_id`, `principal_ref`, `control_session_id`, `principal_kind`, `scope`, `run_id`, `owner_epoch`, `expected_seq`, `delivery_id`, `expires_at`, `nonce`, `authn_context_digest`, `mac`. Constructed/validated only by `CMP-orch` ingress; sealed in-process type, never stored in plaintext, prompt, environment, config, or child IPC. A retry with the same delivery ID/payload is idempotent; a reused ID with changed payload conflicts. Durable events retain only capability ID/hash and authn-context digest. |
-| `RunGoal` | `goal_id`, `run_id`, `objective_ref`, `outcome`, `success_conditions[]`, `verification_surface[]`, `constraints[]`, `scope[]`, `iteration_policy`, `blocked_stop_condition`, `lifecycle`, `budget_id`, `spec_digest`, `created_by`, `created_at`, `updated_at`. Goal is run/thread-scoped, versioned, user-controlled, and never global memory. `lifecycle = DRAFT | ACTIVE | PAUSED | BLOCKED | BUDGET_LIMITED | COMPLETE`; `COMPLETE` requires current evidence, while budget/blocker states never imply success. Clearing a UI selection does not alter this lifecycle. |
+| `RunGoal` | `goal_id`, `run_id`, `objective_ref`, `outcome`, `success_conditions[]`, `verification_surface[]`, `constraints[]`, `scope[]`, `iteration_policy`, `blocked_stop_condition`, `lifecycle`, `budget_id`, `spec_digest`, `created_by`, `created_at`, `updated_at`. Goal is run-scoped, versioned, user-controlled, and never thread/session-scoped or global memory. `lifecycle = DRAFT | ACTIVE | PAUSED | BLOCKED | BUDGET_LIMITED | COMPLETE`; `COMPLETE` requires current evidence, while budget/blocker states never imply success. Clearing a UI selection does not alter this lifecycle. |
 | `GoalPreparation` | `preparation_id`, `delivery_id` (idempotency key), `run_id`, `goal_id`, `input_digest`, `base_commit`, `planner_route`, `planning_budget_id`, `reservation_ids[]`, `state: QUEUED | RUNNING | WAITING_FOR_INPUT | READY_FOR_REVIEW | FAILED | CANCELLED | UNKNOWN`, `spec_digest?`, `task_graph_digest?`, `plan_digest?`, `context_digest?`, `provider_request_id?`, `failure_ref?`, `created_at`, `updated_at`. Preparation is read-only with respect to the workspace, consumes only its bounded planning allowance, and cannot launch coding workers or external side effects. Duplicate deliveries with the same payload return the same receipt; changed payload under a reused ID conflicts. `UNKNOWN` covers a crash after an inference request may have been accepted but before its result/usage receipt is durable; reconcile provider status if supported, otherwise retain conservative usage and require a new explicit preparation delivery. |
 | `GoalApprovalChallenge` | `challenge_id`, `review_delivery_id` (idempotency key), `request_digest`, `run_id`, `goal_id`, `review_bundle_digest`, `spec_digest`, `task_graph_digest`, `plan_digest`, `base_commit`, `route_digest`, `policy_digest`, `permission_digest`, `budget_digest`, `surface`, `control_session_id`, `connection_ref`, `state: PENDING | ACCEPTED | DECLINED | CANCELLED | EXPIRED | INVALIDATED | CONSUMED`, `response: ACCEPT | DECLINE | CANCEL?`, `expires_at`, `response_delivery_id?`, `response_digest?`, `created_at`, `updated_at`. Persisted before rendering; binds the exact bundle shown to a particular trusted operator channel/connection. At most one unconsumed challenge may exist per goal; opening a newer review invalidates a still-pending challenge and is rejected while a start intent is already accepted/in progress. Reuse of `review_delivery_id` with a different request digest conflicts. A still-pending challenge is invalidated by material plan/policy/workspace/budget change, extra input, disconnect, expiry, or session change. Once the response is durably `ACCEPT`ed, disconnect does not revoke that already-recorded authorization; the same intent is reconciled, and any later material change blocks activation and requires a new review. |
 | `GoalApprovalReceipt` | `receipt_id`, `challenge_id`, `run_id`, `goal_id`, `review_bundle_digest`, `spec_digest`, `task_graph_digest`, `plan_digest`, `base_commit`, `route_digest`, `policy_digest`, `permission_digest`, `budget_digest`, `operator_principal_ref`, `control_session_id`, `authentication_context_digest`, `surface`, `method: TUI_CONFIRM | CLI_CONFIRM | ACP_ELICITATION | ACP_TYPED_RECEIPT`, `client_session_id?`, `connection_ref`, `payload_digest`, `created_at`, `consumed_by_start_delivery_id?`, `expires_at`. One-shot, exact-challenge/digest-bound evidence from a trusted, authenticated operator ingress. ACP approval is enabled only for a configured trusted connector that can present the confirmation to the operator; ACP itself does not attest that a human viewed or clicked UI. The principal is assigned by the authenticated client/control channel, never read from model text, config, shell args, peer messages, or worker claims. |
 | `GoalStartIntent` | `delivery_id` (unique idempotency key), `response_digest`, `challenge_id`, `run_id`, `goal_id`, `approval_receipt_id`, the approved review/spec/task-graph/plan/base/route/policy/permission/budget digests, `state: VALIDATING | RESERVED | UNKNOWN | CANCEL_REQUESTED | COMMITTED | REJECTED | CANCELLED`, `reservation_ids[]`, `reason?`, `created_at`, `updated_at`. At most one nonterminal start intent exists per goal. A stale/changed digest is rejected. Recovery reconciles pending reservation(s) against the activation event; dispatch requires a durable `GoalActivated` event and matching committed intent. Same delivery ID/payload returns the recorded result; changed payload conflicts. `CANCEL_REQUESTED` fences activation immediately; `CANCELLED` is terminal only after all reservations are confirmed released. |
-| `DispatchOutbox` | `outbox_id`, `source_event_id`, `run_id`, `task_id`, `attempt_id`, `workspace_id`, `owner_epoch`, `idempotency_key`, `state: PENDING | CLAIMED | ACKNOWLEDGED | UNKNOWN | CANCELLED`, `lease_until?`, `worker_receipt_ref?`, `created_at`, `updated_at`. Created only from committed `GoalActivated`/eligible task-claim events; unique on `(source_event_id, task_id)` and `idempotency_key`. Redelivery reuses the same attempt ID. If the supervisor cannot establish whether launch occurred, state stays `UNKNOWN` and no replacement attempt launches until process/workspace reconciliation completes. |
-| `ActiveGoalPointer` | `scope_kind: SESSION | THREAD`, `scope_id`, `run_id`, `goal_id`, `revision`, `source_event_seq`, `updated_at`. A projection over `GoalPointerSelected` and `GoalPointerCleared` events; clear carries the expected pointer revision and is rejected on mismatch. Absence means no currently selected goal. Clearing removes only this pointer. The `RunGoal`, run/task lifecycle, attempts, budget, and history remain addressable by ID and unchanged. |
+| `DispatchOutbox` | `outbox_id`, `source_event_id`, `run_id`, `task_id`, `attempt_id`, `workspace_id`, `owner_epoch`, `idempotency_key`, `state: PENDING | CLAIMED | ACKNOWLEDGED | UNKNOWN | CANCELLED`, `claim_owner_token?`, `claim_epoch?`, `lease_until?`, `worker_receipt_ref?`, `created_at`, `updated_at`. Created only from committed `GoalActivated`/eligible task-claim events; unique on `(source_event_id, task_id)` and `idempotency_key`. Redelivery reuses the same attempt ID. A CLAIMED lease may be reacquired only by a higher fencing epoch after exact-launch reconciliation; lease expiry alone never returns it to PENDING. If the supervisor cannot establish whether launch occurred, state stays `UNKNOWN` and no replacement attempt launches until process/workspace reconciliation completes. |
+| `ActiveGoalPointer` | `control_session_id`, `run_id`, `goal_id`, `revision`, `source_event_seq`, `updated_at`. A projection over `GoalPointerSelected` and `GoalPointerCleared` events; clear carries the expected pointer revision and is rejected on mismatch. Absence means no currently selected goal in that authenticated operator control session. Clearing removes only this pointer. The run-owned `RunGoal`, run/task lifecycle, attempts, budget, and Thread history remain addressable by ID and unchanged. |
 | `ControlIntent` | `control_id`, `delivery_id`, `run_id?`, `target_kind?: RUN | TASK | ATTEMPT`, `target_id?`, `input_digest`, `source_surface`, `principal_ref`, `classification: CONTROL | NORMAL | AMBIGUOUS`, `requested_action: PAUSE | RESUME | CANCEL | STOP?`, `confidence_class`, `fence_seq?`, `decision_ref?`, `created_at`. A recognized control is committed to the priority lane before any model continuation. A cancel intent is executable only after its target kind and ID resolve to the same run under controller lookup; ambiguous/missing/foreign targets create a pause fence and clarification request, never a guessed broad cancellation. |
 | `IntentItem` | `item_id`, `run_id`, `kind`, `text_ref`, `source_ref`, `confirmation_actor`, `impact`, `status`, `supersedes`. A model inference cannot be `confirmed`. |
 | `SpecVersion` | `spec_id`, `run_id`, `parent_digest`, `digest`, `requirements[]`, `examples[]`, `invariants[]`, `exclusions[]`, `state: PROPOSED | APPROVED | SUPERSEDED`, `approver?`, `approved_at?`. Proposal is immutable by digest; approval binds to the exact digest and cannot be inferred from planner output. A clarification or material revision produces a child digest and invalidates any unused receipt for an ancestor digest. |
 | `ExecutionPlan` | `plan_id`, `run_id`, `plan_revision`, `spec_digest`, `source_event_seq`, `purpose`, `repository_orientation_ref`, `milestones[]`, `exact_steps[]`, `expected_outcomes[]`, `progress_refs[]`, `surprise_refs[]`, `decision_refs[]`, `retrospective_ref?`, `content_digest`, `created_at`, `author`. Versioned human-readable projection; never overrides canonical task/evidence state or spec approval. |
 | `Task` | `task_id`, `run_id`, `spec_digest`, `title`, `inputs[]`, `output_contract`, `acceptance_ids[]`, `deps[]`, `state`, `priority`, `write_scope`, `permission_ceiling`, `budget_id`, `attempt_limit`, `workspace_id`, `evidence_ids[]`. `deps` must be acyclic. |
-| `Attempt` | `attempt_id`, `task_id`, `strategy_id`, `model_route`, `base_commit`, `workspace_id`, `environment_digest`, `state`, `started_at`, `ended_at`, `failure_fingerprint`, `usage_status`. Attempts are append-only; retries create a new ID. |
+| `Attempt` | `attempt_id`, `task_id`, `strategy_id`, `model_route`, `base_commit`, `workspace_id`, `environment_digest`, `execution_limit`, `state`, `started_at`, `ended_at`, `failure_fingerprint`, `usage_status`. Attempts are append-only; retries create a new ID. One attempt may own several Threads; an individual Thread binds to at most one current Attempt. `execution_limit` is a finite immutable ceiling bounded by parent budgets. |
+| `WorkerExecution` | `execution_id`, `run_id`, `task_id`, `attempt_id`, `thread_id?`, `adapter_kind`, `capability_snapshot_id?`, `external_execution_ref?`, `external_session_id?`, unique `launch_id`, `execution_no`, `owner_epoch`, `workspace_id`, `state`, `started_at?`, `last_heartbeat_at?`, `last_durable_event_ref?`, `ended_at?`, `exit_status?`, `terminal_receipt_ref?`, `usage_observation_ids[]`. Durable record for one live worker/process incarnation; the process is not durable. `thread_id` identifies its HorizonCode conversation; `external_session_id` is only an adapter binding. `exit_status` records an observed process/peer terminal result, not task success. The run stream owns the record; `CMP-execution-host` owns local process mechanics. The HorizonCode launch ID deduplicates its outbox; external idempotency/query is used only when the negotiated adapter supports it. A relaunch under the same Attempt is allowed only after prior execution/effects are reconciled and the same strategy remains valid. `execution_no` is monotonic per Attempt and bounded by the approved execution limit. |
 | `AttemptProgress` | `attempt_id`, `revision`, `items[]`, `source_tool_call_id`, `event_seq`, `updated_at`. A bounded, controller-validated projection of `todowrite` updates for worker continuity only; it cannot change task/run status, acceptance criteria, budget, permission, or evidence and never substitutes for verifier evidence. |
-| `ExternalAttempt` | `attempt_id`, `peer_identity`, `adapter_kind`, `protocol_version`, `capabilities_digest`, `external_session_id?`, `event_cursor?`, `resume_mode`, `opaque_children`, `workspace_id`, `scope_digest`, `cancel_state`, `last_heartbeat`, `usage_provenance`. Never infer unsupported fields. |
-| `InputReceipt` | `delivery_id`, `run_id`, `session_id`, `payload_digest`, `lane`, `admitted_seq`, `result`, `promoted_seq?`, `expires_at?`, `actor`, `created_at`. Same ID/digest is idempotent; same ID/different digest is a conflict. Receipts and pending input survive compaction. |
-| `PermissionBridge` | `bridge_id`, `run_id`, `root_session_id`, `child_attempt_id`, `child_session_id?`, `request_id`, `requester_identity`, `action_digest`, `resource_digest`, `guard_policy_digest`, `deadline`, `state`, `decision_ref?`. One terminal answer; parent policy reauthorization is mandatory. |
+| `ExternalAttempt` | `attempt_id`, `peer_identity`, `adapter_kind`, `protocol_version`, `capabilities_digest`, `external_session_id?`, `event_cursor?`, `event_source_identity?`, `event_auth_context_digest?`, `last_event_id?`, `last_event_seq?`, `resume_mode`, `opaque_children`, `workspace_id`, `scope_digest`, `cancel_state`, `last_heartbeat`, `usage_provenance`. Auth/source fields are controller-derived observations, never values trusted from a peer payload. Never infer unsupported fields. |
+
+| `InputReceipt` | `delivery_id`, `run_id`, `thread_id`, `payload_digest`, `lane`, `admitted_seq`, `result`, `promoted_seq?`, `expires_at?`, `actor`, `origin: USER | CONTROLLER | AGENT_MESSAGE`, `source_ref?`, `created_at`. Same ID/digest is idempotent; same ID/different digest is a conflict. Receipts and pending input survive compaction. For `AGENT_MESSAGE`, `source_ref` binds the Run message ID and body digest; the Thread stream stores a reference, not a second canonical message body (`ARCH/32`). |
+| `AgentMessage` | `message_id`, `run_id`, authenticated `sender`, explicit `recipient_thread_ids[]`, optional `task_id` and `reply_to`, bounded UTF-8 body and digest, `posted_seq`, timestamp. Canonical `AgentMessagePosted` event in the Run stream; same delivery ID/digest is idempotent. Message text is untrusted and cannot alter intent, authority, Task, evidence, or completion (`ARCH/32`). |
+| `MessageDelivery` | `message_id`, `recipient_thread_id`, stable `delivery_id`, state, Thread `InputReceipt` reference, Run transition sequence, typed failure. Canonical Run projection/events reconcile with the recipient Thread receipt after a crash. No implicit wake; no status claims that a recipient read or understood the message (`ARCH/32`). |
+| `PermissionBridge` | `bridge_id`, `run_id`, `root_thread_id`, `child_attempt_id`, `child_thread_id?`, `request_id`, `requester_identity`, `action_digest`, `resource_digest`, `guard_policy_digest`, `deadline`, `state`, `decision_ref?`. One terminal answer; parent policy reauthorization is mandatory. |
 | `RequestLane` | `lane_id`, `class`, `capacity`, `queue_limit`, `request_deadline`, `active_count`, `expired_count`, `last_progress_seq`. Interactive cancel/permission/control are isolated from catalog/history and bulk event streams. |
-| `ToolBatch` | `batch_id`, `run_id`, `task_id`, `attempt_id`, `provider_response_id?`, `response_digest`, `call_ids[]`, `call_count`, `argument_bytes`, `retained_response_bytes`, `limits_digest`, `state`, `rejection_reason?`, `usage_observation_id?`. `state = COLLECTING | ADMITTED | REJECTED | SETTLING | SETTLED`; no call dispatch before `ADMITTED`; over-cap/malformed response is rejected whole and never partially dispatched. |
+| `ToolBatch` | `batch_id`, `run_id`, `task_id`, `attempt_id`, `provider_response_id?`, `response_digest`, `calls[{call_ordinal, call_id, effect_id?}]`, `call_count`, `argument_bytes`, `retained_response_bytes`, `limits_digest`, `state`, `rejection_reason?`, `usage_observation_id?`. `state = COLLECTING | ADMITTED | REJECTED | SETTLING | SETTLED`; no call dispatch before `ADMITTED`; over-cap/malformed/duplicate-ID response is rejected whole and never partially dispatched. Safe calls may finish concurrently, but model-visible call/result pairs are projected in `call_ordinal` order; canonical run events retain actual completion order and receipts so recovery never infers order from timing (`ARCH/10`). |
 | `ProgressSignature` | `signature_id`, `run_id`, `task_id?`, `spec_digest`, `task_graph_digest`, `workspace_digest`, `evidence_digest`, `external_cursor_digest`, `failure_fingerprint?`, `strategy_digest`, `batch_digest?`, `result_class`, `created_at`. Canonical digest excludes model prose, heartbeats, repeated reads, and call count; repeated signatures increment a durable no-progress counter. |
 | `WaitCondition` | `wait_id`, `run_id`, `task_id?`, `kind: TIMER | USER | APPROVAL | EXTERNAL_EVENT | RESOURCE`, `due_at?`, `source_ref?`, `source_cursor?`, `deadline?`, `state: ARMED | FIRED | EXPIRED | CANCELLED`, `wake_event_id?`, `poll_policy_ref?`. No model inference while only waiting; external polling is a separately authorized/budgeted task. |
 | `RunMaintenance` | `maintenance_id`, `run_id`, `kind: CHECKPOINT_COMPACT | INDEX_REBUILD | ANALYTICS_ROLLUP | NONCRITICAL_CLEANUP`, `source_event_seq`, `source_revision`, `state: PENDING | RUNNING | COMPLETE | FAILED | DEFERRED`, `deadline?`, `artifact_refs[]`, `failure_ref?`, `created_at`, `updated_at`. It is outside the foreground completion transaction and cannot change task/run verification. If no supervised owner remains, optional work is marked `DEFERRED`, not silently awaited. |
@@ -75,14 +136,39 @@ These are logical records. `CMP-session` and `CMP-orch` assign versioned event t
 | `EventStorageReservation` | `reservation_id`, `budget_id`, `owner_kind/id`, `attempt_id?`, `max_bytes`, `protected_control_bytes`, `state: HELD | RECONCILING | SETTLED | RELEASED`, `expires_at`. Held before work that can emit durable state; stable ID survives retry/restart and does not double-spend. |
 | `PhysicalStorageReserve` | `reserve_id`, `run_id`, `filesystem_identity`, `backend_profile_digest`, `allocated_bytes`, `allocation_method`, `state: VERIFIED | CONSUMED | REPLENISH_REQUIRED | UNKNOWN | RELEASED`, `allocation_receipt_ref`, `fence_epoch`. It proves the protected control/recovery bytes were physically allocated before activation; a budget counter alone never satisfies this record. |
 | `Workspace` | `workspace_id`, `repo_id`, `path`, `base_commit`, `head_commit`, `dirty_digest`, `writer_epoch`, `lease_until`, `status`, `cleanup_state`. A lease alone is insufficient; every write checks fencing epoch. |
-| `Budget` | `budget_id`, `parent_id?`, ceilings for money (`amount`, `currency`, `rate_snapshot?`), tokens/time/tool calls/output/event-log bytes/artifact bytes/concurrency, `reserved`, `spent`, `unknown_usage`, `verification_reserve`, `recovery_reserve`, `control_reserve`. Event-log and artifact sub-budgets are separately reserved so payloads cannot consume settlement capacity. Atomic reservation rows prevent concurrent overspend; unlike currencies are never added. |
+| `Budget` | `budget_id`, `parent_id?`, ceilings for money (`amount`, `currency`, `rate_snapshot?`), tokens/time/tool calls/worker-execution launches/output/event-log bytes/artifact bytes/concurrency, `reserved`, `spent`, `unknown_usage`, `verification_reserve`, `recovery_reserve`, `control_reserve`. Event-log and artifact sub-budgets are separately reserved so payloads cannot consume settlement capacity. Atomic reservation rows prevent concurrent overspend; unlike currencies are never added. |
 | `EffectIntent` | `effect_id`, `attempt_id`, `kind`, `canonical_resource_digest`, `idempotency_key?`, `authorization_ref`, `workspace_base`, `state`, `audit_prepare_ref`, `terminal_receipt_ref`, `reconciliation`. One stable ID from prepare through outcome. |
 | `Evidence` | `evidence_id`, `task_id`, `spec_digest`, `repo_commit`, `workspace_digest`, `scenario_ids[]`, `producer`, `environment_digest`, `artifact_refs[]`, `verdict`, `limitations`, `created_at`. `verdict = PASS | FAIL | INSUFFICIENT_EVIDENCE`; only current `PASS` unlocks a dependency. |
 | `ArtifactPin` | `pin_id`, `run_id`, `artifact_ref`, `owner_kind`, `owner_id`, `owner_revision`, `retention_class`, `state: PINNED | RELEASE_PENDING | RELEASED`, `event_seq`. A canonical run event owns each cross-record pin; the projection alone never retains or frees bytes. |
 | `Decision` | `decision_id`, `question`, `alternatives[]`, `answer`, `actor`, `evidence_refs[]`, `affected_ids[]`, `supersedes`. User and model decisions are distinguishable. |
 | `Delivery` | `delivery_id`, `base_commit`, `head_commit`, `diff_digest`, `review_ids[]`, `ci_status`, `pr_remote_id?`, `release_status`, `external_effect_ids[]`. PR create/comment/merge/deploy are distinct effects. |
 
-`run_id`, `goal_id`, `control_id`, `maintenance_id`, `task_id`, `attempt_id`, `effect_id`, and `evidence_id` are globally unique and never reused. Every event has `schema_version`, aggregate ID, monotonic sequence, actor, causation ID, correlation ID, payload digest, previous event digest, and event digest. A projection rebuild must reproduce the same rows from the same committed log bytes. A stored newer event version is refused before partial replay. On bundle export, include the source revision, committed log head and seals, artifact manifest, required redaction/anchor level, and environment assumptions; a copied session log alone is not a portable run.
+`run_id`, `goal_id`, `control_id`, `maintenance_id`, `task_id`, `attempt_id`, `execution_id`, `effect_id`, and `evidence_id` are globally unique and never reused. Every event has `schema_version`, aggregate ID, monotonic sequence, actor, causation ID, correlation ID, payload digest, previous event digest, and event digest. A projection rebuild must reproduce the same rows from the same committed log bytes. A stored newer event version is refused before partial replay. On bundle export, include the source revision, committed log head and seals, artifact manifest, required redaction/anchor level, and environment assumptions; a copied session log alone is not a portable run.
+
+In the HorizonCode target model, `Thread` is the canonical conversation aggregate
+(turns/items plus parent-child lineage). It is not a task, an attempt, or proof of a
+live process. `WorkerExecution` records each live process/peer incarnation. `Session`
+is reserved for an external protocol's session handle and is stored as a binding on
+the HorizonCode Thread/Attempt; it is never a second local conversation ID. The task
+dependency DAG and worker Thread tree are independent relations and must not be
+derived from one another. This avoids equating OpenCode's Task-tool resume key (a child
+Session ID at pinned commit `083ed266e`) with HorizonCode's durable Task ID.
+
+`WorkerExecution.state` normally follows `PREPARED → LAUNCHING → RUNNING → SETTLING → FINISHED | FAILED | CANCELLED`; uncertainty at any nonterminal point transitions to `UNKNOWN`. `UNKNOWN` is nonterminal: only a durable reconciliation event backed
+by an authoritative host/peer observation may move it to `RUNNING`, `SETTLING`, or a
+terminal state. If no source can establish the outcome, it stays `UNKNOWN` and
+requires review; elapsed time alone cannot resolve it. `FINISHED` means the process/peer
+execution has a terminal receipt; it does not mean the Attempt or Task passed. A
+lease expiry or heartbeat timeout marks the execution `UNKNOWN`, not dead. The
+supervisor commits a stable launch intent before spawn and reconciles its launch receipt, process/adapter
+handle, workspace revision, last durable event, usage observations, and pending
+effects after restart. Only a proven terminal process outcome can settle
+`FINISHED`/`FAILED`/`CANCELLED`; it cannot settle Attempt success or Task PASS. If the
+adapter cannot query/resume the prior execution, the result stays `UNKNOWN`; no
+duplicate worker is launched against the same writable workspace until fencing and
+effect reconciliation finish. An Attempt can own multiple sequential executions
+for infrastructure recovery, but only one may hold its active writer fence at a
+time. A relaunch reserves budget and obeys the durable retry/no-progress policy.
 
 The run-event package is `runs/<run_id>/events/head.json`, one bounded active
 `segment-<first-seq>.open`, immutable `segment-<first-seq>.sealed` files, and seal
@@ -109,6 +195,20 @@ terminal state, and bounded handoff records; it then marks the reserve
 If the platform cannot prove this behavior under ENOSPC, it refuses the multi-hour
 profile instead of claiming it can always persist a stop.
 
+External lifecycle hooks, CLI transcript changes, and peer status events are
+observations, not controller commands. Before updating a `WorkerExecution`, an
+adapter must bind an event to the authenticated adapter/process identity, exact
+`launch_id`, workspace, current owner fence, and a monotonic source cursor or stable
+event ID where available. Reject duplicate, stale, cross-workspace, or superseded
+events; bound payload/rate and retain missing or unauthenticated signals as
+`UNKNOWN`. A transcript path is an untrusted file reference: resolve it with
+descriptor-based no-follow/open-under-root semantics (or the platform's equivalent
+reparse-point-safe handle checks) and revalidate file identity before each read. If a
+platform cannot provide the required containment, refuse transcript access rather
+than falling back to lexical prefix checks. Only explicitly user-visible content may
+enter HorizonCode history/search. None of these observations may transition
+Attempt/Task to success or pass evidence.
+
 ### Interface contracts and transaction boundaries
 
 ```rust
@@ -123,17 +223,24 @@ trait RunController {
     fn goal_start_status(&self, auth: MutationContext, run: RunId, goal: GoalId) -> Result<Option<GoalStartIntent>, ControlError>;
     fn clear_goal_pointer(&self, auth: MutationContext, expected_revision: u64) -> Result<(), ControlError>;
     fn admit_input(&self, auth: MutationContext, input: InputEnvelope) -> Result<InputReceipt, ControlError>;
+    fn post_agent_message(&self, auth: MutationContext, request: AgentMessageRequest) -> Result<MessageReceipt, ControlError>;
+    fn list_agent_messages(&self, auth: MutationContext, run: RunId, filter: MessageFilter,
+                           cursor: Option<EventSeq>) -> Result<MessagePage, ControlError>;
+    fn agent_message_status(&self, auth: MutationContext, delivery_id: DeliveryId)
+                           -> Result<MessageDeliveryStatus, ControlError>;
+    fn acknowledge_agent_message(&self, auth: MutationContext, message_id: MessageId)
+                                -> Result<AckReceipt, ControlError>;
     fn approve_spec(&self, auth: MutationContext, expected_parent: Digest, spec: SpecDraft)
                     -> Result<SpecDigest, ControlError>;
-    fn claim_ready(&self, auth: MutationContext, worker: WorkerIdentity,
-                   capacity: Capacity) -> Result<Option<Claim>, ControlError>;
+    fn claim_ready(&self, auth: MutationContext) -> Result<Option<Claim>, ControlError>;
     fn record_attempt(&self, auth: MutationContext, claim: Claim, event: AttemptEvent)
                       -> Result<AttemptState, ControlError>;
     fn submit_evidence(&self, auth: MutationContext, task: TaskId, evidence: EvidenceDraft)
                        -> Result<TaskState, ControlError>;
     fn route_permission(&self, auth: MutationContext, request: ChildPermissionRequest)
                         -> Result<PermissionBridgeId, ControlError>;
-    fn attach(&self, run: RunId, cursor: Option<EventSeq>) -> Result<SnapshotAndReplay, ControlError>;
+    fn attach(&self, auth: ReadContext, run: RunId,
+              cursor: Option<EventSeq>) -> Result<SnapshotAndReplay, ControlError>;
     fn decide_next(&self, run: RunId) -> Result<StopDecision, ControlError>;
     fn recover(&self, auth: MutationContext)
                -> Result<RecoveryPlan, ControlError>;
@@ -141,9 +248,93 @@ trait RunController {
 
 trait RuntimeVerifier {
     fn verify(&self, subject: VerifiedSubject, scenarios: &[ScenarioId],
-              budget: Reservation) -> Result<VerificationResult, VerifyError>;
+              permit: VerificationPermit) -> Result<VerificationResult, VerifyError>;
+}
+
+// Issued only by CMP-orch; opaque, one-use, and bound to run/task/attempt,
+// spec digest, verifier class, exact subject revision, and reserved budget.
+struct VerificationPermit { /* private fields */ }
+
+trait ExecutionHost {
+    // Only a committed dispatch-outbox entry plus current workspace fence can launch.
+    fn launch(&self, request: LaunchRequest) -> Result<LaunchReceipt, HostError>;
+    fn inspect(&self, execution: ExecutionId) -> Result<ExecutionObservation, HostError>;
+    fn request_cancel(&self, execution: ExecutionId, cancel_id: CancelId)
+                     -> Result<CancelObservation, HostError>;
+    fn events(&self, execution: ExecutionId, after: Option<ExecutionCursor>)
+             -> Result<EventPage<ExecutionEvent>, HostError>;
 }
 ```
+
+`claim_ready` derives the worker profile/identity from the authenticated
+`MutationContext`; callers do not submit a `WorkerIdentity` or concurrency
+`Capacity`. Capacity is computed by the scheduler from host limits, run/task
+reservations, active leases, and policy. If a transport supplies a worker label,
+the ingress validates it against the authenticated principal and allowed profile
+set before invoking this interface. `attach` is always authenticated and
+membership-scoped at ingress, even when the underlying replay reader is a pure
+read function. A `VerificationPermit` is minted and consumed by the controller;
+worker/evaluator callers cannot construct or reuse a generic budget reservation
+to bypass verification class or task/spec binding.
+
+`LaunchRequest` carries `launch_id`, `execution_id`, run/task/attempt/Thread IDs, an
+optional external adapter Session ID, profile and negotiated-capability digests,
+workspace ID/base/fencing epoch, bounded write scope, approved budget reservation,
+secret references (never secret values),
+and the adapter's requested operation. It carries no operator credential or
+controller socket. The host validates the run-store dispatch receipt and current
+fence before spawn; it cannot create tasks, approve permissions, change budgets, or
+mark evidence. A child receives only a narrow execution capability and cannot read
+the controller's state/credential channel.
+
+`LaunchReceipt = LAUNCHED | ALREADY_LAUNCHED | NOT_LAUNCHED | UNKNOWN` with the
+stable launch ID, observed process/peer handle, host identity, time, and evidence
+reference. `NOT_LAUNCHED` requires authoritative proof that no process/peer action
+occurred; timeout, connection loss, process disappearance, or missing telemetry is
+`UNKNOWN`. `ExecutionObservation = ACTIVE | FINISHED | FAILED | CANCELLED |
+NOT_FOUND_PROVEN | UNKNOWN`; `NOT_FOUND_PROVEN` is valid only when the host/adapter
+can establish it for the exact launch ID. A capability snapshot that does not expose
+query/resume, cancellation, events, or usage makes those fields unsupported or
+unknown, never synthesized. The event page has a durable cursor for committed
+events and separately labeled ephemeral progress; an event gap requires replay or a
+fresh status snapshot. Cancel receipts report request delivery only; the controller
+waits for a terminal observation and effect reconciliation before settling state.
+
+The dispatch/recovery transaction is:
+
+1. In one run-stream commit, write `WorkerExecution(PREPARED)` and one outbox row
+   keyed by `(source_event_id, task_id)` and `launch_id`; reserve the attempt's
+   execution count and resources.
+2. `CMP-execution-host` claims that outbox row under a lease carrying a unique
+   owner token and monotonic fencing epoch, validates the current
+   workspace fence and capability snapshot, then launches once. Repeated requests
+   with the same `launch_id` return the prior durable receipt; if a crash leaves the
+   host unable to prove whether spawn occurred, it reports `UNKNOWN` and must not
+   spawn a second worker under that ID until host/process reconciliation resolves it.
+3. The run controller commits `LAUNCHED` receipt and the new state, then consumes
+   ordered execution events. If the host returns or recovery observes `UNKNOWN`, it
+   persists that state and does not create a replacement writer.
+4. After controller restart, reconcile the outbox, host process table/adapter query,
+   workspace diff, durable cursor, usage and prepared effects. Resume the same
+   execution only when the negotiated capability supports it; otherwise settle or
+   keep `UNKNOWN` and require review before retry.
+
+An expired claim is not permission to launch again. Recovery first compares the
+claim's owner token/epoch with the current owner, then asks the execution host to
+reconcile the exact `launch_id`. A claim may return to dispatchable `PENDING` only with
+an authoritative `NOT_LAUNCHED` receipt proving no process/peer action occurred; a
+missing receipt, timeout, host restart, or possible side effect becomes `UNKNOWN`.
+If spawn happened but the receipt/event publication was interrupted, recovery adopts
+the existing process/peer handle and republishes the same receipt under the same
+launch ID. This closes the claim-before-launch and launch-before-publication crash
+windows without turning a retry into a second writer. A lease timeout alone proves
+neither that the old owner stopped nor that spawn did not happen; fencing rejects
+stale-owner writes, while OS/adapter reconciliation settles execution reality.
+
+This host boundary is a target design, not an implementation claim. Local process
+supervision and each peer adapter need separate acceptance records because PID
+identity, remote handles, idempotency, and recovery guarantees differ by platform and
+protocol.
 
 Goal control payload contracts:
 
@@ -152,6 +343,7 @@ Goal control payload contracts:
 | `GoalPreparationRequest` | `delivery_id`, `run_id`, `goal_id`, `input_digest`, `base_commit`, optional user-selected `planner_route_ref`. The controller validates the base/route and computes/reserves the effective planning budget; callers cannot submit a budget ceiling or write capability. |
 | `ClarificationInput` | `delivery_id`, `run_id`, `goal_id`, `question_id`, `prior_spec_digest`, `answer_text`. The input is persisted verbatim as a clarification receipt; no inference occurs until another explicit prepare request. |
 | `ClarificationReceipt` | `delivery_id`, `run_id`, `input_receipt_id`, `superseded_challenge_ids[]`, `requires_prepare: true`, `event_seq`. This records new user input only; it does not claim a refreshed specification exists. |
+| `AgentQuestionState` | The canonical `QuestionRequest`/`QuestionAnswer` schemas in `ARCH/10`, plus `requester_thread_id`, waiting tool-call identity, delivery attempt, and owner sequence. `CMP-session` owns the durable request/answer events for the HorizonCode Thread; managed Runs store a `QuestionLinked` reference and enter condition-driven `WAITING` while required input is open. The Run stream does not duplicate answer text. Only the requesting call waits; unrelated dependency-safe Tasks may continue. |
 | `GoalReviewRequest` | `delivery_id`, `run_id`, `goal_id`. The controller canonicalizes the request and computes its request digest, selects current versions, revalidates open questions/freshness/limits, persists the challenge and canonical review bundle, then returns both for rendering. Client-supplied digests cannot replace controller-computed digests. Replayed delivery ID with a changed canonical request digest conflicts. |
 | `GoalConfirmation` | `delivery_id`, `challenge_id`, `response: ACCEPT | DECLINE | CANCEL`, `review_bundle_digest`. It contains no actor, principal, scope, trust flag, or free-form approval assertion. The receiving control context must match the challenge's authenticated session/connection. `delivery_id` is unique within the run; controller-computed `response_digest` binds all payload fields, so changed-payload replay conflicts. |
 | `GoalStartResult` | `ACTIVATED(GoalStartReceipt) | RECONCILING(GoalStartIntent) | DECLINED | CANCELLED`. A `GoalStartReceipt` contains `delivery_id`, `run_id`, `goal_id`, `activation_event_seq`, `reservation_ids[]`, and `created_at`; it is returned only after durable activation commit. `RECONCILING` reports durable accepted-but-not-yet-activated state and MUST NOT render as running; clients query the intent by run/goal and subscribe to events. Failure to reserve returns a typed `BudgetExceeded`/precondition error, invalidates the intent, and dispatches nothing; after a material resource/policy change, the user must open and confirm a fresh review. |
@@ -396,12 +588,13 @@ capability. Remote/multi-user ACP must authenticate and map an operator identity
 before this surface can mint approval; generic ACP stdio does not establish a
 multi-user identity.
 
-**Cross-stream rule.** The run stream records a `TurnLinked` event with session ID,
-turn ID, start/end session sequence, and digest. If a session append succeeds but the
-run link does not, recovery finds the orphan by run/attempt ID and appends a repair
-link after verifying the session bytes. If the run link exists but the session range
-is absent or altered, the task becomes `NEEDS_REVIEW` and cannot pass. A worker
-session close never changes run completion by itself.
+**Cross-stream rule.** The run stream records a `TurnLinked` event with HorizonCode
+`thread_id` (and an external session binding only where present), turn ID, start/end
+Thread sequence, and digest. If a Thread append succeeds but the run link does not,
+recovery finds the orphan by run/attempt ID and appends a repair link after verifying
+the Thread bytes. If the run link exists but the Thread range is absent or altered,
+the task becomes `NEEDS_REVIEW` and cannot pass. A worker Thread close never changes
+run completion by itself.
 
 **Effect transaction.** Create a deterministic `effect_id` and idempotency key where
 supported; obtain guard decision and frozen confinement profile; durably append the
@@ -462,7 +655,9 @@ claim success solely because a signal was sent.
 
 **Task:** `BLOCKED → READY → CLAIMED → RUNNING → VERIFYING → PASSED`; other states include `WAITING`, `NEEDS_REVIEW`, `FAILED`, `CANCEL_REQUESTED → CANCELLED`, and `SUPERSEDED`. Any nonterminal task may enter `CANCEL_REQUESTED` under its task fence. `CANCELLED` waits for its in-flight attempts/effects to reconcile. Worker completion moves a task to `VERIFYING`. `PASSED` requires independent `PASS` evidence at the current spec digest and tested integration/workspace commit. A cancelled dependency keeps descendants `BLOCKED` with a durable blocker reason; independent tasks remain eligible. `SUPERSEDED` keeps history after a spec revision.
 
-**Attempt:** Normal progress is `PREPARED → ACTIVE → SETTLING → SUCCEEDED | FAILED | UNKNOWN`; any nonterminal attempt may branch to `CANCEL_REQUESTED → CANCELLED | UNKNOWN`. An `UNKNOWN` external outcome blocks replay until reconciled. `CANCELLED` is terminal only when the supervisor/peer and all effects are reconciled; cancelling one attempt does not cancel its task or create a retry unless controller retry policy permits it. An ACP session is a conversation handle under an attempt, not a run or task.
+**Attempt:** Normal progress is `PREPARED → ACTIVE → SETTLING → SUCCEEDED | FAILED | UNKNOWN`; any nonterminal attempt may branch to `CANCEL_REQUESTED → CANCELLED | UNKNOWN`. An `UNKNOWN` external outcome blocks replay until reconciled. `CANCELLED` is terminal only when the supervisor/peer and all effects are reconciled; cancelling one attempt does not cancel its task or create a retry unless controller retry policy permits it. An ACP session is a peer conversation handle bound to the HorizonCode Thread/Attempt; it is not a run or task.
+
+**WorkerExecution:** `PREPARED → LAUNCHING → RUNNING → SETTLING → FINISHED | FAILED | CANCELLED`, with `UNKNOWN` reachable when any transition cannot be established. `UNKNOWN` can leave only through a durable reconciliation event supported by an authoritative host/peer observation; otherwise it remains blocked for review. A controller crash between committed launch intent and process receipt is `UNKNOWN` until the supervisor checks process ownership and workspace/effect state. A heartbeat timeout is not proof of process death. `FINISHED` means the process/peer execution ended with an observed terminal receipt; it does not imply Attempt success or Task PASS. A new execution for the same Attempt requires the old execution to be terminal or fenced and reconciled.
 
 **Verification:** `PENDING → RUNNING → PASS | FAIL | INSUFFICIENT_EVIDENCE | STALE`. Changing the spec digest, tested commit, relevant environment, or integrated diff makes evidence stale; this is a transition with an event, not deletion. Evidence can be re-used only if its exact subject and scenarios remain identical and the verifier records why.
 
@@ -517,6 +712,50 @@ acts and never reset attempt, budget, or no-progress history (`DEC-042`).
 
 Before automatic continuation, write a `ProgressSignature` from the current specification/task graph, revision and dirty-workspace digest, verifier evidence, external cursor, last failure fingerprint, strategy, and tool-batch digest. Meaningful progress is a new verifiable artifact, resolved blocker, changed failure evidence, task/acceptance transition, or a user steer that changes the task/spec. Assistant text saying “continuing,” tool-call volume, heartbeats, repeated reads, and compaction do not count. A repeated signature without meaningful progress increments a counter that survives model/session changes, compaction, adapter replacement, and restart. At the configured finite threshold the controller selects an untried evidence-backed strategy only while its per-strategy and run-level attempt/resource limits allow it; otherwise it enters `PAUSED` with an inspectable reason. A system-enforced hard maximum bounds any configurable threshold. `/resume` does not clear consumed attempt/no-progress history: it authorizes reconciliation, then permits only a bounded untried strategy or work made eligible by new user steering/evidence/approved strategy. If neither condition holds, the controller remains paused. Repeating the same unchanged signature and strategy immediately re-pauses.
 
+### Asynchronous evaluation freshness fence
+
+Planning, review, risk assessment, goal completion, and verifier work can finish after
+the operator or workspace has changed. Treat every such result as a proposal against
+captured state, never as a write capability.
+
+```text
+EvaluationSnapshot {
+  evaluation_id, run_id?, task_id?, attempt_id?, source_event_seq,
+  input_receipt_seq, spec_digest, task_graph_digest, policy_digest,
+  workspace_id, workspace_fence_epoch, base_commit, dirty_digest,
+  evaluator_kind, route_snapshot_id?, reservation_id,
+  created_at, result_digest?, completed_at?, disposition
+}
+```
+
+Before persisting a result that changes state or allowing it to dispatch work, the
+controller reloads the canonical projection and compares every relevant revision.
+Changed user input, a cancellation fence, spec/graph/policy digest, workspace
+epoch/base/dirty digest, terminal task state, or superseding evaluation makes the
+result `STALE`. Store its bounded result/evidence reference for diagnosis, but do not
+let it overwrite a newer plan, complete or reopen a task, resume an attempt, or
+authorize an effect. Unrelated derived analytics sequence changes do not alone
+invalidate it. Re-evaluation is a new bounded action with a fresh reservation.
+
+The commit path is serialized with the authoritative Run writer:
+`read snapshot → evaluate → acquire current writer fence → reload and compare → append
+result+transition or stale diagnostic`. If the process crashes before append, recovery
+sees no accepted result and may retry only under the original bounded reservation and
+idempotency ID. If newer input arrives before commit, that input wins. The evaluator
+cannot choose which revisions to ignore.
+
+| Condition | Required outcome |
+|---|---|
+| Relevant revisions match and task remains eligible | Persist result; apply only the allowed transition; re-check permission/budget before dispatch |
+| Input/cancel/spec/policy/graph/workspace changed | Persist `STALE` diagnostic; do not overwrite state or dispatch |
+| Task became terminal or evidence was superseded | Reject transition; preserve current evidence lineage |
+| Current revision cannot load or digest validation fails | Typed `WAITING`/`BLOCKED`; fail closed |
+| Reevaluation budget cannot be reserved | Do not invoke evaluator; report budget-limited state |
+
+This fence does not make an LLM completion judgment independent verification.
+`CMP-verifier` evidence must still bind to the current integrated revision and approved
+specification.
+
 Response admission is a separate loop gate: fully collect one bounded provider response, enforce call-count/argument-byte/retained-byte limits, validate the full batch, and persist `ToolBatch=ADMITTED` before scheduling. Over-cap or malformed output receives `REJECTED` and dispatches zero calls. Record provider-reported generation usage even when the tool batch is rejected; this gate cannot undo or prevent tokens already generated. Once an admitted call begins, reconcile each effect separately; do not pretend multi-tool execution is atomic.
 
 For scheduled waits, persist `WaitCondition` and release the worker. A timer or external event creates an idempotent, sequence-stamped wake after checking the condition and current policy/budget again. No model call, heartbeat prompt, or busy poll runs during the idle interval. User pause has priority over event wake and fences dispatch; cancellation is terminal after in-flight effects are reconciled. External polling uses explicit cadence, permissions, budget, timeout, and stop condition.
@@ -552,7 +791,7 @@ nonterminal and the client exposes the wait/recovery state (`DEC-043`).
 
 **Disconnect or cancellation:** persist the external peer capability snapshot and last event cursor. Ask for resume/load only if negotiated and supported; otherwise use a fresh session with a bounded handoff package. Terminate descendants according to the adapter's actual control surface, then reconcile workspace and effects. A heartbeat only proves a live connection, not progress or completion.
 
-**Permission request from a child:** persist the `PermissionBridge` before forwarding. Route to an attached, authorized surface using the root session identity while retaining child/requester IDs locally. If routing fails, the client disconnects, or the deadline expires, deny/cancel and settle the child with a receipt. A parent turn may not remain indefinitely blocked on an orphan request.
+**Permission request from a child:** persist the `PermissionBridge` before forwarding. Route to an attached, authorized surface using the root's external ACP Session binding while retaining the child `ThreadId` and requester IDs locally. If routing fails, the client disconnects, or the deadline expires, deny/cancel and settle the child with a receipt. A parent turn may not remain indefinitely blocked on an orphan request.
 
 **Queued user input:** persist a bounded `InputReceipt` before acknowledging acceptance. Duplicate delivery retries return the same receipt. On crash, replay admission/promotion events and preserve pending items. Apply fair service across steer and queued lanes; cap steer batches so new prompts cannot starve. Expired entries receive a visible terminal result; none silently vanish during compaction.
 

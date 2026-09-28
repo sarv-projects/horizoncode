@@ -6,82 +6,102 @@ and pinned upstream research file, follow the owner row in
 contract; source and research links are evidence/navigation, not shipped status.
 
 **Status:** target architecture, not a claim about the current executable. At the
-2026-09-27 code snapshot, the workspace contains 11 Rust crates; TUI, configuration,
-repository intelligence, secret broker, MCP, ACP client, and durable orchestration are
-not yet implemented as their target components. `TODO.md` tracks the implementation;
-`CURRENT_RUN.md` records the inspected revision. Source presence is not verification
-(`ARCH/00`).
+2026-09-28 source snapshot (`23d4ce8`), the workspace contains 16 Rust crates. The
+configuration crate, bounded event-log/artifact foundations, typed command/reference
+registry, skill discovery, headless CLI, and inbound ACP server have partial
+implementations; they do not constitute the full target components described below.
+The interactive TUI, repository intelligence/index, secret broker, MCP host, outbound
+ACP client, durable run/task controller, worker execution host, independent runtime
+verifier, and integrated multi-agent execution remain absent. `TODO.md` tracks
+implementation and evidence; `CURRENT_RUN.md` records the checked-out revision and
+handoff. Source presence is not verification (`ARCH/00`).
 
 ## 1. Shape
 
-A **single Rust workspace** producing one core executable per platform where feasible. The user may run it interactively on a laptop/workstation or headlessly on a user-managed server; no HorizonCode-operated control service is required. A detached-run supervisor may be a local helper process, but it uses the same controller and durable state. Required host capabilities are probed and disclosed per feature: the current Linux confinement path invokes `bwrap`, and Git/LSP/local inference or detached execution can need external processes. A missing required backend refuses that feature; one-binary packaging is not a claim that every capability works without host tools. Protocols (ACP, MCP) are edges, not a second engine. Remote UI attachment is not implied by server deployment. `DEC-029..031`, `DEC-046`, and `ARCH/25` define the durable run controller inside the existing `CMP-orch` boundary.
+A **single Rust workspace** producing one core executable per platform where feasible. The user may run it interactively on a laptop/workstation or headlessly on a user-managed server; no HorizonCode-operated control service is required. A detached-run supervisor may be a local helper process, but it uses the same controller and durable state. Required host capabilities are probed and disclosed per feature: the current Linux confinement path invokes `bwrap`, and Git/LSP/local inference or detached execution can need external processes. A missing required backend refuses that feature; one-binary packaging is not a claim that every capability works without host tools. ACP/MCP are protocol edges, and the local app server is a client transport around the same control service, never a second engine. Remote UI attachment is not implied by server deployment. `DEC-029..031`, `DEC-046`, `DEC-063`, `ARCH/25`, and `ARCH/31` define the durable run controller in `CMP-orch`; `CMP-execution-host` owns process/adapter lifecycle mechanics under that controller's authority.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                            HorizonCode binary                            │
 │                                                                     │
-│  Surfaces                          Control plane (first-party)      │
-│  ┌───────────────┐                 ┌──────────────────────────────┐ │
-│  │ TUI           │                 │  Runner / Loop               │ │
-│  │ (ratatui)     │                 │   · admission                │ │
-│  │  · transcript │                 │   · model step               │ │
-│  │  · cockpit    │◄───────────────►│   · scheduler / tool settle  │ │
-│  │  · palette    │   one control   │   · observe / continuation   │ │
-│  └───────────────┘   interface     └──────────────┬───────────────┘ │
-│  ┌───────────────┐                                │                 │
-│  │ Headless (-p) │                                ▼                 │
-│  └───────────────┘                 ┌──────────────────────────────┐ │
-│  ┌───────────────┐                 │  Capability layer            │ │
-│  │ ACP server    │                 │   · tool registry (filtered) │ │
-│  │ (stdio)       │                 │   · context engine           │ │
-│  └───────────────┘                 │   · provider router          │ │
-│  ┌───────────────┐                 │   · sub-agent orchestrator   │ │
-│  │ ACP client    │                 └──────────────┬───────────────┘ │
-│  └───────────────┘                                │                 │
-│                                    ┌──────────────▼───────────────┐ │
-│                                    │  Trust layer (fail-closed)   │ │
-│                                    │   · policy guard             │ │
-│                                    │   · sandbox / egress         │ │
-│                                    │   · secret broker            │ │
-│                                    │   · audit (hash-chained)     │ │
-│                                    └──────────────┬───────────────┘ │
-│                                    ┌──────────────▼───────────────┐ │
-│                                    │  Persistence                 │ │
-│                                    │   · event log (JSONL)        │ │
-│                                    │   · SQLite state / index     │ │
-│                                    │   · scoped artifact store    │ │
-│                                    │   · worktrees / checkpoints   │ │
-│                                    └──────────────────────────────┘ │
+│  Clients/surfaces                 Shared control boundary          │
+│  TUI · CLI/headless · ACP         typed API / app client           │
+│  SDK/IDE adapters (future)  ───►  local app server (optional)       │
+│                                      │                              │
+│                                      ▼                              │
+│  Durable controller: Run / Spec / Task DAG / Attempt / budgets     │
+│                                      │                              │
+│                         ┌────────────┴────────────┐                 │
+│                         ▼                         ▼                 │
+│               bounded turn runner          independent verifier     │
+│                         │                         │                 │
+│                         ▼                         │                 │
+│   repository/context · provider/worker adapters · tool registry    │
+│                         │                         │                 │
+│                         ▼                         ▼                 │
+│     Guard → sandbox/egress → effects; Audit records effect truth   │
+│                                      │                              │
+│                                      ▼                              │
+│   session/run streams · SQLite projections/indexes · audit chain    │
+│   · immutable artifacts · Git workspaces/checkpoints                 │
 └─────────────────────────────────────────────────────────────────────┘
                  │ model traffic                    │ external tools
                  ▼                                  ▼
           Provider transports                  MCP servers / sandboxes
 ```
 
+The run-control and worker-process ownership chain is:
+
+```text
+Durable Run / Task / Attempt (`CMP-orch`)
+        │ commits launch intent and fencing epoch
+        ▼
+`CMP-execution-host` ── launches/observes ──> native or external worker
+        │                                         │
+        └──── records receipt, events, UNKNOWN ───┘
+
+`CMP-session` stores the conversation (Session, turns, items, replay).
+`CMP-verifier` evaluates the resulting workspace/evidence independently.
+Only `CMP-orch` advances Task state; process exit or conversation closure is not PASS.
+```
+
+This distinction allows a conversation to persist after its runtime exits and lets
+the controller reconcile an execution after restart without treating a missing
+process handle as proof that the work did not happen. `CMP-execution-host` is a
+target component and is not implemented at the source snapshot above.
+
 ## 2. Components
 
 | ID | Component | Owner layer | Responsibility |
 |---|---|---|---|
-| `CMP-runner` | Runner / Loop | Control | Turn lifecycle, admission, step loop, scheduler, continuation, cancellation |
-| `CMP-session` | Session store | Persistence | Durable sessions, segmented event log, committed head, bounded replay, read-only listing, explicit recovery, checkpoints and canonical session artifact references (`ARCH/07`) |
+| `CMP-runner` | Runner / Loop | Control | One admitted turn's provider/tool step loop, continuation, cancellation and terminal receipt; `CMP-orch` grants system-wide run/work admission before dispatch |
+| `CMP-execution-host` | Worker execution host | Runtime boundary | Idempotent local process launch, process/adapter handle ownership, heartbeat and exit observation, termination, and restart observations for `WorkerExecution`; no durable task-state, permission, or verification authority |
+| `CMP-session` | Thread store | Persistence | Durable HorizonCode Threads (legacy component/crate name), segmented event log, committed head, bounded replay, read-only listing, explicit recovery, checkpoints, canonical Thread artifact references, and the rebuildable message/title search projection plus verified navigation (`ARCH/07`) |
 | `CMP-artifact` | Artifact store | Persistence | Scoped immutable payload bytes, digest verification, bounded reads, physical emergency-space reservation, owner pins, import/export staging and safe garbage collection (`ARCH/28`) |
-| `CMP-context` | Context engine | Capability | Assembly, budget, repo map, selection, compaction, pins/excludes |
+| `CMP-context` | Context engine | Capability | Assembly, budget, task-specific repo context, selection, compaction, pins/excludes; consumes revision/freshness evidence from `CMP-repo-intel` |
+| `CMP-repo-intel` | Repository intelligence | Capability | Lazy, incremental, revision-bound file/symbol/reference/diagnostic map; lexical fallback and task-scoped context packages (`ARCH/09`); no separate authority or duplicate index owner |
+| `CMP-web` | Web search/fetch | Capability | Provider adapters, mediated egress, bounded response cache and optional project URL history (`ARCH/10`); no provider-model catalog ownership or unrestricted browser |
 | `CMP-tools` | Tool registry | Capability | Tool definitions, permission-filtered materialization, execution, settle |
 | `CMP-provider` | Provider router | Capability | Catalog, route resolution, transports, retries, usage accounting |
-| `CMP-orch` | Durable run controller | Control plane | Task DAG, budget/event-storage reservations, physically allocated control reserve, fenced leases, stop/recovery, sub-agent scheduling, merge arbitration; invokes independent verifier (`ARCH/25`) |
+| `CMP-orch` | Durable run controller | Control plane | Durable task DAG, system-wide `SupervisorControlStream` and cross-process run/work/maintenance admission, budget/event-storage reservations, physically allocated control reserve, fenced leases, stop/recovery, sub-agent scheduling, bounded Run-scoped agent mailbox/delivery reconciliation, durable `WorkerExecution` lifecycle reconciliation, merge arbitration; invokes independent verifier (`ARCH/16`, `ARCH/25`, `ARCH/32`) |
 | `CMP-guard` | Policy guard | Trust | Ordered allow/ask/deny rules; approval lifecycle |
 | `CMP-sandbox` | Sandbox | Trust | Platform confinement through explicitly selected backends; current Linux namespaces and macOS Seatbelt source; Windows backend unavailable; Landlock/seccomp remain target layers, not current guarantees |
 | `CMP-secrets` | Secret broker | Trust | Credential resolution; redaction; never-log guarantees |
 | `CMP-audit` | Audit log | Trust | Append-only hash-chained execution record; verification |
 | `CMP-acp` | ACP edge | Surface | ACP server (stdio) and client modes; protocol mapping |
 | `CMP-mcp` | MCP edge | Capability | MCP host: server lifecycle, tool/resource/prompt mirroring, dedupe |
-| `CMP-tui` | TUI | Surface | Transcript, dock, cockpit, palette, permissions, telemetry |
+| `CMP-tui` | TUI | Surface | Explorer/editor left dock, central chat, verified Tasks right pane, composer, palette, settings, permissions, telemetry; virtualized and bounded (`ARCH/06`) |
 | `CMP-headless` | Headless | Surface | Non-interactive run, structured output, CI use |
-| `CMP-config` | Configuration | Capability | Discovery precedence, validation, instructions, skills, plugins, hooks, memory |
+| `CMP-config` | Configuration | Capability | Discovery precedence, validation, instructions, skill/plugin/hook configuration, typed memory settings; no memory domain behavior |
+| `CMP-memory` | Memory service | Capability | Provenance-bearing candidate records, user review/consent, dedupe/conflict/supersession, retrieval, bounded consolidation and deletion (`ARCH/33`); no policy or verification authority |
 | `CMP-analytics` | Analytics | Observability | Usage/cost/tool/session metrics, local ledger, `stats`/`export` surfaces |
 | `CMP-command` | Command registry | Surface adapter | Typed slash-command descriptors, completion/help, parse and dispatch to owning services; no business state or permission decisions |
+| `CMP-control-api` | Shared typed control dispatcher | Surface boundary | Versioned requests/responses/events and method registry routed to canonical domain owners; no duplicate state, policy, or agent loop (`ARCH/31`) |
+| `CMP-app-server` | Local supervisor IPC and lifecycle | Surface/runtime boundary | Same-host authenticated IPC, bounded lanes, singleton and attach lifecycle; no Run/Session truth or network listener (`ARCH/31`) |
+| `CMP-app-client` | Shared surface client | Surface | In-process/IPC transport parity, request idempotency, reconnect and per-aggregate cursor replay; no business decisions (`ARCH/31`) |
 | `CMP-agent-directory` | Agent profiles | Capability | Built-in/local/catalog profile records, provenance, install staging, probing, trust/enable state and adapter selection; no run/task truth |
 | `CMP-reference` | Composer references | Capability | Namespaced resolution of agents, files, tasks, runs, symbols and skills against current registries and revision-bound repository context; no launch or grant |
+| `CMP-update` | Installer/update service | Trust + maintenance | Signed update metadata/target verification, install-method detection, staging, explicit consent, safe activation/rollback; activation requires a one-use quiescence permit from `CMP-orch`; no release signing key or run/task state ownership (`ARCH/30`) |
 
 ## 3. The agent loop (contract)
 
@@ -97,7 +117,10 @@ INPUT → ADMISSION → PLAN → MODEL STEP → SCHEDULER → EXECUTE → OBSERV
 - **SCHEDULER** — partition tool calls into parallel-safe groups and ordered barriers.
 - **EXECUTE** — run tools under guard + sandbox; record effects.
 - **OBSERVE** — collect results, split model-content from UI-detail.
-- **UPDATE** — append events, update task graph and cost.
+- **UPDATE** — `CMP-session` commits turn, model, and tool observations; the runner
+  emits typed usage and execution receipts. `CMP-orch` alone updates durable task/run
+  state and the authoritative run-cost projection. A turn update is not a task-state
+  transition (`ARCH/08`, `ARCH/16`, `ARCH/25`).
 - **CONTINUATION** — decide to continue, compact, or terminate.
 
 Terminal states: `completed | failed | interrupted | declined`. Exactly one per turn (`REQ-LOOP-004`).
@@ -120,7 +143,7 @@ Terminal states: `completed | failed | interrupted | declined`. Exactly one per 
 | TUI | `ratatui` + `crossterm` | Mature; retained control of cells; one binary |
 | Async runtime | Tokio | Cancellation, timers, process and network IO |
 | HTTP | `reqwest` | Provider transports |
-| Persistence | SQLite (`rusqlite`) + append-only JSONL event log | Durable state + replayable stream |
+| Persistence | SQLite (`rusqlite`) projections/indexes plus segmented session/run event streams, a separate audit chain, and immutable artifact storage | Each store has one authority and explicit replay/reconciliation links; a single JSONL log is not the entire persistence architecture (`ARCH/07`, `ARCH/14`, `ARCH/25`, `ARCH/28`) |
 | Git | `gitoxide`, shelling to system git for worktrees | Worktree isolation and diff/status |
 | Parsing | `tree-sitter` | Repo map, syntax highlight |
 | Language servers | LSP client | Symbols and diagnostics |
@@ -133,12 +156,27 @@ Terminal states: `completed | failed | interrupted | declined`. Exactly one per 
 
 ## 6. Provider model
 
-- **One catalog, curated primary and opt-in enrichment.** The executable can resolve its curated, provenance-bearing primary without network; optional refresh is explicit and policy checked. No full upstream dataset or logos are bundled by default (`DEC-021`).
+- **One provider/model catalog service, multiple explicit sources.** The executable resolves a small curated, provenance-bearing primary offline. OpenCode's provider/model metadata source is a documented, automatically refreshed data feed, enabled by default and disableable in settings; generic enrichment remains opt-in. Catalog breadth is separate from adapter/auth support, and no feed grants credentials, loads code, or changes arbitrary endpoints (`DEC-021`, `DEC-060`).
 - **One route abstraction.** A route is the orthogonal tuple `Protocol × Endpoint × Auth × Framing`, plus defaults. Vendor quirks live in protocol adapters, not in the loop (`REQ-PROV-003`).
 - **One executor.** Bounded retries with exponential jitter and `Retry-After`; typed failure reasons; full secret redaction.
 - **One router.** Policy-driven selection (cost, latency, capability, tags), optionally eval-gated; every decision observable (`REQ-PROV-005`).
+- **Native Rust OpenCode integration.** The general OpenCode feed and Go `/models` directory are separate fixed-origin data sources; the Go connector uses the user's own eligible Go API key for inference and HorizonCode's own request identity. Go model IDs cannot choose endpoint paths or protocols: a locally versioned route map binds documented `/responses`, `/chat/completions`, and `/messages` paths to native Rust adapters, and unknown/new models remain visible but unavailable until a compatible signed HorizonCode release adds and verifies a mapping. Adapter changes ship in HorizonCode releases; metadata refresh cannot download executable behavior (`DEC-060`, `ARCH/11`).
+- **Pinned routes.** Active attempts pin an immutable provider/model descriptor and adapter snapshot. Metadata refresh changes only future picker/route choices; changing a live route requires an explicit controller-mediated replan.
 
-## 7. Security model
+## 7. Distribution and updates
+
+`CMP-update` is the only owner of application update checks, verified staging, install
+method handling, and activation. It uses signed TUF metadata rooted in a separately
+authenticated installer/bootstrap, performs non-blocking startup checks, and requires
+explicit confirmation to install. The updater never interrupts active long-horizon
+work. `CMP-orch` serializes run starts, direct-turn/worker execution, and update
+maintenance so an executable swap cannot race work outside a durable Run. App metadata,
+provider catalogs, and signed executable targets have distinct
+schemas, caches, trust roots, permissions, and UI states. Release packaging and
+offline signing are described in [`ARCH/30-DISTRIBUTION-UPDATES.md`](30-DISTRIBUTION-UPDATES.md);
+there is no release script/workflow in the current checkout.
+
+## 8. Security model
 
 - **Default deny.** Guard posture fails closed; ambiguous actions ask or deny (`REQ-GUARD-002`).
 - **Sandbox by default.** Writes scoped to the workspace; egress closed unless
@@ -149,14 +187,14 @@ Terminal states: `completed | failed | interrupted | declined`. Exactly one per 
 - **No secret leakage.** The broker never emits credentials to prompts, logs, telemetry, or audit (`REQ-PROV-004`, `REQ-AUDIT-003`).
 - **Provenance.** Every dependency passes a license allowlist gate; provenance headers on adapted files (`REQ-SEC-001`).
 
-## 8. Execution tiers (sandbox)
+## 9. Execution tiers (sandbox)
 
 | Tier | Backend | Use |
 |---|---|---|
 | Local (default) | Each backend discloses its actual mechanism. Current source provides Linux bubblewrap namespace isolation; Landlock/seccomp stacking is target work. macOS and Windows backends exist in source but have no host acceptance evidence in this audit. | Everyday repo work |
 | Container | OCI runtime (Docker/Podman) | Reproducible toolchains |
 | Micro-VM | Firecracker-class or lightweight VM sandbox | Untrusted/unsafe tasks |
-| Remote | Managed sandbox behind one interface | Hostile or elastic workloads |
+| Remote | Future adapter to an explicitly user-managed/authorized host; no HorizonCode-operated worker service is implied | Remote execution remains proposed and requires authenticated transport, custody, policy, and acceptance contracts |
 
 Linux and macOS are **implementation targets**, with distinct acceptance obligations.
 At baseline `1c7a1c68bab9`, the Linux source invokes bubblewrap with user/mount/PID/IPC/
@@ -178,8 +216,11 @@ backends implement one `SandboxProvider` interface, but this does not make their
 guarantees equivalent. Until the exact platform acceptance row exists, report the
 capability as unverified or unavailable.
 
-## 9. Deployment and distribution
+## 10. Deployment and host placement
 
-- Precompiled binaries per platform; an install script that verifies the checksum.
+- Precompiled binaries for accepted platform targets. Installers bootstrap an
+  authenticated update root, and updates verify signed metadata and artifacts; a
+  checksum from the download origin alone is insufficient (`REQ-UPDATE-003`,
+  `ARCH/30`).
 - The installer reports toolchain prerequisites when a source build is required (`REQ-VISION-002`).
 - Config discovery walks from global to project scope; nearest wins; JSONC accepted.

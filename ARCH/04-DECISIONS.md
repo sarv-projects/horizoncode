@@ -38,7 +38,7 @@ Architecture decision records. Each constrains the design until superseded by a 
 
 **Status:** accepted.
 
-**Decision.** Sessions are event-sourced: an append-only log is the source of truth; SQLite holds derived state and indexes. Sessions are replayable and resumable; checkpoints and rewind operate on the log.
+**Decision.** HorizonCode Thread conversations are event-sourced: an append-only log is the source of truth; SQLite holds derived state and indexes. Threads are replayable and resumable; checkpoints and rewind operate on the log. `CMP-session` remains the persistence component name for compatibility, while protocol/provider Sessions are external bindings.
 
 **Rationale.** Long-horizon work requires surviving crash and restart with no state loss (`REQ-SESS-001`, `REQ-LOOP-006`, `REQ-HORIZON-001`).
 
@@ -84,9 +84,9 @@ Architecture decision records. Each constrains the design until superseded by a 
 
 ## DEC-010 — Worktree cockpit as a dockable pane with an embedded editor
 
-**Status:** accepted.
+**Status:** accepted for bounded editor scope; the original scrollback-first and freely dockable layout is superseded by `DEC-066`.
 
-**Decision.** The primary interface is scrollback-native with a fixed composer dock. The worktree cockpit is a **dockable, extensible pane** (dock to a side, collapse/expand, remove, restore, top-right toggles) showing the indexed worktree, file viewing, colored diffs, and in-terminal editing via an **embedded mini-editor** (open/edit/save/undo + syntax highlight; no IDE features). Telemetry and server status move behind a command/palette surface.
+**Decision.** The embedded editor remains bounded to file open/edit/save/undo and syntax highlighting, with no IDE feature claim. Its original primary-interface and free-docking language is historical; `DEC-066` controls current pane positions. Telemetry and server status move behind a command/palette surface.
 
 **Rationale.** The cockpit is the user's persistent state-of-the-world during long runs; per-request telemetry belongs on demand, not permanently on screen (`REQ-UI-005..006`).
 
@@ -168,35 +168,38 @@ Architecture decision records. Each constrains the design until superseded by a 
 
 **Status:** accepted.
 
-**Decision.** Keep **separate** append-only stores, each owned by exactly one component, rather than collapsing them into a single log: the session event log (`CMP-session`; replay source of truth), the tamper-evident audit chain (`CMP-audit`; independently verifiable evidence), and the analytics ledger (`CMP-analytics`; rebuildable rollup source). Each store owns its own ordering and retention. Where one effect appears in more than one store, the stores MUST satisfy a **cross-store consistency invariant**: a security-relevant effect is complete only once its audit entry is durably chained, and every session/analytics fact that references it carries the owning `session_id`, its monotonic session `seq`, and the globally monotonic audit `audit_seq` (or `receipt_ref`). Ordering is defined by each store's own monotonic sequence; **cross-store ordering is never inferred from wall-clock time** — `audit_seq` is the authoritative tie-break for security-relevant ordering, and a reconciliation check flags any referenced effect that has no audit entry. Retention stays per-store: the audit chain is never pruned with the session log or the analytics ledger (`DEC-044`).
+**Decision.** Keep **separate** append-only stores, each owned by exactly one component, rather than collapsing them into a single log: the Thread event log (`CMP-session`; replay source of truth), the tamper-evident audit chain (`CMP-audit`; independently verifiable evidence), and the analytics ledger (`CMP-analytics`; a durable but rebuildable projection, never execution truth). Each store owns its own ordering and retention. Where one effect appears in more than one store, the stores MUST satisfy a **cross-store consistency invariant**: a security-relevant effect is complete only once its audit entry is durably chained, and every cross-store reference carries owner-qualified aggregate identity/sequence, event ID, schema version, and payload digest (`DurableFactRef` in `ARCH/14`). References to security-relevant effects include the Thread `seq` and audit `audit_seq` (or stable receipt reference). Ordering is defined by each store's own monotonic sequence; **cross-store ordering is never inferred from wall-clock time** — `audit_seq` is authoritative for security-relevant order, and reconciliation flags missing or mismatched references. An analytics projection is rebuilt only from validated canonical owner facts and reports incomplete source coverage rather than silently fabricating totals. Retention stays per-store: the audit chain is never destructively pruned with the Thread log or analytics projection; archived audit ranges retain verifiable references (`DEC-044`).
 
-**Rationale.** A single store would couple replay, tamper-evidence, and derived metrics: an analytics retention choice could put the audit chain at risk, and a corrupt session log could poison evidence. Separate stores keep each guarantee provable while an explicit invariant stops them drifting into disagreement (`REQ-AUDIT-001`, `REQ-AUDIT-006`, `DEC-004`, `DEC-005`, `DEC-017`; detail in `ARCH/14`).
+**Rationale.** A single store would couple replay, tamper-evidence, and derived metrics: an analytics retention choice could put the audit chain at risk, and a corrupt Thread log could poison evidence. Separate stores keep each guarantee provable while an explicit invariant stops them drifting into disagreement (`REQ-AUDIT-001`, `REQ-AUDIT-006`, `DEC-004`, `DEC-005`, `DEC-017`; detail in `ARCH/14`).
 
-## DEC-021 — Model catalog posture: curated primary, opt-in enrichment, no bundled marks
+## DEC-021 — Model catalog posture: curated primary, opt-in enrichment, no bundled marks (refined by DEC-060)
 
 **Status:** accepted. Closes the `SRC-009` data-license hard gate.
 
 **Decision.**
 
 1. **The built-in catalog is a small, internally curated subset** covering only the providers and models HorizonCode actually supports. Every row carries provenance: source URL, retrieval date, generating method or script, and a pinned upstream commit wherever a value is derived. Limits and pricing are verified against provider-published documentation and cross-checked against a second permissively licensed community map.
-2. **Runtime enrichment is opt-in.** With network permission, the catalog MAY be refreshed from the upstream public API through an explicit `catalog refresh` command, with opt-in, timeout, schema validation, and offline-by-default behavior. The cache records source URL, retrieval timestamp, content hash, and upstream commit when known. Live data **MUST NOT** silently overwrite pinned eval fixtures.
+2. **Generic runtime enrichment is opt-in.** With network permission, a generic catalog source MAY be refreshed through an explicit command, with timeout, schema validation, and offline-by-default behavior. The cache records source URL, retrieval timestamp, content hash, and upstream commit when known. Live data **MUST NOT** silently overwrite pinned eval fixtures. The OpenCode-specific default refresh is the scoped exception in `DEC-060`.
 3. **No full dataset snapshot in the binary by default.** The grant permits it with the notice retained, but it is rejected as the default posture: it imports daily staleness, community-data accuracy liability that upstream explicitly disclaims, and binary bloat — for no compliance benefit over (1) + (2).
 4. **No third-party marks are bundled.** Provider and model names appear as plain text (nominative use). Provider logos are NOT redistributed: the upstream grant conveys no trademark rights. Names MUST stay factually accurate and MUST NOT imply endorsement.
 5. **Attribution is unconditional.** Any bundled or derived catalog data ships the upstream copyright line and full permission notice through `THIRD-PARTY-NOTICES` and a `--credits` / `about` surface, satisfying the MIT notice condition for every row regardless of which tier supplied it.
 
-**Rationale.** The grant is permissive and verified from primary sources, so redistribution is legally available subject to notice retention. Operational risk remains: a pseudonymous holder, no contributor agreement, unaddressed database rights, and no accuracy warranty. A small verified primary keeps offline resolution and eval reproducibility; opt-in enrichment adds breadth without making correctness depend on it. Excluding marks avoids assuming trademark rights (`SRC-009`, `DEC-011`, `AX-010`, `REQ-PROV-*`; detail in `ARCH/05` §5 and `ARCH/11`).
+**Rationale.** The grant is permissive and verified from primary sources, so redistribution is legally available subject to notice retention. Operational risk remains: a pseudonymous holder, no contributor agreement, unaddressed database rights, and no accuracy warranty. A small verified primary keeps offline resolution and eval reproducibility; generic opt-in enrichment adds breadth without making correctness depend on it. OpenCode's live registry is added only as a bounded data-only source under `DEC-060`. Excluding marks avoids assuming trademark rights (`SRC-009`, `DEC-011`, `AX-010`, `REQ-PROV-*`; detail in `ARCH/05` §5 and `ARCH/11`).
 
 **Residual risk (accepted).** Upstream title to every byte of a community-curated dataset is not fully provable from public sources; no contributor agreement exists upstream; EU sui generis database rights are not addressed by the grant; upstream disclaims accuracy entirely, so pricing and limit errors are our operational liability. Mitigation is the per-row provenance record plus cross-verification — not a stronger license claim.
 
-## DEC-022 — Audit anchoring: signed roots always, a declared anchoring level, an honest claim boundary
+## DEC-022 — Audit root authentication, declared anchoring level, and honest claim boundary
 
-**Status:** accepted. Resolves `ARCH/22` Open question 1 and `ARCH/14` Open question 1.
+**Status:** accepted; amended 2026-09-28 after source recheck. Resolves `ARCH/22` Open question 1 and `ARCH/14` Open question 1. Original “signed roots” wording overstated the implementation: current source uses a local BLAKE3 keyed MAC, with `device.key` under the audit store; it is not an asymmetric signature and is not owned by `CMP-secrets`.
 
 **Decision.**
 
-1. **Signing is not configurable off.** Every audit segment root is signed with a
-   device key held by `CMP-secrets`. `audit.anchor.sign: false` is a configuration
-   error, not a supported posture.
+1. **Root authentication is not configurable off.** Its algorithm and key owner are
+   explicit. The current BLAKE3 keyed MAC supports local verification only. Any
+   portable/off-box authenticity claim requires independently verifiable public-key
+   proof or trusted counter-signing and a separate key-custody/rotation design.
+   `audit.anchor.authentication: none` is a configuration error, not a supported
+   posture. Do not call a shared-secret MAC a public-key signature.
 2. **Three declared anchoring levels, default `local-sink`** (table below).
 3. **A configured-but-unreachable sink fails closed.** The evidence gate fails and
    the run does not degrade to a weaker level presented as the configured one
@@ -209,16 +212,16 @@ Architecture decision records. Each constrains the design until superseded by a 
 
 | Level | `anchor.offbox` | Claim |
 |---|---|---|
-| `local-trust` | `none` | signed roots only, in the audit store; no independent verification claim. Permitted only as an explicit, acknowledged posture and labeled everywhere. |
-| `local-sink` (**default**) | `file` | signed roots appended to a distinct, ownership- and mode-validated append-only sink **outside** `<state-dir>/audit`. |
-| `off-box` | `remote` | signed roots recorded off-host or counter-signed; the required level for any deployment that declares an off-box trust requirement. |
+| `local-trust` | `none` | locally authenticated roots only in the audit store; no independent verification claim. Permitted only as an explicit, acknowledged posture and labeled everywhere. |
+| `local-sink` (**target default**) | `file` | locally authenticated roots appended to a distinct, ownership- and mode-validated append-only sink **outside** `<state-dir>/audit`; claims are bounded by access to both key and sink. |
+| `off-box` | `remote` | roots with independently verifiable proof recorded off-host or counter-signed; required for any deployment that declares an off-box trust requirement. |
 
-**Rationale.** `REQ-AUDIT-004` (strict: signed *and* anchored off-box) and `ARCH/14`'s
+**Rationale.** `REQ-AUDIT-004` (strict: authenticated *and* anchored off-box) and `ARCH/14`'s
 `offbox: "none"` default genuinely conflicted. The stricter requirement stays the floor,
 and the weaker statement is scoped to the case where it is demonstrably true (a
 genuinely local-only deployment). A fresh install cannot invent a remote sink, so the
-honest zero-config default is the strongest level that needs no external party: signed
-roots written to a sink *outside* the audit store root. That defends against
+honest zero-config default is the strongest level that needs no external party: locally
+authenticated roots written to a sink *outside* the audit store root. That defends against
 audit-store-local rewriting and against a *different* unprivileged principal (`AV-6`),
 which are exactly the in-scope adversaries; `off-box` is reserved for the claim that
 survives against the invoking user (out of scope per the threat model, but a deployment
@@ -229,8 +232,8 @@ authenticity, and never detects fabrication in the unanchored tail.
 **Consequences.** `"offbox": "file"` replaces `"none"` as the shipped default
 (`ARCH/14` §Configuration), with `sink_path` validated per `REQ-SEC-018` and a
 `trust_requirement` key (`none` | `off_box`); `"none"` continues to work but must carry
-an explicit `local-trust` acknowledgement. Signing once and only once is the contract, so
-`sign: false` is rejected at load. A deployment that declares `trust_requirement:
+an explicit `local-trust` acknowledgement. Root authentication once and only once is
+the contract, so `authentication: none` is rejected at load. A deployment that declares `trust_requirement:
 off_box` and configures a weaker `anchor.offbox` is refused. The acceptance record
 stores the **level** and, for `local-trust`/`local-sink`, the rendered claim boundary.
 
@@ -506,14 +509,19 @@ but must not be advertised as the detached long-horizon capability.
 
 ## DEC-033 — HorizonCode product and runtime identity
 
-**Decision (2026-09-27).** The final product and GitHub repository name is
-HorizonCode at `sarv-projects/horizoncode`. The executable is `horizoncode`,
-internal crate prefix is `horizoncode-`, and new environment/config/state
-names use `HORIZONCODE_*` and `~/.horizoncode`. Existing state is not moved
-implicitly; `HORIZONCODE_HOME` can point at a previously created directory
-when the operator intentionally resumes it. Historical Git commits, archived
-documents and the current local checkout path retain their original identity.
-Stable task IDs such as `AX-309` are not renumbered.
+**Decision (2026-09-27; naming clarified 2026-09-28).** The product and GitHub
+repository name is HorizonCode at `sarv-projects/horizoncode`. `hzcode` is the
+canonical install, package, and executable name. After installation,
+`horizoncode` is a compatibility command alias to the same version, process,
+configuration, and state root; it must not create a second identity or copy of
+state. New installation instructions and help use `hzcode`. The internal crate
+prefix remains `horizoncode-`, and environment/config/state names use
+`HORIZONCODE_*` and `~/.horizoncode`. Existing state is not moved implicitly;
+`HORIZONCODE_HOME` can point at a previously created directory when the operator
+intentionally resumes it. Historical Git commits, archived documents, and the
+current checkout path retain their original identity. Stable task IDs such as
+`AX-309` are not renumbered. The checked-out binary and manifests are still
+named `horizoncode`; migration is delivery work under `AX-365..366`.
 
 **Why.** The user named the final repository and requested a coherent rename.
 Changing package and runtime identifiers together avoids shipping a new product
@@ -562,7 +570,7 @@ must not be adopted without a memory/backpressure bound. These reports are incid
 evidence for failure scenarios, not proof that all releases share the defect. See
 [OpenCode #48232](https://github.com/anomalyco/opencode/issues/48232),
 [Codex #47842](https://github.com/openai/codex/issues/47842), and the
-[Codex app-server client queue notes](https://github.com/openai/codex/blob/main/codex-rs/app-server-client/README.md).
+[Codex app-server client queue notes at the inspected snapshot](https://github.com/openai/codex/blob/41ed72c32b4980cd7919e1c2a45ecb1f96c5911a/codex-rs/app-server-client/README.md).
 
 **Consequences.** `REQ-HORIZON-012..014`, adapter event schema, detached client attach,
 ACP permission relay and settings/UI status; `ARCH/15`, `ARCH/16`, `ARCH/22`,
@@ -1223,3 +1231,340 @@ versioned domain separator `horizoncode/eventlog/event/v1`, and `ARCH/28`'s
 `ArtifactRef` field is renamed `digest` (the artifact store is not implemented yet,
 so no stored data migrates). Any future change of algorithm or canonical form is a
 schema-version migration with the version checked before partial decode.
+
+## DEC-060 — OpenCode provider data refresh with native, pinned Rust adapters
+
+**Decision (2026-09-28).** Keep HorizonCode's curated offline primary and generic
+opt-in enrichment from `DEC-021`. Add an OpenCode-backed provider/model registry and
+OpenCode Go model directory as explicit, named sources that automatically refresh in
+the background by default (one-hour interval, user-disableable). Do not bundle the
+full upstream provider database or marks. The cache is bounded, schema-validated,
+provenance-stamped, content-addressed, and atomically replaced. Model/provider names,
+catalog availability, and published capability/price/limit values may refresh as
+inert data; they cannot introduce executable code, endpoint origins or paths, protocol
+adapters, auth methods, or credentials. Go `/models` IDs indicate discovery only. The
+Go model-to-path/protocol map is locally versioned Rust data derived from the current
+official endpoint table; unknown IDs remain visible but unavailable until a released
+adapter includes a reviewed route and conformance record. General OpenCode catalog
+data and the Go directory use separate fixed source origins and separate provenance.
+
+HorizonCode implements the OpenCode Go connector in native Rust, using the user's own
+Go API key from the secret broker, its own User-Agent, stable opaque
+`x-opencode-session`, mediated egress, and locally implemented protocol adapters. No
+OpenCode token/client ID/auth store is reused and no OpenCode identity is impersonated.
+Active attempts pin an immutable provider/model/adapter/capability/metadata snapshot;
+refresh affects only future selections. The matrix enumerates every ID in each pinned
+dynamic provider-feed snapshot, every documented provider setup method and sign-in
+path, and records `unknown` where no primary source was found. Catalog presence, auth,
+protocol, capability, terms/client registration, and availability are independent
+fields. A provider is not claimed usable until its own supported auth and route
+conformance evidence pass. If an auth flow requires an unavailable or unauthorized
+independent client registration, show it as unavailable rather than bypassing the
+requirement.
+
+The 2026-09-28 snapshot is deliberately not treated as a consistent universal route
+catalog: the global feed contained 225 provider IDs/8,253 models; Go `/models` returned
+43 IDs, its global-feed `opencode-go` record contained 33, and current docs mapped 30
+Go IDs to paths. These values and digests are recorded in the research inventory and
+must be refreshed at implementation/acceptance. The provider feed's `env`, `npm`, and
+`api` fields are not auth, package-installation, or endpoint authority. The Go
+directory's model IDs do not select endpoint paths.
+
+**Rationale.** User-approved automatic freshness is valuable for catalog breadth, but
+remote metadata is not a safe executable update channel and catalog presence is not
+provider compatibility. Keeping executable behavior in versioned Rust releases makes
+protocol changes reviewable and allows active runs to remain reproducible. OpenCode's
+provider docs distinguish catalog data, provider integrations, custom provider
+configuration, and sign-in; its Go docs require the caller's own identity/session
+headers and do not guarantee client compatibility indefinitely. See the exact source
+snapshot and volatile-document limits in `research docs/opencode.md` and
+`ARCH/29-SOURCE-TRACEABILITY.md` (`SRC-019`, `SRC-021`).
+
+**Consequences.** Add `REQ-PROV-008..011`, `REQ-SEC-017`, `REQ-SEC-027`, `ARCH/11`,
+`ARCH/18`, the provider/update UI in `ARCH/06`, the pinned provider/auth inventory in
+`research docs/opencode-provider-inventory.md`, live free-model acceptance to
+`research docs/tests.md`, and TODO `AX-360..364`. Changing this to arbitrary
+auto-loaded adapters, an OpenCode auth-store import, or a user-selected untrusted
+origin requires a new security decision.
+
+## DEC-061 — Signed, explicit, active-run-safe application updates
+
+**Decision (2026-09-28).** `CMP-update` owns application update discovery and
+installation. Use The Update Framework (TUF) metadata/target verification rooted in
+a separately authenticated installer bootstrap, with an offline threshold-signing
+process, key rotation/revocation, per-target platform/channel/version/schema
+constraints, bounded staging, atomic activation, health check, and rollback. Use the
+first-party release repository `sarv-projects/horizoncode`; managed mirrors may
+serve identical signed metadata but cannot change trust roots. TLS, same-origin
+checksums, and attestations supplement, not replace, client verification. A Rust TUF
+library is not selected until license/MSRV/maintenance/target/conformance review
+passes; the current release-key/bootstrap process is not implemented. Preserve
+`DEC-002`'s one-shipped-binary product contract: activation may run the signed
+HorizonCode executable in a restricted internal helper mode, including as a separate
+process on platforms that cannot replace a running executable; do not distribute a
+second updater runtime.
+
+On interactive TUI startup, when enabled, perform a rate-limited, non-blocking,
+cancellable check of the locally selected channel (`stable` by default; `preview` only after an explicit
+user choice and while signed preview targets are published). Non-interactive CLI and
+headless invocations do not perform unsolicited update checks. Show a user-editable
+notification only when verified metadata reports an update. Never install automatically. The notice, `/upgrade`, and `hzcode upgrade`
+are clients of the same update service. The explicit Install action consents to download, verify, and apply at the next safe
+restart boundary; it never terminates active work. If a run is active, stage and defer
+until all work is terminal and the application reaches a normal process exit. A separate
+maintenance approval is required only if applying would require pausing or reconciling
+still-active work. Never ask for a second surprise confirmation after download. Package-manager-owned
+installs are updated by their manager rather than overwritten. There is no `curl | sh`
+or equivalent script bootstrap; convenience wrappers remain deferred until their
+independent trust path is proven. Release packaging, audit, offline signing, and
+platform install scripts are specified in `ARCH/30`.
+
+**Rationale.** Update delivery is executable-code supply chain, not model metadata.
+TUF addresses repository metadata/target substitution, rollback, freeze, mix-and-match,
+and key-compromise classes; it does not remove the need to authenticate the first
+installer or protect signing keys. Explicit consent and a maintenance fence protect
+long-running work and make update deferral truthful.
+
+**Consequences.** Add `REQ-UPDATE-001..007`, `ARCH/30`, settings/commands in
+`ARCH/18`/`ARCH/27`, UI in `ARCH/06`, threats in `ARCH/22`, update acceptance in
+`research docs/tests.md`, and TODO `AX-365..366`. Release is blocked until the first
+root bootstrap, selected TUF implementation, per-platform install method, and rollback
+compatibility are tested. Do not treat a development build or an unsigned mock
+repository as release acceptance.
+
+## DEC-062 — One durable sequencer for run admission and maintenance
+
+**Decision (2026-09-28).** `CMP-orch` owns one bounded, append-only
+`SupervisorControlStream` and cross-process admission lock for system-wide run,
+worker-execution, direct-turn, and executable-maintenance admission. The stream records
+run/work/maintenance intents, grants, and terminal settlement, with stable operation
+IDs and references to the exact per-run stream head, session/execution, or update
+operation. Per-run streams remain canonical for task,
+attempt, and evidence truth; the supervisor stream owns only global admission and its
+fence. SQLite remains a rebuildable projection. A pending or unknown intent blocks
+conflicting admission until recovery reconciles per-run streams, execution/effect
+state, the helper process, and installed binary digests.
+
+**Rationale.** A per-run event log cannot serialize a new run or direct session turn
+against a system update when no Run exists, and checking a rebuilt active-work count
+before swapping leaves a start/update race. A global sequencer gives run/work admission
+and maintenance one durable arbitration point without making the updater a second
+scheduler or promoting SQLite into a source of truth.
+
+**Consequences.** Add `REQ-HORIZON-029`, the `SupervisorControlStream` LLD to
+`ARCH/25`, run/work admission APIs and the maintenance fence to `ARCH/16`, and
+run/direct-turn/update race plus crash-recovery acceptance to `research docs/tests.md`.
+Reuse the bounded event-log framing and OS-backed writer lock; fail closed if durable
+locking or reconciliation is unsupported. `AX-365` depends on this controller seam.
+No implementation is present.
+
+## DEC-063 — One typed control API with an optional local app server
+
+**Decision (2026-09-28).** All HorizonCode surfaces use one typed `CMP-control-api`
+dispatcher that calls the existing domain owners. `CMP-app-client` and
+`CMP-app-server` provide the same request/event semantics in process and across a
+same-host IPC boundary. A supervised controller can run in the same shipped binary's
+hidden `__supervisor` mode so the TUI may detach and reconnect without owning the Run.
+The server owns process/socket lifecycle and transport only; `CMP-orch`, `CMP-session`,
+`CMP-guard`, and other domain components remain the sole owners of their state and
+decisions. ACP remains an external protocol adapter into the control service. The
+initial app server is local-only; no remote listener is implied.
+
+**Rationale.** `REQ-HORIZON-011` already requires supervised detached Runs, attach,
+sequence replay, and truthful disconnect state, while `ARCH/27` exposes `/attach`.
+Those contracts need a stable authenticated service boundary that is absent from the
+current code and not specified as a single LLD. Codex's pinned
+[`app-server-client` design](https://github.com/openai/codex/blob/368e5eae2f006a70a91dddfdc96e6b2d11498f81/codex-rs/app-server-client/README.md)
+is evidence for sharing lifecycle and typed in-process transport; its unbounded local
+event consumer queue conflicts with HorizonCode's bounded backpressure requirement
+and is not adopted.
+
+**Consequences.** Add `REQ-HORIZON-030`, `ARCH/31`, same-host IPC/authentication and
+platform acceptance, with no separate state store or duplicate policy layer. Keep
+remote attachment out until explicit authentication/encryption requirements and tests
+exist. One binary can host both interactive client and hidden supervisor modes; if a
+platform cannot provide the tested boundary, expose attached-only execution and refuse
+to claim detached recovery. `AX-367` is proposed; no server/client implementation exists.
+
+## DEC-064 — Run-scoped mailbox with explicit, non-authoritative delivery
+
+**Status:** accepted architecture decision; implementation remains proposed.
+
+**Decision.** Provide bounded operator/worker messaging for explicitly enabled
+managed Runs. `CMP-orch` owns membership, ordered message events, idempotent delivery
+state, and resource limits in the existing canonical Run stream. `CMP-session` owns
+the recipient Session input receipt and safe-boundary promotion. A derived outbox
+connects them using a stable per-message/per-recipient delivery ID and reconciles the
+two stores after a crash. The `AgentMessagePosted` event contains bounded text inline;
+no independent mailbox database or message event log is introduced. `CMP-guard`
+remains the sole policy authority for the `agent.message` capability.
+
+Messages are addressed only to explicit members of the same Run; task and session
+identity do not collapse into one hierarchy. Message content is untrusted data and
+cannot grant authority, alter an approved spec, transition a task, or count as
+verification. Active agents receive a message only at a safe provider-turn boundary.
+V1 does not wake or restart idle/paused/terminal workers. External messaging requires
+an explicitly negotiated adapter bridge; ordinary ACP session/prompt support and
+opaque CLI process handles are insufficient evidence.
+
+**Alternatives considered.** Parent-only relays are simpler but bottleneck every
+exchange through one live worker; ephemeral notifications lose delivery after a
+restart; a separate service/store would add another consistency and permission
+owner. The Run-stream/outbox design gives durable group coordination while preserving
+one task-truth owner and bounded recovery. Costs include additional event bytes,
+context exposure, notification/UI complexity, and a second-store reconciliation
+path; all are explicitly capped and acceptance-tested.
+
+**Consequences.** Add `REQ-HORIZON-031`, `ARCH/32`, message-panel/command/settings
+contracts in `ARCH/06` and `ARCH/27`, `InputReceipt` provenance in `ARCH/25`, Codex
+source comparison in `ARCH/26` and `research docs/codex.md`, and TODO `AX-368`.
+Never equate a Codex message-board pattern with task truth or import its server
+claims: the public client crate does not itself provide the remote service.
+
+## DEC-065 — Local, rebuildable full-text search over committed session content
+
+**Status:** accepted product/architecture direction; implementation remains proposed.
+
+**Decision (2026-09-28).** `CMP-session` owns search over committed, authorized
+session history. Use the existing local `state.db` for a versioned, rebuildable
+SQLite FTS5 projection of displayable message text and session-title history. Keep
+canonical segmented session events authoritative. Search returns stable message
+targets and distinct title-only targets; it revalidates source event digests before
+showing snippets or navigating. Use a bounded parser that emits only whole-token
+queries and quoted contiguous token phrases. The initial tokenizer is
+`unicode61 remove_diacritics 2`; punctuation is a separator, so phrase matching is
+token-based rather than byte-for-byte substring matching. User and assistant display
+text are indexed by default; tool output requires the user-scope opt-in. Hidden
+reasoning, transient deltas, and non-displayable payloads are excluded. Results expose
+incomplete/corrupt/unreadable index coverage. Search is local, cancellable, access
+scoped, and independent of inference/network.
+
+**Alternatives considered.** A linear scan avoids an index but has query cost that
+grows with all retained history and cannot provide bounded interactive latency. A
+separate search service/database adds another lifecycle, privacy boundary, and
+cross-store reconciliation problem. The existing SQLite projection plus FTS5 keeps
+the index rebuildable and local. OpenChamber's pinned search UI demonstrates useful
+query-to-message navigation and title-aware session finding, but its message search
+is limited to already-loaded user prompts and its session search is metadata-only;
+HorizonCode's full-history index is a proposed synthesis, not copied behavior
+([`research docs/openchamber-search.md`](../research%20docs/openchamber-search.md)).
+The current local `libsqlite3-sys` build enables FTS5, but the implementation must
+probe it at startup/migration and refuse typed if a future build lacks it; see
+[`ARCH/07`](07-SESSION.md) and the exact local/upstream trail in `ARCH/29`.
+
+**Consequences.** Add `REQ-SESS-007` and `REQ-UI-017`, message and title FTS schemas,
+`session/title-changed` event projection, exact navigation/coverage behavior, search
+settings, `/search` and `hzcode sessions search`, and adversarial rebuild/privacy
+tests. TODO `AX-369` owns implementation. Do not claim search is present until
+`ACC-P1-14` passes on an exact revision; FTS availability, complete enumeration,
+rename aliases, query semantics, and result revalidation are release evidence.
+
+## DEC-066 — Three-pane workspace with chat fixed at the center
+
+**Status:** accepted target direction; no interactive TUI is implemented.
+
+**Decision (2026-09-28).** The full-screen workspace defaults to exactly three
+primary panes: Explorer/editor dock group on the left, chat in the center, and the
+controller-backed Tasks checklist on the right. All three regions are resizable by
+dragging their splitters; Explorer and Tasks can swap side slots, while the center slot
+remains reserved for chat. Opening a file opens a tab in the left group and expands
+that group; it never creates a second editor sidebar or replaces the central chat.
+Side panes can be collapsed/restored. On narrow terminals, use a focused single-pane
+layout with preserved state rather than illegible columns. Tasks are read-only
+projections; a checkmark requires current independent PASS evidence for the integrated
+revision.
+
+**Rationale.** The user's main work surface is the conversation, while repository
+navigation/editing and verified task progress remain visible in stable neighboring
+panes. The prior `DEC-010` layout wording is superseded; its bounded editor scope and
+governed write path remain in force. OpenCode's TUI is a behavioral comparison, not a
+layout mandate; HorizonCode-specific three-pane behavior is captured in `ARCH/06`.
+
+**Consequences.** `REQ-UI-018`, `ARCH/06`, and UI acceptance cases use this pane model.
+The TUI must not add permanent bottom, right-editor, or duplicate task panes. Small
+terminal behavior and pane keyboard/mouse movement are part of acceptance, not optional
+polish. “Move” applies only to swapping Explorer and Tasks across side slots; the chat
+anchor cannot be dragged away from center.
+
+## DEC-067 — Scoped local memory with explicit writes by default
+
+**Status:** accepted target defaults; storage implementation remains proposed.
+
+**Decision (2026-09-28).** Memory is local-only and supports a user-global scope for
+preferences/work habits and a project scope keyed by stable repository identity for
+repository facts/decisions. Retrieval is scope-filtered before ranking. Cross-project
+retrieval is off. A direct `/memory remember` user action can create a reviewable
+candidate; automatic extraction is off by default and automatic acceptance is always
+off. Users can inspect, export, disable retrieval, and purge by scope. A repository
+fact is revision/provenance-bound and becomes stale when its source changes. No remote
+embedding/index service is required.
+
+**Rationale.** Global convenience should not create repository-data leakage or quietly
+turn model inference into accepted user memory. Codex's two-phase extraction and
+consolidation is a useful pattern to evaluate, while HorizonCode adds explicit scope and
+consent rules; the exact upstream files are listed in `research docs/codex-memory.md`.
+
+**Consequences.** `REQ-MEM-004`, `ARCH/33`, `/memory`, and `AX-371` use these defaults.
+Bounds, retention, backup/export format, and deletion tombstone duration still require
+implementation-time privacy review and finite settings; they do not change the defaults
+above.
+
+## DEC-068 — Workflow Builder authors controller plans, not a second runtime
+
+**Status:** accepted target direction; implementation remains proposed.
+
+**Decision (2026-09-28).** `/workflow create` opens a guided builder that produces a
+versioned, validated task graph with typed inputs, dependencies, role/model hints,
+permission ceiling, budgets, and verification criteria. Saving stores a local template.
+Running it instantiates the ordinary HorizonCode Run controller and task lifecycle.
+Templates cannot execute arbitrary scripts or bypass approval, guard, sandbox, audit,
+budget, or verification. Begin with guided composition from user-authored steps and
+small built-in templates; add graph editing only after interaction tests show it is
+needed.
+
+**Rationale.** Grok Build demonstrates useful workflow authoring, phases, validation,
+limits, and journaling patterns, but its documented runtime does not recover across
+process restarts and has unresolved external-effect replay behavior. HorizonCode already
+needs a durable controller; a second scripting/runtime engine would duplicate state and
+recovery semantics. See the pinned pattern-only source record `SRC-022`.
+
+**Consequences.** `/workflow`, `ARCH/27`, `ARCH/25`, and `AX-377` share the controller
+and validation path. Workflow templates are data, not executable authority.
+
+## DEC-069 — Durable Thread identity and separate worker execution
+
+**Status:** accepted target architecture; current store/API implementation remains
+session-named and does not yet implement this model.
+
+**Decision (2026-09-28).** HorizonCode uses one canonical durable `ThreadId` for an
+agent conversation and its history (turns/items, context epochs, admitted input, and
+replay). An `Attempt` may own a root Thread and a parent/child Thread tree. One Thread
+may be served by successive `WorkerExecution` incarnations after a restart or adapter
+recovery; each incarnation has its own ID, launch receipt, heartbeat, capability and
+usage observations, and fenced workspace ownership. `Session` is reserved for a
+protocol/provider/peer concept (ACP session, OpenCode Session, or an adapter's native
+conversation handle), stored as an external binding to the HorizonCode Thread. The
+current `horizoncode-session` crate may remain the persistence implementation name,
+but its target public/domain contract is Thread-oriented and must not create both a
+`SessionId` and `ThreadId` for the same HorizonCode conversation.
+
+The durable task DAG describes required work; the Thread tree describes agent
+conversations and delegation. They have independent IDs and relations. A Thread or
+WorkerExecution ending never passes an Attempt or Task; only current verifier evidence
+bound to the approved specification and integrated revision can do that. Opaque peers
+may have a HorizonCode Thread with only partial history/capability visibility; missing
+peer session, nested-agent, usage, or resume fields stay `UNKNOWN`.
+
+**Rationale.** Codex's durable Thread and OpenCode's durable Session both demonstrate
+the value of a persistent conversation identity, while OpenCode's source explicitly
+separates its process-local active runner from durable history. A normalized Thread
+gives HorizonCode one internal term across Codex, OpenCode, ACP, Claude Code, and native
+workers without adopting any peer's Task semantics. The already-required
+`WorkerExecution` captures the live incarnation; adding another core `Session` entity
+would duplicate identity and confuse protocol sessions with durable work.
+
+**Consequences.** `ARCH/07`, `ARCH/16`, `ARCH/25`, `ARCH/26`, `ARCH/32`, requirements,
+source traces, and tests must use `ThreadId` for HorizonCode conversations and clearly
+name external session bindings. `AX-379` owns the cross-document schema/API migration
+and compatibility plan. Preserve legacy on-disk history through an explicit
+versioned/idempotent migration; never rewrite or duplicate a conversation silently.

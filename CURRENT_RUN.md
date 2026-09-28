@@ -1,5 +1,201 @@
 # CURRENT_RUN — HorizonCode
 
+## Active handoff — architecture audit continuation (2026-09-28)
+
+The currently confirmed target layout is **Explorer/editor on the left, chat fixed in
+the center, and verified Tasks on the right**. All three regions resize through
+splitters. Explorer and Tasks may swap side slots; chat cannot move, be replaced, or
+close while active. Opening a file expands the Explorer/editor dock group. No permanent
+bottom pane or second editor sidebar is planned. Earlier sections below that describe a
+right-side editor or a movable chat are superseded historical notes, not current
+requirements. `ARCH/06`, `DEC-066`, `REQ-UI-018`, `AX-374`, and the UI test plan own the
+current contract. This is proposed design; the TUI is absent from source.
+
+Distribution decision: **HorizonCode** is the product name; `hzcode` is the canonical
+install/package/CLI name, and installed `horizoncode` is a compatibility alias to the
+same app/state. New installation instructions use only `hzcode`. Dated npm and
+crates.io exact-name lookups returned 404 on 2026-09-28; this does not reserve either
+name. `ARCH/30`, update requirements, and AX-366 describe the target migration. The
+checked-out binary is still named `horizoncode`; no code or package rename was made.
+
+Conversation identity decision: `DEC-069` defines a durable HorizonCode `ThreadId`
+plus separately recorded `WorkerExecution` incarnations. Protocol/provider `Session`
+IDs are external bindings, not duplicate HorizonCode conversation IDs. The existing
+`horizoncode-session` crate and session-named v1 files remain the persistence/migration
+source; legacy IDs are preserved, and hash-chained event bytes must never be rewritten
+in place. `AX-379` owns API/schema migration and compatibility acceptance. This target
+model is not implemented in source.
+
+### Thread identity contract check (2026-09-28)
+
+The contract is now explicit in `REQ-SESS-008` and `ACC-P1-15`: a new process or
+adapter execution under the same Attempt may continue the same Thread; a changed
+task strategy creates a new Attempt and Thread. External ACP/provider Session IDs
+remain adapter bindings, Thread parent/child links stay separate from the Task DAG,
+and only verifier evidence can pass a Task. The permission bridge and run-to-turn
+link examples now distinguish local `ThreadId` from external/control Session IDs.
+`AX-379` owns the versioned, idempotent migration; `AX-359` owns durable live
+execution and restart reconciliation. These are proposed target contracts, not
+implemented code.
+
+### Durable agent questions (2026-09-28)
+
+Added `REQ-ORCH-010` / `REQ-UI-021`, `ACC-P1-16`, and `AX-380` for durable selectable
+questions from an agent, including exact requester identity, typed answers, safe
+pause/resume, idempotent receipts, accessible central-chat UI, and resumable headless
+`NEEDS_INPUT`. Source inspection found a basic callback/options question tool, but no
+answer validation, durable broker, TUI, or headless continuation. The added tests
+cover malformed answers, crash/reconnect, adapter capability gaps, UI focus/draft
+preservation, and the rule that answers never grant authority. This remains proposed;
+the current tool does not meet that contract.
+
+The first long-horizon harness review also identified a race invariant worth making
+explicit: asynchronous evaluator output is stale if user input, cancellation, spec,
+policy, task graph, or workspace revision changes before commit. Added
+`REQ-ORCH-011` / `ACC-P1-17` / `AX-381`; controller revalidation must happen after the
+inference and immediately before any state transition or dispatch. DeerFlow is the
+pinned source pattern, but its LLM goal evaluator is not HorizonCode acceptance
+evidence.
+
+### External long-horizon and agent ecosystem review (2026-09-28)
+
+Pinned read-only source reviews have been recorded in `research docs/` for DeerFlow,
+LongHorizon-Harness, DeepSeek-Harness, DeepCode, Plandex, Ruflo, Kilo, ECC, Hermes,
+Superset, CodeBurn, Nanobot, and wshobson/agents. Their reports distinguish observed
+code from README claims and call out process-local state, stale quota caches, simulated
+swarm paths, and benchmark scope. OpenHuman, OpenHands/SDK, AiderDesk,
+DeepSeek-Reasonix, and tool candidates also have a source review. OpenChamber's active
+timeline/sidebar search paths are now traced at its pinned revision; they search
+materialized user-message/title records and do not establish full-history coverage.
+The detailed note records exact source/test paths and the distinction from
+HorizonCode's proposed FTS design. Superset's launch, binding, hook, transcript,
+child-roster, and resume paths received a second pass; its resume-claim crash gap is
+now an explicit HorizonCode recovery test. No source was copied, and no peer tests or
+benchmarks were executed. Existing architecture already owns the key
+budget, mailbox, terminal, usage, and provider-cache boundaries; test additions specify
+their failure cases rather than creating duplicate systems.
+
+Follow-up reviews added Kilo's quota/cache, soft warning, Agent Manager, and question
+flows at its pinned revision, and found no local atomic budget authority in those
+surfaces. Independent reviews are continuing on Warp/oh-my-pi and `ARCH/00..08`; their
+reports are pending. Repository reviews are focused path traces, not claims that every
+file in each large upstream repository has been read.
+
+Documentation QA after the latest doc pass: 66 Markdown files under `ARCH/` and
+`research docs/` checked; 901 repository-local links and heading/HTML fragments pass
+after URL decoding (`THIRD-PARTY-NOTICES.md` is excluded because SPDX identifiers are
+labels); `git diff --check` passes; all 125 TODO task IDs are unique and each source
+trail link/anchor resolves. The only root Markdown files are `AGENTS.md`,
+`CURRENT_RUN.md`, `THIRD-PARTY-NOTICES.md`, and `TODO.md`. No build, automated test,
+benchmark, provider call, or UI run was performed. `.code-intelligence/` and
+`uipics/` remain untouched untracked user data. No staging or commit has occurred.
+
+Review continued against HEAD
+`cbba87b9c6a33fc6faac31cdef9b38d2aae67243` and source baseline `23d4ce8`. The OpenCode
+UI/API comparison remains pinned to
+`083ed266e058dc3d2d1b377ff5540859d79de110`. The old notes below are evidence/history;
+they do not override newer user decisions or architecture records.
+
+Continued the line-by-line architecture review at HEAD
+`cbba87b9c6a33fc6faac31cdef9b38d2aae67243` against the unchanged Rust source baseline
+`23d4ce8`. OpenCode TUI source was inspected at
+`083ed266e058dc3d2d1b377ff5540859d79de110` for idle/home, prompt submission, active
+tool/generation states, permission and question surfaces, child navigation, recent
+history hydration, theme/preferences, and reconnect behavior. This was a source trace;
+the peer TUI was not launched, and no usability or runtime-recovery claim is made.
+
+The UI research note and `ARCH/06`, `ARCH/26`, `ARCH/29`, and `research docs/tests.md`
+now capture the key boundaries: OpenCode renders only a recent 100-message window in
+this route; that window is not whole-history search. Its UI omits a delivery mode while
+the inspected V2 contract defaults to steering and also supports queueing. SSE
+reconnect alone is not durable replay. HorizonCode search, queue receipts, explicit
+status, and replay/gap behavior remain proposed.
+
+Added `F-69..F-73` and `AX-370..AX-373` for the current-source external-path guard
+action mismatch, policy-precedence verification, local-MAC versus portable audit
+proof/effect recovery, memory-consent decisions, and implemented-versus-proposed
+tool/skill capability reporting. The source-confirmed guard defect is critical and is
+now the first bounded implementation item in `TODO.md`; it has **not** been fixed in
+this docs pass. Added source-trail rows and tests-plan coverage. Clarified `AX-110` as
+config-level discovery/digest-checked activation, while model-visible skill activation
+is still absent. Pinned the Codex Goal/ThreadManager references to commit
+`368e5eae2f006a70a91dddfdc96e6b2d11498f81` and kept the broad map and app-server README
+at their distinct source pins.
+
+Changed architecture/research/TODO/handoff Markdown only. No build, test, benchmark,
+provider call, or UI execution was run. The following documentation QA passed on an
+earlier snapshot: `git diff --check`, repository-local links/fragments, TODO task IDs
+and source-trail anchors, and root Markdown layout. It does not cover subsequent edits;
+the active review must rerun it on the final snapshot. The
+generated third-party notices file was excluded from link parsing because its SPDX
+license identifiers are labels, not repository-relative documents. Preserve the
+untracked `.code-intelligence/` and `uipics/` user data; no staging or commit has
+occurred. The earlier identity discussion is superseded by `DEC-069`: the target is
+one durable `ThreadId` plus `WorkerExecution`. The
+Codex/OpenCode mappings remain evidence-based comparisons, not a claim that HorizonCode
+is implemented or superior.
+
+## OpenCode provider and update architecture continuation (2026-09-28)
+
+Earlier provider/update handoff details (superseded in status by the section above). HEAD is
+`cbba87b9c6a33fc6faac31cdef9b38d2aae67243`; the reviewed Rust source baseline remains
+`23d4ce8`, with no Rust-source or manifest difference between that baseline and HEAD.
+The OpenCode source review is pinned to
+`083ed266e058dc3d2d1b377ff5540859d79de110`; live official provider/Go documentation
+and public catalog endpoints were checked on 2026-09-28.
+
+A credential-free GET of `https://models.opencode.ai/api.json` at 16:30:47 UTC returned
+225 provider IDs and 8,253 model records (5,214,814 bytes, SHA-256
+`a03260a354cb2a97672eb582a94050a945762ad01890a368e69c4769755d69df`). A separate
+credential-free GET of `https://opencode.ai/zen/go/v1/models` at 16:30:48 UTC returned
+43 Go model IDs (3,569 bytes, SHA-256
+`1464472961052aa41d454cce5c953d5fc3c68d7a2e19e95f7a6f41901d3b178a`). The global
+feed's `opencode-go` provider record contained 33 models; official Go docs mapped only
+30 current IDs to inference paths. Therefore Go model-directory presence is discovery
+only: route path/protocol is local versioned data, and unknown IDs stay unavailable.
+The current documented temporary zero-price examples are dynamic and still require a
+Go account; the live inference acceptance waits for an implemented connector and a
+user-authorized credential configured locally. No key was used or requested.
+
+The inventory also distinguishes the 51 named provider-doc sections plus Custom, 32
+pinned core integration modules, and supplemental auth plugins. It records each
+provider ID in the dated global snapshot and all 51 documented setup/auth methods;
+for additional IDs with no primary auth evidence the required state is explicitly
+`unknown`, not an inferred API key or OAuth route. Remote env/package metadata is not
+an auth/adapter authority. Exact endpoints, drift, sources, and method gaps are in
+`research docs/opencode-provider-inventory.md`, `ARCH/11`, `ARCH/29`, and TODO
+`AX-360..364`.
+
+`ARCH/30-DISTRIBUTION-UPDATES.md` specifies one signed update service for startup
+notification, `/upgrade`, and `hzcode upgrade`; settings, TUF bootstrap, install
+ownership, safe maintenance, rollback, repair/uninstall behavior, and release scripts.
+Notification is non-blocking; installation needs explicit operator consent and never
+interrupts active work. Installer/update code is absent and no TUF client is selected.
+
+The update CLI `--channel` override is one-command only; persistent channel selection
+belongs to `/settings updates`. The helper that applies a staged update is a restricted
+mode of the same signed HorizonCode binary, preserving `DEC-002`'s one-shipped-binary
+contract. OpenCode Go docs say external coding agents should identify themselves and
+send a stable session header, but HorizonCode is not in the current validated-client
+list; any eventual test can establish local conformance only.
+
+This pass changed architecture, provenance, test-plan, TODO, source-traceability, and
+handoff Markdown only. Static documentation QA passed for 24 changed/new Markdown
+files: local link targets, whitespace, newlines, exact inventory counts (225 provider
+IDs, 51 documented auth/setup entries, 43 Go IDs, 30 documented routes), and
+`git diff --check`. No build, code tests, benchmark, or live model-inference request
+was run. No task status was promoted to implemented or verified. Preserve the
+untracked user data in `.code-intelligence/` and `uipics/`; no staging or commit has
+occurred. Next safe action: continue the overall architecture audit, beginning from
+`TODO.md` and the owning `ARCH/` LLD; implementation of AX-360..366 remains proposed.
+The follow-up concurrency review added `DEC-062` and `REQ-HORIZON-029`: system-wide
+run admission, direct-turn/worker execution admission, and update maintenance must
+share the durable `SupervisorControlStream` and cross-process lock. `ARCH/16`, `ARCH/25`,
+`ARCH/30`, `TODO.md`, and the update tests now describe that fence and its crash
+reconciliation; it is still proposed and no updater/controller implementation exists.
+Final documentation QA for this continuation is pending. Continue the architecture
+cross-check after that QA; this pass is not the end of the requested whole-architecture
+review.
 Updated 2026-09-28 (second pass, same day). This handoff covers the **first
 implementation wave** plus the closure of `F-66`/`AX-355` — the permission-seam defect
 the first wave's test run exposed. It supersedes the documentation-only audit handoff
@@ -14,10 +210,34 @@ including explicit absent implementations and source-coverage limits. Every AX r
 in `TODO.md` links to its first owner's source trail; additional owner links in that
 row still apply. `AGENTS.md`, `ARCH/00` and `ARCH/26` require reading the trail and
 rechecking paths at HEAD. This is documentation/navigation work only; it did not
-change or verify runtime behavior. The source snapshot for the trail is `692eba1`,
-and the checked-out revision must be confirmed again before implementation.
+change or verify runtime behavior. The trail was first recorded at documentation
+commit `692eba1`; the latest reviewed source baseline is `23d4ce8`. The final
+Codex/OpenCode comparison reviewed architecture status and official workflow/protocol
+references, but did not run tests or promote any task to verified. Confirm the
+checked-out revision again before implementation.
 
-## Active goal
+## Latest architecture comparison (2026-09-28)
+
+The supplied OpenCode revision `083ed266e058dc3d2d1b377ff5540859d79de110` was
+fetched and checked at the Session schema, Task tool, process-local background-job
+registry, and V2 Session design. The source crosswalk now distinguishes durable
+conversation identity from live execution. This paragraph records the earlier
+comparison conclusion and is superseded by `DEC-069`: HorizonCode's target uses one
+durable `ThreadId`, with `WorkerExecution` for each live process/adapter incarnation;
+external ACP/provider session IDs are bindings only. The current implementation has
+only the source-backed foundations listed in `ARCH/29`. `AX-359` owns execution
+reconciliation and `AX-379` owns the migration to the Thread domain model.
+Architecture, source-traceability, OpenCode research, TODO and test-plan records were
+updated. These remain proposed design requirements; no runtime code or test was run
+and no implementation/verification status changed. The exact peer sources and
+comparison limits are recorded in `ARCH/26` and `research docs/opencode.md`.
+
+The current doc-review changes are not a replacement for the remaining implementation
+queue. Before coding, use `TODO.md` for the authoritative dependency order and recheck
+the exact source revision; this handoff's older implementation-wave sections below
+are historical context, not a live claim that those rows remain open.
+
+## Prior implementation-wave goal (historical)
 
 Deliver the first implementation wave that makes the session log and the audit chain
 honest under inspection and crash, in dependency order, without adding a second
@@ -415,14 +635,15 @@ physical reserve, and the session/run integration.
   legitimate calls, while in-turn replay protection is unchanged. Any test that builds two
   requests for "the same call" must give them the **same** turn, or it is testing two calls.
 
-## Next exact steps
+## Implementation queue from the prior coding wave (recheck TODO before acting)
 
 0. Decide whether to format the rest of the tree in its own change, so the documented
    `cargo fmt --all --check` baseline becomes enforceable (`AX-121` builds the gate that
    would catch this). Every file this handoff's passes touched is `rustfmt`-clean; the
    workspace-wide check still reports the 67 pre-existing diffs.
-1. Nothing from these passes is uncommitted: the working tree is clean except the
-   user-owned untracked `uipics/` and `.code-intelligence/`.
+1. Recheck the current checkout and `TODO.md`; this architecture review has a
+   documentation diff, and the user-owned untracked `uipics/` and `.code-intelligence/`
+   must remain untouched.
 2. The **`AX-350` session migration** onto `horizoncode-eventlog`: bounded
    digest-linked segments, committed head, streaming replay, event-byte quota and the
    protected control reserve, keeping the read-only/typed-enumeration contract stable.
@@ -458,8 +679,9 @@ physical reserve, and the session/run integration.
   layout: the session header currently names `CURRENT_FORMAT_VERSION`, and the new
   stream carries its own `CURRENT_SCHEMA_VERSION`; the migration must define how the
   two relate before it lands.
-- The `session.log.*` / `run.log.*` finite defaults (`AX-348`): not yet chosen, and they
-  gate AX-309 slice 1 and AX-350.
+- The `DEC-058` `session.log.*`, `session.artifacts.*`, and `run.log.*` finite defaults
+  are chosen. AX-348 implementation and workload/platform validation remain open and
+  gate the relevant AX-309/350 slices.
 - Whether the segment/head format (`AX-350`) needs a format version bump for the durability
   backend, given that no head file exists yet.
 

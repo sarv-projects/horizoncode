@@ -8,7 +8,10 @@ A terminal-first coding agent that a developer runs in a repository and can trus
 
 - Engineers who delegate real, hours-long tasks — cross-repo refactors, migrations, audits — not one-shot edits.
 - Teams that require deterministic policy, verifiable execution history, and deployment on infrastructure they control.
-- Users who want provider freedom: any hosted model, any local model, any OpenAI-compatible endpoint.
+- Users who want a broad choice of hosted and local providers. A route is usable only
+  when its authentication flow and concrete model/server/template capabilities have
+  been documented and pass the applicable conformance checks; API compatibility or a
+  catalog entry alone does not establish support (`REQ-PROV-001`, `REQ-PROV-006`).
 
 ## Candidate differentiators to prove
 
@@ -22,8 +25,12 @@ These are product hypotheses, not current benchmark results. The priority is ver
 
 ## Signature surfaces
 
-- **Long-horizon cockpit.** A dockable, extensible pane (VS Code-style: drag, dock, collapse, remove, top-right toggles) that shows the whole worktree, live git diffs with colored highlights, and lets the user view **and edit** files in-terminal with an embedded mini-editor. It is the user's persistent "state of the world" during long runs.
-- **Portable sessions.** Every session is a durable, movable, replayable artifact from day one.
+- **Long-horizon cockpit.** A dockable, extensible pane that shows the worktree,
+  live Git diffs, and a governed file-inspection/editing flow. Editing has a governed
+  in-terminal path and an external-editor handoff; an embedded mini-editor is an
+  optional implementation choice, not a product dependency (`REQ-UI-005`). It is the
+  user's persistent view of run state during long work.
+- **Portable conversations.** Every HorizonCode Thread is a durable, movable, replayable conversation artifact. This does not make its associated managed Run portable; Run/task/evidence export is a separate explicit bundle with new identity and no transferred authority (`ARCH/07`, `ARCH/25`, `ARCH/28`).
 - **Protocol-first.** Drives and is driven by other agents over ACP; integrates tools over MCP.
 - **User-selected execution host.** Runtime, state, and workspaces stay on the laptop or server chosen by the user. A provider receives only the request/context required by the selected route and policy. Remote UI attachment is a separate capability and is not implied by deploying headlessly on a server.
 

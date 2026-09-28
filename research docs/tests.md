@@ -1,8 +1,9 @@
 # HorizonCode test and benchmark plan
 
 Status: **plan only**. No test, build, benchmark, or acceptance suite was executed
-during the 2026-09-27 architecture audit. The source baseline is Git `53a2654`; the
-Rust source tree is unchanged from `1c7a1c6`. See [`CURRENT_RUN.md`](../CURRENT_RUN.md)
+during the 2026-09-28 documentation/UI architecture review. The reviewed source
+baseline is Git `23d4ce8`, an ancestor of HEAD `cbba87b9c6a33fc6faac31cdef9b38d2aae67243`;
+the Rust source tree is unchanged between them. See [`CURRENT_RUN.md`](../CURRENT_RUN.md)
 for the exact handoff and [`ARCH/23-VERIFICATION.md`](../ARCH/23-VERIFICATION.md) for
 evidence rules. A proposed test is not evidence that its behavior exists.
 Current protocol references were rechecked against official ACP v1, its elicitation
@@ -247,6 +248,73 @@ test-data revision.
 
 ### Durable state, tools, integration, and restart
 
+- Worker-execution lifecycle (`AX-359`): crash before/after durable launch intent,
+  after an expiring resume claim but before spawn, between spawn and receipt, after
+  receipt but before event publication, after peer acceptance, during heartbeat expiry,
+  during cancel, and after process exit but before settlement. Restart with a surviving,
+  dead, PID-reused, unreachable, or opaque peer handle. Reconcile workspace fence,
+  event cursor, usage and every pending effect before allowing another writer. Same
+  launch ID must return the same execution; changed payload under that ID conflicts.
+  A claimed auto-resume must not become unrecoverable if the host exits before launch:
+  expire/reconcile the claim, inspect the outbox and process table, and prove no second
+  writer launches while outcome is unknown. Inject stale/forged hook events and verify
+  they cannot change the bound workspace/launch status; test missing hooks and child
+  roster after restart as `UNKNOWN`, never as “no child.” Reject symlink traversal in
+  any transcript reader and keep private reasoning out of user-visible artifacts.
+  Verify unsupported resume/query stays `UNKNOWN`, client disconnect leaves work
+  running under the detached controller, worker exit cannot pass the Attempt/Task,
+  infrastructure relaunch stays within the same strategy/Attempt only after
+  settlement, and a changed strategy creates a new Attempt. Run this with native,
+  ACP-capable, and opaque CLI fixtures; mark unavailable peer data `unknown` rather
+  than inventing evidence.
+- Thread/Execution identity migration (`AX-379`): migrate legacy session IDs and
+  event/index names in a copied fixture without changing identity, dropping committed
+  events, duplicating a conversation, or making search/navigation cursors point at a
+  different message. Kill/restart at every migration phase; rerun migration to prove
+  idempotency; load old bundles read-only; verify the new Thread format remains
+  exportable and readable after rollback to a migration-capable build. Exercise root
+  and child Threads, several Threads in one Attempt, external Codex/OpenCode/ACP
+  bindings, opaque workers with unknown peer IDs, input inbox replay, and a
+  WorkerExecution restart on the same Thread. Confirm thread/worker completion never
+  marks an Attempt or Task passed and that a changed strategy creates a new Attempt.
+  This is the `ACC-P1-15` evidence set: retain source/target manifests and digests,
+  migration receipt, crash matrix, graph/cursor parity report, and verifier refusal
+  evidence in `acceptance/thread-migration/<build-id>.json`.
+- Evaluator freshness (`AX-381`): pause deterministic planner/reviewer/evaluator
+  responses behind test barriers, mutate each bound source revision (new user input,
+  cancellation, spec/task-graph/policy/workspace update, terminal task) and then release
+  the old response. Verify the controller reloads state before commit and leaves the
+  stale response diagnostic-only; it must not complete a task/run, overwrite newer
+  state, resume a worker, or dispatch an effect. Cover two evaluators returning out of
+  order, a crash after response but before state commit, restart/replay of the stale
+  response, same revision with unrelated analytics updates, digest collision/encoding
+  boundaries, and reevaluation with a newly reserved budget. Record deterministic
+  schedules and state/event digests in `acceptance/evaluator-freshness/<build-id>.json`
+  for `ACC-P1-17`.
+- Agent questions and selectable answers (`AX-380`): validate stable request,
+  question, and option IDs; duplicate IDs; single-choice, multi-choice, required,
+  optional, free-text, and “other” cardinality; empty/oversized payloads; malformed
+  schemas; unknown options; and answers that exceed declared counts. Reject before
+  persistence/delivery, with no fallback to the first option. Persist the request
+  before rendering or acknowledging it, bind it to the exact originating Run/Task/
+  Attempt/Thread/Turn/tool call, and verify that a child question returns to the
+  authorized operator surface without losing child identity. Test duplicate answer
+  delivery after reconnect, same-payload idempotency, changed-payload conflict,
+  answer persistence before delivery, crash between commit and worker resume, stale
+  request, expiry, cancellation, missing operator authorization, and unsupported
+  ACP/opaque worker question capabilities. A pending request pauses only its caller
+  at a safe boundary, releases unused worker resources, and does not block unrelated
+  tasks, cancellation, permission replies, or recovery control lanes. Headless mode
+  must return structured `NEEDS_INPUT` plus a stable resume reference; test resume
+  with valid answers and prove `--yes` never invents one. In the TUI, cover keyboard
+  selection, multi-select, free text/other, visible focus and selected state, screen
+  reader labels, color themes, narrow terminal resizing, composer draft preservation,
+  pane layout preservation, provenance (which agent/task asked), receipt/error state,
+  double-submit, and reconnect. Prove question answers cannot authorize tools,
+  change policy, approve long-horizon start, or count as verification. Record
+  schema/property tests, control API receipts, adapter capability fixtures, process
+  kill matrix, TUI interaction captures, and headless transcripts under
+  `acceptance/agent-questions/<build-id>.json` for `ACC-P1-16`.
 - Crash before effect; after external effect but before receipt; between event append
   and SQLite projection; during task settlement; while applying patch; during checkout,
   merge, checkpoint, or PR creation. Restart reconciles before replay and never treats
@@ -278,6 +346,95 @@ test-data revision.
   recovery must preserve/hash-pin the original tail, reconcile effect/operation IDs,
   write only an idempotent recovery record/new generation, and refuse when the
   external outcome is unknown. Test duplicate and changed-payload recovery IDs.
+- Session search (`AX-369`, `ACC-P1-14`): compare the derived message/title FTS tables
+  with a reference scan of committed canonical events. Cover globally authorized
+  sessions and a selected session; user/assistant text and opt-in displayable tool
+  output; hidden reasoning, uncommitted events, deltas, binary content, and secrets
+  excluded by explicit classification; case/diacritic behavior, whole-token terms,
+  contiguous quoted phrases, punctuation tokenization, repeated terms, Unicode,
+  malformed quotes, FTS operators as inert text, empty/oversized queries, and bounded
+  page/cursor behavior. Exercise current and historical titles, rename then search,
+  rename back, duplicate titles, title-only hits, role/date filtering of title hits,
+  and message-ID navigation when the target history window is not loaded. Force
+  equal timestamps/ranks across message and title hits at a page boundary; prove the
+  complete tie-break tuple gives deterministic no-duplicate/no-skip keyset pagination.
+  When title and body both match in one Thread, verify message hits carry title context
+  and redundant title-only rows are suppressed. Bind the index to a versioned text
+  extractor; fixtures cover each persisted part type, ordering/spacing, normalization,
+  truncation, replacement/edit policy, and explicit non-text omission. Toggle
+  tool-output indexing off while purge is pending and prove queries/snippets hide
+  existing tool rows immediately. Inject
+  rename/message commit between snapshot and query; assert captured-head consistency,
+  stale cursor handling, event-digest revalidation, no jump to a neighboring message,
+  and no leak across project/session authorization scopes.
+- Search-index recovery/privacy: crash between canonical append, projection rows,
+  FTS maintenance, and indexed-head commit; rebuild must produce the same rows/digests
+  as uninterrupted projection. Inject missing/corrupt FTS table, unsupported FTS5,
+  stale generation, corrupt/unreadable session, interrupted enumeration, delete/expiry,
+  search disable/purge, and tool-output opt-out. Coverage must be `COMPLETE` only when
+  every authorized session is indexed through its captured head; otherwise return
+  visible `INDEXING`/`PARTIAL`/`FAILED` issues, never a complete zero-hit result.
+  Compare the index against a reference scan and prove search/listing never repairs,
+  truncates, or changes canonical events. Run concurrent readers/indexer and cancel
+  queries while checking bounded memory and that cancelled indexing does not advance
+  its checkpoint.
+- Search load protocol: use fixed synthetic corpora of 10k and 100k committed display
+  messages across varied session/project counts, message sizes, title aliases and hit
+  densities. Record hardware, SQLite build/FTS5 capability, corpus digest, query
+  distribution, p50/p95/p99 latency, index build/rebuild time, bytes/RSS, and result
+  parity. No latency target is claimed until a baseline is recorded; query deadlines,
+  maximum page size, and index batches must still bound work under deliberately broad
+  terms and cold-cache scans.
+- Guard regression (`AX-370`): demonstrate that a path-scoped `fs.read` allow cannot
+  exempt `fs.write`, delete, or move from the external-path ask floor; a same-action
+  rule can only affect its own action. Cover user/global ask plus project allow,
+  higher-scope deny plus lower-scope allow, per-layer last-match, multi-resource
+  aggregation, wildcard and relative paths, and replayed/expired approval receipts.
+  Bind every assertion to the actual decision trace; do not test only a helper mock.
+- Memory lifecycle (`AX-371`): enforce the defaults in `DEC-067` (explicit saves make
+  reviewable candidates, background extraction off, auto-accept off, user-global
+  preferences separated from repository-identity project memory, no cross-project
+  retrieval, local-only). Test provenance,
+  prompt-injection framing, cross-project isolation, conflicting/stale memories,
+  inspection/export/purge, crash and corrupted-store recovery, quotas, and the
+  no-memory baseline. Verify that memory cannot grant permissions or satisfy task
+  evidence. If extraction is explicitly enabled, test leases, retry backoff, bounded
+  concurrency, cancellation, and cost budget; default startup must issue no memory
+  model calls.
+- Audit and effect recovery (`AX-372`): verify current local keyed-MAC semantics and
+  reject claims of public signature or off-box authenticity. Exercise key replacement,
+  relocation, rotation, sink loss, and bundle verification under the selected proof
+  design. For effects, crash before/after external execution, between prepare and
+  terminal receipt, and between event append and projection; recovery must reconcile
+  stable effect IDs and preserve `UNKNOWN` without duplicate replay. Include an
+  external fixture that can report whether an idempotency key was committed. Exercise
+  bounded hot/archive storage, verified range archival and restart, archive corruption
+  or unavailability, high-water admission, full storage, and preservation of the
+  protected control/effect reserve; verify that no effect dispatches without durable
+  capacity for prepare and terminal evidence.
+- Analytics projection recovery (`AX-382`): compare every analytics row's
+  `DurableFactRef` with its canonical owner record, including store/aggregate/sequence,
+  event/schema identity, payload digest, and audit reference for security effects.
+  Inject missing ranges, corrupt sources, digest/ID mismatch, schema upgrades, crashes
+  during projection rebuild, Thread migration, and archived audit refs. The result must
+  be deterministic, quarantine invalid rows, and show exact incomplete-coverage ranges
+  in query/export; it must never turn unknown/missing usage into zero or task/effect
+  success.
+- Skill/tool capability inventory (`AX-373`): test skill discovery, explicit
+  activation, content digest changes between discovery and use, symlink/frontmatter
+  rejection, progressive reference loading, scope and privacy, and advertised tool
+  lists. `allowed-tools` is metadata, never permission. Any script must be denied
+  unless routed through the same Guard/Sandbox/Audit path. Candidate LSP/web/MCP
+  resource/prompt/Code Mode tools require separate owner, security and conformance
+  tests before they can appear in a model schema.
+- OpenCode TUI comparison tests (design-derived, not peer implementation reuse):
+  acceptance should cover home/empty state, normal and shell submission, active model
+  and tool status, permission/question blocking, child navigation, narrow/wide
+  terminals, theme/preferences, and reconnect. Verify search navigates beyond the
+  visible recent-message window, and show steer versus queued input status explicitly.
+  Reconnect must use durable cursors and report gaps; an SSE reconnect or peer UI
+  source trace alone does not prove replay correctness. This pass inspected source
+  only; it did not launch OpenCode's TUI or run HorizonCode UI tests.
 - Session-artifact fault matrix: concurrent writes racing the encoded-byte quota;
   oversize streaming without preallocation; temp-file symlink/replace races; duplicate
   digest with mismatching bytes; file flush, atomic rename, directory-flush and event
@@ -352,6 +509,12 @@ thinking/reasoning fields; tool-choice modes; parallel calls; cancellation; cont
 overflow; output/token cap; cache read/write reporting; usage omission/duplication; late
 usage; currency/pricing source; and provider status reset. Required missing capability
 means route refusal or an explicit, accepted user override.
+For parallel calls, deliberately complete safe calls out of order and assert that
+canonical events preserve actual completion order while the next model-visible
+projection emits call/result pairs in provider-response `call_ordinal` order. Crash
+after one call settles and before the rest: replay settled receipts into the same
+ordered projection without repeating their effects; preserve failure/cancel slots and
+reject duplicate IDs before dispatching any call in that malformed batch.
 
 Output termination gets a dedicated decision table: completed, context-window rejection,
 explicit requested output cap, validated server remaining-context cap, and unknown
@@ -360,8 +523,9 @@ cap, missing usage, mismatched route fingerprint, local-server version/template 
 partial text, malformed partial tool JSON, provider-side tools enabled, streamed
 side-effect receipts, user input/cancel during compaction, budget reservation loss,
 compaction failure/truncation, retry route outage, and a second truncation. Assert that
-only a validated remaining-context profile is eligible; partial tool arguments never
-execute; incomplete assistant attempts survive restart but are excluded from completed
+provider-hosted execution is refused before dispatch for HorizonCode-managed turns and
+can never count as a local effect receipt; partial tool arguments never execute;
+incomplete assistant attempts survive restart but are excluded from completed
 conversation context; both attempts and compaction are billed/recorded independently;
 and retries never recur for the same `logical_step_id` after recovery depth is consumed.
 Use Cline's local-model recovery only as a peer design precedent, not as evidence of
@@ -381,6 +545,60 @@ pass a task. Subagent quota tests distinguish HorizonCode-enforced launch budget
 opaque internal provider quotas. Verify aggregate deduplication when parents and
 children both report usage; preserve currency, basis, freshness, and provenance.
 
+OpenCode provider coverage adds a snapshot-specific registry suite. Use the exact
+upstream commit and provider docs captured in
+[`opencode-provider-inventory.md`](opencode-provider-inventory.md); the 225 provider
+IDs/8,253 model records in the 2026-09-28 global-feed snapshot, 51 named documentation
+sections plus Custom, 32 core integration modules, and separate Go directory are
+independent inventories. Tests must detect newly added, removed, renamed, or
+auth-changed entries and fail into review-required/unknown state; they must never
+auto-enable new integrations. Feed fixtures must cover malformed, deep, oversized,
+duplicate, unknown-version, changed-origin, hostile header/body, untrusted
+`npm`/`env`/endpoint fields, partial fetch, expiry, cache corruption, and concurrent
+refresh. Verify source/digest provenance, last-good-cache retention, freshness display,
+offline primary behavior, and immutable route snapshots across a later refresh. Confirm
+that unknown provider/auth methods stay inert and that every discovered provider has
+either a pinned auth-evidence reference or an explicit unknown state.
+
+For each integration marked usable, test its exact auth method and protocol independently:
+API key/token secrecy, cloud identity chain selection, OAuth state/PKCE/device-code
+polling and cancellation, callback collision/timeout, expired/revoked credential,
+least scope, missing registration, terms restriction/conflict, wrong account/tenant,
+model availability, and all provider-stream/tool/usage failure cases above. Mock or
+test only a HorizonCode-owned OAuth client registration. Assert that OpenCode-specific
+client IDs, `auth.json`, token cache, and environment credential values are never
+read, copied, emitted, or inherited by model/worker processes. A provider page entry,
+mock response, or reusable protocol implementation cannot promote a row to usable.
+
+A successful HorizonCode Go probe is local conformance evidence only. Verify that the
+UI, CLI, documentation, and release notes do not call HorizonCode an OpenCode-validated
+client unless the current official validated-client list explicitly includes it.
+
+The OpenCode Go connector needs protocol contract tests and a separately authorized
+live acceptance (`ACC-PROV-OC-GO`). Test the distinct general catalog feed
+(`https://models.opencode.ai/api.json`), Go availability directory
+(`https://opencode.ai/zen/go/v1/models`), and fixed inference origin separately; assert
+the Go key never goes to the general feed. Include fixtures for the observed
+2026-09-28 drift (225 global provider IDs, 33 models in its `opencode-go` record, 43
+IDs from Go `/models`, and only 30 models with a current documentation endpoint map).
+The live test must refuse any ID without an exact locally versioned model-to-path map,
+and must check that the map contains no arbitrary host or path. It must test the three
+wire families independently: `/responses`, `/chat/completions`, and `/messages`.
+
+The opt-in live test chooses an ID only from the intersection of the current Go
+directory, a current official price/offer source showing zero listed model price, and a
+locally supported/conformance-tested route. It must use a user-authorized Go API key
+configured locally through the secret broker; never ask the user to paste a credential
+into chat or commit it. Record retrieval time, exact model ID, source/catalog digests,
+adapter/build revision, route capabilities, HorizonCode User-Agent, whether stable
+opaque `x-opencode-session` affinity arrived, observed usage/quota and any charge
+evidence, but no key, session ID, workspace name, or repository path. Exercise one
+bounded coding request, a stream, capability-backed tool calling, cancellation,
+provider errors, and usage/quota handling. The 2026-09-28 limited-time zero-price
+examples are not permanent fixtures; Go remains a subscription service. If no eligible
+model/account exists, report `not applicable` or `blocked` with evidence, never PASS.
+Do not run this live test by default in CI.
+
 ### UI, commands, settings, and accessibility
 
 - Use an actual terminal matrix: truecolor, 256-color, ANSI-16, monochrome,
@@ -389,8 +607,56 @@ children both report usage; preserve currency, basis, freshness, and provenance.
   paste, resize, reconnect, and interrupted rendering.
 - Check transcript/composer stability, virtualized large output, command palette,
   focus/docking, diff/editor modes, large/binary file handling, dirty buffers, external
-  editor roundtrip and concurrent disk changes. Validate screen-reader labels, glyph
+  editor roundtrip and concurrent disk changes. At wide widths, verify the exact
+  Explorer/editor-left, chat-center, Tasks-right default. Selecting a file opens or
+  activates its tab in the left dock group and expands that pane while chat stays
+  central; background work must not steal focus. Exercise resizing all three regions,
+  swapping Explorer and Tasks between side slots, keyboard move/drop/cancel,
+  collapse/restore, maximize/restore, invalid
+  minimum widths, restart persistence, and restored focus/layout after an overlay.
+  At narrow widths verify focus layout (no compressed unreadable columns), one-action
+  pane switching, and preservation of task/composer state. Verify task checkmarks derive
+  only from current independent PASS evidence for the integrated revision. Validate
+  screen-reader labels, glyph
   alternatives, contrast, high contrast and reduced motion.
+- Composer attachment tests cover multiline paste, threshold crossing, exact original
+  bytes/digest, large-text attachment preview, supported clipboard image MIME types,
+  decompression/pixel bombs, unsupported formats, missing terminal clipboard support,
+  disk-full/staging errors, cancellation, retry/recovery references, and cleanup only
+  after all owners release the artifact. Assert raw base64 never enters the transcript
+  and oversized user text is never silently truncated.
+- Right Tasks-pane projection tests cover dependency order, multi-worker labels and
+  adapter/model provenance (`unknown` stays visible), blocked/failed/waiting/verifying
+  states, stale evidence, spec revision invalidation, integrated revision mismatch,
+  and layout changes while events arrive. Clicking a worker opens its thread/detail but
+  does not alter task state or implicitly cancel it.
+- Workflow Builder tests (AX-377) cover typed parameters, graph cycle/missing dependency
+  rejection, input validation, template version migration, changed-template digest,
+  model/profile availability, permission ceiling, budget reservation, review-before-run,
+  cancellation and process-crash recovery through the normal Run controller. Templates
+  must not execute arbitrary script code or create a second scheduler.
+- Extension manager tests (AX-378) distinguish search result, staged, configured,
+  authenticated, probed, enabled, and permitted states. Include malicious/changed
+  manifests, license/source review, registry outage, duplicate IDs, missing/expired
+  secrets, failed health check, tool-schema drift during a turn, cancellation and
+  uninstall with active calls. Search/install never executes an extension.
+- Web capability tests (AX-376) cover redirect loops, public-to-private DNS rebinding,
+  IPv4/IPv6 private/link-local ranges, credential-bearing URLs, sensitive query
+  stripping, `no-store`/personalized response exclusion, cache expiry/size eviction,
+  stale-cache labels, cancellation, response limits, duplicate fetches, project history
+  opt-out/purge, and network guard/audit receipts. Compare cached and uncached results
+  for digest/freshness correctness.
+- Repository intelligence tests (AX-375) cover initial scan and incremental updates,
+  ignored/vendor/generated files, symlink escape, rename/delete, dirty buffers,
+  revision drift, stale symbol/reference edges, missing parser/LSP, malformed syntax,
+  huge files/monorepos, cancellation, concurrent edits, and bounded cache/RSS. Verify
+  lexical fallback stays available and every context package reports its source commit
+  and per-file freshness.
+- UI resource benchmark (AX-374) records startup/idle/active RSS and PSS, CPU, render
+  latency, peak transcript/search/tree size and allocation behavior on fixed terminal
+  sizes and corpus digests. Measure HorizonCode process tree separately from provider
+  or local model server. No RAM target becomes a release claim until a baseline and
+  reference hardware are published.
 - Every semantic color is configurable through `/settings`; validate contrast and
   preserve distinct status/error/warning/approval meaning without color. Preview before
   apply; invalid or conflicting palettes are rejected with a useful explanation.
@@ -403,10 +669,29 @@ children both report usage; preserve currency, basis, freshness, and provenance.
   path spaces, Unicode and command-like user text never fall through into a model
   prompt or action. `@agent`, `@file`, `@task`, `@run`, and `@symbol` mentions resolve
   deterministically and never launch/grant authority by themselves.
+- Search UI tests cover `Ctrl+F`, `Ctrl+Shift+F`, `/search`, CLI JSON paging, current
+  session/global scope, project/date/role/archive filters, display-timezone conversion,
+  accessible keyboard navigation, exact hit reveal/highlight, title-only open, stale
+  target and corrupt-session states, coverage banners, retry/rebuild, fast query
+  cancellation, composer/draft preservation, search privacy settings, tool-output
+  indexing opt-in, purge confirmation, and `NO_COLOR`/narrow-terminal layout.
 - Agents panel tests include native and external agents, actual provider/model vs
   peer-managed/unknown values, nested visibility gaps, attempt tree, cost/quota sources,
   soft warnings, hard limits, stale quota, muted channels, pause/cancel responsiveness,
   failed connection, and recovered cursor snapshots.
+- Usage and quota tests additionally include delayed/stale provider observations,
+  reset-period rollover, partial provider failures with retained-but-stale snapshots,
+  per-agent attribution gaps, parent-plus-child aggregate deduplication, and cross-
+  provider cache fields whose wire schema or billing meaning differs. A stale remote
+  quota observation never frees or creates a HorizonCode local reservation. If the
+  adapter cannot report cache/quota usage, UI and exports preserve `unknown`; they do
+  not infer zero from missing values. Use Kilo/CodeBurn/Nanobot only as source-specific
+  parser and privacy test fixtures after license review, not as budget authorities.
+  Verify soft-warning thresholds persist at their declared Settings scope across
+  restart, dismissal/snooze cannot disable a controller-enforced ceiling, and a
+  soft-warning "continue" response is not recorded as user approval to raise a hard
+  budget. Reset/stale quota windows and Kilo-style ephemeral warning state are not
+  valid defaults for HorizonCode persisted settings.
 - Test notification preferences independently: per-event/per-channel disable, sound
   off, terminal bell off, quiet hours, rate limiting, desktop permission denied, and
   required approval/stop persistence. Muting sound or desktop delivery never hides the
@@ -422,6 +707,36 @@ They are designs; no interactive TUI exists at the source baseline. The attach t
 are **same-host/local-socket only**. A user-managed server may run headless; it does not
 imply SSH UI access, remote-control protocol, multi-user isolation, or HorizonCode cloud
 hosting.
+
+## Control API, app-server, and detached-client tests
+
+- Exercise identical typed methods through in-process and same-host IPC clients;
+  verify equivalent results/errors and that all routes still call the same owner.
+- Negotiate protocol major/minor/capabilities; refuse an incompatible major or
+  required missing capability without partial mutation. Fuzz oversized/deep frames,
+  duplicate JSON fields/IDs, deadlines, changed idempotency payloads, and method scope.
+- Race two launchers for one state root; test stale socket/PID files, symlink/junction
+  redirection, owner/mode/ACL checks, PID reuse, server identity mismatch, and lock
+  loss on each supported OS. Never signal a process based only on stored PID data.
+- Disconnect the TUI during a multi-hour run, kill/restart the client, and reconnect
+  at each aggregate cursor. Verify `/quit` detaches without cancelling, `/attach` does
+  not dispatch work, duplicate event replay is idempotent, and gaps force a new
+  snapshot without pretending to have a total order across Run and Session streams.
+- Kill the supervisor between mutation intent, canonical owner write, grant, response,
+  and projection update. Retry the same `delivery_id` and query status; assert one
+  domain event/effect and a truthful `UNKNOWN` when the owner cannot reconcile.
+- Flood a slow client and all non-control lanes with catalog/history/event traffic;
+  control cancel, permission, pause, and maintenance requests must meet the configured
+  dispatch deadline or return an explicit overload. Buffers stay within their byte
+  caps and report a cursor gap/disconnect, never silently discard durable events.
+- Verify worker/plugin subprocesses cannot read the controller endpoint or inherit
+  operator capabilities; same-user local process trust residual is documented.
+- Crash during state recovery and update handoff; do not accept mutations until the
+  control stream and nonterminal Run/active Session owners reconcile. Test a platform
+  with no accepted IPC/supervisor backend and ensure detach is reported unavailable.
+- Stop an idle supervisor only when all Runs, work permits, approvals, effects, and
+  maintenance operations are settled. Concurrent new work must win or lose atomically
+  against idle shutdown without a duplicate controller.
 
 ## Multi-hour reliability and resource benchmarks
 
@@ -497,10 +812,96 @@ Report at least:
 - Cost per independently verified task, separated by source currency/basis; tokens,
   provider quota, elapsed time, waiting time, and human intervention.
 - Context retrieval recall and context overflow; compaction loss against fixed probes.
+- Context preflight must use saturating window arithmetic, return `ROUTE_UNSATISFIABLE`
+  when output/buffer reserve consumes the route window, and return
+  `PINNED_CONTEXT_OVER_BUDGET` rather than silently drop required pins. Calibrate
+  pre-send byte estimates against provider-reported token counts for Latin, CJK, Arabic,
+  mixed-script text, code, and serialized tool schemas; report drift by route/model
+  class, ensure the safety margin prevents overflow admission, and never claim the
+  estimate is a tokenizer measurement.
 - Delegation benefit after context replay, integration, and merge costs.
 - RAM/CPU/disk and responsiveness per active run and per worker.
 - UI command completion, keyboard reachability, accessibility, and notification delivery
-  without masking state.
+without masking state.
+
+### Distribution, installation, and updates
+
+- Interactive TUI startup update checks are background/non-blocking, cancellable, and
+  rate-limited. Headless/CLI startup performs no implicit network check; explicit
+  `hzcode upgrade --check` remains available. Test both cached update display and
+  offline/stale/no-update outcomes; `CHECK_UNAVAILABLE` must never render as current.
+  Default startup checks use `stable`; startup on `preview` is valid only after explicit
+  user selection and only while signed preview targets exist. An unknown/removed
+  channel must fail closed without falling back to another channel.
+- Test TUF root bootstrap and rotation, threshold signatures, expiry, rollback/freeze,
+  mix-and-match, metadata/target substitution, revoked keys, wrong channel/platform,
+  length/hash mismatch, archive traversal/symlinks/zip bombs, unknown schema range,
+  oversized release notes, mirror mismatch, and corrupt cache. No target activates
+  before all signed metadata, digest, size, platform, and install-method checks pass.
+- Test the explicit `Install` consent, `Later`, `Details`, cancellation, duplicate
+  update invocation, and one-time prompt suppression. `Install` must not become
+  auto-install from settings, project instructions, model output, cached metadata, or
+  another CLI process. Details must expose target version/channel, publisher/source,
+  notes, size, signature status, and active-run deferral before consent.
+- Start a long-running task, approve a download, disconnect/reattach clients, and
+  assert the current binary remains in use. Installation must wait at a safe restart
+  boundary; it must not kill workers, change model/adapter snapshots, migrate live
+  state, or mark the run complete. A pending update must remain visible after restart.
+- Race update activation against starting a new run, run attempt, and standalone
+  interactive model turn. One durable `SupervisorControlStream` must atomically
+  arbitrate run admission, worker/direct-turn execution admission, and maintenance;
+  it must fence new run/work admission before granting `MaintenancePermit`. Active or
+  unknown worker/effect state, expired permit, controller restart, or stale binary
+  digest must defer activation and must not reopen the gate until helper/swap outcome
+  is reconciled. A confirmed rollback or successful target health check settles the
+  permit exactly once.
+- Crash at each boundary between `RunAdmissionIntent`, creation of the initial
+  per-run stream head, `RunAdmissionGranted`, `WorkAdmissionIntent`, creation or
+  reconciliation of the canonical session/attempt execution, `WorkAdmissionGranted`,
+  `MaintenanceIntent`, `MaintenanceGranted`, and helper launch. Restart must reconcile
+  stable operation IDs and exact run/session stream heads before acknowledging an
+  operation or reopening admission; replay cannot create a duplicate run, direct turn,
+  worker, budget reservation, or update operation. Corrupt/newer-schema control streams
+  and unsupported cross-process locks fail closed rather than falling back to SQLite.
+- Test `hzcode upgrade`, read-only `hzcode upgrade --check`, accepted and
+  rejected channel selection, `/upgrade`, TUI startup notice, `/settings updates`, and
+  structured/headless output. `--check` must never download or mutate state. Muted
+  notifications/sound suppress only configured non-critical channels; explicit
+  command output, security failures, and durable update state remain visible.
+- Verify `hzcode upgrade --channel preview` is a one-invocation override and does
+  not change the saved channel; only an explicit settings edit persists a new channel.
+- Approve installation while work is active; after all work is terminal, stage
+  application for normal shutdown/next launch without a second prompt, run
+  interruption, or forced application restart. Cancelling a staged update before
+  activation must leave the current version intact.
+- Simulate concurrent CLI/TUI checks, process kill during each fetch/verify/stage/swap/
+  health-check/rollback state, low disk, permission loss, failed startup, incompatible
+  schema, interrupted migration, unavailable package manager, and symlink/junction
+  replacement. State must recover to known-good version or a clearly blocked/refused
+  state, never a false `UPDATED` result.
+- Verify activation helper mode is the same signed HorizonCode binary, cannot bypass
+  TUF/ownership checks, and is not a separately distributed updater runtime; exercise
+  its platform-specific parent-exit and replacement protocol.
+- Test first install separately from in-place update: validate platform/package-manager
+  ownership, bootstrap-root authentication independent of the asset mirror, repair,
+  uninstall preserving user data by default, and documented supported target matrix.
+  Exercise every published OS/architecture in a disposable clean image. Shell and
+  PowerShell wrappers, if added, are thin launchers and must be audited not to download
+  and execute unauthenticated code or implement their own signature logic.
+- Package-name checks are point-in-time evidence: recheck `hzcode` availability on npm
+  and crates.io immediately before publication. Test `npm install -g hzcode` and
+  `cargo install hzcode` in clean environments, ensuring no hidden installer side
+  effects, no credential/state reset, and no unsupported platform claim. Test both
+  installed commands (`hzcode` and `horizoncode`) with identical arguments, signals,
+  environment, working directory, exit codes, state root, and `--version`; verify
+  uninstall/upgrade removes or replaces only HorizonCode-owned links. The curl path
+  remains unavailable until separate-file download, authenticated bootstrap root,
+  signature verification, and platform-specific first-install tests all pass. Never
+  test/publish `curl | sh` as a supported path.
+- Release-pipeline tests cover locked reproducible builds, notices/SBOM/provenance
+  gates, artifact and target metadata consistency, offline signing separation, release
+  authorization, immutable publication, key rotation, and rollback rehearsal. A mock
+  unsigned server proves parser behavior only and cannot qualify a release.
 
 Release claims follow `ARCH/23` gates. Any unsupported platform, provider, agent
 capability, usage amount, cost conversion, or quota is explicitly unknown or refused,
@@ -513,6 +914,8 @@ stale spec evidence, or hard-budget exhaustion blocks `accepted` status.
 - [DeepSeek-Reasonix releases](https://github.com/esengine/DeepSeek-Reasonix/releases) — checked 2026-09-27; Studio release notes report the image/event-log size and recovery problem that motivates `ACC-P1-09`. This is an upstream report, not a HorizonCode reproduction.
 - [Codex Goals in the CLI](https://developers.openai.com/cookbook/examples/codex/using_goals_in_codex) — checked 2026-09-27; available in Codex CLI 0.128.0+; documents structured goal lifecycle commands, thread-scoped state, idle-boundary continuation, queued-input checks, no-tool-call suppression, and budget-limited stopping. These are peer workflow references, not a HorizonCode implementation or proof of multi-hour reliability.
 - [Codex long-horizon task report](https://developers.openai.com/blog/run-long-horizon-tasks-with-codex) — useful empirical workflow report; not a reliability guarantee.
+- [OpenCode provider directory](https://opencode.ai/docs/providers/) and [OpenCode Go](https://opencode.ai/docs/go/) — checked 2026-09-28; the provider list, supported auth methods, model directory, prices, quotas and Go-client compatibility are volatile. Research pin and file map: [`opencode-provider-inventory.md`](opencode-provider-inventory.md).
+- [The Update Framework specification](https://github.com/theupdateframework/specification/blob/master/tuf-spec.md) — metadata/target verification and repository-attack model; it does not authenticate the initial installer by itself.
 - [Terminal-Bench 4.0](https://www.tbench.ai/news/terminal-bench-4-0).
 - [SWE-Bench Pro V2 leaderboard](https://labs.scale.com/leaderboard/swe_bench_pro_public_v2) and [benchmark task/method README](https://github.com/scaleapi/SWE-bench_Pro-os/blob/main/README.md).
 - [Agent Client Protocol](https://agentclientprotocol.com/) — protocol behavior must be capability/version pinned; ACP is not a scheduler or durable task database.

@@ -15,14 +15,14 @@ Resolve everything that shapes a turn — model, mode, permissions, instructions
 - **Skills.** Discover `SKILL.md` (and sibling markdown with frontmatter), route by description, and inject instructions only when activated and only within the context budget.
 - **Hooks.** Register pre/post tool, session, and compaction hooks with explicit ordering and tighten-not-loosen semantics.
 - **Plugins.** Load a manifest, gate it, and expose only declared extension points; plugin code runs sandboxed.
-- **Memory.** Maintain persistent project/user memory records with explicit size bounds and scope.
+- **Memory settings.** Configure scope, consent mode, size/retention bounds, and retrieval policy for `CMP-memory`; config does not store, infer, or consolidate memory records.
 - **MCP/provider config.** Supply server and provider entries; secret fields are references only.
 - **Agent profile and command config.** Load profile and declarative command descriptors from validated sources; config never launches or trusts an executable. See `ARCH/27` for separate discovery/install/trust/enable lifecycle.
-- **Operator preferences.** Store theme tokens, accessibility, notification channels, sound, warning thresholds, and user defaults. Preferences never disable the guard or rewrite run/task evidence.
-- **Migration.** Forward-only, idempotent schema migrations that never run against a half-migrated state.
+- **Operator preferences.** Store theme tokens, accessibility, notification channels, sound, warning thresholds, update-check preferences, and user defaults. Preferences never disable the guard or rewrite run/task evidence. `updates.origin`, trust roots, and signing policy are compiled/managed trust settings, not user/project preferences (`ARCH/30`).
+- **Migration.** Forward-only, idempotent schema migrations that never run against a half-migrated state. For binary rollback, upgrades use expand/contract compatibility: a new binary cannot perform an irreversible data/schema migration until the previous supported binary can read the result, unless a separately verified backup/restore path exists. Restoring an older executable alone is not a state rollback. Destructive migration requires a decision, recovery artifact, and platform acceptance; updater rollback claims are bounded by that evidence (`ARCH/30`, `AX-365/366`).
 - **Secrets hygiene.** Config carries secret references; values are resolved by `CMP-secrets` and never written into config, logs, prompts, telemetry, or audit.
 
-**Not owned.** Loop and turn state (`CMP-runner`); context assembly and compaction (`CMP-context`); tool execution (`CMP-tools`); allow/ask/deny evaluation and egress (`CMP-guard`); credential storage (`CMP-secrets`); provider transports (`CMP-provider`); MCP transport lifecycle (`CMP-mcp`); skill/plugin execution (`CMP-tools` + `CMP-sandbox`).
+**Not owned.** Loop and turn state (`CMP-runner`); context assembly and compaction (`CMP-context`); memory records or retrieval (`CMP-memory`); tool execution (`CMP-tools`); allow/ask/deny evaluation and egress (`CMP-guard`); credential storage (`CMP-secrets`); provider transports (`CMP-provider`); MCP transport lifecycle (`CMP-mcp`); skill/plugin execution (`CMP-tools` + `CMP-sandbox`).
 
 ## Interfaces
 
@@ -126,7 +126,7 @@ A manifest may only claim surfaces from this closed set, and each claim passes t
 
 **Plugin manifest.** `{id, version, source, content_digest, signer?, surfaces[], requested_capabilities[], hooks[], compat_window, provenance}`. Surfaces are a closed set (tools, providers, model adapters, UI panels, commands). A manifest is data, not a grant; capabilities require explicit user/managed approval and are still passed through the guard/sandbox. No plugin may patch core behavior or inject a raw hook outside the declared set.
 
-**Memory record.** `{scope: user|project, key, value, created, updated, ttl?, bytes}` with explicit per-scope size bounds and eviction by age/size. Memory is durable and survives restart; it is distinct from session event history.
+**Memory record.** `{scope: user|project, key, value, created, updated, ttl?, bytes}` with explicit per-scope size bounds and eviction by age/size. Memory is durable and survives restart; it is distinct from Thread event history.
 
 **MCP/provider entries.** MCP: `{id, transport, command/args/env | url/headers, auth, timeout, enabled}`. Provider: `{id, endpoint, auth_ref, models{}, headers}`. Every secret field stores a reference, never a value.
 
@@ -176,7 +176,46 @@ provenance, while `CMP-orch` owns active limits, `CMP-provider` owns usage facts
 
 ## Configuration
 
-This document *is* the configuration surface. Key groups: `providers.*`, `models.*`, `routing.*`, `budget.*`, `permissions.*`, `instructions.*`, `skills.*`, `hooks.*`, `plugins.*`, `memory.*`, `mcp.servers[]`, `agents.profiles[]`, `commands.custom[]`, `orch.*`, `ui.theme.*`, `ui.layout.*`, `ui.keymap.*`, `ui.notifications.*`, `ui.sound`, `ui.accessibility.*`, `ui.usage_warnings[]`, `compaction.*`, `repository.*`, `verification.*`, and `delivery.*`. Every field is schema-versioned; migration notes accompany renames. A `SettingView` contains `{key, requested_value, effective_value, source_scope, source_ref, shadowed_sources[], locked_by?, validation_error?, capability_status?, apply_boundary, schema_version, effective_digest}`. `/settings` exposes theme tokens, contrast/color depth, reduced motion and screen-reader mode, layout/keymap, provider/model/agent, reasoning, local endpoint, context limits and compaction, routing, hierarchical run/task/worker budgets, warning thresholds, approval posture, notification channels and sound, extension enablement/provenance, evidence retention, and cost/quota display. `managed` locks win; project content cannot widen authority. Changing model/provider/agent records capability and provenance; an unavailable setting is not silently approximated (`REQ-UI-010..015`, `REQ-ORCH-007..009`, `DEC-030`, `DEC-038..040`). The slash command and mention catalogs are owned by `ARCH/27`.
+This document *is* the configuration surface. Key groups: `providers.*`, `models.*`, `routing.*`, `budget.*`, `permissions.*`, `instructions.*`, `skills.*`, `hooks.*`, `plugins.*`, `memory.*`, `search.*`, `mcp.servers[]`, `agents.profiles[]`, `agents.messaging.*`, `commands.custom[]`, `orch.*`, `app_server.*`, `updates.*`, `ui.theme.*`, `ui.layout.*`, `ui.keymap.*`, `ui.notifications.*`, `ui.sound`, `ui.accessibility.*`, `ui.usage_warnings[]`, `compaction.*`, `repository.*`, `verification.*`, and `delivery.*`. Every field is schema-versioned; migration notes accompany renames. A `SettingView` contains `{key, requested_value, effective_value, source_scope, source_ref, shadowed_sources[], locked_by?, validation_error?, capability_status?, apply_boundary, schema_version, effective_digest}`. `/settings` exposes theme tokens, contrast/color depth, reduced motion and screen-reader mode, layout/keymap, provider/model/agent, reasoning, local endpoint, provider metadata freshness, context limits and compaction, routing, hierarchical run/task/worker budgets, warning thresholds, approval posture, agent-message limits/enablement, search/content-index preferences and coverage, update check/channel/defer state, notification channels and sound, extension enablement/provenance, evidence retention, local supervisor status, and cost/quota display. `managed` locks win; project content cannot widen authority or change update trust/channel, app-server lifecycle, IPC ceilings, or a user's search privacy choices. Changing model/provider/agent records capability and provenance; an unavailable setting is not silently approximated (`REQ-UI-010..015`, `REQ-ORCH-007..009`, `DEC-030`, `DEC-038..040`, `ARCH/30`, `ARCH/31`, `ARCH/32`). The slash command and mention catalogs are owned by `ARCH/27`.
+
+`app_server.detached_enabled` and `app_server.idle_shutdown_seconds` are local-user
+preferences. The supervisor endpoint is always same-host only in the initial contract;
+there is no setting for a network bind or cross-user listener. Frame, client,
+subscription, lane, and deadline ceilings are finite generated settings with compiled
+upper bounds; configuration can lower a ceiling but cannot set it to unlimited or
+raise the security maximum. A platform without accepted supervised-process and IPC
+support exposes `capability_status=unavailable` and refuses detach; it does not silently
+claim the preference is active.
+
+`providers.opencode.metadata_refresh.enabled` defaults to `true` with a bounded
+one-hour interval; only this explicitly approved provider/model source is automatic
+by default. It is data-only and cannot set hosts, credentials, auth methods, adapter
+code, or live run routes. Generic `catalog.enrichment.enabled` remains `false` by
+default. Active attempts retain their immutable route snapshot.
+
+`search.enabled=true`, `search.index_tool_output=false`,
+`search.include_archived=true`, `search.keep_renamed_title_aliases=true`, and
+`search.page_size=20` are user-scope preferences. Search text indexing is local and
+does not send content to a model or network service. A user's disable/purge choice is
+not overridden by project configuration; managed policy may disable search for a
+deployment. `search.index_tool_output` can include only tool-result text explicitly
+marked displayable in the committed session projection. Query-byte, page-size,
+index-work, concurrent-query, and deadline limits are finite compiled ceilings that
+configuration may lower only. Turning `search.enabled` off disables queries and
+indexing and offers an explicit purge of derived index content; it never deletes
+canonical session history. Search dates are presented in the selected UI timezone;
+stored/query boundaries are UTC.
+
+`updates.check_on_start=true`, `updates.notify=true`,
+`updates.channel=stable|preview`, and `updates.check_interval=24h` are bounded user
+preferences. Only signed, currently published channels may be selected. A CLI
+`--channel` overrides the channel for that command only and does not write settings;
+`/settings updates` is the persistent channel control. `updates.auto_install=false`
+is a hard invariant, not a preference. `updates.origin` and TUF trust-root/key policy
+are compiled or managed-only; project/user config cannot change them. Check and
+notification toggles are independent: manual check remains available when startup
+checks are disabled, and a muted notice does not hide an explicit command result.
+Settings show install method and update deferral due to active work (`ARCH/30`).
 
 **Source status (2026-09-28).** `horizoncode-config` now owns the implemented slice:
 the discovery walk (global first, then project outer to nearest; a path that exists
@@ -206,7 +245,7 @@ instruction source into the assembled context is `AX-319`; permission rules rema
 validated and evaluated by `CMP-guard`.
 
 `session.artifacts.*` is a first-class schema group for maximum inline-event bytes,
-per-object and per-session encoded bytes, decoder expansion/pixel/time ceilings,
+per-object and per-Thread encoded bytes, decoder expansion/pixel/time ceilings,
 artifact retention, orphan-cleanup grace, and required durability mode. Expose
 requested/effective values, current/reserved storage, and effective filesystem
 durability in `/settings`; managed policy and compiled resource ceilings win, and no
@@ -247,7 +286,7 @@ config digest is pinned to the run and changes create a new context/policy epoch
 ## Open questions
 
 1. **`CMP-config` registration.** Resolved: `CMP-config` is registered in `ARCH/03-ARCHITECTURE.md` §2 (Capability layer). No further `DEC-*` is needed for registration; the extension surfaces it configures remain governed by `DEC-018`.
-2. **Memory requirements.** Resolved: memory is covered by `REQ-MEM-001..003` in `ARCH/02-REQUIREMENTS.md` (persistent store with bounds, attributable/inspectable writes, injectable typed context source). The remaining open detail is the exact per-scope size bounds and eviction thresholds.
+2. **Memory requirements.** Resolved: memory is covered by `REQ-MEM-001..004` in `ARCH/02-REQUIREMENTS.md` (bounded persistence, attributable/inspectable writes, typed context injection, separate scopes/consent/export/purge). Remaining open details are exact per-scope size bounds and eviction thresholds.
 3. **Config format authority.** JSONC is primary; whether YAML is a supported authoring format (and how it maps to JSONC precedence) is undecided.
 4. **Plugin permission model.** Whether plugins request capability grants or surface grants, and how review depth maps to v1.
 5. **Hook surface freeze.** The exact v1 hook event set and whether experimental transform hooks ship or are deferred.

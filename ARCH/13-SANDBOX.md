@@ -107,7 +107,7 @@ SandboxOutcome  = { exit, stdout_ref, stderr_ref, denied?, violations[] }
   `full-access` (broad access to the explicitly selected worker environment and
   network allowed — still subject to Guard and the catastrophic gate, and still one
   egress path). Per-attempt scratch is disposable tool output, **not** canonical
-  session/run state. No tool child may write session events, task/evidence projections,
+  Thread/run state. No tool child may write Thread events, task/evidence projections,
   audit records, credentials, budgets, policy, or operator-control state.
 - **Private controller boundary:** canonical HorizonCode state, credential material,
   operator IPC/control capabilities, and the controller's home/config roots are never

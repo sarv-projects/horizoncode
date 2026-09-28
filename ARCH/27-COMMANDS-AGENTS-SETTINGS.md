@@ -13,11 +13,12 @@ undifferentiated “plugin”.
 
 ## Source baseline and scope
 
-At Git `53a2654` on 2026-09-27 (Rust source unchanged from `1c7a1c68bab9`), the repository has a headless CLI and ACP server,
-not the planned interactive TUI or an agent orchestration runtime. Source currently
-parses only `/usage` and `/insights [--days N]` in one-shot `-p` prompt mode
-(`crates/horizoncode-cli/src/app.rs::parse_slash_command`); an ACP prompt is not parsed
-as a slash command. There is no `@` mention resolver, settings UI, agent panel, agent
+At the 2026-09-28 source snapshot (`23d4ce8`), the repository has a headless CLI and
+inbound ACP server, not the planned interactive TUI or an agent orchestration runtime.
+The shared typed command registry parses `/usage`, `/insights [--days N]`, and
+`/skills [list | show <name>]` in one-shot `-p` prompt mode; the composer-reference
+parser recognizes typed `@` namespaces but does not resolve or attach references. An
+ACP prompt is not parsed as a slash command. There is no reference resolver, settings UI, agent panel, agent
 profile registry, ACP client, agent installer, durable run tree, or shared quota
 controller. The actual CLI surfaces are `acp`, `audit verify|replay|census`, and
 `analytics stats|export`, plus the options defined in
@@ -38,6 +39,7 @@ own syntax or state.
 | Agent profile source, provenance, schema and migration | `CMP-config` + `CMP-agent-directory` | ACP wire parsing, child task completion, provider billing truth |
 | Agent lookup/install/launch | `CMP-agent-directory` + `CMP-adapter` | Trust decision, policy bypass, task verification |
 | Agent task scheduling, parent/child budgets, stop/recovery | `CMP-orch` / `CMP-runner` | UI session lifecycle, provider-specific wire details |
+| Run-scoped agent messages and delivery receipts | `CMP-orch` (canonical Run events), `CMP-session` (recipient inbox) | A separate mailbox database, task graph, permission engine, or implicit agent wake-up |
 | Provider/model capability and observed usage | `CMP-provider` | Claiming usage hidden inside an opaque peer |
 | Quota aggregation, warning evaluation, resource reservation | `CMP-analytics` (facts) + `CMP-orch` (dispatch control) | Fabricating unreported remote usage |
 | Settings storage and preference merge | `CMP-config` | Widening guard authority or directly mutating active tasks |
@@ -55,7 +57,7 @@ enabled or trusted.
 
 ### Surface distinction
 
-The CLI command tree (`horizoncode ...`), in-session slash commands (`/...`), composer
+The CLI command tree (`hzcode ...`), in-session slash commands (`/...`), composer
 references (`@namespace:value`), key bindings, and ACP methods are different namespaces.
 They may invoke the same typed service, but names are not silently aliased across
 surfaces. `/settings` is an in-session command in the target interactive client; the
@@ -143,17 +145,60 @@ generated from the same validated registry. Each extension command is hidden unt
 the extension is enabled and contributes only a schema-validated descriptor; command
 text cannot inject shell text or bypass the owning service.
 
+### Native CLI maintenance and provider commands
+
+The CLI and TUI call the same typed services. These commands are separate from
+in-session slash commands; package-manager-owned installations remain under their
+manager's lifecycle.
+
+| CLI command | Behavior |
+|---|---|
+| `hzcode --version` | Show version/build target and known install method, channel, and manager; no network. |
+| `hzcode providers list` | List the full versioned OpenCode/HorizonCode provider inventory with catalog source/freshness, auth method, adapter status, and honest availability. |
+| `hzcode providers show <id>` | Show provenance, documented auth/setup, registration/terms state, supported model protocols/capabilities, unavailable reason, and evidence references; never reveal secret values. |
+| `hzcode providers refresh` | Explicitly refresh approved metadata through the same bounded cache service; never changes active route snapshots. |
+| `hzcode providers test <provider/model>` | User-requested, cost-bearing minimal connectivity/conformance probe with no repository context; preview model/cost/quota and require confirmation. |
+| `hzcode sessions search <query> [--session <id>] [--project <id>] [--after <time>] [--before <time>] [--role <role>] [--archived] [--json]` | Search the local committed-content index; page stable message/title hits and coverage issues. Read-only; no model/network access. |
+| `hzcode upgrade --check [--channel <stable|preview>] [--json]` | Read-only TUF metadata check; no target download or installation. |
+| `hzcode upgrade [--channel <stable|preview>]` | Interactive signed update review and consent; active work is preserved and manager-owned binaries are not overwritten. |
+| `hzcode install status` | Read-only local binary, install method, trust-root, and rollback state. |
+| `hzcode install repair` | Repair a standalone HorizonCode-managed install from its verified known-good target after explicit operator action. |
+| `hzcode uninstall` | Explicitly remove managed binaries/updater only; preserve user state by default. Delegate managed installs to the package manager. |
+
+For future distributions, `hzcode` is the canonical executable used by install
+instructions and command examples. `horizoncode` is a compatibility alias to the same
+binary and state root; aliases must preserve arguments, signals, environment, working
+directory, and exit code. The source snapshot's current `horizoncode` binary name is an
+implementation fact and does not satisfy the distribution alias requirement.
+
+No unattended `--yes` installation flag is available in the initial contract. Unknown
+or unsupported methods return a typed explanation. A developer/source build does not
+pretend to be owned by the signed self-updater.
+
 This is the proposed built-in interactive command set. Commands with destructive,
 external, expensive, or authority-changing effects show a preview and go through the
 normal guard/confirmation path. Read commands do not acquire write locks.
 
 | Command | Arguments and behavior | Side-effect boundary |
 |---|---|---|
+| `/init [--force]` | Inspect the repository and offer a reviewed starter `AGENTS.md`, project memory scope, and ignored local state location. Show detected files and the exact proposed diff first; never overwrite existing instructions or weaken security without a separate review. | Read-only discovery, then guarded file edits after explicit confirmation |
+| `/new [--project <id>]` | Start a new conversation in the selected workspace; existing sessions and active supervised runs remain intact. | Creates a session only; never implies cancellation of other work |
+| `/sessions [list|show <id>|search <query>]` | Open the session browser with recent/all/archived, project/date filters, full-text search, title history, and index coverage. Selecting a result opens the exact session/message when authorized. | Local reads; no model/network unless a separate action is explicitly requested |
+| `/rename <title>` | Rename the current session after previewing normalized title and preserving the previous title as a searchable alias. | Local metadata event; no transcript rewrite |
+| `/export [session|run|task] [id]` | Preview a redacted export manifest with included/excluded history, artifacts, source refs, usage, and secrets policy; write only to an explicit destination after confirmation. | Local file effect; never silently exports credentials or hidden reasoning |
+| `/theme [list|show <id>|set <id>]` | Preview semantic color tokens against terminal capabilities and accessibility modes; allow custom accent/palette through `/settings appearance`. | Local preference; theme never carries task/security meaning by color alone |
+| `/tokens [tree|run|task|agent|provider] [id]` | Shortcut into the token detail view, showing input/output/cache/reasoning by provider/model, observed vs estimated amounts, pricing basis, quota observations, and missing/overlapping data. | Read-only local usage ledger |
+| `/subagents [list|show|assign|limits]` | Open the agent panel for built-in/local/ACP profiles, per-role model selection, capability/trust, concurrency, quota warnings/hard caps, and task-to-worker assignment. `assign` always targets a ready task and shows scope/budget before dispatch. | Read-only until an explicit assignment/setting action; provider limits unknown to an adapter remain `unknown` |
+| `/workflow [list|show|create|run|pause|resume|stop]` | Browse saved workflow templates or open the Workflow Builder. The builder creates a versioned, validated task graph; preview its inputs, permissions, budgets, dependencies, and verification plan before saving/running. | Create/save is a local guarded write; run uses normal Run approval and task controller; a workflow cannot bypass the controller |
 | `/help [topic]` | Show help for commands, settings, references, keys, or a workflow. | Read only |
 | `/commands [filter]` | Search available command descriptors with source/availability. | Read only |
+| `/search [query]` | Search committed displayable messages and session-title history globally or in the current session; filter by project/date/role/archive state, inspect index coverage, and open a verified hit. `/search rebuild` runs bounded local index maintenance. | Local read or bounded maintenance; session access checks apply; no model/network; content indexing preferences are user-scoped |
 | `/settings [section]` | Open settings; optional section focuses a typed group. Edits preview effective value, source, lock, and apply boundary. | Persist preference through `CMP-config`; authority changes remain guarded |
+| `/settings runtime` | Show local supervisor availability/state, attached vs supervised mode, last recovery result, effective finite idle policy, connected clients, and any detach limitation. Allow local-only detach/idle preferences; do not expose remote bind or weaken IPC ceilings. | User-scope settings; changing attach mode does not start a Run or cancel active work; see `ARCH/31` |
 | `/agents [list]` | Open the Agents panel and run/child tree. | Read only |
 | `/agents show <profile>` | Show provenance, install path/version, supported capabilities, model control, permissions, limits, and last probe. | Read only |
+| `/agents message send <session-ref> <text>` | Open the explicit recipient composer or send literal remaining text to a selected same-Run member; return the durable message ID and per-recipient delivery state. | Requires `agent.message` authority, recipient membership, run enablement, and budget/storage admission; never falls through to model text |
+| `/agents message list [--task <id>] [--agent <ref>] [--state <state>]` | Page the current Run's message history with sender/recipient, task, time, reply, and delivery status; reconnect uses the Run event cursor. | Read only within the caller's Run membership |
 | `/agents discover [source]` | Search local executable paths or a configured remote catalog; return candidates only. | Network lookup requires opt-in and guard; no install or launch |
 | `/agents add <path-or-catalog-id>` | Add a local command path or stage an explicitly selected catalog distribution. Validate path/hash/platform/license/manifest before writing. | Install is a separately guarded effect; not trusted/enabled by add |
 | `/agents trust <profile>` | Review/pin origin, executable/content digest, requested access, adapter, and execution boundary. | Explicit user action; auditable |
@@ -161,15 +206,17 @@ normal guard/confirmation path. Read commands do not acquire write locks.
 | `/agents probe <profile>` | Launch only the profile's protocol/capability handshake in an empty disposable workspace. | Process/network access guarded; no user task is sent |
 | `/agent <profile>` | Select primary agent for a new turn/run. | Session preference; pinned to new turn/run, not retroactive |
 | `/model [provider/model [variant]]` | Inspect or select a model for the next run/turn; report actual capability and price/quota provenance. | Validate route; reject missing required capabilities |
-| `/providers [list|show <id>]` | Inspect configured provider/endpoint type, auth reference status, model catalog provenance and connectivity state. | Secrets are never revealed; explicit probe is guarded |
+| `/providers [list|show <id>]` | Inspect the complete versioned provider/auth inventory, endpoint type, auth-reference status, model provenance, capability evidence, and connectivity. Distinguish listed, needs-configuration, needs-registration, usable, stale, and unavailable. | Secrets are never revealed; explicit probe is guarded |
+| `/connect <provider> [auth-method]` | Begin only a documented, implemented provider login/key flow; show scopes, account/client/callback, expiry, and credential-storage destination before proceeding. | Explicit user action; HorizonCode-owned OAuth client only; secret goes directly to `CMP-secrets`; no auth-store import |
+| `/upgrade [--check]` | Inspect signed update state. Without `--check`, show release details and request explicit installation consent; stage/apply only through `CMP-update`, and defer during active runs, direct turns, worker executions, or unresolved effects. | `--check` is read-only; install is signed, package-manager-aware, and safe-boundary gated |
 | `/run [id]` | Show the run summary or a selected durable run. | Read only |
-| `/attach <run-id> [--after-seq <n>]` | Attach this UI client to a live local supervisor, return a snapshot at a stated event sequence, then replay ordered events after that cursor. It never starts or resumes work. A gap forces a fresh snapshot. | Authenticated local control API; read/subscribe only |
+| `/attach <run-id> [--after-seq <n>]` | Attach this UI client to a live local supervisor, return a snapshot at a stated aggregate sequence, then replay ordered events after that cursor. It never starts or resumes work. A gap forces a fresh snapshot. | Versioned `CMP-control-api`; authenticated local server (`ARCH/31`); read/subscribe only |
 | `/tasks [filter]` | Show task DAG, readiness, blockers, owners, attempts, dependencies, and evidence state. | Read only |
 | `/goal [show] [run-id]` | Inspect the original request, intended outcome, confirmed constraints, success conditions, unresolved assumptions, and current goal version. | Read only |
 | `/goal set <request>` | Persist the exact original request as a new inert run/goal draft and select its pointer in this session. Show only supplied request text, pinned workspace/base, and fields still awaiting preparation; do not invent success conditions. | Pure durable draft write; no model, repository scan/tool, or peer work starts |
 | `/goal prepare <run-id>` | Explicitly request a bounded planning attempt: revision-pinned read-only repository discovery, proposed intent/specification, task DAG, verification plan, and review bundle. Show planner model/agent, read scope, cost/time/token ceiling, and no-write/no-peer boundary first. | Reserves the separate planning budget; may run planner/read-only discovery only. Unknown usage is reconciled; no coding worker, mutation, or external side effect starts |
 | `/goal clarify <run-id> <answer>` | Answer a persisted blocking clarification. Replaces no confirmed requirement silently; creates a new input/preparation proposal and invalidates older preview/approval receipts. | Durable user input; no inference until a new `/goal prepare` is explicitly requested |
-| `/goal start <run-id>` | If a nonterminal start intent exists, show its durable `starting`/`reconciling` status and do not open another review. Otherwise open the final review card for the exact spec/task-graph/plan, base commit, policy snapshot, route, permission boundary, and total/verification/recovery budgets. This persists an expiring `GoalApprovalChallenge` before rendering; only a confirmation in the same authenticated operator control session/connection can accept it. | Explicit digest-bound confirmation; stale/expired/replaced challenge or failed preflight leaves work undispatched. CLI: `horizoncode run start <run-id>` opens the review in an authenticated operator control session; the user confirms the displayed challenge and bundle digest there. Same-delivery/same-payload retry is idempotent; changed payload conflicts. Digest flags or `--confirm` from a worker shell are rejected. Activation is committed after durable idempotent reservations; dispatch comes from an idempotent outbox and uncertain launches are reconciled by attempt ID. A control-plane timeout queries intent status before any retry. |
+| `/goal start <run-id>` | If a nonterminal start intent exists, show its durable `starting`/`reconciling` status and do not open another review. Otherwise open the final review card for the exact spec/task-graph/plan, base commit, policy snapshot, route, permission boundary, and total/verification/recovery budgets. This persists an expiring `GoalApprovalChallenge` before rendering; only a confirmation in the same authenticated operator control session/connection can accept it. | Explicit digest-bound confirmation; stale/expired/replaced challenge or failed preflight leaves work undispatched. CLI: `hzcode run start <run-id>` opens the review in an authenticated operator control session; the user confirms the displayed challenge and bundle digest there. Same-delivery/same-payload retry is idempotent; changed payload conflicts. Digest flags or `--confirm` from a worker shell are rejected. Activation is committed after durable idempotent reservations; dispatch comes from an idempotent outbox and uncertain launches are reconciled by attempt ID. A control-plane timeout queries intent status before any retry. |
 | `/goal revise <run-id>` | Start a versioned intent/specification revision; show affected tasks/evidence and require confirmation when user-visible behavior changes. | Proposal only until accepted; accepted revisions invalidate affected evidence |
 | `/goal pause <run-id>` / `/goal resume <run-id>` | Aliases for the same controller-owned transitions as `/pause` and `/resume`; they neither create a second lifecycle nor issue a new prompt. | Priority control lane; durable intent/fence and effect reconciliation |
 | `/goal clear <run-id>` | Remove this goal from the current session's active-goal pointer only for a draft with no attempt, terminal run, or explicitly paused/blocked run. It never changes `RunGoal`, run/task lifecycle, history, or budget; a paused run remains resumable by ID. A running run must first be paused, cancelled, or stopped. | Explicit confirmation; writes a pointer-clear event, never deletes run history or resets budget |
@@ -189,9 +236,10 @@ normal guard/confirmation path. Read commands do not acquire write locks.
 | `/insights [--days N]` | Inspect local aggregate metrics and provenance. | Read only |
 | `/context [show|sources]` | Inspect effective context, token estimate/usage, source provenance, compaction epoch, and retrieval pointers. | Read only; does not reveal secrets |
 | `/compact [preview]` | Request a budgeted compaction preview, then apply only under current policy. Canonical intent/spec/task/effect/evidence records remain outside the summary. | Resource-consuming; loss report required |
-| `/mcp [list|show <id>|enable|disable <id>]` | Inspect/manage MCP servers in the distinct MCP lifecycle. | Enabling a server does not grant every tool; server launch/network is guarded |
+| `/mcp [search|installed|create|show <id>|install <id>|connect <id>|enable|disable <id>]` | Open the centered extension-manager overlay on Search, Installed, or Create. Search uses the official MCP Registry as data-only metadata plus a small versioned HorizonCode-curated catalog. Install stages a selected source/version, reviews package/license/transport/config, gets secrets from `CMP-secrets`, probes `initialize` and discovered capabilities, then requests per-tool policy before enabling. | Registry listing is not trust. Install, credential entry, probe, and enable are separate observable states; no tools execute before explicit policy approval |
 | `/skills [list|show <id>|enable|disable <id>]` | Inspect pinned skill metadata and activation state; body loaded on activation only. | Skill content is untrusted; never grants authority |
 | `/plugins [list|show <id>|enable|disable <id>]` | Inspect plugin source/hash/license/surfaces and separately enable declared surfaces. | Install and enable are distinct guarded effects |
+| `/memory [global|project|candidates|search <query>|show <id>|forget <id>]` | Open the memory inspector for user-global preferences, this project's knowledge, and pending candidates. Explicit saves create candidates; auto-extraction is opt-in, acceptance always requires user review. | Local scoped storage; user/project clear and export are explicit, audited actions |
 | `/permissions [show]` | Explain effective permission rules and source/locks; editable policy opens `/settings permissions`. | No one-shot grant by merely viewing |
 | `/panels` / `/focus` / `/dock` | Open panel picker, focus workspace, or change layout. | Local UI preference only |
 | `/pr [prepare|status]` | Prepare a PR evidence packet or inspect remote status. `/pr create` is a later explicit, confirmed effect. | Network reads/creates governed separately; see `ARCH/25` |
@@ -206,8 +254,10 @@ registry and the strict parse: only commands whose owning service exists are
 registered (`/help`, `/commands`, `/usage`, `/insights`, `/skills`, each naming its owner and
 effect class), an unknown name is a typed error with nearest-name suggestions, a
 malformed argument names the grammar, an unavailable owner and an unsupported
-surface are typed refusals, and help, search, and completion are generated from the
-same registry. Nothing falls through to a model prompt. The composer-reference
+surface are typed refusals, and help, command discovery, and completion are generated
+from the same registry. The session-content `/search` command and
+`hzcode sessions search` CLI are not implemented. Nothing falls through to a
+model prompt. The composer-reference
 parser recognizes the six namespaces, keeps `@name`/email/unknown-delimiter text
 literal, diagnoses an unknown namespace or malformed mention without blocking, and
 supports quoted paths; parsing is not resolution and grants no authority. The rest
@@ -216,11 +266,21 @@ their owners land, mention resolution/attachment is `AX-319`/`AX-340` context an
 registry work, and no local attach API exists.
 `analytics stats|export` and `audit verify|replay|census` are CLI subcommands, not
 aliases in the interactive registry unless explicitly registered later. The CLI attach
-equivalents are `horizoncode run start <run-id> --spec-digest <digest>`,
-`horizoncode run attach <run-id> --after-seq <n>`, and
-`horizoncode run resume <run-id>`. Start, attach, and resume have separate contracts.
+equivalents are `hzcode run start <run-id> --spec-digest <digest>`,
+`hzcode run attach <run-id> --after-seq <n>`, and
+`hzcode run resume <run-id>`. Start, attach, and resume have separate contracts.
 Neither remote SSH attach nor
 remote hosting is part of this local-supervisor contract.
+
+`hzcode upgrade` is the standalone interactive equivalent of `/upgrade` and uses
+`CMP-update`. `hzcode upgrade --check` is read-only; `--channel stable|preview`
+may select only a currently published, signed channel and applies to that invocation
+only. It does not change the persistent `/settings updates` channel. There is no force-unsigned
+install, implicit downgrade, or worker-authorized update. `hzcode providers
+list|show <id>` inspects the inventory without opening credentials;
+`hzcode providers connect <id> [--method <method>]` starts the same trusted flow
+as `/connect`. Final flags and exit codes must be defined in the CLI LLD before
+implementation, and these CLI commands remain distinct from ACP methods.
 
 ### Composer references (`@`)
 
@@ -229,7 +289,7 @@ agent, and task:
 
 | Form | Resolution | Effect |
 |---|---|---|
-| `@agent:<profile-id>` | Visible, enabled agent profile plus adapter capabilities | Contextual routing intent only; starts a child only after parsed task, scope, budget and permission checks, then explicit dispatch |
+| `@agent:<profile-id>` | Visible, enabled agent profile plus adapter capabilities | Contextual routing intent only; starts a child only after parsed task, scope, budget and permission checks, then explicit dispatch. It never sends a mailbox message (`ARCH/32`). |
 | `@file:<repo-relative-path>` | Canonical workspace path, current base digest, size/type and access classification | Attach a reference; guard/context decide what may be read |
 | `@task:<task-id>` / `@run:<run-id>` | Durable current graph identity and status | Add a reference; stale/foreign IDs produce a picker/error |
 | `@symbol:<qualified-name>` | Repo index/LSP result bound to commit and file digests | Attach symbol source locations; stale/missing index prompts refresh or falls back to search |
@@ -274,6 +334,27 @@ argv, install destination, and requested permissions to be shown before executio
 No registry-supplied shell string runs. Package-manager lifecycle commands are
 spawned with argv, environment allowlist, disk/process/time ceilings, and no workspace
 access; the resulting executable is independently hash-pinned and manually enabled.
+
+### Built-in personas and worker assignment
+
+Ship a small versioned set of role profiles that reuse the same runtime and tools:
+
+| Profile | Default purpose | Default authority |
+|---|---|---|
+| `architect` | Requirements, trade-offs, plan/spec and task decomposition | Read-only; may ask the user; cannot dispatch implementation |
+| `explorer` | Find files/symbols, trace flows, report evidence | Read-only |
+| `implementer` | Implement a bounded approved task | Exact task worktree/write scope and inherited policy ceiling |
+| `reviewer` | Adversarial code/spec/evidence review | Read-only; cannot mark PASS |
+| `test-debugger` | Diagnose a named failure and propose/fix a bounded repair | Task scope only; retry budget remains controller-owned |
+
+Profiles are editable recipes for prompt, model preference, skill loadout, tool set,
+and budgets; role names never grant permission. The controller assigns ready tasks to
+eligible profiles/worker adapters only after checking capabilities, model/provider
+configuration, remaining budget, workspace conflicts, and dependencies. The task board
+reports the real binding in plain language, e.g. `Update login UI — OpenCode adapter /
+claude-sonnet · running`, with observed-vs-unknown fields. Assignment, execution,
+conversation, and verification remain separate IDs. A worker may recommend delegation
+but cannot allocate peer budgets or self-authorize another child.
 
 Discovery pipeline:
 
@@ -349,8 +430,9 @@ UsageWarningPolicy {
 ```
 
 `profile_limits` use the same resource vocabulary as `Budget` in `ARCH/25`:
-tokens, monetary amount/currency, wall time, model steps, tool calls, output bytes,
-children, nesting depth, concurrent attempts, and workspace/disk bytes. Effective
+tokens, monetary amount/currency, wall time, model steps, tool calls, worker-execution
+launches, output bytes, children, nesting depth, concurrent attempts, and
+workspace/disk bytes. Effective
 limits are the intersection of managed cap, user cap, run/task reservation, and
 profile/adapter-enforceable cap. A child cannot widen a parent; a profile cannot
 widen a run. A limit unsupported by a peer is displayed as `monitor-only` or
@@ -408,7 +490,9 @@ dispatch beyond a hard ceiling.
 
 ## Agents panel and controls
 
-The dockable `agents` panel (see `ARCH/06`) contains two linked views:
+The Agents management surface is opened on demand; the right Tasks pane remains the
+compact always-visible assignment board (`ARCH/06`). The full Agents view contains
+three linked views:
 
 1. **Profiles**: built-in, local/manual, ACP-registry candidates, and installed
    profiles, grouped by trust state. Show source, digest/version, license, executable
@@ -434,6 +518,13 @@ user can lower a live budget, which stops future dispatch, but cannot rewrite pa
 usage. Capacity counts the complete child tree, not just direct children. Model
 selection and workspace separation are independently configured.
 
+3. **Messages**: the selected Run's bounded operator/worker mailbox, with explicit
+recipient selection, reply chain, sender/attempt/task provenance, queue state, and
+per-recipient delivery history. No broadcast across Runs; message text is rendered
+as untrusted data. Messages to external workers are available only when an explicit
+versioned bridge capability was negotiated. Details and failure semantics are in
+[`ARCH/32`](32-AGENT-MESSAGING.md).
+
 ## Settings contract
 
 `CMP-config` owns one typed schema and precedence/effective-value view; `/settings`
@@ -445,14 +536,15 @@ is a view/controller over it. In addition to existing `ARCH/18` fields, include:
 | Accessibility | screen-reader linear mode, reduced motion, non-color labels, terminal bell preference | Immediate; never removes required text/status |
 | Providers/models | provider and endpoint references, model/variant/reasoning, model capability requirements, fallback/routing preference, output-cap policy and validated remaining-context recovery preference | Secrets are references; capability and termination profile are version-pinned; automatic recovery is available only for a conformance-validated route, is once per logical step, and is budgeted; new context epoch/attempt only |
 | Agents | profile visibility, primary profile, per-role/profile model policy, adapter config, trust/enabled state, agent profile caps | Trust/enable separate from discovery; managed/user authority ceilings cannot be widened |
+| Agent messages | Run-level enablement, per-profile `agent.message` capability, bounded body/recipient/pending caps, warning threshold, unread badge/sound preference | Effective limits and permission digest are pinned at Run start; caps are finite and can only be narrowed; mute does not drop messages or wake workers |
 | Run budgets | run/task/attempt tokens, spend + currency, time, tools, output, disk, child count/depth/concurrency; verification/recovery reserves | Atomic reservations, source currency preserved, hard cap actions deterministic |
 | Warnings | threshold levels, resource kinds, channels, dedupe/reset window | Soft alert cannot override hard limit; unknown/stale clearly rendered |
 | Approval posture | plan/ask/eligible-auto-approve preference; reduced-approval activation scope and expiry | Persistent preference may be set, but high-risk activation is per-run acknowledged; hard deny/catastrophic/OS boundaries cannot be bypassed |
 | Context | context budget, compaction mode/threshold/keep-tail, output retention, repo-map budget | New context epoch; canonical task/effect/evidence state is never compacted away |
 | Extensions | MCP servers, skills, plugins and command/panel contributions, provenance pins, enable state | Separate lifecycle and capability grants; no auto-enable from project config |
 | Notifications | event categories, terminal bell/sound, system notification, quiet hours, rate limit, background completion | User may mute sound and non-critical channels; durable events and required in-client approval/status remain visible |
-| Privacy/retention | analytics detail, transcript/export retention, research cache, redaction mode | Local-only defaults; export is explicit, redacted preview, and guarded |
-| Session storage | inline event cap; per-record/segment/session event bytes and event count; replay batch; blob/session encoded bytes; decoded media ceilings; current/reserved bytes by class; control reserve; orphan-GC grace; retention and effective filesystem durability | Bounded product defaults are shown; managed/compiled limits win; multi-hour runs require crash-durable profile; referenced artifacts/log segments cannot be quota-deleted; incomplete scans disable deletion |
+| Privacy/retention | analytics detail, transcript/export retention, research cache, redaction mode, search enablement and displayable-content indexing | Local-only defaults; export is explicit, redacted preview, and guarded; search is user-scoped and project content cannot enable indexing |
+| Thread storage | inline event cap; per-record/segment/Thread event bytes and event count; replay batch; blob/Thread encoded bytes; decoded media ceilings; current/reserved bytes by class; control reserve; orphan-GC grace; retention and effective filesystem durability | Bounded product defaults are shown; managed/compiled limits win; multi-hour runs require crash-durable profile; referenced artifacts/log segments cannot be quota-deleted; incomplete scans disable deletion |
 | Run storage | per-record/segment/run event bytes, artifact/evidence bytes, current/reserved use, protected cancel/reconcile/handoff reserve and its physical allocation status/backend, terminal retention/export state | Physically allocate before activation; reserve event capacity before dispatch; pressure fences new work and reconciles in-flight effects; no active-run history pruning; status shows exact limit, last committed revision/sequence and `WAITING` vs `STOPPED` reason |
 | Workspace/runtime | worktree root, sandbox profile/required network level, external editor, local model runtime endpoint, hardware/context cap | Probe host and profile; unsupported guarantees refuse; path changes require restart/reopen |
 

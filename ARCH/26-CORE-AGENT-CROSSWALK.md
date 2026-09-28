@@ -1,6 +1,6 @@
 # 26 — Core coding-agent source crosswalk
 
-Reviewed 2026-09-27. This is the explicit read-through of the five core agent notes
+Reviewed 2026-09-28. This is the explicit read-through of the five core agent notes
 the user named: [Claude Code](../research%20docs/claude.md),
 [Codex](../research%20docs/codex.md), [OpenCode](../research%20docs/opencode.md),
 [Cline](../research%20docs/cline.md), and [Aider](../research%20docs/aider.md).
@@ -20,12 +20,16 @@ documented behavior. No upstream code has been copied.
 | Claude Code: focused subagents, background agents and teams | Keep focused worker contexts and user steering; only recorded peer events are visible | `ARCH/16`, `ARCH/25`, `REQ-HORIZON-009`; adapter `AX-318`. |
 | Claude Code: settings, permissions and hooks | Keep typed effective settings and pre-effect policy; hooks cannot widen authority | `ARCH/18`, `ARCH/22`, `REQ-UI-010`. |
 | Codex: Rust core plus app-server stable/experimental schemas | Keep one core and versioned client contracts; negotiate optional methods | `ARCH/03`, `ARCH/15`, `ARCH/21`; schema gate `ACC-P1-05`. |
+| Codex: shared app-server client centralizes startup/lifecycle and keeps an in-process typed transport | Reuse the typed shared boundary for attached and supervised clients; retain bounded queues, durable owner events, and explicit gap/resnapshot instead of Codex's documented unbounded local consumer queue | `ARCH/31`, `REQ-HORIZON-013`, `DEC-063`, `AX-367`; exact `app-server-client/README.md` pin in `ARCH/29` `U-CX-APP-SERVER`. |
 | Codex: JSONL rollout and SQLite index; thread/turn/item separation | Separate canonical events from rebuildable projections and run/task/attempt identity | `ARCH/07`, `ARCH/25`, `AX-309`. |
 | Codex: persisted parent/child thread graph, lifecycle and budget controls | Track external IDs and usage, but require task DAG and independent evidence for completion | `ARCH/16`, `ARCH/25`, `AX-310`, `AX-318`. |
+| Codex: local agent message board and separate remote board client, with scoped membership, channels/posts, paging/search, idempotent post IDs, body/output caps, and best-effort live notices | Adopt a bounded Run-scoped mailbox through the existing Run event stream and recipient Thread inbox; keep task truth separate, expose explicit per-recipient receipts, and do not assume delivery/read/understanding or a remote service implementation from the public client crate | `ARCH/16`, `ARCH/25`, `ARCH/32`, `REQ-HORIZON-031`, `DEC-064`, `research docs/codex.md`, `ARCH/29` `U-CX-MESSAGE-BOARD`; Horizon addition is a proposed synthesis, not copied code. |
 | Codex Goals: persistent thread-scoped objective, `/goal` lifecycle commands, event-driven idle-boundary continuation, queued-input checks, budget stop, and suppression after no-tool-call continuation | Reuse explicit goal/status/budget visibility and safe-boundary scheduling; bind HorizonCode activation to exact approved digests, preserve a task graph/evidence gate, and let the deterministic controller—not prompt text—own stop state | [Current Goals guide](https://developers.openai.com/cookbook/examples/codex/using_goals_in_codex), `research docs/codex.md`, `ARCH/25`, `ARCH/27`, `DEC-039`, `DEC-042`, `DEC-047`, `DEC-048`, `AX-337`. |
 | Codex: review command, diff and Git/worktree workflow | Add exact-revision review and governed PR lifecycle | `ARCH/25`, `REQ-DELIVERY-001`, `AX-326`. |
 | OpenCode: models.dev provider metadata separated from connectors | Use a pinned, curated catalog as data; probe real route capabilities and cost provenance | `ARCH/11`, `REQ-PROV-006`, `AX-324`, `AX-327`. |
 | OpenCode: typed message parts, input admission sequence and context epoch | Preserve queued/steered input order and epoch-bound prompt/tool snapshots; task truth remains separate | `ARCH/07`, `ARCH/09`, `ARCH/25`. |
+| OpenCode TUI at `083ed266e058dc3d2d1b377ff5540859d79de110`: sparse home composer; typed active transcript and tool states; child-session navigation; blocking permission/question prompts; recent-message hydration window; theme/preferences; SSE reconnect loop | Use explicit idle/active/waiting/error states and actionable tool/approval context; keep canonical search beyond the visible transcript window; replay/resnapshot before a reattached client trusts state. Do not copy OpenCode's process-lifetime “always allow” semantics or mistake Session/UI completion for task acceptance. This is a source trace only, not a launched TUI usability result. | `ARCH/06`, `ARCH/25`, `ARCH/31`, `research docs/opencode.md`, `ARCH/29` `U-OC-TUI`; no source code copied. |
+| OpenCode at `083ed266e058dc3d2d1b377ff5540859d79de110`: parent-linked durable Sessions; Task tool resumes a child by Session ID; process-local background registry; V2 separates admitted input from visible history and replays durable aggregate events | Reuse durable conversation/inbox/replay patterns, but do not identify HorizonCode Task with peer Session or mistake local job state for restart recovery. HorizonCode's target `ThreadId` defines the canonical conversation identity; external Session IDs are adapter bindings and `WorkerExecution` records live incarnations | `ARCH/07`, `ARCH/16`, `ARCH/25`, `REQ-HORIZON-028`, `AX-359`, `AX-379`, `research docs/opencode.md`. |
 | OpenCode: dynamic permission-filtered tool registry and child sessions | Permission-filter before materialization; child completion does not pass parent task | `ARCH/10`, `ARCH/16`, `REQ-TOOL-003`. |
 | OpenCode: local retry/doom-loop guard | Use its signal as one attempt fingerprint; persistent controller changes strategy across sessions | `ARCH/25`, `AX-310`. |
 | MiMo-Code: OpenCode-derived memory, goal, task/actor workflows and response-flood recovery | Study the fork-specific deltas without counting it as an independent OpenCode peer; use bounded whole-response admission and durable recovery evidence | `ARCH/08`, `ARCH/25`, `research docs/mimo-code.md`, `research docs/tests.md`, `AX-338`, `AX-345`. |
@@ -53,6 +57,49 @@ The five core notes do **not** establish an exhaustive map of every upstream sch
 UI screen, provider adapter or platform branch. They also do not prove that
 HorizonCode already implements the proposed controller. The source/license
 ledger in `ARCH/05` remains the gate before any adapted code or dependency.
+
+## Session, task, and process identity finding
+
+These are distinct upstream choices, not a universal naming convention:
+
+| System | Durable conversation | Delegation relation | What survives process loss (evidence reviewed) |
+|---|---|---|---|
+| OpenCode at the pinned 2026-09-28 revision | `Session`, with optional `parentID` | Task tool's `task_id` resumes the child Session; new delegation creates a parent-linked Session | Session event/input data is durable in V2 design; active execution/background-job registry is process-local. V2 explicitly leaves restart ownership/continuation recovery open. |
+| Codex current public source/docs | `Thread`, turns/items and parent-child thread graph | Child thread/agent lifecycle is managed through ThreadManager/app-server surfaces | Thread history and Goal metadata persist, and Goals resume/continue subject to controller/runtime policy. This is still not a general verified task DAG. |
+| Cline public SDK/source map | Session plus separate team/task records in some flows | Team tasks and session children are related but have different persistence/usage semantics | Depends on selected session/team feature; do not collapse its agenda task, task run, team task, and session into one ID. |
+| HorizonCode target | `ThreadId` is the durable conversation identity; `CMP-session` remains the persistence component/crate name | Run → Task DAG → Attempt → one or more Threads; the Thread parent/child tree is separate from the Task DAG | Durable run/attempt and Thread behavior are target contracts with partial foundations; a durable process incarnation is currently absent and proposed by `REQ-HORIZON-028`/`AX-359`. The schema/API migration is `AX-379`. |
+
+**Disposition.** Keep one HorizonCode persisted conversation ID. The target
+`Session` contract already defines the required Thread-like concept (durable
+history, turns/items, context epochs, input inbox and parent-child lineage); the
+current implementation has only the foundations called out in `ARCH/29`. Renaming
+it or adding a second `Thread` table would create two IDs for one fact without
+providing additional recovery. Keep Task DAG edges separate from the conversation tree. Add
+`WorkerExecution` for a specific process/adapter incarnation under an Attempt, with
+durable launch intent, fence, observation and terminal/unknown outcome. A process
+exit, Session close, ACP `session/close`, or child receipt remains an execution or
+conversation event, never independent Task PASS evidence.
+
+This recommendation is falsifiable: acceptance must kill/restart the controller
+around launch, heartbeat, client disconnect, peer completion and effect settlement;
+prove that one durable Session/Attempt can be reconciled without duplicate writes;
+prove unknown peer outcomes remain blocked; and prove the integrated Task still
+requires revision-bound independent evidence. This review does not establish those
+behaviors as implemented.
+
+**Claims not carried forward without evidence.** OpenCode's `task_id` behaving as a
+child Session ID and its process-local background-job status are confirmed at the
+pinned source revision. At the Task-tool lookup site, a missing ID leads to a fresh
+child; the visible lookup does not prove parent ownership, while the surrounding
+authorization path has not been fully traced. HorizonCode must verify the full peer
+binding before resume. The detailed paths are in `research docs/opencode.md`.
+Codex's app-server/ThreadManager and persistent ThreadGoal schema are source-backed.
+Current `ThreadManager` also imports a local agent-message-board implementation, so
+the feature exists as a source subsystem. This review did not trace its full API or
+validate the earlier claim of remote subscriptions/SSE; that transport detail remains
+unconfirmed here. AgentProfile, input receipts, context epochs, event-envelope
+fields, and a task DAG are already represented in HorizonCode's target docs; they
+must not be mislabeled as absent merely because implementation remains incomplete.
 
 ## Findings from this read-through
 

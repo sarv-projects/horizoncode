@@ -2,8 +2,9 @@
 
 Module LLD for the three edge components `CMP-acp`, `CMP-mcp`, and `CMP-headless`, plus the language edge-SDK seam. Protocols are seams onto the one control plane; they never contain loop logic (`REQ-PROTO-005`, `DEC-003`).
 
-**Implementation status at 2026-09-27:** the Rust ACP crate is server-only. Its source
-handles `initialize`, `session/new`, `session/close`, `session/prompt`, and
+**Implementation status at 2026-09-28 source snapshot (`23d4ce8`):** the Rust ACP
+crate remains server-only. Its source handles `initialize`, `session/new`,
+`session/close`, `session/prompt`, and
 `session/cancel`; it does not currently implement session `load/list/resume/fork`,
 `set-mode`, `set-model`, `set-config-option`, client-side ACP transport, MCP, or an edge
 SDK, durable-goal preparation/approval, or ACP elicitation handling. The method tables
@@ -36,7 +37,7 @@ Let external editors and peer agents drive HorizonCode, let HorizonCode drive pe
 **Edge SDK seam — own.**
 - A TypeScript client that talks to the binary over stdio and wraps ACP/headless. It is an *edge*; it must never host loop, provider, tool, or policy logic (`DEC-002`).
 
-**Not owned.** Loop, scheduling, and turn state (`CMP-runner`); durable session store (`CMP-session`); tool execution and permission filtering (`CMP-tools`); allow/ask/deny decisions (`CMP-guard`); subagent lifecycle (`CMP-orch`); provider transports (`CMP-provider`).
+**Not owned.** Loop, scheduling, and turn state (`CMP-runner`); durable Thread store (`CMP-session`, historic component name); tool execution and permission filtering (`CMP-tools`); allow/ask/deny decisions (`CMP-guard`); subagent lifecycle (`CMP-orch`); provider transports (`CMP-provider`).
 
 ## Interfaces
 
@@ -47,11 +48,17 @@ Let external editors and peer agents drive HorizonCode, let HorizonCode drive pe
 | `CMP-headless` | `CMP-runner`, `CMP-session` | shells, CI |
 | Edge SDK | `CMP-acp`, `CMP-headless` over stdio | external TS embedders |
 
-**Control-interface rule.** All three surfaces translate to the same operations: create/resume session, submit prompt, steer, cancel, observe streamed events, resolve permission. No surface may reach a transport, provider, or persistence handle directly.
+**Control-interface rule.** All surfaces translate to the same versioned operations in
+`CMP-control-api` (`ARCH/31`): create/resume session, submit prompt, steer, cancel,
+observe streamed events, resolve permission, and invoke run-control operations. The
+typed dispatcher routes to canonical domain owners. A local app-server is only one
+transport for this interface; ACP and MCP remain protocol adapters and cannot create
+alternate state/permission semantics. No surface may reach a provider or persistence
+handle directly.
 
 ## Data / state model
 
-**ACP session binding.** An ACP `sessionId` maps to a durable `CMP-session` id. Optional lifecycle methods are advertised only with the exact capability required by the pinned protocol schema. In v1, `session/load` replays history (`loadSession`); `session/resume` restores without replay (`sessionCapabilities.resume`); `session/list` supports filtered/paginated catalog reads (`sessionCapabilities.list`); `session/delete` is a destructive operation gated by `sessionCapabilities.delete`; and `session/close` cancels active work/releases active resources (`sessionCapabilities.close`). `session/fork` remains unstable in v1. UI detach and long-lived run attachment are HorizonCode control-plane operations and MUST NOT be mapped to ACP `session/close`, because close cancels active work.
+**ACP session binding.** ACP `sessionId` is an external protocol identifier bound to exactly one HorizonCode `ThreadId`; it is not a `CMP-session`/Thread ID and never mints a second local conversation identity. `session/new` creates one HorizonCode Thread and stores the ACP ID as an external binding. Optional lifecycle methods are advertised only with the exact capability required by the pinned protocol schema. In v1, `session/load` replays the bound Thread history; `session/resume` reattaches without replay only when the pinned protocol semantics permit it; `session/list` projects bounded Thread summaries with external ACP IDs; `session/delete` is destructive and gated by `sessionCapabilities.delete` and explicit Thread-deletion policy; and `session/close` closes the ACP binding and applies the protocol's cancellation/resource-release behavior without deleting Thread history. `session/fork` remains unstable in v1. UI detach and long-lived Run attachment are HorizonCode control-plane operations and MUST NOT be mapped to ACP `session/close`, because close can cancel active work.
 
 **ACP update classes** (one typed vocabulary, no opaque chunk channel): message chunks, thought summaries (never raw chain-of-thought), plan, tool call, tool-call update, usage update, available-commands, config-option update, and the prompt/step boundary markers.
 
@@ -60,13 +67,13 @@ Let external editors and peer agents drive HorizonCode, let HorizonCode drive pe
 | ACP method | Control operation | Session effect |
 |---|---|---|
 | `initialize` | negotiate capabilities | none |
-| `session/new` | create | mint durable session |
-| `session/load` (optional) | replay + attach | history projection; only when `loadSession` was advertised |
-| `session/resume` (optional) | reattach | continue durable session without replay; only when session resume was advertised |
-| `session/list` (optional) | list sessions | bounded, paginated session summaries; only when session list was advertised |
-| `session/delete` (optional) | delete session | destructive, audited, capability-gated; separate from close |
-| `session/close` (optional) | close active protocol session | cancel active work and release active resources; preserve durable history |
-| `session/prompt` | submit turn | append events; stream updates |
+| `session/new` | create Thread + bind ACP ID | mint one local `ThreadId`; ACP ID is an external binding |
+| `session/load` (optional) | replay + bind | history projection from the bound Thread; only when `loadSession` was advertised |
+| `session/resume` (optional) | reattach binding | continue the bound Thread without replay only when advertised |
+| `session/list` (optional) | list bindings/Threads | bounded, paginated Thread summaries with external ACP IDs |
+| `session/delete` (optional) | delete via explicit policy | destructive and audited; never infer ACP ID is local Thread ID |
+| `session/close` (optional) | close protocol binding | apply negotiated cancellation/release behavior; preserve Thread history |
+| `session/prompt` | submit Thread turn | append events to bound Thread; stream updates |
 | `session/cancel` notification | cancel turn (cooperative) | in-flight work settles as `interrupted` |
 | `session/set_mode` / `session/set_config_option` (optional) | adjust advertised mode/config | validate offered values and record accepted change; no v1 `session/set_model` method |
 | `session/request_permission` (agent → client baseline request) | guard ask → client | wait for exact reply; otherwise typed denial on error/deadline |
@@ -74,9 +81,16 @@ Let external editors and peer agents drive HorizonCode, let HorizonCode drive pe
 | `terminal/create`, `terminal/output`, `terminal/wait_for_exit`, `terminal/kill`, `terminal/release` (client → agent, optional) | governed client terminal access | require advertised client capability and resource limits |
 | `session/fork` (unstable in v1), task graph, UI detach, checkpoints/rewind | HorizonCode control API | do not advertise as stable ACP; unstable fork is opt-in and negotiated separately |
 
-**Session listing result and error mapping.** `session/list` (optional, advertised only
-when the exact capability is implemented and tested) projects `SessionListResult`
-(`ARCH/07`) without adding a second notion of listing:
+**Session listing result and error mapping.** The versioned internal control API
+owns the rich `SessionListResult` (`ARCH/07`), including per-entry integrity
+states and store-level issues. ACP `session/list` may expose only fields allowed
+by the exact pinned ACP schema. It must not add `enumeration_complete` or
+`SessionListIssue` as unnegotiated root fields. Map incomplete enumeration using
+the pinned standard error/result contract or a negotiated extension; otherwise
+return the standards-compliant subset and preserve the detailed issue in the local
+control API. `session/list` is advertised only when the exact mapping is tested.
+
+The local listing contract (separate from the ACP wire shape):
 
 - every entry is returned, including `UNREADABLE`/`CORRUPT`/`UNSUPPORTED`/`RECOVERY_PENDING`
   rows, each with its typed integrity state; a session is never dropped to make a
@@ -96,7 +110,7 @@ state. Neither surface may substitute "no sessions" for a failed scan.
 
 `session/request_permission` is an **agent-to-client request** when HorizonCode is serving ACP; it is a baseline client method in ACP v1, not an optional capability. In client mode, HorizonCode receives the peer's request. A method-not-found response, disconnect, malformed outcome, or timeout is a typed reject/deny; it is not evidence of a missing negotiated permission capability. Keep directions distinct in type names and logs.
 
-**Child permission bridge.** A child may have an internal session ID unknown to the ACP client. Persist a mapping `{run_id, root_acp_session_id, child_attempt_id, child_session_id, request_id, requester_identity, tool_call_id, action_digest, resource_digest, deadline, state}` before forwarding. Send the permission request with the root ACP session ID as required by the client-facing binding, while retaining the child/requester correlation internally. Accept a reply only once, reauthorize against the parent ceiling and current guard policy, and deliver it to the original child request. Missing mapping, disconnect, invalid reply, or deadline becomes typed denial/cancellation and a terminal child receipt; no unresolved waiter is permitted (`REQ-HORIZON-012`, `DEC-035`).
+**Child permission bridge.** A child may have an internal HorizonCode `ThreadId` unknown to the ACP client. Persist a mapping `{run_id, root_acp_session_id, child_attempt_id, child_thread_id, request_id, requester_identity, tool_call_id, action_digest, resource_digest, deadline, state}` before forwarding. Send the permission request with the root external ACP session ID as required by the client-facing binding, while retaining the child Thread/requester correlation internally. Accept a reply only once, reauthorize against the parent ceiling and current guard policy, and deliver it to the original child request. Missing mapping, disconnect, invalid reply, or deadline becomes typed denial/cancellation and a terminal child receipt; no unresolved waiter is permitted (`REQ-HORIZON-012`, `DEC-035`).
 
 **Permission exchange.** The method token is exactly `session/request_permission`; it is frozen by `DEC-023` and no alias is accepted. The server emits a request with a tool-call descriptor and the options allowed by the pinned ACP schema and local policy; the protocol option IDs/semantics MUST be schema-derived, not invented as fixed `allow-once/allow-always/reject-once` strings. An allow-always response can be offered only if the pinned schema and guard policy can represent the exact remembered pattern; `CMP-guard` shows it before confirmation (`REQ-GUARD-003`). Requests are serialized per session with a bounded queue and deadline; overlapping requests cannot block cancellation or control messages (`DEC-035`).
 
@@ -140,7 +154,7 @@ Signals (`SIGINT`/`SIGTERM`) map to cooperative cancel; the run always emits its
 ## Lifecycle & flows
 
 1. **ACP server boot.** Open the stdio NDJSON stream, answer `initialize` with only implemented capabilities, then serve supported requests. `prompt` starts a turn through the control interface and streams updates until exactly one terminal state. `cancel` is cooperative and stops streaming promptly (`REQ-LOOP-005`). A disconnect does not imply detached-run persistence unless the supervised controller and attach API are active (`REQ-HORIZON-011`).
-2. **Session lifecycle.** ACP `session/new` mints a durable session; optional `load`/`resume` have different replay semantics; `list` is paginated; `delete` is a separate destructive action; `close` cancels active work and releases active resources but preserves history. UI detach, task graph, checkpoint, rewind and (unless explicitly enabled as unstable) fork use HorizonCode's control API.
+2. **ACP Session lifecycle.** External ACP `session/new` binds one identifier to a local durable Thread; optional `load`/`resume` have distinct replay semantics; `list` is paginated; `delete` follows explicit local Thread-deletion policy; `close` closes the protocol binding and may cancel active work while preserving Thread history. UI detach, task graph, checkpoint, rewind and (unless explicitly enabled as unstable) fork use HorizonCode's control API.
 3. **Permission flow.** A guard `ask` becomes one baseline `session/request_permission` request; the schema-valid response returns to `CMP-guard`; the loop resumes or declines. A peer method error, malformed response, disconnect, or timeout fails closed.
 4. **ACP client flow.** `CMP-orch` requests an ACP child; `CMP-acp` negotiates version/capabilities, opens only a supported session lifecycle, submits the bounded task, and maps peer updates into durable child events. Core tickets never cross the boundary; the child returns a receipt. Permission requests map to the root session and return to the originating child through the bridge above. If a peer lacks permission or cancel capability required by the task, refuse delegation or apply an explicit narrower policy; do not infer support.
 5. **MCP connect.** On session start, connect configured servers, discover capabilities (paginated), and mirror tools. On tool-list change, debounce and refresh. On disconnect, reconnect with backoff; a failed server is isolated and does not block the session.
@@ -235,7 +249,7 @@ grammar.
 |---|---|
 | `REQ-PROTO-001` | Target ACP stdio server with standard v1 baseline and capability-gated optional methods, exact advertised support, streamed updates, and an unstable gate for fork; UI detach and long-horizon task operations remain in HorizonCode's control API |
 | `REQ-PROTO-002` | The canonical agent-to-client `session/request_permission` method carries the permission request to the ACP client; allow/deny is honored by `CMP-guard` and no alias is accepted (`DEC-023`). |
-| `REQ-PROTO-003` | MCP host over stdio and streamable HTTP with per-session dedupe |
+| `REQ-PROTO-003` | MCP host over stdio and streamable HTTP with per-server-connection tool dedupe; MCP protocol sessions are not HorizonCode Thread IDs |
 | `REQ-PROTO-004` | ACP client mode drives peer agents as subordinates (behind `CMP-orch`) |
 | `REQ-PROTO-005` | All surfaces talk through one control interface; no loop logic in a surface |
 | `REQ-GUARD-003` | Allow-always persists the exact pattern, shown before confirmation |

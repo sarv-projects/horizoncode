@@ -23,18 +23,26 @@ Output recall and hook coverage are features described by upstream documentation
 
 | Technique | Compresses | Runs | Lossy | Fit for a remote-API Rust CLI |
 |---|---|---|---|---|
-| **Prompt caching** (stable prefix, explicit breakpoint) | Billing/latency of a stable prefix | Provider (one flag) | No (exact reuse) | **Adopt first** — largest proven lever |
+| **Prompt caching** (stable prefix, explicit breakpoint) | Repeated stable-prefix processing; billing/latency only where provider documents the effect | Provider adapter | No (exact reuse) | Implement only for documented route capabilities; comparative savings are unmeasured here |
 | **Ranked repo map + just-in-time reads** | What is loaded at all | Client | No (selection) | **Adopt** — avoid loading, don't compress |
 | **Deterministic observation formatters + recall** | Tool observations | Client | Yes, recoverable | **Adopt** (eval-gated per family) |
 | **Keep-tail + structured-summary compaction + tool-result clearing** | Old turns | Client | Yes | **Adopt** as engine core |
 | **Extractive retrieved-context compression** | Retrieved docs | Client | No (selection) | Prototype |
 | **Small-encoder prompt compression** (perplexity/classifier token dropping) | Prompt tokens | Client, CPU-friendly | Yes (ungrammatical) | Prototype for **prose only** — risky on code |
-| **Code-aware span pruning** | Redundant code spans | Client | Yes | Prototype; most promising 2025–26 code-specific line |
+| **Code-aware span pruning** | Candidate redundant code spans | Client | Yes | Untested hypothesis; no comparative evidence here establishes it as promising or safe |
 | **Recursive/hierarchical summaries (RAPTOR-style tree)** | Corpus + long trajectories | Client (offline build) | Yes | Adopt for repo knowledge / long-horizon notes |
 | **Soft-prompt / gist compression, xRAG** | Prompt → dense vectors | Server (needs model control) | Yes, extreme | **Avoid** — impossible via remote APIs |
 | **KV-cache / attention compression** | KV tensors | Server (self-host only) | Yes | **Avoid** — no API surface |
 
 Provider caching is provider-specific: some APIs expose prompt-cache usage/controls, others do not or report different accounting classes. Treat cache behavior as a negotiated adapter capability rather than a universal property or the only provider-side reuse mechanism.
+
+The table's order is an implementation/evaluation order, not a claim of measured
+effectiveness. The cited upstream RTK documentation describes its own byte-based
+estimate and reduction claims; HorizonCode has no independent task-level evidence for
+any relative compression ranking. Provider caching documentation describes route
+semantics, not cross-provider comparative savings. No strategy is called “best” until
+paired task evaluation measures verified success, cost basis, latency, retries, output
+recall, and local resource use.
 
 ## 3. Extractive vs abstractive (code vs prose)
 

@@ -23,7 +23,7 @@ Owns:
 - the registry and the permission-filtered materialization that produces the
   model's advertised tool set;
 - the built-in tool set;
-- MCP-bridged tool registration (mirrored definitions, deduped per session);
+- MCP-bridged tool registration (mirrored definitions, deduped per server connection and definition digest);
 - permission assertion immediately before each execution;
 - output bounding and managed-output spill;
 - the parallel-safe vs exclusive declaration consumed by the scheduler;
@@ -60,8 +60,9 @@ make({
   toModelOutput?: ({ input, output }) -> Content[],
 })
 
-ToolContext { sessionID, agent, assistantMessageID, toolCallID }
-Content = { type: "text", text } | { type: "file", data, mime, name? }
+ToolContext { sessionID, runID?, taskID?, attemptID?, agent, assistantMessageID, toolCallID }
+Content = { type: "text", text }                 // current model-visible variant
+// Image/audio/file variants are proposed protocol work, not implemented content.
 ```
 
 Runtime behavior of `settle`:
@@ -121,23 +122,102 @@ return { definitions, settle }
 The advertised set is the model's tool list. `CMP-context` counts these
 definitions into the token budget; the registry never sends them itself.
 
-## Built-in tool set
+## Built-in tools: source baseline and target
 
-| Tool | Input (summary) | Mutates | Permission action | Model output |
-|---|---|---|---|---|
-| `read` | `path`, `offset`, `limit` | no | `read` | text page, directory listing, or image content part |
-| `write` | `path`, `content` | yes | `edit` | `Wrote/Created file successfully: <resource>` |
-| `edit` | `path`, `oldString`, `newString`, `replaceAll?` | yes | `edit` | success line + bounded `-`/`+` diff preview |
-| `apply_patch` | `patchText` (add/update/delete hunks) | yes | `edit` | sequential `A/M/D <resource>` lines |
-| `glob` | `pattern`, `path?`, `limit?` | no | `glob` | newline-joined relative paths |
-| `grep` | `pattern`, `path?`, `include?`, `limit?` | no | `grep` | per-file grouped line previews |
-| `bash` / shell | `command`, `workdir?`, `timeout?` | yes | `bash` | captured output + exit/timeout line |
-| `todowrite` | `todos[]` | controller-managed attempt-local progress | `todowrite` | validated progress snapshot |
-| `webfetch` | `url`, `format?`, `timeout?` | no | `webfetch` | fetched text/markdown/html |
-| `websearch` | `query`, `numResults?`, … | no | `websearch` | search result text |
-| `question` | `questions[]` | no | `question` | answered labels (interactive only) |
-| `skill` | `name` | no | `skill` | skill instructions + sampled file list |
-| `task` / subagent | task + role/bounds | spawns | `task` | receipt (summary + metadata) |
+The table is split deliberately: source presence is not inferred from a target
+contract. At HorizonCode Rust source baseline `23d4ce8` (confirmed unchanged for
+Rust/Cargo manifests through HEAD `cbba87b`), these are the first-party tools
+registered by `horizoncode-tools`; `question` is registered only when the caller
+selects interactive mode. The registry has no model-visible skill, web, agent,
+mailbox, LSP, or image tool at that baseline. See `ARCH/29` for exact files/tests.
+
+| Tool | Status at baseline | Input (summary) | Mutates | Permission action | Model output |
+|---|---|---|---|---|---|
+| `read` | implemented | `path`, `offset`, `limit` | no | `read` | UTF-8 text page, directory listing, or binary-file notice |
+| `write` | implemented | `path`, `content` | yes | `edit` | success line |
+| `edit` | implemented | `path`, `oldString`, `newString`, `replaceAll?` | yes | `edit` | success line and bounded diff preview |
+| `apply_patch` | implemented | `patchText` (add/update/delete hunks) | yes | `edit` | sequential `A/M/D <resource>` lines |
+| `glob` | implemented | `pattern`, `path?`, `limit?` | no | `glob` | newline-joined relative paths |
+| `grep` | implemented | `pattern`, `path?`, `include?`, `limit?` | no | `grep` | per-file grouped line previews |
+| `list` | implemented | directory path/options | no | `list` | directory entries |
+| `bash` | implemented | `command`, `workdir?`, `timeout?` | yes | `bash` | captured output and exit/timeout line |
+| `todo` | implemented | `todos[]` | session-local | `todo` | validated progress snapshot; not durable Task truth |
+| `question` | implemented, interactive-only registration | `questions[]` | no | `question` | answered labels; unavailable headless |
+
+The current shared `ContentPart` type is text-only. Image/audio/file parts and
+multimodal tool results are proposed protocol work; `read` does not return an
+image part at the source baseline. Any future media path needs an explicit typed
+representation, byte/pixel limits, artifact identity, provider capability check,
+and evidence that previews are not mistaken for originals.
+
+### Proposed capability candidates (not registered tools)
+
+These are architecture candidates, not promises that all belong in the first
+release. Each must use the existing capability registry and the same permission,
+sandbox, audit, budget, and output-limiting paths; none may create a parallel tool
+engine.
+
+| Candidate | Fit and constraint | Status |
+|---|---|---|
+| Skill activation | Add a first-party invocation path for discovered skills: verify the listed digest, load only the selected body/references, frame all content as untrusted instructions/data, and run any script only through the governed process path. Discovery and `/skills list/show` currently exist; model invocation does not. | proposed; bounded under AX-110 follow-up |
+| Symbol/LSP navigation | Reuse repository-intelligence's versioned LSP/SCIP interface for symbol, references, diagnostics, and optionally rename previews. Do not duplicate an LSP client in the tool crate; edits still go through `edit`/patch and guard. Serena may be an MCP integration. | proposed; prioritize read-only calls |
+| Web search/fetch | Useful for documented tasks, but only through a mediated egress service with redirect revalidation, DNS/IP checks, private/link-local denial, byte/deadline caps, content provenance, and untrusted-result framing. | proposed; no direct arbitrary URL fetch |
+| MCP resources/prompts | MCP tools are already the first integration surface. Add resources/prompts only with user-visible provenance, URI allowlists, size bounds, change notifications, and explicit selection; do not silently inject server content. | staged proposal; validate pinned MCP revision first |
+| Code Mode / tool composition | Consider only after measured repeated-call overhead; generated code receives no ambient authority and every nested call goes through this registry, guard, sandbox, budget, and audit. | optional proposal; defer until benchmark |
+| Independent verification | Tests may be run by workers through the normal shell path, but the worker must not manufacture its own PASS. Verification belongs to `CMP-verifier`, bound to the tested revision/specification. | control-plane component, not a worker tool |
+| Extensions/plugins | Keep plugins disabled by default, provenance-pinned, isolated, permission-filtered, and versioned. Prefer MCP/skill interoperability before executable in-process plugin loading. | proposed; no unrestricted native plugins |
+
+### Target built-in capability set
+
+This is the intended first-party product surface, not a statement about current source
+registration. Keep the set small and route every invocation through the one registry,
+guard, sandbox, audit, budget, and output store.
+
+| Capability group | Target built-ins | Boundary |
+|---|---|---|
+| Repository | `read`, `list`, `glob`, `grep`, `search`, `symbol`, `references`, `diagnostics`, `git_status`, `git_diff`, `git_log` | Symbol operations use one revision-aware repository-intelligence service; mutations remain `edit`/`write`/`apply_patch`. |
+| Change/execution | `write`, `edit`, `apply_patch`, `bash`, `test`, `todo`, `question` | `test` is a safe command-profile wrapper over governed process execution, not a bypass around shell policy. |
+| Web | `websearch`, `webfetch` | Search and fetch are distinct; results carry URL, retrieval time, redirects, provider, and content digest. All egress uses the one mediated network boundary. |
+| Agent/workflow | `task` (controller-owned delegation), `skill` (progressive instruction activation), `workflow` (validated saved workflow invocation) | A call returns a typed durable receipt; it does not self-verify or change permission. |
+| Media | image input/attachment references and image metadata inspection | Treat media as bounded artifacts with declared MIME, size, digest, and model-route capability; no raw base64 in transcript/context. |
+| Optional integrations | MCP tools/resources/prompts, plugins, and Code Mode | Catalogs are selected/lazy; each nested capability uses the same policy and resource ceilings. Code Mode is deferred until tool-roundtrip evaluation shows a measurable win. |
+
+Do not add a second-purpose `fixer` tool, hidden browsing browser, local shell escape,
+or overlapping semantic index. A built-in persona is a profile/role recipe using this
+same set, not a second agent runtime (`ARCH/27`). A useful initial profile set is
+**Architect/Planner** (read-only planning and task decomposition), **Implementer**
+(bounded write scope), **Explorer** (read-only repository research), and **Reviewer**
+(read-only evidence review). A focused test/debug profile can be offered as a preset,
+but it must not get extra permissions by persona name. The scheduler chooses among
+these based on task contract, capability, independence, cost, and available budget;
+users can choose model/profile per role in `/subagents`.
+
+### Web search/fetch caching and source history
+
+Search provider selection belongs to `CMP-web`, not model-provider routing. The target
+supports an OpenCode-like provider abstraction (provider-specific adapters and
+capability/price evidence), but never assumes a provider is available or free. Search
+returns source URLs and snippets; `webfetch` retrieves one explicit URL after redirect
+and DNS/IP revalidation. Results are untrusted data. A fetch can be cited and cached
+only after the final URL and content digest are recorded.
+
+Keep two caches distinct:
+
+1. A process-local bounded response cache for page bytes, with short configurable TTL,
+   size cap, content digest, and no persistence by default. Do not cache credentialed,
+   personalized, no-store, or otherwise private responses. Never serve stale bytes as
+   current without an explicit stale label.
+2. A local project-associated **source history** containing canonical URL, title,
+   access time, source/provider, status, content digest, and optional run/task reference.
+   It stores no fetched body and no raw search query by default. Strip credentials and
+   sensitive query parameters before persistence; the user can disable, inspect, and
+   purge it. Project identity is the canonical workspace ID, not the directory name.
+
+This adopts the useful project-level “where did the agent read this?” affordance while
+avoiding a persistent web-content mirror. A future content cache requires a separate
+privacy, retention, disk-quota, license, and freshness decision. Provider quotas,
+search charges, and cache hits/misses flow into `CMP-analytics` with actual/estimated/
+unknown provenance.
 
 Behavioral rules per tool:
 
@@ -163,12 +243,56 @@ Behavioral rules per tool:
   (unavailable headless, see below); `skill` injects instructions as data; `task`
   returns a receipt, never a raw transcript (`REQ-ORCH-001`).
 
+### Structured agent questions
+
+The current built-in `question` tool has a small callback contract with a header,
+question text, string options, and one string answer per question. It is interactive
+only; the current tool has no stable option IDs, cardinality rules, durable pending
+request, answer receipt, or headless continuation. These source facts are recorded in
+`ARCH/29`/AX-380. The following is the target contract, not current behavior.
+
+```text
+QuestionRequest = {
+  request_id, origin: {run_id?, task_id?, attempt_id?, thread_id, turn_id,
+                        tool_call_id?, requester_thread_id?},
+  questions: [{question_id, header, prompt, selection: SINGLE | MULTIPLE | TEXT,
+               options: [{option_id, label, description?}],
+               min_selections?, max_selections?, allow_other_text, required}],
+  created_seq, state: OPEN | ANSWERED | DELIVERING | DELIVERED |
+         CANCELLED | EXPIRED | UNKNOWN,
+  deadline?, capability_snapshot_id?
+}
+QuestionAnswer = {
+  answer_id, request_id, delivery_id,
+  responses: [{question_id, selected_option_ids[], free_text?}],
+  payload_digest, answered_at, receipt_ref
+}
+```
+
+The controller validates option IDs and selection cardinality, persists the answer
+receipt, then resumes the exact waiting tool call using the same idempotency identity.
+An identical retry returns the same receipt; changed payload conflicts. A pending
+question survives client disconnect/restart. It suspends only the requesting call at
+its tool boundary; unrelated Tasks can continue when scheduler policy permits. On a
+child question, preserve requester Thread and exact parent/run route. Peer adapters
+may issue questions only when the capability is negotiated and the method is actually
+observable; otherwise report `UNSUPPORTED`/`UNKNOWN` without inventing a local answer
+surface. Headless execution returns `NEEDS_INPUT` plus the stable request reference;
+it never guesses an answer, including under `--yes`.
+
+Answers are untrusted user content. They cannot grant effect authority, approve a
+goal, change policy, or pass a task. The question card is visually and behaviorally
+distinct from a permission request and goal-start confirmation (`ARCH/06`, `ARCH/25`).
+Bound request size/count, pending-request count, answer bytes, and concurrent waiters;
+reserve cancel/control capacity so a blocked question cannot make stop or permission
+replies unresponsive.
+
 ## MCP-bridged tools
 
 `REQ-PROTO-003`. The MCP host registers remote tools into the same registry as a
 scoped batch. Their names are namespaced, their schemas are mirrored from the
 server, and their permission action is derived from the server + tool identity so
-policy can allow/ask/deny them independently. Per-session deduplication means a
+policy can allow/ask/deny them independently. Per-MCP-connection deduplication means a
 server connected twice contributes one definition. A vanished server's scope
 finalizer removes its tools; in-flight calls fail typed (`Unknown tool`).
 
@@ -222,7 +346,16 @@ Model-visible content is bounded so one tool cannot exhaust the window
   available through a managed reference. A preview or pointer MUST NOT be represented
   as the full original media, and transformations are recorded in the request receipt.
 - Structured output is retained even when text is previewed.
-- Managed files are pruned by retention (default 7 days).
+- `CMP-artifact` owns managed-output retention, pin/release, and garbage collection
+  (`ARCH/28`); `CMP-tools` emits bounded owner references and never deletes artifact
+  bytes itself. Checkpoint creation pins every reachable required output; rewind keeps
+  any object still referenced by another retained generation or evidence record.
+- Managed files use the configured retention (default target: 7 days) only after
+  all owner pins are released. Active attempts, unresolved effects, pending
+  verification, and evidence artifacts hold explicit pins; TTL alone cannot
+  remove bytes needed for recovery or a verifier. Once retention expires, an
+  unavailable artifact makes dependent verification `INSUFFICIENT_EVIDENCE`, not
+  a silent lookup miss. `CMP-artifact` owns pin/release/GC policy (`ARCH/28`).
 - Transport-specific caps apply before bounding: shell capture, fetch body,
   search body, and page reads each have their own byte ceiling; binary files and
   oversized files are handled by an explicit read-only/refusal path.
@@ -241,6 +374,18 @@ Model-visible content is bounded so one tool cannot exhaust the window
   partitions calls into parallel-safe groups separated by barriers.
 
 The declaration is fixed per tool definition; it cannot be overridden per call.
+
+### Tool-call order and replay
+
+Every fully admitted provider response assigns each call a stable `call_ordinal` in
+the order it appeared in that response, alongside its unique call ID. Safe calls may
+execute concurrently, and durable completion events record their actual completion
+times/order; however, the next model-visible conversation projection emits each
+call/result pair in `call_ordinal` order, with typed failure/cancellation results in
+the original slot. Do not infer call order from completion time or reorder canonical
+event history. A crash may therefore replay the same ordered projection from durable
+call IDs and receipts without re-running a settled effect. Reused IDs are rejected
+before any call in the malformed response is dispatched (`ARCH/25` ToolBatch).
 
 `todowrite` is a typed, bounded progress update for the current attempt, not a
 filesystem or general session-store write. `CMP-runner` validates and appends the
@@ -275,13 +420,22 @@ The model never receives UI-only detail (raw patches, full logs, telemetry);
 the UI never depends on the model's truncated view. The split is produced at
 settlement, so both projections are derived from one execution.
 
-## Headless restrictions
+## Headless question delivery
 
-`REQ-PROTO-005`. Tools that block on a human are unavailable or degraded in
-non-interactive mode:
+`REQ-PROTO-005`. **Current source status at `23d4ce8`:** `question` is registered only
+when `BuiltinOptions::interactive` is true; headless `QuestionTool` returns
+`Unavailable` and there is no durable `NEEDS_INPUT` broker. This is an implementation
+gap recorded by `AX-380`, not the target contract.
 
-- `question` is not advertised in headless runs; the model is instructed to
-  proceed or fail explicitly rather than wait.
+**Target behavior (`REQ-UI-021`, `REQ-ORCH-010`).** If a durable question broker is
+available, headless mode exposes `question` as a suspending capability. It returns a
+stable `NEEDS_INPUT` receipt, persists the request, and exits or waits according to the
+headless invocation mode; an authorized operator can answer by request ID and resume.
+If the broker is unavailable, omit the capability and pause/report a typed
+`QUESTION_UNSUPPORTED`; do not prompt stdin, invent an answer, or tell the model to
+continue as if the clarification were optional. `--yes` never answers a question.
+
+Other effectful tools needing human permission remain governed separately:
 - Permission prompts use the run's explicit headless policy and never block on stdin.
   The default is deny for effectful actions requiring an interactive decision; only
   actions already eligible under an explicitly configured, run-scoped approval policy
@@ -290,6 +444,12 @@ non-interactive mode:
   unavailable, timed-out, or malformed replies fail closed.
 - `task`/subagent and background jobs are bounded by configuration; headless
   runs surface receipts through structured stdout/JSON rather than a UI panel.
+- Agent-message tools are materialized only in an enabled managed Run when the
+  profile and current guard policy permit them. The runner supplies `runID`,
+  `taskID`, and `attemptID` from authenticated execution context; model arguments
+  cannot choose the sender, widen recipient membership, or forge principal identity.
+  Message body is untrusted, size-bounded, and never sent to a provider until the
+  recipient Session's safe-boundary promotion (`ARCH/32`).
 
 ## Data / state model
 
@@ -354,7 +514,7 @@ only reflects the resulting advertised set.
 
 | Requirement | Where satisfied |
 |---|---|
-| `REQ-TOOL-001` | Built-in set including read/write/edit/apply-patch/glob/grep/shell/todo/question/webfetch/websearch. |
+| `REQ-TOOL-001` | Built-in set including read/write/edit/apply-patch/glob/grep/shell/todo/question/webfetch/websearch; managed-run agent messaging is gated by `REQ-HORIZON-031`. |
 | `REQ-TOOL-002` | `Tool.make` typed input + output + optional structured schema. |
 | `REQ-TOOL-003` | Permission-filtered materialization removes wholly-denied tools. |
 | `REQ-TOOL-004` | Settlement splits model content from UI detail. |
@@ -362,10 +522,11 @@ only reflects the resulting advertised set.
 | `REQ-LOOP-003` | Parallel-safe vs exclusive declarations + scheduler barriers. |
 | `REQ-LOOP-005` | Aborted calls yield typed partial results. |
 | `REQ-GUARD-001..004` | Guard asserted per call; fail closed; remembered patterns. |
-| `REQ-PROTO-003` | MCP-bridged registration with per-session dedupe. |
+| `REQ-PROTO-003` | MCP-bridged registration with per-server-connection tool dedupe; protocol sessions are not HorizonCode Thread IDs. |
 | `REQ-PROTO-005` | Headless/ACP behavior with no surface-owned loop logic. |
 | `REQ-SEC-002/003` | Tool output is untrusted. Targets are validated before use, but the ownership is split: `CMP-guard` authorizes (allow/ask/deny) and `CMP-sandbox` enforces reach — the tool plane only extracts resources and may raise, never lower, a decision. |
 | `REQ-SEC-025` | Path-shaped shell arguments are extracted into `fs.*` resources on one guard request alongside the command-prefix resource; deny-glob → `deny`, outside-root → `ask`, unconfineable tier → refuse, all decided by the guard (`DEC-024`, `DEC-025`). |
+| `REQ-HORIZON-031` | Agent-message tools use controller-authenticated run/attempt identity, explicit same-Run recipients, guarded bounded posting, and safe-boundary Session inbox promotion (`ARCH/32`). |
 
 ## Open questions
 
@@ -373,13 +534,15 @@ only reflects the resulting advertised set.
    per-agent; and whether the limit scales with budget.
 2. **Parallel-safe classification of `task`.** Whether sub-agent spawn is
    parallel-safe (independent worktrees) or always exclusive (shared session).
-3. **Managed-output retention and cleanup ownership.** Whether `CMP-tools`,
-   `CMP-session`, or a background sweep owns pruning, and whether paths survive
-   checkpoint/rewind.
+3. **Managed-output retention ownership — resolved.** `CMP-artifact` owns pins,
+   release, and GC; checkpoints/evidence retain every reachable required output.
+   See `ARCH/28` and the invariant above.
 4. **MCP permission-action derivation.** The exact scheme that maps a server+tool
    identity to an allow/ask/deny rule without leaking server specifics into the
    model-visible name.
 5. **Structured-output adoption for read/glob/grep.** Which tools benefit from a
    stable structured projection (for UI and eval) versus text only.
-6. **Headless `question` substitute.** Whether the model gets a synthetic
-   guidance result or the tool is fully absent, and the effect on model behavior.
+6. **Headless question delivery — resolved target.** Use durable `NEEDS_INPUT` when
+   the question broker is available; otherwise omit the tool and pause with typed
+   `QUESTION_UNSUPPORTED`. Do not synthesize an answer or ask the model to continue.
+   Current code remains interactive-only; see the source-status block and AX-380.

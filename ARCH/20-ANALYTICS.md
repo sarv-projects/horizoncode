@@ -2,6 +2,17 @@
 
 `CMP-analytics`. Observability for long-horizon work. **Local-first**: the analytics path performs no network egress.
 
+## Source status
+
+The schema and lifecycle below are the **proposed target**, not the current
+analytics database contract. At Rust baseline `23d4ce8` (HEAD `cbba87b`,
+2026-09-28), `AnalyticsEvent` is session/turn/step oriented and records
+USD-specific `cost_micros_usd`; run/task/attempt attribution, native source
+currency, quota provenance, and pinned pricing snapshots are not established by
+the present event type. Inspect `crates/horizoncode-analytics/src/event.rs` and
+`cost.rs`; delivery remains tracked by AX-109/334. Do not label target fields as
+stored or verified until migrations and evidence land.
+
 ## Purpose
 
 Answer, truthfully and on demand: what did this session/turn cost, which tools and models were used, how well did routing work, and where did time and money go. Analytics exists to make long runs *inspectable*, not to decorate the UI.
@@ -31,11 +42,13 @@ Out of scope: being a source of truth for sessions or audit. `CMP-session` and `
 
 ## Data / state model
 
-Append-only **event ledger** `~/.horizoncode/analytics/events.jsonl` (source of truth, rebuildable) plus an SQLite rollup index.
+The append-only `~/.horizoncode/analytics/events.jsonl` is a durable, rebuildable **analytics projection**, not a canonical source of execution truth. Its rows are derived from canonical Thread, audit, provider, tool, and controller facts. SQLite rollups are derived again from this ledger. A rebuild must validate the source references and digests; it must not infer missing facts or promote an analytics-only row into an execution/audit fact. The event ledger itself is recoverable from its canonical sources and may be compacted only after the configured retention/export contract is satisfied.
 
-`analytics_event` (one per turn/step/tool): `{event_id, run_id?, task_id?, attempt_id?, turn_id, session_id, project, agent, model, kind, seq, ts, tokens{input,output,cache_read,cache_creation,reasoning}, money{amount_decimal?, currency?, basis, source, pricing_version?, observed_at?}, quota{units?, unit?, basis, source?}, tool{name,outcome,latency_ms,bytes}, retry{reason,attempt}, error_class}`. `basis = actual | estimated | included | unknown`; an unknown amount has no fabricated numeric value. Currency uses ISO 4217 where known. Preserve the original source amount as immutable evidence.
+`analytics_event` (one per turn/step/tool): `{event_id, run_id?, task_id?, attempt_id?, thread_id, turn_id, project, agent, model, kind, source_refs[], audit_seq?, effect_id?, effect_receipt_ref?, ts, tokens{input,output,cache_read,cache_creation,reasoning}, money{amount_decimal?, currency?, basis, source, pricing_version?, observed_at?}, quota{units?, unit?, basis, source?}, tool{name,outcome,latency_ms,bytes}, retry{reason,attempt}, error_class}`. `source_refs[]` contains one or more `DurableFactRef` values: `{store_id, aggregate_type, aggregate_id, seq, event_id, payload_digest, schema_version}`. A ref identifies the canonical persisted fact from which the analytics row was derived; it is not a copied payload. Every event that represents a security-relevant effect MUST carry its authoritative audit `DurableFactRef` (including `audit_seq`) or stable `effect_receipt_ref` and `effect_id`; ordinary usage-only rows still require a canonical source ref and must not invent an effect link. Missing, unreadable, or digest-mismatched source facts quarantine the projection row and raise an integrity diagnostic; they do not become zero usage or successful work. `basis = actual | estimated | included | unknown`; an unknown amount has no fabricated numeric value. Currency uses ISO 4217 where known. Preserve the original source amount as immutable evidence. Imported legacy session events retain their source payload/digest; a versioned projection maps their verified local conversation ID to `thread_id`.
 
-Derived tables: `session_usage`, `session_model_usage` (per-route upsert), `tool_stats`, `daily_rollup`, `pricing_snapshot{version, source, fetched_at}`.
+Derived tables: `thread_usage`, `thread_model_usage` (per-route upsert), `tool_stats`, `daily_rollup`, `pricing_snapshot{version, source, fetched_at}`. Existing `session_usage` projections are rebuildable and migrate from canonical Thread events; they do not create a second conversation identity.
+
+Machine export envelope: `AnalyticsExport = {export_id, schema_version, generated_at, query, rows[], source_coverage: COMPLETE | INCOMPLETE, missing_ranges[], source_manifest_digest}`. A complete export requires validated source refs for the entire declared query range. An incomplete export names unavailable/corrupt owner ranges and must not be presented as a complete total. Sanitization changes the exported view but never rewrites canonical source facts.
 
 Cost semantics: **observed vs estimated** must never be conflated. `Money` rows preserve source currency, amount basis, pricing provenance, and observation time. Missing price is unknown, not zero. Mixed currencies are grouped separately; an optional converted view records its rate, source, timestamp, and rounding without rewriting the original. If a run budget is denominated in one currency, provider amounts are converted only using the run's pinned, policy-approved rate snapshot; if no usable rate exists, reserve/fail-closed according to the configured budget policy instead of inventing a total. Tokens, quota usage, billed amount, included plan benefit, and provider-reported estimate remain distinct (`REQ-ANALYTICS-007`, `DEC-034`).
 
@@ -48,17 +61,18 @@ Metric definitions:
 
 ## Lifecycle & flows
 
-1. `CMP-provider` and `CMP-tools` emit usage/outcome facts during a step; `CMP-session` already persists the step.
-2. Analytics appends ledger events (coalesced writes), then rolls up affected keys.
-3. Queries read rollups; if a rollup is missing/corrupt, it is rebuilt from the ledger.
-4. `export` streams the ledger (optionally sanitized); `stats`/`insights` aggregate on read.
+1. `CMP-provider`, `CMP-tools`, `CMP-guard`, and `CMP-orch` append canonical facts through their owning durable stores; Thread events persist model-visible step boundaries.
+2. Analytics reads committed canonical facts, appends derived ledger rows with `source_refs[]` (coalesced writes), then rolls up affected keys. A row is not visible as complete until its source refs validate.
+3. Queries read rollups; if a rollup is missing/corrupt, it is rebuilt from the derived ledger. If the ledger is missing/corrupt, it is rebuilt from the referenced canonical facts within the retention window, with explicit incomplete-coverage status if a source is unavailable.
+4. `export` streams a versioned export that includes source-reference coverage (optionally sanitized); `stats`/`insights` aggregate on read.
 
 ## Failure modes
 
 - **Missing/unknown pricing** → mark `estimated`/`unknown`; never guess.
 - **Clock skew** → events carry monotonic sequence as tiebreak; rollups keyed by session+turn, not wall time alone.
-- **Crash mid-rollup** → rollup is derived; rebuild from ledger (same recovery stance as sessions).
-- **Ledger unbounded growth** → retention/rotation policy; aggregates survive compaction.
+- **Crash mid-rollup** → rollup is derived; rebuild from the derived ledger.
+- **Ledger missing/corrupt or source unavailable** → replay verified canonical source facts; report exact missing ranges rather than silently claiming complete totals.
+- **Ledger unbounded growth** → bounded retention/rotation policy; preserve required canonical sources and export receipts before compacting derived rows. Aggregates survive only with coverage metadata showing the source range.
 - **Sanitization miss** → a deny-list scrub runs before any export; prompts and file contents are excluded by default.
 - **Mixed currency rollup** → emit separate currency buckets and no combined total unless a traceable conversion snapshot is selected.
 - **Provider reports included/zero billed usage** → record monetary basis and quota consumption independently; zero invoice amount never erases tokens or limits.
@@ -70,10 +84,10 @@ Metric definitions:
 
 ## Requirements mapping
 
-`REQ-ANALYTICS-001..007`.
+`REQ-ANALYTICS-001..008`.
 
 ## Open questions
 
-- Rollup retention window vs ledger retention.
+- Exact analytics projection retention/window and coverage metadata when canonical source facts themselves expire or are exported.
 - Optional OTEL attribute set and stability guarantees.
 - Whether "commits/PRs attributed" belongs here or in the orchestration/CI layer.

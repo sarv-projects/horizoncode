@@ -52,8 +52,8 @@ an allow (`EDGE-038` analogue).
 
 ```
 Rule        = { action: Glob, resource: Glob, effect: allow|ask|deny }
-Ruleset     = [Rule]                      // ordered; index = precedence
-RuleSource  = GlobalConfig | ProjectConfig | AgentLevel | SessionOverride
+Ruleset     = [Rule]                      // ordered only within one authority layer
+RuleSource  = GlobalConfig | ProjectConfig | AgentLevel | ThreadRestriction
 Decision    = { effect, matched: [RuleRef], source, policy_hash }
 Pending     = { id, session, action, resources[], save[], deferred, created_at, timeout }
 SavedRule   = { project, action, resource }   // persisted "always" memory
@@ -84,8 +84,10 @@ RunPostureGrant = { run_id, actor, classes[], scope_digest, policy_digest,
   control.
 - **Built-in external-directory floor rule.** An `fs.*` resource that names an
   absolute path **outside the granted roots**, is not deny-globbed, and is not
-  explicitly allowed resolves to `ask` — the single `external_directory` ask, and
-  Guard is the one decider for it. The floor is **overridable toward `deny`**
+  explicitly allowed for that same action and resource resolves to `ask` — the
+  single `external_directory` ask, and Guard is the one decider for it. An
+  `fs.read` allow cannot exempt `fs.write`, `fs.delete`, or `fs.move`. The floor is
+  **overridable toward `deny`**
   (a deny-glob, a protected subpath, or a more specific deny rule wins immediately)
   and **never toward a silent `allow`**. A caller that requires the effect to be
   *refused* rather than asked, or that requires a tier which can confine the reach,
@@ -101,10 +103,14 @@ RunPostureGrant = { run_id, actor, classes[], scope_digest, policy_digest,
 ## Lifecycle & flows
 
 ### Startup
-1. Discover config (global → project, nearest wins) and agent/session overrides.
-2. Parse each source into a `Ruleset`, preserving order; reject a malformed layer and
+1. Discover user/global config (then project, nearest wins) and agent/session
+   restrictions.
+2. Parse each source into a `Ruleset`, preserving order within that layer; reject a malformed layer and
    fall back to the previous valid layer with a warning — never fail open.
-3. Concatenate `[global, project, agent, session]`; compute and freeze `policy_hash`.
+3. Resolve each layer independently. The user/global layer is the base policy;
+   project, agent, and Thread layers may only narrow that authority. Existing source
+   code currently flattens layers and is defective; AX-370 owns this correction.
+   Compute and freeze `policy_hash` from the composed result.
 4. Record the requested safe posture (default `act`) and the policy snapshot to
    `CMP-session`/`CMP-audit`; create a reduced-approval grant only after run-scoped
    user acknowledgement.
@@ -113,29 +119,40 @@ RunPostureGrant = { run_id, actor, classes[], scope_digest, policy_digest,
 
 ```
 fn evaluate(action, resources, ctx) -> Decision:
-    rules = concat(global, project, agent, session)     # find-last-wins order
-    if any matching rule in the *outer ceiling* (global, project) is deny:
-        return deny                                    # non-overridable ceiling
-    effects = [ find_last_rule(action, r, rules).effect for r in resources ]
-    effect  = deny if any deny else ask if any ask else allow if any allow
-              else configured_unmatched_effect          # deny by default
+    layers = [user_policy, project_restrictions, agent_restrictions,
+              session_restrictions]
+    if any matching managed or user rule is deny: return deny
+    for each resource:
+        base = resolve_last_match_within_layer(user_policy, action, resource)
+               ?? configured_unmatched_effect          # deny by default
+        restrictions = resolved effects from project, agent, and thread layers
+        effect = max_restrictiveness(base, restrictions) # deny > ask > allow
+    return combine_resources(effect) and apply_external_floor(action)
 ```
 
-- **find-last-wins**: the last matching rule in the concatenated order decides.
-- **External-directory floor.** After the deny ceiling and rule evaluation, an
+- **Rule precedence.** Last matching rule wins only within one source/layer.
+  Across authority layers, use `deny > ask > allow`; project, agent, or session
+  `allow` cannot lower an upstream `ask` or `deny`. A user changes the user policy
+  through a trusted settings surface; lower-trust project content cannot widen it.
+  A one-use approval ticket authorizes only the exact pending effect and does not
+  rewrite persistent policy.
+- **External-directory floor.** After the deny ceiling and layered rule evaluation, an
   `fs.*` resource naming an absolute path outside the granted roots that matched
-  neither a deny glob nor an explicit allow is raised to `ask` by the built-in
+  neither a deny glob nor an explicit user/global allow for that same action and
+  resource is raised to `ask` by the built-in
   floor rule. The floor only ever **raises** the effect (deny > ask > allow); it can
   never lower an existing deny, and a configuration may not set it to `allow`
   (`REQ-SEC-025`, `DEC-024`). The `CMP-tools` extraction that supplies the `fs.*`
   resource may likewise only raise, so the same `deny`/`ask`/`refuse` outcome is
-  reached whether the path arrived from a tool argument or from configuration.
+  reached whether the path arrived from a tool argument or from configuration. A
+  project, agent, or Thread rule cannot waive this floor; a deliberate exception must
+  be configured by the user/global policy owner and still cannot override a deny.
 - **fail-closed default**: an unmatched action resolves to the configured unmatched
   effect, which is `deny` by default and may be set to `ask`; it may **never** be set
   to `allow` (`REQ-GUARD-002`).
-- **Deny ceiling**: an outer-scope deny cannot be widened by a more specific allow.
-  This mirrors "project config may add, never redefine" and keeps untrusted project
-  files from hollowing out a user/enterprise policy.
+- **Monotonic restriction ceiling**: project/agent/session policy cannot lower a
+  user/global `ask` or `deny`; managed policy is an absolute ceiling. A user-approved
+  ticket is bound to the one effect and never becomes a persistent lower-layer rule.
 
 ### Allow
 Issue a ticket bound to the action, resources, `expires_at`, `provider_epoch`, and
@@ -237,9 +254,16 @@ for approval.
 
 ## Configuration
 
-JSONC, discovered global → project (nearest wins), with agent-level and session
-overrides. Precedence for evaluation is global → project → agent → session
-(find-last-wins).
+JSONC, discovered global → project (nearest wins), with agent-level and Thread
+restrictions. File discovery precedence is distinct from policy authority. The
+effective policy resolves last-match only inside one layer, then composes
+monotonically (`deny > ask > allow`); never apply find-last-wins across layers.
+
+**Source status at `23d4ce8` / HEAD `cbba87b`.** Current Rust source does flatten
+the rule layers before selecting its last match. Global/project deny ceilings are
+checked separately, but a lower-trust project allow can override a global ask for
+an in-root resource. This is a known defect assigned to `AX-370`, not the target
+behavior in this document.
 
 ```jsonc
 {

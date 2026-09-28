@@ -45,7 +45,7 @@ controller can derive those states (`DEC-029`).
 
 | Direction | Counterpart | Surface | Notes |
 |---|---|---|---|
-| in | `CMP-acp`, `CMP-headless`, `CMP-tui` | `prompt(session, input)` · `steer(session, input)` · `interrupt(session)` · `cancel(run)` | Surfaces are thin clients of one control interface (`REQ-PROTO-005`). |
+| in | `CMP-acp`, `CMP-headless`, `CMP-tui`, `CMP-control-api` | `prompt(thread_id, input)` · `steer(thread_id, input)` · `interrupt(thread_id)` · `cancel(run_id)` | `thread_id` is HorizonCode's durable conversation identity; ACP/provider session IDs are external bindings. Surfaces are thin clients of one control interface (`REQ-PROTO-005`). |
 | out | `CMP-session` | `admit` · `append` · `loadForRunner` · `contextEpoch` · `resume/wake/interrupt` | The runner is the only writer of turn/step/tool/model events. |
 | out | `CMP-context` | `assemble(step, budget)` · `compactIfNeeded` · `compactAfterOverflow` | Context decides; the runner requests and acts on the result. |
 | out | `CMP-provider` | `resolveRoute(policy)` · `stream(request)` | Route selection and transport retries live here (`REQ-PROV-003`, `REQ-PROV-005`). |
@@ -61,7 +61,7 @@ controller can derive those states (`DEC-029`).
 |---|---|---|
 | **Turn** | One admitted batch of user-facing work. Exactly one terminal state. | `turn/start` … `turn/end` |
 | **Step** | One provider request, the assistant message it produces, the tool calls it emits, and their settlement. A checkpoint boundary. | `step/start` … `step/end` |
-| **Turn attempt** | One invocation of the step engine plus its compaction/overflow-recovery wrapper; returns `{ needsContinuation, step }`. | internal |
+| **Loop invocation** | One bounded invocation of the step engine plus its compaction/overflow-recovery wrapper; returns `{ needsContinuation, step }`. This is transient loop control, not the durable managed `Attempt` entity in `CMP-orch`. | internal |
 
 ### Turn terminal state
 
@@ -83,7 +83,14 @@ controller can derive those states (`DEC-029`).
 
 ### Completion contract
 
-Carried in the durable task graph (`DEC-009`): `goal`, `success_conditions[]`, `verification[]`. It survives compaction and restart. The loop reads it during CONTINUATION; it is the sole basis for `completed`.
+The durable task graph carries the goal, success conditions, required verification,
+and evidence references (`DEC-009`, `ARCH/25`). The runner may read this state to
+decide whether to yield or request another bounded turn; it cannot decide that a task
+or run is complete. A turn's `completed` terminal state means only that this bounded
+turn ended normally. `CMP-orch` derives task/run completion only from current
+independent PASS evidence bound to the accepted specification and exact integrated
+revision. This keeps the turn terminal contract (`REQ-LOOP-004`) separate from the
+task/run completion contract (`REQ-HORIZON-006..010`).
 
 ## Lifecycle & flows
 
@@ -136,7 +143,15 @@ Lightweight, durable, and bounded: update the task graph and todo from the curre
 - Partition only a fully assembled, admitted batch into parallel-safe groups and ordering barriers. Independent calls run concurrently; a declared barrier is honored (`REQ-LOOP-003`).
 - Batch admission is not an atomic transaction across effects. Preflight calls and reserve resources before dispatch; then each effect separately receives a guard decision/ticket, durable prepare record, and terminal receipt. A batch-level defect (invalid encoding/schema, duplicate ID, oversized response, or stale workspace fence) dispatches none. Per-call authorization denial is a typed result for that call; other independently authorized calls may proceed, with partial batch settlement made explicit.
 - Modifying calls with overlapping write scope serialize (workspace lease); read-only path-scoped calls may fan out.
-- Provider-executed tool calls are recorded but not locally settled.
+- Provider-hosted execution tools (remote code interpreters, remote computer-use, or
+  provider-side tool execution) are unsupported in HorizonCode-managed turns. The
+  provider adapter must not advertise or enable them; if a provider response contains
+  such a call, refuse the complete unstarted response batch with a typed durable
+  `REMOTE_EXECUTION_UNSUPPORTED` outcome. Locally settled tools remain subject to the
+  normal guard → sandbox → audit path. A future remote-execution feature requires a
+  separate reviewed contract for authorization, remote identity, effect receipts,
+  cancellation/reconciliation, data egress, and the limits of HorizonCode's local
+  confinement/audit claims; a provider's success response alone cannot settle it.
 
 ### EXECUTE
 
@@ -147,12 +162,14 @@ Lightweight, durable, and bounded: update the task graph and todo from the curre
 ### OBSERVE
 
 - Collect settlements; separate model-visible content from UI-only detail (`REQ-TOOL-004`).
-- Record typed outcomes: success, failure, or provider-executed.
+- Record typed outcomes: success, failure, denied, interrupted, or unknown. Do not
+  encode unsupported remote execution as a successful settlement.
 - Settlements start only after complete-batch admission and are all awaited/reconciled before continuation so the next request sees final results.
 
 ### UPDATE
 
-- Append the step's events; update the task graph and todo; fold usage into session totals.
+- Append the step's events; update the Task projection and plan; fold usage into
+  Thread and managed Run totals with provider-reported/estimated/unknown provenance.
 - Persist incrementally so a crash loses no committed step (`REQ-LOOP-006`).
 
 ### CONTINUATION
@@ -296,7 +313,7 @@ Events are appended before the phase's work is considered settled (`REQ-LOOP-006
 | Budget exhausted | Fail closed: pause or terminate with a typed reason; no silent overrun. |
 | Provider restart / stale handle | Epoch bump invalidates handles; the step restarts cleanly rather than replaying provider-bound state. |
 | Sub-agent fails/stalls | Receipt with blockers (untrusted data); the parent re-plans or escalates. |
-| Crash mid-turn | The session store repairs the open turn deterministically; committed steps survive. |
+| Crash mid-turn | The Thread store performs only the explicit, byte-preserving recovery flow; committed steps survive and the interrupted tail remains visible until reconciliation. |
 
 ## Configuration
 
@@ -312,7 +329,7 @@ Events are appended before the phase's work is considered settled (`REQ-LOOP-006
 | `loop.toolBarriers` | declared per call | Ordering barriers honored by the scheduler |
 | `loop.overflowRecovery` | `once` | Single compact-after-overflow retry |
 | `loop.maxToolOutput` | ~2000 lines / 50 KiB | Bounded preview plus artifact ref |
-| `budget.tokens` / `budget.cost` / `budget.wallClock` | per session | Hard maxima enforced at admission |
+| `budget.tokens` / `budget.cost` / `budget.wallClock` | per direct interactive Thread; managed Runs use Run → Task → Attempt → WorkerExecution reservations | Hard maxima enforced atomically at admission; managed Run verification/recovery reserves are protected |
 
 Configuration is layered (`defaults → user → workspace → agent profile → session`) and the effective model/mode/permission snapshot is persisted with the session (`REQ-SESS-004`). Security ceilings, no-progress ceilings, output limits and budget caps cannot be widened by less trusted layers.
 
@@ -339,15 +356,15 @@ Configuration is layered (`defaults → user → workspace → agent profile →
 | `REQ-AUDIT-001` | Executed effects append to the audit path. |
 | `REQ-HORIZON-001` | Turn/step state is resumable after a gap. |
 | `REQ-HORIZON-002` | Durable task graph drives continuation and survives compaction. |
-| `REQ-HORIZON-003` | Token/cost budgets are enforced per session and fail closed. |
+| `REQ-HORIZON-003` | Direct Thread ceilings and managed Run hierarchical reservations are enforced and fail closed. |
 | `REQ-HORIZON-004` | Waiting states are distinguishable from working states. |
 | `REQ-ORCH-001` | Sub-agents return receipts, not transcripts, admitted as typed events. |
-| `REQ-SESS-001` | The loop persists through the durable session store. |
+| `REQ-SESS-001` | The loop persists through the durable Thread store (`CMP-session`, historic component name). |
 
 ## Open questions
 
 1. **Stuck-detector definition.** Whether "no progress" is repeated identical tool calls, unchanged workspace hash, or both; the exact threshold and the escalation primitive are not yet fixed.
-2. **Turn-level retry budget.** How many turn retries and re-plans are allowed before blocking, and whether the budget is per turn or per session.
+2. **Retry policy values.** Maximum strategy changes and repair attempts by execution class remain to be selected and benchmarked; the durable Attempt count and spend do not reset when a new Thread/WorkerExecution is created.
 3. **Verification depth in the loop.** Which success conditions require executable verification versus model attestation, and how a failed verification reopens the task graph.
 4. **Barrier declaration surface.** Whether ordering barriers are declared by the tool author, the model, or the runtime from write-scope analysis; the reference sources imply but do not settle this.
 5. **Partial-marker semantics.** Whether a `partial` step auto-resumes on the next user input or requires explicit confirmation, and how it interacts with budgets.

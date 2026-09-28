@@ -5,15 +5,16 @@
 `CMP-audit` is the **tamper-evident, append-only execution record**. Every
 security-relevant effect and every decisive moment — policy decisions, tool calls,
 approvals, file writes, sandbox denials, model/provider calls, and cost — is recorded
-in a hash-chained log with periodic Merkle roots that are **signed; anchored at a
-declared level (`local-sink` default, `off-box` when required)**, so history can be
-verified rather than merely trusted. A class-coverage census checks declared wiring;
+in a hash-chained log with periodic Merkle roots. The current source uses a local
+BLAKE3 keyed MAC for root records; it is not a public-key signature. The stronger
+portable/off-box authenticity contract below is proposed and is not implemented by
+that MAC. A class-coverage census checks declared wiring;
 per-effect ID reconciliation checks runtime completeness (`DEC-005`, `DEC-031`,
 `DEC-022`, `REQ-AUDIT-001`, `REQ-AUDIT-002`, `REQ-AUDIT-004`, `REQ-AUDIT-005`,
 `REQ-AUDIT-007`..`REQ-AUDIT-011`).
 
-The audit store is **not** the session event log. `CMP-session` owns replayable
-session events; `CMP-audit` owns independently verifiable evidence and is not pruned
+The audit store is **not** the Thread event log. `CMP-session` owns replayable
+Thread events while retaining its historic component name; `CMP-audit` owns independently verifiable evidence and is not pruned
 with operational events. Audit reads and exports are themselves access-controlled
 (`REQ-AUDIT-008`).
 
@@ -26,30 +27,35 @@ with operational events. Audit reads and exports are themselves access-controlle
 - Provide a **verify** command that recomputes the chain and roots and reports any
   tampering, deletion, reorder, or truncation.
 - Provide a **replay** command that reconstructs the decision/effect timeline of a
-  session from its entries.
-- Authorize audit reads by actor, run/session scope, and destination; write a
+  Thread from its entries.
+- Authorize audit reads by actor, run/Thread scope, and destination; write a
   non-recursive access receipt to a separately verifiable access-evidence stream
   before disclosing audit content. If that receipt cannot be made durable, refuse the
   disclosure (`REQ-AUDIT-008`, `DEC-044`).
 - Guarantee **secret redaction**: credentials never enter an entry
   (`REQ-PROV-004`, `REQ-AUDIT-003`).
 - Reference durable receipts for effects rather than duplicating payloads.
-- **Sign and anchor** finalized segment roots at a declared anchoring level —
-  signing is unconditional, the default level is `local-sink`, and a declared
-  off-box trust requirement makes `off-box` mandatory (`REQ-AUDIT-004`,
+- **Authenticate and anchor** finalized segment roots at a declared anchoring level —
+  the current device-key MAC is local verification only; any future portable or
+  off-box authenticity claim requires independently verifiable public-key proof or
+  counter-signing, with an explicitly designed key custody/rotation contract. The
+  default target level is `local-sink`; a declared off-box trust requirement makes
+  `off-box` mandatory (`REQ-AUDIT-004`,
   `REQ-AUDIT-007`, `DEC-022`).
 - **Render the claim boundary**: `verify` states, per level, what is and is not
   detected, and never presents a weaker level as a stronger one
   (`REQ-AUDIT-007`).
 - Publish a first-class class-coverage census **and** per-effect ID reconciliation.
   One entry per class does not prove that every runtime effect has a receipt (`DEC-031`).
-- Maintain the **cross-store consistency invariant** with the session log and the
+- Maintain the **cross-store consistency invariant** with the Thread log and the
   analytics ledger (`REQ-AUDIT-006`, `DEC-020`).
-- Keep the record portable with the session bundle.
+- Keep the record portable with the Thread bundle.
 
-**Never owns:** session event replay (`CMP-session`), receipts/artifacts
+**Never owns:** Thread event replay (`CMP-session`), receipts/artifacts
 (`CMP-tools`/persistence), policy evaluation (`CMP-guard`), or credential custody
-(`CMP-secrets`).
+(`CMP-secrets`). The current audit device key is owned/stored by `CMP-audit`; the
+future key-custody boundary is unresolved and must not be attributed to
+`CMP-secrets` until implemented.
 
 ## Interfaces
 
@@ -61,7 +67,7 @@ with operational events. Audit reads and exports are themselves access-controlle
 | `CMP-provider` | inbound | model call (provider/model id, token counts, cost), no prompt/completion content |
 | `CMP-runner` | inbound | run/step boundaries, terminal state, step receipts |
 | `CMP-secrets` | outbound | redaction pass applied before an entry is chained |
-| `CMP-session` | both | session id/ref association; audit accompanies a portable session bundle |
+| `CMP-session` | both | Thread ID/ref association; audit accompanies a portable Thread bundle |
 | `CMP-tui` / `CMP-headless` | outbound | verify/replay invocations and status |
 
 ## Data / state model
@@ -72,7 +78,9 @@ AuditEntry = {
   segment_id:   u32,
   segment_seq:  u32,              // monotonic within the segment
   event_id:     EventId,          // stable idempotency key for one lifecycle record
-  session_id?:  SessionId,
+  effect_id?:   EffectId,         // stable across prepared/decision/terminal rows for one effect
+  effect_phase?: PREPARED | DECISION | TERMINAL | RECONCILIATION,
+  thread_id?:   ThreadId,
   run_id?:      RunId,
   task_id?:     TaskId,
   attempt_id?:  AttemptId,
@@ -83,21 +91,44 @@ AuditEntry = {
   action?:      string,
   resource?:    string,           // ref/glob form, never raw payload
   effect?:      allow | ask | deny,
-  outcome?:     ok | denied | error | timeout,
-  ticket_ref?,  approval_ref?,    receipt_ref?, work_id?, run_id?,
+  outcome?:     completed | denied | failed | unknown,
+  ticket_ref?,  approval_ref?, receipt_ref?, work_id?,
   inputs_digest?: blake3,         // effect/argument digest
   meta:         bounded,          // small typed fields only
   prev_hash:    blake3,           // previous entry_hash in the chain
   entry_hash:   blake3            // blake3(canonical(entry \ entry_hash) || prev_hash)
 }
 SegmentRoots = { segment_id: u32, first_audit_seq, last_audit_seq, count, merkle_root, prev_root? }
+DurableFactRef = {
+  store_id: StoreId, aggregate_type: string, aggregate_id: string,
+  seq: u64, event_id: EventId, payload_digest: blake3, schema_version: u32
+}
 AuditAccessReceipt = {
   access_id: AccessId, actor, action: verify | replay | census | export,
-  run_scope?, session_scope?, destination?, decision: allow | deny,
+  run_scope?, thread_scope?, destination?, decision: allow | deny,
   target_store_id, observed_head_digest?, created_at, access_chain_seq,
   access_prev_hash, access_hash
 }
 ```
+
+`DurableFactRef` is the shared cross-store reference envelope, not a shared event
+bus or a fourth source-of-truth store. A reference is valid only if the named owner
+can retrieve the exact committed record and its digest/schema match. Causation and
+correlation IDs may be added to the owning record when needed; they never replace
+aggregate sequence, event identity, or payload digest. This gives Thread, audit,
+analytics, and artifact records a common way to point to one another while preserving
+their independent sequence and transaction boundaries.
+
+Every effect lifecycle row carries the same `effect_id`; the prepare row is committed
+before execution and exactly one terminal row is accepted. `event_id` deduplicates one
+specific lifecycle row and is not a substitute for `effect_id`. Storage enforces the
+terminal uniqueness invariant transactionally (or through a recoverable append
+reservation); a second terminal row for the same effect is an integrity failure. A
+terminal `unknown` remains immutable; later authoritative reconciliation appends a
+`RECONCILIATION` fact linked to that receipt and updates only the derived status view,
+never rewriting or duplicating the terminal receipt.
+Non-effect audit entries omit `effect_id`/`effect_phase`. `run_id` occurs once in the
+envelope; receipts are references, not repeated ownership fields.
 
 - `blake3` is the hashing dependency (`ARCH/03` §5). Entries are canonicalized
   (stable field order, no floats) before hashing so verification is deterministic.
@@ -195,7 +226,7 @@ evidence itself (`AX-346` remainder, `AX-311`).
 
 ### Verify
 ```
-horizoncode audit verify [--session <id>] [--all]
+horizoncode audit verify [--thread <ThreadId>] [--all]
 ```
 Recomputes each `entry_hash` from stored bytes and `prev_hash`, checks contiguity of
 `audit_seq` and `segment_seq`, recomputes every segment Merkle root, and confirms root linkage across
@@ -217,7 +248,9 @@ startup action and never overwrites the original segment.
 
 **What verify proves:** given a trusted anchor, no entry has been added, removed,
 reordered, truncated, or modified without detection, every entry is included in its
-segment root, and every root signature verifies.
+segment root, and every root authenticator verifies against the trust material
+available at the declared level. With the current local MAC this is local
+verification, not independent public verification.
 **What verify does not prove:** that the recorded content is truthful, that no
 unrecorded effect occurred elsewhere, or who authored an entry. Per
 `REQ-AUDIT-007` (`DEC-022`), it does NOT prove content authenticity, does NOT detect
@@ -234,18 +267,20 @@ local level is independently off-box anchored.
 
 ### Replay
 ```
-horizoncode audit replay --session <id> [--from <seq>] [--to <seq>]
+horizoncode audit replay --thread <ThreadId> [--from <seq>] [--to <seq>]
 ```
 Prints the reconstructable decision/effect timeline (decisions, tickets, tool
 outcomes, approvals, cost) in order. Replay reads evidence; it does not re-execute
 effects.
 
-### Session portability
-A portable session bundle includes its audit entries, segment roots, and a proof
-header. Import **verifies the chain before trusting it**; a bundle whose chain fails
+### Thread portability
+A proposed portable Thread bundle includes its audit entries, segment roots, and a
+proof header. Import verifies the hash chain and any supported proof before treating
+the bundle as structurally intact; a keyed MAC alone cannot give an external
+recipient independently verifiable authenticity. A bundle whose chain fails
 verification is rejected or quarantined with the failure surfaced. The audit record
-carries the model, mode, and policy snapshot the session ran under, so a restarted or
-moved session remains reconstructable and its decisions reproducible
+carries the model, mode, and policy snapshot the Thread ran under, so a restarted or
+moved Thread remains reconstructable and its decisions reproducible
 (`REQ-SESS-002`, `REQ-SESS-004`).
 
 ## Storage layout and rotation
@@ -280,49 +315,56 @@ moved session remains reconstructable and its decisions reproducible
   repair flow may produce a separately preserved recovery artifact. No ordinary
   surface repairs evidence as a side effect.
 
-**Current source gap (2026-09-27).** `AuditLog::open` currently calls
-`repair_torn_tail` while opening for writes; `crates/horizoncode-cli/src/surfaces.rs`
-also calls that writable open in `note_access` before `audit verify`/`replay`/`census`.
-Thus the CLI read path can mutate a torn segment before the read-only verifier runs.
-`read_head` currently maps both missing and invalid/unreadable head files to `None`,
-and `read_segments`/`segment_indices` can map directory-read errors to an empty list.
-The in-process `Mutex<Head>` does not serialize separate processes. These are source
-gaps, not target behavior; track and close them under `AX-346` before describing audit
-inspection as read-only or multi-process safe.
+**Source status at Rust baseline `23d4ce8` (HEAD `cbba87b`, 2026-09-28).** The
+read-only inspection defects recorded on 2026-09-27 were addressed by the AX-346
+integrity slice: `AuditLog::open_read_only` does not repair; writable open refuses a
+torn tail; malformed/unreadable heads and segment-enumeration errors are typed; and
+the writer holds an OS-backed lock. See `crates/horizoncode-audit/src/store.rs` and
+`TODO.md` AX-346. This does not close AX-346's global sequence migration, effect
+prepare/terminal reconciliation, or key rotation. Analytics is a derived ledger, not
+a second authority for whether an effect happened.
 
-## Root anchoring (signed / declared level)
+## Root anchoring (current MAC versus proposed portable proof)
 
-Local roots detect local tampering only. To make tamper-evidence meaningful against a
-local actor, `CMP-audit` **signs and anchors** every finalized `SegmentRoots`
+Local roots detect local tampering only. The current source stores `device.key` under
+the audit root and authenticates finalized roots using a BLAKE3 keyed MAC
+(`crates/horizoncode-audit/src/key.rs`, `SIGNATURE_ALGORITHM =
+blake3-keyed-mac`). Because this is a shared-secret MAC, it does not support public
+verification of an exported bundle. To make tamper-evidence meaningful against a
+local actor, the **target** authenticates and anchors every finalized `SegmentRoots`
 (`REQ-AUDIT-004`):
 
 - **Local root chain.** Each root is appended to `roots.jsonl` and chain-linked by
   `prev_root`, so deleting or editing a root breaks the root chain.
-- **Signed roots.** Each root is signed with a device key held by `CMP-secrets`; the
-  signature covers `{segment, first_seq, last_seq, count, merkle_root, prev_root}`.
-  `audit verify` checks signatures as well as hashes.
-- **Anchor sink.** On a configured cadence or at a session-close boundary, the
-  signed root is exported to the declared sink (append-only file for `local-sink`, or
-  a remote object / counter-signing service for `off-box`). The sink is transport
-  behind an adapter and receives roots and signatures only — never entries.
+- **Root authenticator (claim boundary decided; portable key design pending).** The
+  current local authenticator is a BLAKE3 keyed MAC, as recorded in `DEC-022`; retain
+  the honest local-verification boundary. Any portable/off-box proof requires an
+  asymmetric signature or trusted counter-signature plus an independently obtained
+  trust root. Key custody/rotation and portable proof formats remain implementation
+  design work under `AX-372`; never call the present MAC a public-key signature.
+- **Anchor sink (target).** On a configured cadence or at a Thread-close boundary,
+  the authenticated root is exported to the declared sink (append-only file for
+  `local-sink`, or a remote object / counter-signing service for `off-box`). The sink
+  is transport behind an adapter and receives roots/proofs only — never entries.
 - **What anchoring buys.** Given a trusted anchor, a local actor who rewrites entries
   and recomputes local roots is still detected: the anchor's root no longer matches.
   It does not prove the content is truthful, and it is only as strong as the trust in
   the anchor key and sink, which is documented per deployment.
 
-**Anchoring levels.** `DEC-022` fixes three declared levels. Roots are **always signed**
+**Anchoring levels (target).** `DEC-022` fixes three declared levels. The target
+requires root authentication
 — `anchor.sign: false` is a configuration error, not a supported posture, because
 signing is a security control rather than a convenience.
 
 | Level | `anchor.offbox` | Sink | Claim it may make |
 |---|---|---|---|
-| `local-trust` | `none` | none | Signed roots inside the audit store. **No independent-verification claim.** Permitted only as an explicit, acknowledged posture; labeled everywhere. |
+| `local-trust` | `none` | none | Locally authenticated roots inside the audit store. **No independent-verification claim.** Permitted only as an explicit, acknowledged posture; labeled everywhere. |
 | `local-sink` (**default**) | `file` | a distinct, ownership- and mode-validated append-only sink **outside** `<state-dir>/audit` | Tamper-evidence against audit-store-local rewriting and against a *different* unprivileged principal (`AV-6`). **Not** a claim that survives the invoking user. |
 | `off-box` | `remote` | off-host object store or counter-signing service | The only level that survives an actor who also controls local storage. **Required** for any deployment that declares an off-box trust requirement. |
 
 - **Default is `local-sink` (`offbox: "file"`).** A fresh install cannot invent a
   remote sink, so the honest zero-config default is the strongest level that needs no
-  external party: signed roots written to a sink outside the audit store root.
+  external party: locally authenticated roots written to a sink outside the audit store root.
   `"offbox": "none"` keeps working, but it is now an explicit, acknowledged
   `local-trust` posture and is labeled wherever audit history is shown; nothing is
   deleted by this change.
@@ -380,24 +422,72 @@ are:
 
 | Store | Owner | Role | Ordering |
 |---|---|---|---|
-| `events/segment-*.jsonl` + `events/head.json` (session event stream) | `CMP-session` | committed replay source of truth | per-session dense `seq`; bounded digest-linked segments and committed head (`ARCH/07`) |
+| `events/segment-*.jsonl` + `events/head.json` (Thread event stream) | `CMP-session` | committed replay source of truth | per-Thread dense `seq`; bounded digest-linked segments and committed head (`ARCH/07`) |
 | `segments/*.jsonl` + `roots.jsonl` | `CMP-audit` | independently verifiable evidence | global audit `seq`; chain-linked roots |
-| `events.jsonl` (analytics ledger) | `CMP-analytics` | rebuildable rollups | derived; coalesced appends |
+| `events.jsonl` (analytics projection ledger) | `CMP-analytics` | rebuildable analytics rows and rollups | derived from canonical owner facts; each row carries `DurableFactRef` source refs |
 
 Invariant (`REQ-AUDIT-006`):
 
 1. A security-relevant effect is **complete** only once its audit entry is durably
-   chained; a session or analytics fact that references it carries `session_id`, the
-   session `seq`, and the audit `seq` (or `receipt_ref`).
+   chained; a Thread or analytics fact that references it carries `thread_id`, the
+   Thread `seq`, and the audit `audit_seq` (or stable receipt reference), each as an
+   owner-qualified `DurableFactRef` where stored cross-store. Legacy v1 `session_id` fields
+   are preserved as source bytes and normalized only in a separately versioned view.
 2. Each store's own monotonic sequence defines its internal order. **Cross-store
    ordering is never inferred from wall-clock time**; the audit `seq` is the
-   authoritative tie-break for security-relevant ordering, and the session/analytics
+   authoritative tie-break for security-relevant ordering, and the Thread/analytics
    stores carry their own sequence for their internal use.
-3. A reconciliation check flags any referenced effect with no audit entry and any
-   audit entry whose referenced session fact is missing; disagreement is surfaced,
-   never silently merged.
-4. Retention is per-store: the audit chain is never pruned with the session log or the
-   analytics ledger, and analytics remains rebuildable without the audit chain.
+3. A reconciliation check verifies `store_id`, aggregate identity/sequence, event id,
+   schema version, and digest for every `DurableFactRef`; it flags referenced effects
+   with no audit entry and audit entries whose referenced Thread fact is missing.
+   Disagreement is surfaced, never silently merged.
+
+**Target crash protocol (not implemented at source baseline).** The audit
+`EffectPrepared(effect_id, request_digest, thread_id, run_id, task_id, attempt_id,
+tool_call_id, workspace_fence, idempotency_key?)` is the canonical write-ahead
+intent and must be durable before execution. The effect runner returns a bounded
+receipt/artifact reference; the controller then appends exactly one audit terminal
+receipt before exposing the result as settled to the model. Thread events store
+references/digests and are rebuilt or reconciled against that canonical audit
+receipt; analytics is an asynchronous, rebuildable projection and never blocks or
+defines effect truth. The caller must not replay an external/non-idempotent action
+while its outcome is unknown.
+
+| Crash boundary | Recovery rule |
+|---|---|
+| Before `EffectPrepared` commit | No effect may have started; safe to retry same operation ID after confirming no dispatch receipt exists. |
+| After prepare, before executor admission | Reconcile executor/outbox; retry only if non-admission is proven and the same idempotency key is reused. Otherwise remain `UNKNOWN`. |
+| During/after execution, before terminal receipt | Inspect filesystem/process/peer/provider state; settle observed result, apply approved compensation, or remain `UNKNOWN` and block replay. |
+| After audit terminal receipt, before Thread result event | Rebuild the Thread reference/result projection from receipt/artifact refs; never rerun the effect. |
+| After Thread result, before analytics append | Rebuild analytics from canonical receipts; no effect retry. |
+| Analytics row without a matching canonical receipt | Quarantine/remove derived row and surface an integrity incident; analytics cannot promote it to truth. |
+
+`DurableFactRef`'s store/aggregate identity, event ID, sequence, schema version, and
+payload digest connect these streams. No cross-store total order is inferred from
+timestamps. Exact storage transaction and recovery implementation belongs to
+`AX-311`; this table is required behavior, not evidence it exists.
+
+## Bounded retention and disk pressure
+
+Audit history is never destructively pruned. A deployment selects `preserve` or
+`archive_with_proof`. In archive mode, only a sealed range can leave the hot store,
+and only after a content-preserving archive is written, read back, fully verified,
+linked to its authenticated root/range, and recorded with a durable archive reference.
+The archive remains part of the audit store's required read/verify/export path; moving
+bytes does not erase retention or availability obligations. Numeric hot-store,
+archive, and reserve ceilings are workload/platform limits to validate before release,
+not unbounded defaults.
+
+Before starting each effect, the controller reserves enough bounded audit capacity
+for prepare, one terminal receipt, and reconciliation/stop evidence. At a high-water
+mark it pauses new effectful work and attempts configured archival. If archival is
+unavailable or the reserved capacity is exhausted, new effects fail closed before
+dispatch and the run reports a typed `WAITING` or `STOPPED` reason. Cancellation,
+permission replies, and recovery status use a separately protected control reserve;
+when even that reserve cannot be committed, the controller fences further effects
+and reports the durability failure through the client channel. It must never execute
+an unrecorded effect or claim a complete audit range. Retention limits and reserve
+sizes remain open until benchmarked against long-run workload and disk-failure tests.
 
 ## Privacy / PII handling
 
@@ -405,8 +495,10 @@ Invariant (`REQ-AUDIT-006`):
   recorded (counts and ids only).
 - PII minimization is structural: paths are workspace-relative where possible, and
   external targets are stored as normalized host/`host:port` rather than full URLs.
-- Reads/exports are access-controlled; an export carries the chain proof so a
-  recipient can verify it without trusting the exporter.
+- Reads/exports are access-controlled; an export carries the available chain proof.
+  Independent recipient verification is possible only with an off-box-verifiable
+  signature or trusted counter-signature and a trust root obtained independently. A
+  local keyed MAC or `local-sink` chain is not portable public proof.
 
 ## Failure modes
 
@@ -437,7 +529,7 @@ Invariant (`REQ-AUDIT-006`):
       "trust_requirement": "none",               // none | off_box — "off_box" requires offbox: "remote"
       "cadence": "session_close"                 // session_close | every_n_segments
     },
-    "retention": { "mode": "preserve" },      // preserve | archive with proof
+    "retention": { "mode": "preserve" },      // preserve | archive_with_proof; never destructive prune
     "export": { "require_chain_proof": true }
   }
 }
@@ -450,17 +542,17 @@ Invariant (`REQ-AUDIT-006`):
 | `REQ-AUDIT-001` | Every individual effect has a prepared intent and one terminal receipt under a stable ID; reconciliation checks the mapping. |
 | `REQ-AUDIT-002` | Hash chain + Merkle roots with an `audit verify` command that states what it does and does not prove. |
 | `REQ-AUDIT-003` | `CMP-secrets` redaction pass before any entry is chained. |
-| `REQ-AUDIT-004` | Segment roots are signed with a `CMP-secrets` device key (signing is not configurable off) and anchored at a declared level: `local-sink` (default), or `off-box` where a trust requirement is declared; a configured-but-unreachable sink fails closed. |
+| `REQ-AUDIT-004` | Root authentication is non-disableable and its algorithm/key owner are explicit. The current BLAKE3 keyed MAC is local-only. `local-sink` is the target default; off-box verification requires independently verifiable public-key proof or trusted counter-signature. A configured-but-unreachable sink fails closed; do not describe the local MAC as a public signature. |
 | `REQ-AUDIT-005` | Class census and per-effect reconciliation both fail on gaps. |
-| `REQ-AUDIT-006` | Cross-store consistency invariant with the session log and analytics ledger (`DEC-020`). |
+| `REQ-AUDIT-006` | Cross-store consistency invariant with the Thread log and analytics ledger (`DEC-020`). |
 | `REQ-AUDIT-007` | Every level states and `verify` renders its detection boundary — modification of already-anchored history only; no content authenticity, no fabrication detection, no coverage of the unanchored tail; only the three level names are used and `local-sink` is never rendered as `off-box` (`DEC-022`). |
-| `REQ-AUDIT-008` | Read/replay/verify/export requests pass actor, run/session, and destination-scoped read authorization; the access event avoids recursive export. |
+| `REQ-AUDIT-008` | Read/replay/verify/export requests pass actor, run/Thread, and destination-scoped read authorization; the access event avoids recursive export. |
 | `REQ-AUDIT-009` | `audit_seq` is globally monotonic; `segment_seq` is local to a segment; verify is read-only and authorized repair creates a separate, provenance-linked artifact. |
 | `REQ-AUDIT-010` | The OS-backed lock serializes writers across processes before head/segment/sequence reads; lock loss fences the writer. |
 | `REQ-AUDIT-011` | Missing/corrupt/inaccessible/incompletely enumerated state is distinct from a new empty store; readers fail typed and normal writer startup refuses implicit repair. |
 | `REQ-PROV-004` | Credentials never appear in audit entries; provider calls logged as counts/refs only. |
-| `REQ-SESS-002` | Replay reconstructs a session timeline from persisted evidence. |
-| `REQ-SESS-004` | Model, mode, and permission configuration recorded with the session. |
+| `REQ-SESS-002` | Replay reconstructs a Thread timeline from persisted evidence. |
+| `REQ-SESS-004` | Model, mode, and permission configuration recorded with the Thread. |
 | `REQ-HORIZON-003` | Cost entries feed enforceable, fail-closed budgets. |
 | `REQ-LOOP-004` | Each turn's terminal state is recorded as an audited boundary. |
 
@@ -473,9 +565,11 @@ Invariant (`REQ-AUDIT-006`):
    configured-but-unreachable sink fails closed, and `local-trust` survives only as an
    explicit, acknowledged, labeled posture. What remains open is rotation and escrow for
    the device signing key (and the default anchor cadence per deployment).
-2. **Retention vs. portability** — how long full entries are preserved versus a
-   roots-plus-receipts archive, and how a truncated archive still proves the range it
-   covers.
+2. **Retention capacity values** — choose hot-store/archive ceilings and protected
+   control/effect reserves from long-run workload and disk-failure benchmarks. The
+   behavior is fixed: no destructive prune; archive only sealed, verified ranges with
+   retained references; stop new effects before an unrecorded append. Exact values
+   remain open until measured.
 3. **PII redaction policy** — the exact field allowlist for `meta` and whether
    workspace-relative path normalization is always safe across multi-root workspaces.
 4. **Verify performance at scale** — incremental verification from a trusted

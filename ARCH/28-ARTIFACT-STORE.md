@@ -17,16 +17,16 @@ cleanup candidates are rebuildable. It never turns a missing or corrupt object i
 empty string, a passing evidence result, or a completed run.
 
 One implementation/interface is shared; bytes are partitioned by owner namespace.
-There is no cross-session or cross-run deduplication in v1, which avoids accidentally
-sharing deletion, retention, privacy, and accounting domains. Session artifacts live
-inside the portable session package; run/evidence artifacts live below their run
+There is no cross-Thread or cross-run deduplication in v1, which avoids accidentally
+sharing deletion, retention, privacy, and accounting domains. Thread artifacts live
+inside the portable Thread package; run/evidence artifacts live below their run
 namespace. Export copies referenced objects into a standalone manifest bundle.
 
 ## HLD boundaries
 
 | Caller | May request | Remains authoritative for |
 |---|---|---|
-| `CMP-session` | Stage/verify session payloads; append a `BlobRef` to its event log; export/import a session package | Session event sequence, replay, checkpoints, portable bundle identity (`ARCH/07`) |
+| `CMP-session` | Stage/verify Thread payloads; append a `BlobRef` to its event log; export/import a Thread package | Thread event sequence, replay, checkpoints, portable bundle identity (`ARCH/07`) |
 | `CMP-orch` | Stage original request, plan, attempt, test, verifier and handoff artifacts; add/remove run evidence pins | Run/task/spec/attempt/evidence lifecycle (`ARCH/25`) |
 | `CMP-provider` | Read a validated image or bounded context artifact through a lease while preparing an admitted request | Provider route, egress guard, usage/cost and finish evidence (`ARCH/11`) |
 | `CMP-tui` / headless / ACP | Ask for safe metadata, availability, bounded read/preview or export receipt through control APIs | Surface permissions, display, approval and output schema |
@@ -45,7 +45,7 @@ concurrency acceptance; it is not implied by a content-addressed interface.
 
 ```text
 ArtifactRef = {
-  namespace_kind: SESSION | RUN,
+  namespace_kind: THREAD | RUN,
   namespace_id,
   artifact_id,
   digest,   // blake3 (DEC-059)
@@ -55,7 +55,7 @@ ArtifactRef = {
 }
 
 ArtifactOwner = {
-  owner_kind: SESSION_EVENT | CHECKPOINT | RUN_EVENT | EVIDENCE |
+  owner_kind: THREAD_EVENT | CHECKPOINT | RUN_EVENT | EVIDENCE |
                ORIGINAL_REQUEST | EXPORT_JOB | MAINTENANCE | RECOVERY_QUARANTINE,
   owner_id,
   owner_revision_or_event_seq,
@@ -74,9 +74,13 @@ The reserve is a physically allocated controller-only file/journal on the same
 filesystem as the run log (or an equivalent tested hard reservation). A sparse file,
 free-space query, or in-memory quota entry is not physical reservation evidence.
 
-Session events use the compact `BlobRef = {blob_id, digest, media_type,
-encoded_bytes, schema_version}`; the session ID is supplied by the containing log
-and resolves to `ArtifactRef(namespace_kind=SESSION, namespace_id=session_id, ...)`.
+Thread events use the compact `BlobRef = {blob_id, digest, media_type,
+encoded_bytes, schema_version}`; the Thread ID is supplied by the containing log
+and resolves to `ArtifactRef(namespace_kind=THREAD, namespace_id=thread_id, ...)`.
+Legacy v1 references with `namespace_kind=SESSION` remain readable and byte-preserved;
+the `AX-379` migration maps them to the same preserved Thread ID in a separately
+verified generation. Never reinterpret an external ACP/provider Session ID as an
+artifact namespace.
 Run records use the full scoped reference. Every owner reference binds ID, digest,
 length, media type, schema version, owner revision and canonical source. ID reuse with
 different bytes is an integrity error.
@@ -148,12 +152,12 @@ streamed/line-bounded so a corrupt huge record cannot force whole-log allocation
    same integrity-checked bounded decoder. Export writes all referenced bytes to a
    temporary bundle with a digest manifest and publishes the bundle only after full
    validation. Import validates every path/ref/byte before atomically publishing a
-   new namespace; it cannot overwrite an existing session/run.
+new namespace; it cannot overwrite an existing Thread/run.
 
 ### Reference-safe garbage collection
 
 GC is a controller-owned maintenance effect, never a worker tool. It requires the
-retention policy to expire and a complete enumeration of session logs, run/control
+retention policy to expire and a complete enumeration of Thread logs, run/control
 logs, retained checkpoints, evidence, export jobs, maintenance jobs, quarantined
 recovery tails, migration generations, and active read/write/reference leases.
 Directory/read/iterator errors, unknown owner stores,

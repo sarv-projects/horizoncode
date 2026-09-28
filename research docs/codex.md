@@ -2,6 +2,130 @@
 
 > INTERNAL RESEARCH — source snapshot: OpenAI Codex main at **67a709665ac7b50311b93e32612c9a8281684787**, dated 2026-09-27. This is a moving development branch snapshot, not a claim about every released binary. Source was inspected by subsystem and schema families; this is not a line-by-line reproduction of vendored/generated assets.
 
+Targeted Goal/ThreadManager follow-up (2026-09-28) was inspected at Codex commit
+`368e5eae2f006a70a91dddfdc96e6b2d11498f81`; the immutable file links are
+[ThreadManager](https://github.com/openai/codex/blob/368e5eae2f006a70a91dddfdc96e6b2d11498f81/codex-rs/core/src/thread_manager.rs),
+[Goal store](https://github.com/openai/codex/blob/368e5eae2f006a70a91dddfdc96e6b2d11498f81/codex-rs/state/src/runtime/goals.rs),
+and [ThreadGoal schema](https://github.com/openai/codex/blob/368e5eae2f006a70a91dddfdc96e6b2d11498f81/codex-rs/app-server-protocol/src/protocol/v2/thread.rs).
+This confirms the local message-board subsystem exists, but this targeted pass did
+not trace all of its transport implementations; claims about remote subscriptions or
+SSE need a direct source review before being treated as established. The broad
+architecture map below remains pinned to `67a709665ac7b50311b93e32612c9a8281684787`;
+the app-server-client README follow-up is separately pinned to
+`41ed72c32b4980cd7919e1c2a45ecb1f96c5911a`. Do not combine claims across these
+source snapshots without retaining the associated pin.
+
+### App-server client follow-up (2026-09-28)
+
+At current Codex `main` commit
+[`41ed72c32b4980cd7919e1c2a45ecb1f96c5911a`](https://github.com/openai/codex/commit/41ed72c32b4980cd7919e1c2a45ecb1f96c5911a),
+[`codex-rs/app-server-client/README.md`](https://github.com/openai/codex/blob/41ed72c32b4980cd7919e1c2a45ecb1f96c5911a/codex-rs/app-server-client/README.md)
+documents a shared in-process app-server client for `codex-exec` and `codex-tui`.
+It centralizes bootstrap/initialize and lifecycle behavior, uses typed request and
+event channels in process, and preserves JSON-RPC result semantics. The same README
+reports bounded command/runtime queues but an unbounded local consumer event queue to
+avoid blocking responses. That is a deliberate Codex tradeoff, not a safe HorizonCode
+default: HorizonCode's `REQ-HORIZON-013` requires bounded event memory and explicit
+gap/resnapshot behavior.
+
+This supports a transport-neutral typed control service plus an optional local
+app-server boundary. It does **not** justify making the server own run/session truth,
+or adopting Codex's queue policy. The main architecture map remains a pinned,
+subsystem-level survey, not a literal line-by-line copy or an assertion that every
+Codex source file was read.
+
+### Pinned app-server and agent-message-board follow-up (2026-09-28)
+
+This follow-up was checked against Codex commit
+[`368e5eae2f006a70a91dddfdc96e6b2d11498f81`](https://github.com/openai/codex/commit/368e5eae2f006a70a91dddfdc96e6b2d11498f81).
+It supersedes earlier mutable-branch links for these two topics only; the subsystem
+survey below remains pinned to its separately stated `67a709...` snapshot. These are
+source observations, not claims about every released Codex build.
+
+#### Verified Codex source facts
+
+- The [app-server-client README at this pin](https://github.com/openai/codex/blob/368e5eae2f006a70a91dddfdc96e6b2d11498f81/codex-rs/app-server-client/README.md)
+  documents a shared in-process client used by `codex-exec` and `codex-tui`. It
+  centralizes bootstrap/initialization and lifecycle wiring; uses typed request and
+  event channels in-process; and retains JSON-RPC response semantics. The README
+  explicitly documents bounded command/runtime queues **and an unbounded local
+  consumer event queue** so the runtime keeps draining while a caller awaits a
+  response. It also documents bounded graceful shutdown followed by abort on timeout.
+  The unbounded queue is a Codex-specific backpressure trade-off, not a HorizonCode
+  requirement or recommendation.
+- Codex defines an [agent-message-board API](https://github.com/openai/codex/blob/368e5eae2f006a70a91dddfdc96e6b2d11498f81/codex-rs/ext/agent-message-board/src/api.rs)
+  and shared [message and paging types](https://github.com/openai/codex/blob/368e5eae2f006a70a91dddfdc96e6b2d11498f81/codex-rs/ext/agent-message-board/src/types.rs).
+  The API contract scopes a board to an agent tree (`SessionId`), takes a caller
+  runtime `ThreadId` and requires caller-membership validation, and uses `AgentPath`
+  for authors and subscription targets. Runtime thread IDs and message-discussion
+  root IDs are distinct. The API includes channels, post/reply, search, paged reads,
+  and channel or discussion subscriptions. Its contract says a successful mutation acknowledges
+  acceptance, not that a recipient read the post; the board validates membership,
+  owns recipient selection, and must not wake a finalized agent or leave a notice for
+  a later turn.
+- The [local SQLite implementation](https://github.com/openai/codex/blob/368e5eae2f006a70a91dddfdc96e6b2d11498f81/codex-rs/ext/agent-message-board/src/local.rs)
+  stores boards, channels, posts, subscriptions, and opt-outs in a separate SQLite
+  database. It uses board-scoped uniqueness for message IDs and request IDs and
+  indexes channel, thread-root, and timestamp reads. It caps post text at 64 KiB,
+  channel names at 128 bytes, explicit recipients at 256, page size at 50 ([paging
+  implementation](https://github.com/openai/codex/blob/368e5eae2f006a70a91dddfdc96e6b2d11498f81/codex-rs/ext/agent-message-board/src/local/paging.rs)),
+  and a single post read at 20,000 Unicode characters. A post retry with the same
+  caller-scoped request ID and identical request returns the stored post metadata;
+  reuse with different request data errors. These are observed Codex limits, not
+  HorizonCode defaults.
+- In the local implementation, post content commits before best-effort notification
+  fan-out. Delivery errors are logged without invalidating the durable post; fan-out
+  is concurrency-limited. The [remote-client README](https://github.com/openai/codex/blob/368e5eae2f006a70a91dddfdc96e6b2d11498f81/codex-rs/agent-message-board-client/README.md)
+  describes live SSE previews bound to the receiving turn. Reconnect creates a new
+  live receiver; durable posts are recovered through search and an `after_message_id`
+  cursor. The host must validate the receiving turn before admission and must never
+  wake a finalized agent. The [tool schemas](https://github.com/openai/codex/blob/368e5eae2f006a70a91dddfdc96e6b2d11498f81/codex-rs/ext/agent-message-board/src/tools/spec.rs)
+  expose channel/list/search/read/post/subscription operations; direct notifications
+  are distinct from subscriptions and do not start idle agents.
+- The [remote adapter protocol](https://github.com/openai/codex/blob/368e5eae2f006a70a91dddfdc96e6b2d11498f81/codex-rs/agent-message-board-client/src/protocol.rs)
+  and [HTTP client](https://github.com/openai/codex/blob/368e5eae2f006a70a91dddfdc96e6b2d11498f81/codex-rs/agent-message-board-client/src/client.rs)
+  implement the client side only. Its README explicitly says the crate contains no
+  server. The [remote adapter tests](https://github.com/openai/codex/blob/368e5eae2f006a70a91dddfdc96e6b2d11498f81/codex-rs/agent-message-board-client/tests/remote_board.rs)
+  use a mocked HTTP service (`wiremock`); they test client behavior, not a deployed
+  service's correctness or interoperability.
+- The [ThreadManager source at this pin](https://github.com/openai/codex/blob/368e5eae2f006a70a91dddfdc96e6b2d11498f81/codex-rs/core/src/thread_manager.rs)
+  wires local thread-data cleanup to `LocalAgentMessageBoard::delete_boards`. The
+  [board lifecycle implementation](https://github.com/openai/codex/blob/368e5eae2f006a70a91dddfdc96e6b2d11498f81/codex-rs/ext/agent-message-board/src/local/lifecycle.rs)
+  specifies permanent root-board deletion, with a tombstone to prevent delayed writes
+  from recreating it; unload/archive must not call that operation. This is lifecycle
+  cleanup, not evidence that an active board is automatically recoverable after every
+  crash or that the remote service implements the same deletion semantics.
+
+#### HorizonCode synthesis — proposed, not implemented or verified
+
+Codex's board is useful evidence that agent collaboration needs durable messages,
+membership-scoped reads, bounded pages, idempotent writes, and an explicit distinction
+between persisted content and best-effort notification. HorizonCode can adapt those
+properties to its existing Run/Task/Attempt/session hierarchy without equating a
+message discussion with either the Task DAG or the parent/child worker tree.
+
+If adopted, make one Run-scoped mailbox a projection over HorizonCode's canonical
+Run event stream, with a recoverable delivery outbox into the existing session input
+inbox. Do not introduce an independent message database or second owner of task state.
+Persist an accepted message before attempting delivery; use stable delivery IDs so
+restart and retry do not duplicate admitted input; report accepted, admitted,
+promoted, acknowledged, and undeliverable as different states. An explicit ack can
+prove only that a worker invoked the ack operation, not that it understood or obeyed
+the message. Keep message content untrusted: it cannot change approved requirements,
+permissions, budget, task state, or verification evidence. Only deliver at a safe
+provider-turn boundary, never wake an idle, paused, terminal, or finalized worker by
+default, and account for recipient context/usage before promotion. External ACP or
+opaque-CLI agents get messaging only when an adapter explicitly negotiates and
+implements it; do not infer this capability from session support.
+
+Keep HorizonCode's bounded request/event lanes and gap/resnapshot contract. Codex's
+unbounded local event-consumer queue is a concrete counterexample to copying a
+reference design wholesale. The exact Codex server-side HTTP authorization, durable
+notification fan-out, and production recovery behavior remain unknown from this
+public snapshot because the server is outside the inspected repository. Treat the
+remote-client protocol as a reference contract only until an actual service is
+independently inspected or exercised.
+
 ## Scope and HLD
 
 Codex CLI is a Rust workspace with a user-facing CLI/TUI, an app-server protocol for editor/desktop clients, a reusable agent core, tools/policies/sandboxing, and durable local thread rollouts. The source has many separately maintained crates. The app-server protocol has generated Rust/TypeScript/JSON schemas, with stable and experimental surfaces.
@@ -119,9 +243,9 @@ timestamps; its statuses include active, paused, blocked, usage-limited, budget-
 and complete. This is valuable user-visible goal/accounting state, but it is not a
 task DAG, approved requirements bundle, per-task budget ledger, or evidence-bound
 acceptance schema. Keep those concepts separate in HorizonCode. Source: [goal state
-store](https://github.com/openai/codex/blob/main/codex-rs/state/src/runtime/goals.rs),
-[goal tool schema](https://github.com/openai/codex/blob/main/codex-rs/ext/goal/src/spec.rs),
-[goal status UI](https://github.com/openai/codex/blob/main/codex-rs/tui/src/chatwidget/goal_status.rs).
+store](https://github.com/openai/codex/blob/368e5eae2f006a70a91dddfdc96e6b2d11498f81/codex-rs/state/src/runtime/goals.rs),
+[goal tool schema](https://github.com/openai/codex/blob/368e5eae2f006a70a91dddfdc96e6b2d11498f81/codex-rs/ext/goal/src/spec.rs),
+[goal status UI](https://github.com/openai/codex/blob/368e5eae2f006a70a91dddfdc96e6b2d11498f81/codex-rs/tui/src/chatwidget/goal_status.rs).
 
 The official [Codex Goals guide](https://developers.openai.com/cookbook/examples/codex/using_goals_in_codex),
 checked 2026-09-27, documents `/goal`, `/goal pause`, `/goal resume`, and `/goal clear`
@@ -191,4 +315,4 @@ deterministic pause/wait/stop/no-progress control that survives restart.
 - [Execution and sandbox crates](https://github.com/openai/codex/tree/67a709665ac7b50311b93e32612c9a8281684787/codex-rs)
 - [Codex long-horizon experiment](https://developers.openai.com/blog/run-long-horizon-tasks-with-codex)
 - [Codex ExecPlans cookbook](https://github.com/openai/openai-cookbook/blob/main/articles/codex_exec_plans.md)
-- [Codex goal source](https://github.com/openai/codex/blob/main/codex-rs/state/src/runtime/goals.rs)
+- [Codex goal source at `368e5eae`](https://github.com/openai/codex/blob/368e5eae2f006a70a91dddfdc96e6b2d11498f81/codex-rs/state/src/runtime/goals.rs)

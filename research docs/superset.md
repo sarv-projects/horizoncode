@@ -1,6 +1,6 @@
 # Superset: workspaces for parallel coding-agent processes
 
-> INTERNAL RESEARCH — reviewed 2026-09-27. Snapshot: main, commit `3fe2c3636e303ecd3a62d4e63bfaba4428bfbdaf`; desktop release v1.30.2 (2026-09-22). Focused audit of workspace model, terminal/session schema, agent bindings and MCP surface.
+> INTERNAL RESEARCH — initial review 2026-09-27 at `3fe2c3636e303ecd3a62d4e63bfaba4428bfbdaf`; focused follow-up 2026-09-28 at `f37599e2774a99dce67f21b887c88bac331da6fc`. Source-path review of workspace model, terminal/session schema, agent launch/binding, hooks, subagent transcript, and resume. Not a line-by-line review of the full repository; no tests or benchmarks were run and no source was copied.
 
 ## HLD
 
@@ -37,6 +37,48 @@ Project → workspace/worktree → terminal/PTy → agent command and preset hoo
 ## Relevance to HorizonCode
 
 Study worktree lifecycle, multi-session UI and terminal abstraction. HorizonCode should use Superset-like process management only behind its own durable external-attempt record and permission controller. Never collapse terminal status, ACP/native session status, task state and verified outcome into one enum.
+
+## Pinned follow-up: launch, hooks, child roster, and recovery
+
+At `f37599e2774a99dce67f21b887c88bac331da6fc`, the New Workspace UI turns a selected
+agent profile, prompt, and attachments into an `AgentLaunchRequest`; the desktop
+orchestrator stages prompt/attachments and launches a terminal command. A separate
+host `agents.run` route supports automation. Host profiles are SQLite-backed and
+include command/argv, prompt transport, environment, resume/fork arguments, and UI
+metadata. Renderer launch idempotency is process-local. These are distinct launch
+surfaces; a Horizon adapter should normalize them behind one checked launch contract,
+not assume the UI path protects direct host callers.
+
+Root terminal-agent bindings persist, while the subagent roster is deliberately
+process-local and only live children are returned to the UI. After restart, a missing
+child roster therefore means **unknown visibility**, not “no children.” Hook-derived
+status is an activity projection, not correctness evidence. The inspected notification
+route accepts lifecycle hooks without authentication; knowing a terminal ID can allow
+status spoofing, and no route-level rate limit was found. Horizon's event ingestion
+must bind authenticated source, launch ID, workspace, and fence, bound request rates
+and payload sizes, and retain a separate `UNKNOWN` state for missing peer events.
+
+Transcript paths are lexically constrained to absolute `.jsonl` files under home, but
+the inspected check does not resolve symlinks; a symlink could cross the intended
+path boundary unless the eventual implementation uses safe descriptor-based open and
+canonical containment checks. Claude/Codex transcript adapters also include reasoning
+or reasoning-summary blocks. Horizon must not expose private reasoning by default;
+only explicitly supported user-visible events enter its transcript or search index.
+
+Auto-resume has a concrete crash window: the durable candidate claim changes the
+original end reason to `resumed` before launching the replacement terminal. A caught
+launch failure rolls back, but process death between claim and successful launch can
+leave the candidate unavailable with no successor. This is inferred from the inspected
+claim/rollback path and was not reproduced. Horizon's durable outbox/launch state must
+survive this window: claim with an expiring owner/fencing token, write launch intent
+and reservation before spawn, then reconcile claim/receipt on restart; never mark
+resumed based only on claim. Add a crash test after claim, before spawn, between spawn
+and receipt, and after receipt before UI event. This refines `AX-359` and the
+`WorkerExecution` launch protocol; it does not make Superset a durable task controller.
+
+Evidence at the pinned revision: [launch request UI](https://github.com/superset-sh/superset/blob/f37599e2774a99dce67f21b887c88bac331da6fc/apps/desktop/src/renderer/components/NewWorkspaceModal/components/PromptGroup/PromptGroup.tsx#L311), [launch request contract](https://github.com/superset-sh/superset/blob/f37599e2774a99dce67f21b887c88bac331da6fc/packages/shared/src/agent-launch-request.ts#L17), [desktop orchestrator](https://github.com/superset-sh/superset/blob/f37599e2774a99dce67f21b887c88bac331da6fc/apps/desktop/src/renderer/lib/agent-session-orchestrator/agent-session-orchestrator.ts#L16), [host launch route](https://github.com/superset-sh/superset/blob/f37599e2774a99dce67f21b887c88bac331da6fc/packages/host-service/src/trpc/router/agents/agents.ts#L47), [agent profile schema](https://github.com/superset-sh/superset/blob/f37599e2774a99dce67f21b887c88bac331da6fc/packages/host-service/src/db/schema.ts#L193), [hook endpoint](https://github.com/superset-sh/superset/blob/f37599e2774a99dce67f21b887c88bac331da6fc/packages/host-service/src/trpc/router/notifications/notifications.ts#L105), [child roster](https://github.com/superset-sh/superset/blob/f37599e2774a99dce67f21b887c88bac331da6fc/packages/host-service/src/terminal-agents/store.ts#L244), [transcript path check](https://github.com/superset-sh/superset/blob/f37599e2774a99dce67f21b887c88bac331da6fc/packages/host-service/src/terminal-agents/transcript-path.ts#L4), [resume route](https://github.com/superset-sh/superset/blob/f37599e2774a99dce67f21b887c88bac331da6fc/packages/host-service/src/trpc/router/terminal-agents/terminal-agents.ts#L101), and [resume lifecycle tests](https://github.com/superset-sh/superset/blob/f37599e2774a99dce67f21b887c88bac331da6fc/packages/host-service/src/trpc/router/terminal-agents/terminal-agents.test.ts).
+
+Additional inspected tests at this pin: [hook routing/attribution](https://github.com/superset-sh/superset/blob/f37599e2774a99dce67f21b887c88bac331da6fc/packages/host-service/src/trpc/router/notifications/notifications.test.ts#L179), [transcript path predicate](https://github.com/superset-sh/superset/blob/f37599e2774a99dce67f21b887c88bac331da6fc/packages/host-service/src/terminal-agents/transcript-path.test.ts), [profile-backed launch](https://github.com/superset-sh/superset/blob/f37599e2774a99dce67f21b887c88bac331da6fc/packages/host-service/src/trpc/router/agents/agents.test.ts), and [desktop request/orchestration](https://github.com/superset-sh/superset/blob/f37599e2774a99dce67f21b887c88bac331da6fc/apps/desktop/src/renderer/lib/agent-session-orchestrator/agent-session-orchestrator.test.ts). The resume tests exercise concurrent callers and handled launch failure but do not inject process death after the durable claim.
 
 ## Primary references
 

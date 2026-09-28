@@ -4,29 +4,34 @@ Module LLD for `CMP-orch`. Sub-agent delegation, the durable long-horizon task g
 
 ## Purpose
 
-Run units of work — native workers, external agents, background jobs, and dependencies — under one durable controller, without a second state machine. Delegation is optional: use it only when independence, workspace separation, evidence value, and remaining budget justify its prompt/context replay and integration overhead (`DEC-036`). Every child is a normal durable session or a tracked opaque external attempt; every return is a bounded receipt, never authority; every write is scoped or arbitrated; every budget fails closed. The orchestrator owns *coordination and evidence*, not agent reasoning, capability execution, or the turn loop.
+Run units of work — native workers, external agents, background jobs, and dependencies — under one durable controller, without a second state machine. Delegation is optional: use it only when independence, workspace separation, evidence value, and remaining budget justify its prompt/context replay and integration overhead (`DEC-036`). Every child is a durable Thread or a tracked opaque external attempt; every return is a bounded receipt, never authority; every write is scoped or arbitrated; every budget fails closed. The orchestrator owns *coordination and evidence*, not agent reasoning, capability execution, or the turn loop.
 
 ## Responsibilities
 
 **Owned.**
-- **Delegation.** Spawn, bound, monitor, cancel, and collect sub-agents. One child session per sub-agent with its own context and toolset/persona (`REQ-ORCH-001`).
+- **Delegation.** Spawn, bound, monitor, cancel, and collect sub-agents. One child Thread per sub-agent with its own context and toolset/persona (`REQ-ORCH-001`).
 - **Depth/count guard.** Enforce max depth, max total per tree, max parallel, and per-lane concurrency from configuration; a spawn may narrow these but never widen them (`REQ-ORCH-005`).
 - **Permission derivation.** A child's effective authority is the parent's ceiling intersected with the spawn's declared scope; no child ever exceeds its parent.
 - **Receipts.** Schema-validated summaries (status, scope, summary, findings, changed files, tests, artifacts, blockers, confidence, usage, partial marker) delivered under a no-authority header. Full transcripts stay in the child's own log.
+- **Agent messaging.** Own a bounded, optional Run-scoped mailbox for explicit operator/worker recipients; append message and delivery facts to the existing Run stream and bridge recipients through idempotent `CMP-session` inbox receipts. The mailbox is not another task graph, thread tree, policy owner, or completion authority (`REQ-HORIZON-031`, `ARCH/32`).
 - **Isolation.** Read-only in-process, git worktree, or ACP as per-spawn options; write-capable workers MUST use a fenced worktree or a serialized governed write channel. `inprocess` is never the default for concurrent mutation (`REQ-ORCH-002`).
 - **Background jobs.** Fire-and-forget children that do not block the parent turn; completion wakes the parent at a boundary only when it is live and the child was not cancelled.
+- **Execution lifecycle.** Persist each process/adapter incarnation as `WorkerExecution` in the run stream. `CMP-execution-host` owns idempotent spawn/observe/terminate mechanics; `CMP-orch` owns the durable execution state, fencing, reconciliation, retry eligibility, and attempt/task truth. A PID or peer handle disappearing is `UNKNOWN` until reconciled; a process exit never means Task `PASSED` (`REQ-HORIZON-028`).
+- **System-wide admission sequencer.** Own the durable `SupervisorControlStream` and cross-process admission lock. Run admission, every model-driven worker or direct-turn execution, and executable maintenance are serialized here; each grant is acknowledged only after its control event and canonical run/session record reconcile. This prevents direct turns outside a durable Run from racing an update, and makes one global admission decision authoritative without moving task truth out of per-run streams (`REQ-HORIZON-029`, `ARCH/25`, `DEC-062`).
+- **Application maintenance fence.** Before a signed update replaces the executable, atomically close admission for new runs and all new model-driven worker/direct-turn executions, prove that no active or unknown execution/effect remains, and issue a one-use `MaintenancePermit` bound to the update operation, install identity, controller generation, and current binary digest. Keep the permit/fence through replacement and health check or rollback. On controller restart, reconcile the updater and helper before reopening admission; expiry alone cannot release an uncertain fence (`REQ-UPDATE-005`, `ARCH/30`).
 - **Durable task graph.** A persisted DAG with dependencies, per-node budgets (tokens, cost, wall-clock, tool-calls), attempts, artifacts, and resumability across compaction and restart (`REQ-HORIZON-002`).
 - **Worktree lifecycle.** Create, key, lease, diff, merge, and reap worktrees.
 - **Merge arbitration.** Apply clean work, surface conflicts with evidence, deterministic given identical inputs (`REQ-ORCH-003`, `REQ-ORCH-004`).
 - **Team orchestration + CI feedback.** Run N workers against a shared backlog, feed CI results back into the graph, and escalate conflicts.
 
-**Not owned.** The turn loop and model step (`CMP-runner`); child reasoning (`CMP-runner` per session); credential/policy rules (`CMP-guard`); the durable session log itself (`CMP-session`); provider transports (`CMP-provider`); the audit chain (`CMP-audit`).
+**Not owned.** The turn loop and model step (`CMP-runner`); child reasoning (`CMP-runner` per Thread); credential/policy rules (`CMP-guard`); the durable Thread log itself (`CMP-session`, historic component name); provider transports (`CMP-provider`); the audit chain (`CMP-audit`).
 
 ## Interfaces
 
 **Depends on.**
-- `CMP-session` — durable child sessions, checkpoints, replay.
-- `CMP-runner` — one run per child session; parent/child cancellation tokens.
+- `CMP-session` — durable child Threads, checkpoints, replay.
+- `CMP-execution-host` — host process lifecycle and reconciled launch/exit receipts; it cannot change run/task/attempt states.
+- `CMP-runner` — one run per child Thread; parent/child cancellation tokens.
 - `CMP-guard` — permission derivation and approval routing for child asks.
 - `CMP-context` — per-child context assembly; `fork` policy (none/bounded/full) with a bounded inherited snapshot, never the parent transcript.
 - `CMP-provider` — model selection per child role.
@@ -43,10 +48,30 @@ Run units of work — native workers, external agents, background jobs, and depe
 spawn(SubagentOptions) -> SubagentRef          # returns immediately
 await(ref, bounded_ms|none) -> Receipt
 cancel(ref) / close(ref)
+post_message(auth, request) -> MessageReceipt
+list_messages(auth, run_id, filter, cursor) -> MessagePage
+message_status(auth, delivery_id) -> MessageDeliveryStatus
+acknowledge_message(auth, message_id) -> AckReceipt # explicit, optional; not proof of understanding
+admission.admit_run(operation_id, start_intent) -> RunAdmissionReceipt
 graph.add(node, deps[]) -> NodeId
 graph.ready() -> [NodeId]
 merge(worktree_ref) -> MergeResult
+work.acquire(operation_id, kind, run_id?, thread_id, turn_id?, execution_id, attempt_id?) -> WorkPermit | Busy(reason)
+work.settle(permit, COMPLETED | INTERRUPTED | FAILED, terminal_receipt) -> Receipt
+work.reconcile(permit, host_or_session_observation) -> ACTIVE | SETTLED | UNKNOWN
+maintenance.acquire(operation_id, install_id, binary_digest, operator_action_ref) -> MaintenancePermit | Busy(reason)
+maintenance.settle(permit, UPDATED | ROLLED_BACK | ABORTED_RECONCILED) -> Receipt
 ```
+
+`admission.admit_run` and `work.acquire` use the same cross-process sequencer and
+stable operation-ID idempotency. `work.acquire` first writes the control intent and
+canonical Thread-turn or attempt-execution record, then its grant; providers and
+execution hosts reject dispatch without the granted receipt. `work.settle` is allowed
+only after a terminal process/peer receipt and effect reconciliation. A timeout or
+disconnect is not a terminal outcome; `work.reconcile` keeps the permit `UNKNOWN`
+until an authoritative observation arrives. The lock is held only while committing
+these bounded transitions, while the durable permit blocks maintenance for the
+execution's full lifetime.
 
 ## Data / state model
 
@@ -64,11 +89,11 @@ SubagentOptions {
   model?: ModelRef|inherit|peer_managed, # accepted only if adapter can apply/report it
   isolation: readonly_inprocess|worktree|acp, # write isolation is explicit
   limits?: { max_steps?, max_tokens?, max_spend{amount,currency}?, wall_time_ms?,
-             max_tool_calls?, max_output_bytes?, max_disk_bytes?, max_children?,
+             max_tool_calls?, max_worker_executions?, max_output_bytes?, max_disk_bytes?, max_children?,
              max_depth?, max_concurrent? },
   delivery: { await?: bounded(ms)|none, wake?: bool = true, surface?: parent|ui }
 }
-SubagentRef { agent_id, nickname?, session_ref, work_id, status, parent_turn_id }
+SubagentRef { agent_id, nickname?, thread_ref, work_id, status, parent_turn_id }
 ```
 
 **Receipt** — `{status, scope, summary, findings[], changed_files[], tests[], artifacts[], blockers[], confidence, usage, will_wake, partial}`. Receipts are untrusted data: scanned for instruction-shaped content and size-capped, with a full-log artifact ref when larger.
@@ -101,7 +126,7 @@ changes scheduler behavior.
 
 ## Lifecycle & flows
 
-1. **Spawn.** Validate against depth/count/concurrency bounds → derive permission ceiling → create the child session → return `SubagentRef` immediately. Spawn is never coupled to child completion unless a bounded `await` is requested.
+1. **Spawn.** Validate against depth/count/concurrency bounds → derive permission ceiling → create the child Thread → return `SubagentRef` immediately. Spawn is never coupled to child completion unless a bounded `await` is requested.
    Before spawning, estimate prompt/context replay, expected wall-time, verification and merge cost. If the task is not independent or its projected overhead exceeds its budget/value, run sequentially or decline delegation (`REQ-ORCH-006`).
 2. **Run.** The child runs an ordinary turn loop with its own context and tools. A background child emits typed progress; it does not steal parent focus.
 3. **Completion.** Two modes: a bounded foreground wait (park the parent on the child) or a queue-only wake at a turn boundary. Wake is suppressed unless the parent is live and the child was not cancelled. A bounded wait that overruns its budget auto-backgrounds rather than freezing the parent.
@@ -111,6 +136,7 @@ changes scheduler behavior.
 7. **Merge arbitration.** Order candidates by a stable topological order then task ID from pinned base revisions; completion timing is not an input. Apply clean patches; on conflict, stop that branch and record evidence. Reverify the combined integration revision.
 8. **Task graph.** Nodes become ready only when every dependency has current independent `PASS` evidence bound to the approved spec and tested revision. The graph persists and resumes after compaction or restart; a resumed node reuses an effect or result only after reconciliation.
 9. **Team run + CI.** Fan out a backlog within concurrency bounds; feed CI results back as node evidence; clean work applies, conflicts surface.
+10. **Peer coordination.** Check sender capability and recipient membership, reserve bounded event/inbox resources, append one Run message event and idempotent per-recipient outbox IDs, then admit references to eligible Session inboxes. Promote only at a safe provider-turn boundary. Never wake or restart paused/terminal workers; a message never changes Task state. Full schema and recovery semantics are in `ARCH/32`.
 
 **Scheduling & concurrency.**
 - Independent nodes dispatch in parallel up to `max_parallel`; dependent nodes wait on a settle barrier.
@@ -123,6 +149,32 @@ changes scheduler behavior.
 - Admission is queue-on-limit by default with an explicit fail-fast opt-in.
 - The parent does non-overlapping work while children run; it never blocks on a background child.
 - Cancellation is cooperative and token-based and cascades to descendants; a cancelled child is terminal and never wakes the parent.
+
+### Application replacement fence
+
+`CMP-update` may stage an artifact without changing run/work admission. The initial
+product contract waits until every Run is terminal and every execution/effect is
+settled; it does not pause or migrate an active run. To apply an update,
+`CMP-orch` acquires the system-wide admission lock and appends `MaintenanceIntent` to
+the canonical `SupervisorControlStream`. That same sequencer arbitrates new run starts
+and every model-driven worker/direct-turn execution, so the decision cannot race a
+client that bypasses the durable Run API. Before granting, the controller reconciles
+all Run, task, worker, direct-turn, external-effect, and recovery state against canonical
+run/session streams and active host/peer observations. It refuses a permit if any
+execution/effect is active or `UNKNOWN`, a control intent is unresolved, a projection
+is stale, or a required recovery reserve is unavailable. A concurrent start or work
+dispatch receives typed `maintenance_in_progress` and cannot create unowned work or
+consume a run/work reservation.
+
+The permit is recorded in the `SupervisorControlStream` and referenced by the update
+operation; it is not a second updater-owned truth. It is one-use and binds the
+update operation ID, install identity, controller generation, base binary digest, and
+owner fence epoch. The restricted helper revalidates it immediately before swap. A
+permit is settled only after the new binary reports the expected version/digest and
+passes its bounded health check, after a verified rollback, or after restart recovery
+proves that no helper/swap remains in flight. An expired permit or lost process is
+not enough to reopen admission. If helper outcome is uncertain, keep admission closed
+and enter typed recovery; do not allow a new run to race a possibly partial swap.
 
 
 ## Failure modes
@@ -138,6 +190,12 @@ changes scheduler behavior.
 | Merge conflict | Stop branch; evidence recorded; deterministic; no silent overwrite |
 | Budget exhausted | Node fails closed; graph records the exhausted term |
 | Crash mid-graph | Resume from the persisted graph; settled nodes reused |
+| Update requested while a Run, work permit, or effect is nonterminal/unknown | Do not issue a permit; stage/defer the update and preserve normal run/work admission |
+| Run start or direct-turn dispatch races maintenance acquisition | `SupervisorControlStream` arbitration chooses one winner; maintenance blocks new run/work admission with `maintenance_in_progress`, or already admitted work/nonterminal Run makes update acquisition return `Busy` |
+| Worker/turn caller disconnects before settle receipt | Keep the permit `UNKNOWN`; reconcile against the canonical Thread/run stream and host/peer before maintenance or a replacement writer is allowed |
+| Run/session record write fails after admission intent | Do not acknowledge admission; retain the unresolved intent, reconcile the canonical stream/launch receipt, and fail closed for conflicting work or maintenance |
+| Supervisor stream is corrupt, newer-schema, or its lock/durability cannot be established | Refuse admission and update activation; surface typed recovery/unsupported-backend state rather than falling back to a stale SQLite count |
+| Controller/helper crashes with a maintenance permit | Keep admission fenced until process, binary digests, and swap outcome are reconciled; expiry alone never releases it |
 | Duplicate receipt delivery | At-most-once per parent incarnation |
 | Child asks permission with no connected/authorized UI | Route to a durable root request with deadline; deny/cancel and settle on expiry (`REQ-HORIZON-012`) |
 | External worker reports success with hidden child work/usage | Record opaque child state and unknown usage; never infer pass or zero cost (`REQ-HORIZON-009`) |
@@ -145,6 +203,8 @@ changes scheduler behavior.
 | Child usage event duplicates parent roll-up | Deduplicate by stable observation ID or report overlapping rows separately (`REQ-ORCH-009`) |
 | Local agent executable changes after profile approval | Refuse launch and quarantine until the canonical path/digest is re-probed and trust is re-reviewed (`ARCH/27`) |
 | Background work continuously consumes slots | Fair lane reservations; interactive steer/cancel/approval have bounded dispatch latency (`REQ-HORIZON-014`) |
+| Message targets a foreign, stale, paused, or unsupported recipient | Reject before append or return an explicit delivery state; never leak content across Runs or auto-wake an agent (`ARCH/32`) |
+| Message store/inbox boundary crashes or retries | Reconcile by stable message/delivery ID and payload digest; never duplicate a canonical post or provider input (`ARCH/32`) |
 | CI red | Result fed back as evidence; worker re-plans or escalates |
 
 ## Configuration

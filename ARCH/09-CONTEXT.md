@@ -142,12 +142,17 @@ retries, and never degrades into an unplanned context.
 
 Estimation is deterministic and cheap: `estimate(text) = round(len(text) / 4)`,
 clamped at 0, applied to `JSON.stringify` of a structured value where needed.
+This is a conservative byte heuristic, not a tokenizer; drift can be large for
+multilingual text, unusual scripts, code, and provider-specific serialization.
 When the provider reports usage, the measured value replaces the estimate for
 budget accounting; the estimate is the pre-send gate.
 
 Named budget terms (no magic numbers in code):
 
-`usable = window − max(output, buffer)` (the pre-send gate),
+`reserve = max(output, buffer)` and
+`usable = window.saturating_sub(reserve)` (the pre-send gate). If `reserve >= window`,
+return typed `ROUTE_UNSATISFIABLE` before provider dispatch; do not underflow or send a
+zero-context request as valid.
 `keep_recent = keep.tokens` (serialized tail retained intact), and
 `summary_output = min(requested_output, summary_token_cap)` (summarize-call cap).
 
@@ -294,7 +299,11 @@ prompt stable.
 ### 10. Pin, exclude, snapshot, rebuild
 
 - **Pin** — marks an item to survive selection and compaction up to a ceiling;
-  pinned items consume budget and are visible in the inspector.
+  pinned items consume budget and are visible in the inspector. If required pins exceed
+  the current route's usable budget, fail assembly with `PINNED_CONTEXT_OVER_BUDGET`
+  listing the blocking references and measured estimates. Do not silently drop a pin or
+  submit an incomplete request; the planner/operator must reduce scope, select another
+  supported route, or explicitly revise the pin set.
 - **Exclude** — marks an item or path to never enter an assembly, regardless of
   ranking. Exclusions are evaluated before ranking so they cost nothing.
 - **Snapshot** — the generation baseline + `Snapshot` is durable; a resumed
@@ -355,7 +364,7 @@ overridable. No key changes an authorization decision (`CMP-guard` owns that).
 | `REQ-CTX-005` | Hierarchical `AGENTS.md` discovery as a typed source (§6). |
 | `REQ-PERF-003` | Incremental indexing off the loop (§7). |
 | `REQ-ORCH-001/002/005` | Sharded child context + receipts (§11). |
-| `REQ-HORIZON-002` | Task graph survives compaction (checkpoint carries work state). |
+| `REQ-HORIZON-002` | The task graph survives compaction because canonical task state is reloaded from the durable run/task store; a context checkpoint may carry only a bounded, revision-bound summary/reference, never authoritative task truth. |
 | `REQ-SEC-002` | Instructions/retrieved content framed as untrusted data. |
 
 ## Open questions
