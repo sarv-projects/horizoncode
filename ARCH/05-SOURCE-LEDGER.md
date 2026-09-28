@@ -94,6 +94,27 @@ boundary and use public documentation/research only.
 - Mandatory legal attribution is unconditional; stripping or paraphrasing required
   notices is itself a build failure (`DEC-011`, `DEC-030`).
 
+**Source status (2026-09-28).** The bundle and its gate are implemented
+(`AX-010`). `horizoncode notices generate` renders `THIRD-PARTY-NOTICES.md` from
+the pinned `Cargo.lock` and from the license/notice files of the package sources
+that are present for the generating platform: each registry package's `license`
+expression and its verbatim `LICENSE`/`COPYING`/`NOTICE`/`UNLICENSE` documents,
+deduplicated per expression. Packages whose sources are absent (built for another
+target platform) are listed explicitly under *not resolved on the generating
+platform* rather than omitted. The bundle is embedded in the binary and printed
+by `horizoncode --credits`, which needs no store, provider, or environment.
+
+`horizoncode notices check` and the unit gate apply three rules instead of byte
+equality, because which sources are unpacked varies by machine: the lockfile
+digest named in the bundle must match `Cargo.lock`; every locked package must
+appear in the bundle and nothing may appear that is not in the lock graph; and
+every package whose source is present locally must appear in the resolved table
+with its shipped license expression and all of its notice texts. A locally built
+package can therefore never be hidden in the unresolved section or lose its
+notice. **Not covered here:** the dependency allowlist check and quarantine
+(`G-1`, `DEC-012`) and the in-tree provenance records for `Adapt`/`Vendor` rows,
+which have no entries yet.
+
 ## 5. Model catalog provenance record (`SRC-009`)
 
 **Grant verified from primary sources.**

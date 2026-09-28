@@ -25,6 +25,9 @@ persistence path, permission system, or scheduler:
    JSONC reader, the typed settings merge with provenance, and hierarchical `AGENTS.md`
    discovery; one `state_root()` resolves the documented `~/.horizoncode` fallback
    (`AX-008`, fixing `F-67` as `AX-357`).
+10. the shipped third-party notices bundle: generated from the pinned dependency
+   graph, embedded in the binary for `--credits`, and gated so a dependency change
+   cannot ship stale attribution (`AX-010`).
 
 **Breadth program (user directive, 2026-09-28).** After the wave above, the user asked to
 plan, check, and build the remaining proposed rows in dependency order without stopping
@@ -123,6 +126,21 @@ all three branches are unit-tested, and the session, audit, analytics, guard, an
 roots consume it (`AX-357`). Not covered here: injecting the rendered instruction
 source into the assembled context is `AX-319`.
 
+**Fourth pass — `AX-010` (third-party notices and the provenance bundle).**
+
+`horizoncode notices generate` renders `THIRD-PARTY-NOTICES.md` from `Cargo.lock`
+and the license/notice files of the package sources present for the generating
+platform; the bundle is embedded in the binary, so `horizoncode --credits` prints
+exactly what ships and works with no HOME, store, or provider. The gate is not byte
+equality — which sources are unpacked varies by machine — but three rules: the
+bundle's named lockfile digest must match `Cargo.lock`, every locked package must
+appear and nothing else may, and every locally present package must be in the
+resolved table with its shipped license expression and all of its notice texts. A
+locally built package can therefore never be hidden in the unresolved section or
+lose its notice. `horizoncode notices check` exposes the gate to a release script
+(exit `1` when stale). The dependency allowlist (`G-1`) and `Adapt`/`Vendor`
+provenance records are still open and named in the row.
+
 **Contract-first edits (architecture, before code).**
 
 - `ARCH/07-SESSION.md`: exact `SessionListResult`/`SessionListEntry`/`SessionListIssue`
@@ -207,6 +225,10 @@ source into the assembled context is `AX-319`.
   `AX-354`; the two `F-66` failures measured earlier in the day went green under `AX-355`.
 - `cargo test -p horizoncode-config` — 25 tests: 7 unit (JSONC edge cases, the three
   `state_root` branches), 4 discovery, 8 settings/provenance, 6 instructions.
+- `cargo test -p horizoncode-cli` — includes the notices gate: 5 unit tests (the
+  generator's lock parsing, rendering, determinism, and the four refused edits) and 3
+  black-box tests (`--credits` with no configuration, `notices check`, `notices
+  generate --output`).
 - Baseline comparison was performed in a clean worktree at `b677443`; no test that passed
   there fails here.
 - One unreproduced flake was observed once and not in 11 subsequent runs:
@@ -263,11 +285,11 @@ source into the assembled context is `AX-319`.
    `cargo fmt --all --check` baseline becomes enforceable (`AX-121` builds the gate that
    would catch this).
 1. Commit this wave (see the commit list below) with `TODO.md` and this handoff included.
-2. The **breadth program** continues with `AX-010` (third-party notices and the
-   provenance bundle, independent of the storage decisions), then `AX-348` (bounded
-   content-addressed artifacts plus the published finite `session.log.*`/`run.log.*`
-   defaults that gate `AX-309`/`AX-350`), then the TUI/command/settings surfaces
-   (`AX-009`, `AX-344`, `AX-343`), then skills (`AX-110`) and MCP (`AX-106`, `AX-332`).
+2. The **breadth program** continues with `AX-348` (bounded content-addressed
+   artifacts plus the published finite `session.log.*`/`run.log.*` defaults that gate
+   `AX-309`/`AX-350`), then the TUI/command/settings surfaces (`AX-009`, `AX-344`,
+   `AX-343`), then skills (`AX-110`) and MCP (`AX-106`, `AX-332`). `AX-010` is done;
+   its remaining allowlist/provenance-record work is named in the row.
 3. `AX-309` slice 1: the **shared segmented event-log core**, carrying the published
    finite defaults from `AX-348`. Both the session and the run log need the same
    bounded-segment framing (`DEC-055`), so building it once is what keeps a second
@@ -315,6 +337,8 @@ large file, so they are not split further for the sake of a commit boundary.
 12. `docs: close F-65 with the spike evidence and the migration note`
 13. `feat(config): resolve layered settings, instruction discovery, and one state root`
 14. `docs: record the config slice, F-67, and the unified state root`
+15. `feat(cli): ship and gate the third-party notices bundle`
+16. `docs: record the notices bundle and its gate`
 
 Each commit is self-contained and builds; commit 2 carries the workspace manifest,
 so its body notes the MSRV move that commit 4's OS-backed lock depends on.
