@@ -30,8 +30,19 @@
 
 #![forbid(unsafe_code)]
 
+/// The schema version this build writes and the newest it can read.
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+
 pub mod durability;
 pub mod envelope;
+pub mod error;
+pub mod head;
+pub mod log;
+pub mod segment;
 
 pub use durability::{CommitSink, DurabilityProfile, StdCommitSink, UnsupportedSink, std_sink};
 pub use envelope::{DIGEST_DOMAIN, EventEnvelopeError, EventRecord, RecordSpec};
+pub use error::LogError;
+pub use head::{CommittedLogHead, HEAD_FILE, HeadState, read_head, write_head};
+pub use log::{Committed, EventLog, LOCK_FILE, ReplayReport, SEGMENTS_DIR};
+pub use segment::{ContentHasher, SegmentSeal, SegmentSummary, genesis_segment_digest};
