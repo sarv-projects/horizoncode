@@ -21,6 +21,10 @@ persistence path, permission system, or scheduler:
    instead of surfacing as a per-call denial (`AX-356`).
 8. the pinned audit genesis constants are reconciled with the labels they claim, with the
    pre-rename derivation recorded and refused (`AX-354`, closing `F-65`).
+9. the first breadth slice: one configuration crate owns the discovery walk, the shared
+   JSONC reader, the typed settings merge with provenance, and hierarchical `AGENTS.md`
+   discovery; one `state_root()` resolves the documented `~/.horizoncode` fallback
+   (`AX-008`, fixing `F-67` as `AX-357`).
 
 **Breadth program (user directive, 2026-09-28).** After the wave above, the user asked to
 plan, check, and build the remaining proposed rows in dependency order without stopping
@@ -98,6 +102,26 @@ each module pins the pre-rename value and refuses it
 in `ARCH/14` §Genesis derivation: the pre-rename derivation was never shipped, and a store
 that starts from it is refused at sequence 0 rather than accepted under a compatibility rule.
 With this, the workspace has **no failing test**.
+
+**Third pass — breadth program, first slice: `AX-008` (`horizoncode-config`).**
+
+A new `horizoncode-config` crate is the one owner of discovery and validation
+(`ARCH/18`): the layer walk (global first, then project outer-to-nearest, with a path
+that exists but is unusable reported as an issue instead of being skipped), the JSONC
+reader the guard now consumes instead of keeping a second copy, the typed settings
+merge with per-key provenance (`SettingView`: requested/effective values, scope,
+source, contributors, shadowed sources, validation error, apply boundary, schema
+version, effective digest), and hierarchical `AGENTS.md` discovery with
+canonical-path and digest dedupe, exact rendering, and the fail-closed unreadable
+case. The first schema group is the small set this slice's consumers need
+(`instructions.extra`, two accessibility flags, the terminal-bell preference); the
+other `ARCH/18` groups register in the same registry as their owners land, so no
+second settings engine appears. Building it surfaced `F-67`: all five state-root call
+sites documented `~/.horizoncode` and implemented `$HOME`. `horizoncode_config::
+state_root()` is now the one resolver (`$HORIZONCODE_HOME` → `~/.horizoncode` → `.`),
+all three branches are unit-tested, and the session, audit, analytics, guard, and CLI
+roots consume it (`AX-357`). Not covered here: injecting the rendered instruction
+source into the assembled context is `AX-319`.
 
 **Contract-first edits (architecture, before code).**
 
@@ -177,11 +201,12 @@ With this, the workspace has **no failing test**.
   `cargo fmt --all --check` is a pre-existing failure here and must not be reported as
   a pass. Formatting the rest of the tree is its own cleanup task.
 - `cargo clippy --workspace --all-targets -- -D warnings` — pass.
-- `cargo test --workspace --no-fail-fast` — **332 passing, 0 failing**. The two `F-65`
-  genesis failures measured at baseline `b677443` are fixed under `AX-354`; the two `F-66`
-  failures measured earlier in the day went green under `AX-355`
-  (`e2e_acp::acp_initializes_creates_a_session_and_streams_updates` and
-  `e2e_tools::headless_write_edit_and_sandboxed_bash`).
+- `cargo test --workspace --no-fail-fast` — **422 passing, 0 failing** at this revision
+  (the count grows with the new suites; the totals above are per-run, not additive across
+  passes). The two `F-65` genesis failures measured at baseline `b677443` are fixed under
+  `AX-354`; the two `F-66` failures measured earlier in the day went green under `AX-355`.
+- `cargo test -p horizoncode-config` — 25 tests: 7 unit (JSONC edge cases, the three
+  `state_root` branches), 4 discovery, 8 settings/provenance, 6 instructions.
 - Baseline comparison was performed in a clean worktree at `b677443`; no test that passed
   there fails here.
 - One unreproduced flake was observed once and not in 11 subsequent runs:
@@ -238,21 +263,26 @@ With this, the workspace has **no failing test**.
    `cargo fmt --all --check` baseline becomes enforceable (`AX-121` builds the gate that
    would catch this).
 1. Commit this wave (see the commit list below) with `TODO.md` and this handoff included.
-2. The **breadth program** in the order given in §Active goal, beginning with `AX-008`
-   (layered config + `AGENTS.md` discovery): discover global → project → nearest layers,
-   typed merge with per-key provenance, fail-safe parse behavior, and the instruction
-   source records the context plane consumes.
-3. `AX-309` slice 1: the **shared segmented event-log core**, which also carries the
-   published finite `session.log.*`/`run.log.*` defaults (`AX-348`). Both the session and
-   the run log need the same bounded-segment framing (`DEC-055`), so building it once is
-   what keeps a second persistence engine from appearing, and it is `AX-350`'s prerequisite.
+2. The **breadth program** continues with `AX-010` (third-party notices and the
+   provenance bundle, independent of the storage decisions), then `AX-348` (bounded
+   content-addressed artifacts plus the published finite `session.log.*`/`run.log.*`
+   defaults that gate `AX-309`/`AX-350`), then the TUI/command/settings surfaces
+   (`AX-009`, `AX-344`, `AX-343`), then skills (`AX-110`) and MCP (`AX-106`, `AX-332`).
+3. `AX-309` slice 1: the **shared segmented event-log core**, carrying the published
+   finite defaults from `AX-348`. Both the session and the run log need the same
+   bounded-segment framing (`DEC-055`), so building it once is what keeps a second
+   persistence engine from appearing, and it is `AX-350`'s prerequisite.
 4. `AX-350` session half: bounded digest-linked segments, committed head, streaming replay,
    event-byte quota and the protected control reserve. The run-log half waits for
    `AX-309`/`AX-312`.
 5. `AX-311`: the effect journal, which unblocks `AX-351`'s recovery half and gives
    `ACC-P1-06`/`ACC-P1-12` their recovery evidence.
 6. Then the rest of the controller chain (`AX-301`, `AX-310`, `AX-312`, `AX-313`,
-   `AX-317`, `AX-337`, `AX-347`) before any multi-hour claim.
+   `AX-317`, `AX-337`, `AX-347`) before any multi-hour claim. The remaining breadth rows
+   (agent directory and ACP client/pools, repo map/LSP, checkpoints/rewind, artifact
+   store, host probe, config recovery, peer adapters, delegation measurement,
+   eval/perf, safety/config/provenance) follow in the dependency order recorded in
+   §Active goal.
 
 ## Unresolved questions
 
@@ -283,6 +313,8 @@ large file, so they are not split further for the sake of a commit boundary.
 10. `fix(loop): refuse a provider batch that reuses a tool-call id`
 11. `fix(audit): re-derive the genesis constants from the labels they claim`
 12. `docs: close F-65 with the spike evidence and the migration note`
+13. `feat(config): resolve layered settings, instruction discovery, and one state root`
+14. `docs: record the config slice, F-67, and the unified state root`
 
 Each commit is self-contained and builds; commit 2 carries the workspace manifest,
 so its body notes the MSRV move that commit 4's OS-backed lock depends on.

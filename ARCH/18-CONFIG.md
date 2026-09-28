@@ -178,6 +178,25 @@ provenance, while `CMP-orch` owns active limits, `CMP-provider` owns usage facts
 
 This document *is* the configuration surface. Key groups: `providers.*`, `models.*`, `routing.*`, `budget.*`, `permissions.*`, `instructions.*`, `skills.*`, `hooks.*`, `plugins.*`, `memory.*`, `mcp.servers[]`, `agents.profiles[]`, `commands.custom[]`, `orch.*`, `ui.theme.*`, `ui.layout.*`, `ui.keymap.*`, `ui.notifications.*`, `ui.sound`, `ui.accessibility.*`, `ui.usage_warnings[]`, `compaction.*`, `repository.*`, `verification.*`, and `delivery.*`. Every field is schema-versioned; migration notes accompany renames. A `SettingView` contains `{key, requested_value, effective_value, source_scope, source_ref, shadowed_sources[], locked_by?, validation_error?, capability_status?, apply_boundary, schema_version, effective_digest}`. `/settings` exposes theme tokens, contrast/color depth, reduced motion and screen-reader mode, layout/keymap, provider/model/agent, reasoning, local endpoint, context limits and compaction, routing, hierarchical run/task/worker budgets, warning thresholds, approval posture, notification channels and sound, extension enablement/provenance, evidence retention, and cost/quota display. `managed` locks win; project content cannot widen authority. Changing model/provider/agent records capability and provenance; an unavailable setting is not silently approximated (`REQ-UI-010..015`, `REQ-ORCH-007..009`, `DEC-030`, `DEC-038..040`). The slash command and mention catalogs are owned by `ARCH/27`.
 
+**Source status (2026-09-28).** `horizoncode-config` now owns the implemented slice:
+the discovery walk (global first, then project outer to nearest; a path that exists
+but is unusable is reported as an issue rather than skipped), the one JSONC reader
+(the guard's document validator consumes it instead of keeping a copy), the typed
+settings merge with per-key provenance (`SettingView` as above, with `contributors`
+added so an accumulating key can list every contributing layer), and hierarchical
+`AGENTS.md` discovery with canonical-path and content-digest dedupe, the exact
+`Instructions from: <path>` rendering, and the fail-closed unreadable case. One
+`state_root()` resolves `$HORIZONCODE_HOME` → `~/.horizoncode` → `.` and is consumed
+by the session, audit, analytics, guard, and CLI roots, so the documented layout is
+the implemented one (`F-67`). The first schema group covers the keys this slice's
+consumers need (`instructions.extra`, `ui.accessibility.reduced_motion`,
+`ui.accessibility.screen_reader`, `ui.notifications.terminal_bell`); every other key
+group above registers in the same registry as its owner lands, so no second settings
+engine appears. **Not covered:** managed locks (`locked_by`) and capability status
+(`capability_status`) arrive with managed policy; injection of the rendered
+instruction source into the assembled context is `AX-319`; permission rules remain
+validated and evaluated by `CMP-guard`.
+
 `session.artifacts.*` is a first-class schema group for maximum inline-event bytes,
 per-object and per-session encoded bytes, decoder expansion/pixel/time ceilings,
 artifact retention, orphan-cleanup grace, and required durability mode. Expose

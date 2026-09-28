@@ -224,8 +224,14 @@ against captured sessions, not on the live critical path.
 
 1. Read the **global** config instruction file (`<config>/AGENTS.md`).
 2. Walk **up** from the working directory to the project root, collecting each
-   `AGENTS.md` along the way; stop at the project root, never above it.
-3. Deduplicate by canonical absolute path, global first, then outermost → nearest. A nearer instruction overrides only conflicting advice within its lower-trust project-instruction scope; it never changes system policy or grants authority (`ARCH/18`, `DEC-031`).
+   `AGENTS.md` along the way; stop at the project root, never above it. The
+   project root is the nearest ancestor carrying a `.git` marker (a directory in
+   a normal checkout, a file in a worktree) or a `.horizoncode` directory; when
+   no ancestor carries one, the working directory is its own project root, so a
+   plain directory tree cannot leak instruction files from above it
+   (implementation note recorded with `AX-008`).
+3. Deduplicate by canonical absolute path and, because two files can hold
+   identical text, by content digest; global first, then outermost → nearest. A nearer instruction overrides only conflicting advice within its lower-trust project-instruction scope; it never changes system policy or grants authority (`ARCH/18`, `DEC-031`).
 4. Render each as `Instructions from: <absolute path>\n<content>`, joined by a
    blank line, as one typed `core/instructions` source.
 
