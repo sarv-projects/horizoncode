@@ -3,6 +3,7 @@
 mod app;
 mod approval;
 mod args;
+mod notices;
 mod output;
 mod surfaces;
 

@@ -23,6 +23,7 @@ use thiserror::Error;
 
 use crate::approval::InteractiveApprovalResolver;
 use crate::args::{Cli, Command, ModeArg, OutputFormat, SandboxArg};
+use crate::notices;
 use crate::output::CliObserver;
 use crate::surfaces;
 
@@ -80,6 +81,10 @@ pub enum CliError {
     /// The audit access record could not be written, so nothing was disclosed.
     #[error("audit access error: {0}")]
     Access(String),
+
+    /// The third-party notices bundle could not be generated or read.
+    #[error("notices error: {0}")]
+    Notices(String),
 }
 
 /// Whether a `CliError` is a configuration error, for exit-code selection.
@@ -145,12 +150,20 @@ struct Context {
 /// # Errors
 /// Returns a [`CliError`] for configuration or infrastructure failures.
 pub async fn run(args: Cli) -> Result<u8, CliError> {
+    // The shipped notices bundle is a property of the binary, not of any store
+    // or provider configuration, so `--credits` answers before anything else is
+    // resolved and works on a machine with no HOME and no network.
+    if args.credits {
+        print!("{}", notices::BUNDLE);
+        return Ok(EXIT_SUCCESS);
+    }
     // The inspection surfaces run before any provider configuration is
     // resolved, because they must work when a run is not possible.
     let state = StateDir::from_env();
     match &args.command {
         Some(Command::Audit(command)) => return surfaces::run_audit(&state, command),
         Some(Command::Analytics(command)) => return surfaces::run_analytics(&state, command),
+        Some(Command::Notices(command)) => return surfaces::run_notices(command),
         Some(Command::Acp) | None => {}
     }
     // A prompt-shaped invocation of `/usage` or `/insights` is an analytics

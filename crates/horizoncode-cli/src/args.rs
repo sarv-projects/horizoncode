@@ -142,6 +142,25 @@ pub enum Command {
     /// Show usage and cost, or export the ledger.
     #[command(subcommand)]
     Analytics(AnalyticsCommand),
+    /// Generate and check the third-party notices bundle.
+    #[command(subcommand)]
+    Notices(NoticesCommand),
+}
+
+/// `notices` subcommands (`ARCH/05-SOURCE-LEDGER.md` §4, `AX-010`).
+#[derive(Clone, Debug, Subcommand)]
+pub enum NoticesCommand {
+    /// Regenerate the bundle from the pinned dependency graph.
+    Generate {
+        /// Output path; defaults to `THIRD-PARTY-NOTICES.md` in the workspace
+        /// root.
+        #[arg(long, value_name = "PATH")]
+        output: Option<PathBuf>,
+    },
+    /// Check that the shipped bundle matches a fresh generation.
+    ///
+    /// Exits `0` when current and `1` when stale, so a release gate can block.
+    Check,
 }
 
 /// Standalone, protocol-native command-line coding agent.
@@ -169,6 +188,10 @@ pub struct Cli {
     /// Read additional prompt text from stdin (composable with -p).
     #[arg(long)]
     pub stdin: bool,
+
+    /// Print the third-party notices bundle shipped with this binary, then exit.
+    #[arg(long)]
+    pub credits: bool,
 
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Default)]

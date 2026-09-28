@@ -18,7 +18,52 @@ use serde::Serialize;
 
 use crate::app::CliError;
 use crate::app::{EXIT_AUDIT_FAILED, EXIT_SUCCESS, StateDir};
-use crate::args::{AnalyticsCommand, AuditCommand, OutputFormat};
+use crate::args::{AnalyticsCommand, AuditCommand, NoticesCommand, OutputFormat};
+use crate::notices;
+
+/// Runs a `notices` subcommand.
+///
+/// The bundle is a release artifact (`ARCH/05` §4): `generate` writes it from
+/// the pinned dependency graph, and `check` refuses a stale one with a nonzero
+/// exit so a release gate can block (`REQ-VER-013`).
+pub fn run_notices(command: &NoticesCommand) -> Result<u8, CliError> {
+    let root = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| notices::workspace_root(&cwd))
+        .ok_or_else(|| {
+            CliError::Config(
+                "no workspace root with Cargo.lock was found from the current directory".to_owned(),
+            )
+        })?;
+    match command {
+        NoticesCommand::Generate { output } => {
+            let rendered =
+                notices::render(&root).map_err(|error| CliError::Notices(error.to_string()))?;
+            let path = output
+                .clone()
+                .unwrap_or_else(|| root.join(notices::BUNDLE_FILE));
+            std::fs::write(&path, rendered.as_bytes())
+                .map_err(|error| CliError::Notices(format!("{}: {error}", path.display())))?;
+            println!(
+                "wrote {} ({} bytes); include it in the commit and rebuild so \
+                 `--credits` ships it",
+                path.display(),
+                rendered.len()
+            );
+            Ok(EXIT_SUCCESS)
+        }
+        NoticesCommand::Check => match notices::validate(notices::BUNDLE, &root) {
+            Ok(()) => {
+                println!("third-party notices are current");
+                Ok(EXIT_SUCCESS)
+            }
+            Err(error) => {
+                eprintln!("horizoncode: {error}");
+                Ok(1)
+            }
+        },
+    }
+}
 
 /// Runs an `audit` subcommand.
 pub fn run_audit(state: &StateDir, command: &AuditCommand) -> Result<u8, CliError> {
