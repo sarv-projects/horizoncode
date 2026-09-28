@@ -180,6 +180,12 @@ Every `execute` calls the guard *before* touching any effect:
 assert({ action, resources, save?, metadata?, sessionID, agent, source })
 ```
 
+The tool's re-assertion immediately before its effect **consumes** the authorization
+the registry's decision issued; it is not a second decision and is never recorded as
+one. The identity it consumes against is the turn plus the call id, and a request
+that names no resource is a whole-action request whose grant is the wildcard grant the
+guard evaluated (`ARCH/12` §Tickets).
+
 - A deny is returned to the model as a typed failure; the effect never runs.
 - **Resource extraction, not decision.** A `bash` request carries the
   **command-token-prefix** resource for `exec.run` **and** any extracted

@@ -37,7 +37,7 @@ or UI copy (`CMP-tui`).
 
 | Peer (`CMP-*`) | Direction | Contract |
 |---|---|---|
-| `CMP-tools` | inbound | `authorize(action, resources, ctx) -> Decision`; `materialize_filter()` returns the deny set used at registration time |
+| `CMP-tools` | inbound | `authorize(action, resources, ctx) -> Decision` **decides once** and issues its grant; `consume(same request) -> Decision` **spends that grant** at the effect boundary and decides nothing. `materialize_filter()` returns the deny set used at registration time |
 | `CMP-runner` | inbound | admission-time `authorize`; the runner blocks on an `ask` deferred |
 | `CMP-tui` / `CMP-headless` / `CMP-acp` | both | approval prompt delivery and reply (`once / always / reject`) |
 | `CMP-sandbox` | outbound | resolved profile ref + egress policy ref; Guard decides, sandbox enforces |
@@ -157,6 +157,35 @@ Issue a ticket bound to the action, resources, `expires_at`, `provider_epoch`, a
 Effects never execute without a valid ticket. Validation checks scope match, `uses`,
 `expires_at`, and `provider_epoch`; a provider restart or cancellation revokes the
 ticket and bumps the epoch so stale handles fail closed.
+
+**One decision, one grant, one effect.** A call passes the seam twice, and the two
+passes are different acts:
+
+1. `authorize` evaluates the policy **once** for the call, records exactly that one
+   decision, and issues the single-use grant it implies.
+2. `consume` is the tool's re-assertion immediately before its effect. It spends the
+   grant, re-checking scope, remaining uses, expiry, and the policy fingerprint, and
+   removes it. It decides nothing, so it is **never recorded as a decision** — the
+   evidence for it is the ticket lifecycle.
+
+Asking twice where one decision was already made is refused with its reason rather
+than answered by issuing a second grant, so the effect's spend is never ambiguous.
+
+**Grant identity is *(turn, call id, action)*.** A tool-call id is a correlation
+token: the protocol requires it to be unique among the calls of one response, and a
+model may reuse an id later. Scoping the grant to the turn makes a reused id in a
+**later** turn a new call, decided on its own merits, while a replay **inside** the
+turn that issued the grant is still the same call and is refused. A provider that
+reuses one id for several calls inside one turn is a malformed response, and
+admission must own that check rather than letting it surface as a per-call denial
+(`F-66`, `AX-356`).
+
+**A request that names no resource is a whole-action request.** It is evaluated
+against the wildcard and its ticket is scoped to the wildcard, so the grant's
+recorded coverage is the wildcard too. Coverage stays one-directional: a
+whole-action grant covers any named resource of that action, but a grant for one
+resource never covers a whole-action request, so a request can still not widen the
+grant it was issued (`F-66`).
 
 ### Plan / act / reduced-approval
 - **Plan** — the hard guard: every mutating action class (`fs.write`, `fs.delete`,
