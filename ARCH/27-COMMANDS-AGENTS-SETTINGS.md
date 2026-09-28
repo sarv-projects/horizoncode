@@ -203,7 +203,7 @@ owner/capability is absent; it must not become a plausible no-op.
 
 **Source status (2026-09-28, `AX-344`).** `horizoncode-commands` implements the typed
 registry and the strict parse: only commands whose owning service exists are
-registered (`/help`, `/commands`, `/usage`, `/insights`, each naming its owner and
+registered (`/help`, `/commands`, `/usage`, `/insights`, `/skills`, each naming its owner and
 effect class), an unknown name is a typed error with nearest-name suggestions, a
 malformed argument names the grammar, an unavailable owner and an unsupported
 surface are typed refusals, and help, search, and completion are generated from the
