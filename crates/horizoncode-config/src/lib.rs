@@ -36,6 +36,7 @@ pub mod discovery;
 pub mod instructions;
 pub mod jsonc;
 pub mod settings;
+pub mod state_fs;
 
 pub use discovery::{
     CONFIG_FILE, ConfigLayer, ConfigSource, Discovery, DiscoveryIssue, PROJECT_CONFIG_DIR,
@@ -48,4 +49,7 @@ pub use instructions::{
 pub use settings::{
     ApplyBoundary, ArtifactLimits, ConfigDiagnostic, EffectiveConfig, LogLimits, SettingScope,
     SettingView, load, schema_keys,
+};
+pub use state_fs::{
+    OwnerOnly, PathEntry, classify, refuse_group_or_other_access, refuse_symlink, set_owner_only,
 };

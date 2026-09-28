@@ -153,3 +153,23 @@ fn configured_extra_instructions_load_after_the_walk() {
         canon(&repo.join("docs/team.md")).display()
     )));
 }
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_instruction_file_is_refused_not_read() {
+    // A repository can plant `AGENTS.md` as a link to a host file; following it
+    // would pull that file into the model's context.
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    fs::create_dir_all(repo.join(".git")).unwrap();
+    let secret = dir.path().join("outside-secret.txt");
+    fs::write(&secret, "host secret\n").unwrap();
+    std::os::unix::fs::symlink(&secret, repo.join("AGENTS.md")).unwrap();
+
+    let error = discover_instructions_with(&repo, &dir.path().join("home")).unwrap_err();
+    assert!(
+        matches!(error, InstructionsError::Unreadable { .. }),
+        "{error}"
+    );
+    assert!(error.to_string().contains("symlink"), "{error}");
+}

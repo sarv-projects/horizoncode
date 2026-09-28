@@ -563,6 +563,10 @@ pub fn load(discovery: &Discovery) -> EffectiveConfig {
     let mut extras: Vec<(PathBuf, ConfigLayer)> = Vec::new();
 
     for source in &discovery.sources {
+        if let Err(error) = crate::state_fs::refuse_symlink(&source.path) {
+            diagnostics.push(diagnostic(Some(&source.path), None, error.to_string()));
+            continue;
+        }
         let text = match fs::read_to_string(&source.path) {
             Ok(text) => text,
             Err(error) => {

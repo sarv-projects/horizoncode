@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::CURRENT_SCHEMA_VERSION;
 use crate::error::LogError;
+use horizoncode_config::OwnerOnly;
 
 /// The head file name inside a stream root.
 pub const HEAD_FILE: &str = "head.json";
@@ -70,6 +71,11 @@ pub enum HeadState {
 /// Reads the head file at `path`.
 #[must_use]
 pub fn read_head(path: &Path) -> HeadState {
+    if let Ok(crate::state_fs::PathEntry::Symlink) = crate::state_fs::classify(path) {
+        return HeadState::Unreadable {
+            detail: "is a symlink; the committed head is never followed".to_owned(),
+        };
+    }
     match fs::read_to_string(path) {
         Ok(text) => match serde_json::from_str::<CommittedLogHead>(&text) {
             Ok(head) => HeadState::Present(Box::new(head)),
@@ -94,6 +100,10 @@ pub fn read_head(path: &Path) -> HeadState {
 /// Returns [`LogError::Io`] when the head cannot be written.
 pub fn write_head(path: &Path, head: &CommittedLogHead) -> Result<(), LogError> {
     let temp: PathBuf = path.with_extension("new");
+    // A link planted at the head or its temp path must not decide where the
+    // commit record lands (`ARCH/22` `L-07`).
+    crate::ensure_not_symlink(path)?;
+    crate::ensure_not_symlink(&temp)?;
     let line =
         serde_json::to_string(head).map_err(|error| LogError::encode(path, error.to_string()))?;
     {
@@ -110,6 +120,8 @@ pub fn write_head(path: &Path, head: &CommittedLogHead) -> Result<(), LogError> 
             .and_then(|()| file.sync_all())
             .map_err(|error| LogError::io(&temp, &error))?;
     }
+    horizoncode_config::set_owner_only(&temp, OwnerOnly::File)
+        .map_err(|error| LogError::unsafe_path(&temp, error))?;
     fs::rename(&temp, path).map_err(|error| LogError::io(path, &error))
 }
 

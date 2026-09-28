@@ -54,6 +54,14 @@ pub fn load_document(
     path: &Path,
     source: RuleSource,
 ) -> Result<(RuleLayer, GuardDocument), GuardError> {
+    // Security policy is never read through a link: a project-controlled
+    // symlink must not decide which policy file is loaded (`ARCH/22` `F-02`).
+    horizoncode_config::refuse_symlink(path).map_err(|error| {
+        GuardError::config(
+            path.display().to_string(),
+            format!("refusing the path: {error}"),
+        )
+    })?;
     let text = std::fs::read_to_string(path)
         .map_err(|error| GuardError::io(path.display().to_string(), error.to_string()))?;
     let document = parse_document(&text, &path.display().to_string())?;
@@ -250,5 +258,24 @@ mod tests {
             .is_err()
         );
         assert!(parse_document(r#"{"guard":{"unmatched":"allow"}}"#, "t").is_err());
+    }
+}
+
+#[cfg(test)]
+mod hygiene_tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_policy_config_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("policy.jsonc");
+        std::fs::write(&target, r#"{"guard":{"unmatched":"deny"}}"#).unwrap();
+        let link = dir.path().join("config.jsonc");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let error = load_document(&link, RuleSource::Project).unwrap_err();
+        assert!(matches!(error, GuardError::Config { .. }), "{error}");
+        assert!(error.to_string().contains("symlink"), "{error}");
     }
 }

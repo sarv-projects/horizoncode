@@ -116,6 +116,14 @@ pub enum LogError {
         /// The backend's reason.
         detail: String,
     },
+    /// A state path is not safe to use (`ARCH/22` `F-02`/`L-07`).
+    #[error("unsafe state path {path}: {detail}")]
+    UnsafePath {
+        /// The path involved.
+        path: PathBuf,
+        /// What is wrong with it.
+        detail: String,
+    },
     /// The replay visitor failed.
     #[error("the replay visitor failed: {0}")]
     Visitor(String),
@@ -140,6 +148,13 @@ impl LogError {
         Self::Corrupt {
             segment,
             detail: detail.into(),
+        }
+    }
+
+    pub(crate) fn unsafe_path(path: &Path, error: std::io::Error) -> Self {
+        Self::UnsafePath {
+            path: path.to_path_buf(),
+            detail: error.to_string(),
         }
     }
 }

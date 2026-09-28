@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use horizoncode_config::LogLimits;
+use horizoncode_config::{LogLimits, OwnerOnly, PathEntry};
 
 use crate::durability::{CommitSink, DurabilityProfile, std_sink};
 use crate::envelope::{EventRecord, RecordSpec, genesis_digest};
@@ -139,7 +139,25 @@ impl EventLog {
                 detail: "this backend cannot provide the run_durable contract".to_owned(),
             });
         }
-        fs::create_dir_all(root.join(SEGMENTS_DIR)).map_err(|error| LogError::io(&root, &error))?;
+        // State paths are never followed through a link (`ARCH/22` `F-02`/`L-07`).
+        horizoncode_config::refuse_symlink(&root)
+            .map_err(|error| LogError::unsafe_path(&root, error))?;
+        let segments = root.join(SEGMENTS_DIR);
+        fs::create_dir_all(&segments).map_err(|error| LogError::io(&root, &error))?;
+        horizoncode_config::refuse_symlink(&segments)
+            .map_err(|error| LogError::unsafe_path(&segments, error))?;
+        horizoncode_config::set_owner_only(&root, OwnerOnly::Directory)
+            .map_err(|error| LogError::unsafe_path(&root, error))?;
+        horizoncode_config::set_owner_only(&segments, OwnerOnly::Directory)
+            .map_err(|error| LogError::unsafe_path(&segments, error))?;
+        let head_path = root.join(crate::head::HEAD_FILE);
+        if horizoncode_config::classify(&head_path)
+            .map_err(|error| LogError::unsafe_path(&head_path, error))?
+            == PathEntry::File
+        {
+            horizoncode_config::refuse_group_or_other_access(&head_path, OwnerOnly::File)
+                .map_err(|error| LogError::unsafe_path(&head_path, error))?;
+        }
         if profile == DurabilityProfile::RunDurable {
             sink.sync_dir(&root)
                 .map_err(|error| LogError::DurabilityRefused {
@@ -148,6 +166,8 @@ impl EventLog {
         }
 
         let lock_path = root.join(LOCK_FILE);
+        horizoncode_config::refuse_symlink(&lock_path)
+            .map_err(|error| LogError::unsafe_path(&lock_path, error))?;
         let lock = OpenOptions::new()
             .create(true)
             .read(true)
@@ -155,6 +175,8 @@ impl EventLog {
             .truncate(false)
             .open(&lock_path)
             .map_err(|error| LogError::io(&lock_path, &error))?;
+        horizoncode_config::set_owner_only(&lock_path, OwnerOnly::File)
+            .map_err(|error| LogError::unsafe_path(&lock_path, error))?;
         lock.try_lock()
             .map_err(|_| LogError::Locked { root: root.clone() })?;
 
@@ -493,6 +515,8 @@ impl EventLog {
             ));
         }
         let path = segment_path(&self.root, index);
+        horizoncode_config::refuse_symlink(&path)
+            .map_err(|error| LogError::unsafe_path(&path, error))?;
         let file = OpenOptions::new()
             .read(true)
             .append(true)
@@ -627,6 +651,8 @@ impl EventLog {
             .append(true)
             .open(&path)
             .map_err(|error| LogError::io(&path, &error))?;
+        horizoncode_config::set_owner_only(&path, OwnerOnly::File)
+            .map_err(|error| LogError::unsafe_path(&path, error))?;
         if self.profile == DurabilityProfile::RunDurable {
             self.sink
                 .sync_file(&file)
@@ -670,6 +696,8 @@ impl EventLog {
             self.sealed_digest.clone(),
         );
         let path = seal_path(&self.root, active.index);
+        horizoncode_config::refuse_symlink(&path)
+            .map_err(|error| LogError::unsafe_path(&path, error))?;
         let line = serde_json::to_string(&seal)
             .map_err(|error| LogError::encode(&path, error.to_string()))?;
         let mut file = OpenOptions::new()
@@ -792,6 +820,8 @@ impl EventLog {
 
     fn read_seal(&self, index: u32) -> Result<SegmentSeal, LogError> {
         let path = seal_path(&self.root, index);
+        horizoncode_config::refuse_symlink(&path)
+            .map_err(|error| LogError::unsafe_path(&path, error))?;
         let text = fs::read_to_string(&path).map_err(|error| LogError::io(&path, &error))?;
         let seal: SegmentSeal = serde_json::from_str(&text)
             .map_err(|error| LogError::corrupt(index, error.to_string()))?;

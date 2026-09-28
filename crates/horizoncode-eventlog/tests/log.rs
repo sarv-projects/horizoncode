@@ -313,3 +313,65 @@ fn a_run_durable_stream_refuses_a_backend_that_cannot_provide_it() {
         "{error}"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_lock_or_segment_is_refused_not_followed() {
+    // A link planted at the lock would redirect the lock target; a link at a
+    // segment would redirect a read outside the stream.
+    let dir = tempfile::tempdir().unwrap();
+    let victim = dir.path().join("victim");
+    fs::write(&victim, b"do not touch").unwrap();
+
+    let lock = dir.path().join("lock");
+    std::os::unix::fs::symlink(&victim, &lock).unwrap();
+    let error = EventLog::open(
+        dir.path(),
+        "session",
+        "ses_1",
+        limits(),
+        DurabilityProfile::Interactive,
+    )
+    .expect_err("a symlinked lock must be refused");
+    assert!(matches!(error, LogError::UnsafePath { .. }), "{error}");
+    fs::remove_file(&lock).unwrap();
+
+    let mut log = open(dir.path(), limits());
+    log.append(spec("step.settled", 0)).unwrap();
+    drop(log);
+    let segment = dir.path().join("segments/00000000.jsonl");
+    let segment_bytes = fs::read(&segment).unwrap();
+    let copy = dir.path().join("segment-copy");
+    fs::write(&copy, segment_bytes).unwrap();
+    fs::remove_file(&segment).unwrap();
+    std::os::unix::fs::symlink(&copy, &segment).unwrap();
+
+    let error = EventLog::open(
+        dir.path(),
+        "session",
+        "ses_1",
+        limits(),
+        DurabilityProfile::Interactive,
+    )
+    .expect_err("a symlinked segment must be refused");
+    assert!(matches!(error, LogError::UnsafePath { .. }), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn created_state_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let mut log = open(dir.path(), limits());
+    log.append(spec("step.settled", 0)).unwrap();
+    let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(dir.path()), 0o700, "stream root");
+    assert_eq!(mode(&dir.path().join("segments")), 0o700, "segments dir");
+    assert_eq!(mode(&dir.path().join("lock")), 0o600, "lock");
+    assert_eq!(mode(&dir.path().join("head.json")), 0o600, "head");
+    assert_eq!(
+        mode(&dir.path().join("segments/00000000.jsonl")),
+        0o600,
+        "segment"
+    );
+}

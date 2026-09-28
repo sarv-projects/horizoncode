@@ -53,7 +53,11 @@ impl AnalyticsLog {
     /// be created.
     pub fn open(config: AnalyticsConfig) -> Result<Self, AnalyticsError> {
         config.settings.validate()?;
+        horizoncode_config::refuse_symlink(&config.root)
+            .map_err(|error| AnalyticsError::io(&config.root, &error))?;
         fs::create_dir_all(&config.root)
+            .map_err(|error| AnalyticsError::io(&config.root, &error))?;
+        horizoncode_config::set_owner_only(&config.root, horizoncode_config::OwnerOnly::Directory)
             .map_err(|error| AnalyticsError::io(&config.root, &error))?;
         let settings = config.settings.clone();
         let sequence = read_ledger(&config)?
@@ -141,10 +145,14 @@ impl AnalyticsLog {
         event.seq = *sequence;
         *sequence = sequence.saturating_add(1);
         let path = self.ledger_path();
+        horizoncode_config::refuse_symlink(&path)
+            .map_err(|error| AnalyticsError::io(&path, &error))?;
         let mut file = OpenOptions::new()
             .append(true)
             .create(true)
             .open(&path)
+            .map_err(|error| AnalyticsError::io(&path, &error))?;
+        horizoncode_config::set_owner_only(&path, horizoncode_config::OwnerOnly::File)
             .map_err(|error| AnalyticsError::io(&path, &error))?;
         file.write_all(event.to_line().as_bytes())
             .and_then(|()| file.flush())
@@ -244,6 +252,7 @@ impl AnalyticsLog {
 /// Reads the ledger, in order.
 pub fn read_ledger(config: &AnalyticsConfig) -> Result<Vec<AnalyticsEvent>, AnalyticsError> {
     let path = config.root.join(LEDGER_FILE);
+    horizoncode_config::refuse_symlink(&path).map_err(|error| AnalyticsError::io(&path, &error))?;
     let content = match fs::read_to_string(&path) {
         Ok(content) => content,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),

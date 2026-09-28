@@ -142,28 +142,20 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), AuditError> {
 }
 
 /// Sets a **file** to owner-only access (0600).
+///
+/// The implementation is the shared state-path primitive (`horizoncode-config`
+/// `state_fs`, `ARCH/22` `AX-126`); this wrapper keeps the audit store's typed
+/// error.
 pub(crate) fn set_owner_only(path: &Path) -> Result<(), AuditError> {
-    set_mode(path, 0o600)
+    horizoncode_config::set_owner_only(path, horizoncode_config::OwnerOnly::File)
+        .map_err(|error| AuditError::io(path, &error))
 }
 
 /// Sets a **directory** to owner-only access (0700). A directory needs the
 /// execute bit to be traversable, so it must not share the file mode.
 pub(crate) fn set_dir_owner_only(path: &Path) -> Result<(), AuditError> {
-    set_mode(path, 0o700)
-}
-
-fn set_mode(path: &Path, mode: u32) -> Result<(), AuditError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = fs::Permissions::from_mode(mode);
-        fs::set_permissions(path, mode).map_err(|error| AuditError::io(path, &error))?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (path, mode);
-    }
-    Ok(())
+    horizoncode_config::set_owner_only(path, horizoncode_config::OwnerOnly::Directory)
+        .map_err(|error| AuditError::io(path, &error))
 }
 
 /// Refuses a path whose mode grants any access beyond its owner.

@@ -17,7 +17,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use horizoncode_types::{Clock, ContentPart, Event, EventKind, SessionId, ToolStatus, TurnId};
 
-use horizoncode_eventlog::{CommitSink, DurabilityProfile, std_sink};
 use crate::listing::{
     SessionIntegrityState, SessionListEntry, SessionListIssue, SessionListIssueKind,
     SessionListResult,
@@ -27,6 +26,7 @@ use crate::payload::{
 };
 use crate::session::{LoadedSession, SessionStatus, summary_from};
 use crate::{CURRENT_FORMAT_VERSION, SessionError};
+use horizoncode_eventlog::{CommitSink, DurabilityProfile, std_sink};
 
 /// Returns the default `sessions/` root: `<state-root>/sessions`, where the
 /// state root is `$HORIZONCODE_HOME` or `~/.horizoncode` (`ARCH/18`).
@@ -100,7 +100,11 @@ impl SessionStore {
     /// Returns [`SessionError::Io`] when the directory cannot be created.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, SessionError> {
         let root = root.into();
+        horizoncode_config::refuse_symlink(&root)
+            .map_err(|error| SessionError::io(&root, error))?;
         fs::create_dir_all(&root).map_err(|error| SessionError::io(&root, error))?;
+        horizoncode_config::set_owner_only(&root, horizoncode_config::OwnerOnly::Directory)
+            .map_err(|error| SessionError::io(&root, error))?;
         Ok(Self {
             root,
             fsync: true,
@@ -211,6 +215,8 @@ impl SessionStore {
             .create_new(true)
             .write(true)
             .open(&path)
+            .map_err(|error| SessionError::io(&path, error))?;
+        horizoncode_config::set_owner_only(&path, horizoncode_config::OwnerOnly::File)
             .map_err(|error| SessionError::io(&path, error))?;
         let mut file = file;
         file.write_all(line.as_bytes())
@@ -415,6 +421,8 @@ impl SessionStore {
     /// Reads one log and reports what it found, writing nothing.
     fn scan_log(&self, id: &SessionId) -> Result<LogScan, SessionError> {
         let path = self.log_path(id);
+        horizoncode_config::refuse_symlink(&path)
+            .map_err(|error| SessionError::io(&path, error))?;
         let content = fs::read(&path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 SessionError::NotFound(id.clone())
@@ -645,6 +653,8 @@ impl SessionStore {
         time: i64,
     ) -> Result<Event, SessionError> {
         let path = self.log_path(id);
+        horizoncode_config::refuse_symlink(&path)
+            .map_err(|error| SessionError::io(&path, error))?;
         if !path.is_file() {
             return Err(SessionError::NotFound(id.clone()));
         }

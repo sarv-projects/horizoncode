@@ -89,3 +89,26 @@ fn a_home_environment_override_is_a_single_directory() {
     assert_eq!(discovery.sources.len(), 1);
     assert_eq!(discovery.sources[0].path, home.join("config.jsonc"));
 }
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_layer_is_reported_and_never_followed() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("project");
+    fs::create_dir_all(project.join(".horizoncode")).unwrap();
+    let target = dir.path().join("elsewhere.jsonc");
+    write(
+        &target,
+        r#"{ "ui": { "accessibility": { "reduced_motion": true } } }"#,
+    );
+    std::os::unix::fs::symlink(&target, project.join(".horizoncode/config.jsonc")).unwrap();
+
+    let discovery = discover_with(&project, None);
+    assert!(discovery.sources.is_empty(), "a link is not a layer");
+    assert_eq!(discovery.issues.len(), 1);
+    assert!(
+        discovery.issues[0].detail.contains("symlink"),
+        "{}",
+        discovery.issues[0].detail
+    );
+}

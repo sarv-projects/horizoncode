@@ -46,3 +46,14 @@ pub use error::LogError;
 pub use head::{CommittedLogHead, HEAD_FILE, HeadState, read_head, write_head};
 pub use log::{Committed, EventLog, LOCK_FILE, ReplayReport, SEGMENTS_DIR};
 pub use segment::{ContentHasher, SegmentSeal, SegmentSummary, genesis_segment_digest};
+
+/// Re-exports the shared state-path hygiene primitives so the storage engine
+/// and its callers use one implementation (`ARCH/22`, `AX-126`).
+pub use horizoncode_config::state_fs;
+
+/// Refuses a symlinked state path, as a typed log error.
+pub(crate) fn ensure_not_symlink(path: &std::path::Path) -> Result<(), LogError> {
+    horizoncode_config::refuse_symlink(path)
+        .map(|_| ())
+        .map_err(|error| LogError::unsafe_path(path, error))
+}

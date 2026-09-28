@@ -16,9 +16,9 @@
 //! configuration scope).
 
 use std::ffi::OsString;
-use std::fs;
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+
+use crate::state_fs::PathEntry;
 
 /// The project configuration directory name used during the walk.
 pub const PROJECT_CONFIG_DIR: &str = ".horizoncode";
@@ -166,9 +166,21 @@ pub fn discover_with(cwd: &Path, global_dir: Option<&Path>) -> Discovery {
 }
 
 /// Returns whether `path` is a usable layer file, recording why not otherwise.
+///
+/// A symlinked layer is **not followed** (`ARCH/22` `F-02`/`L-06`): it is
+/// reported and skipped, so a link planted in a repository cannot redirect the
+/// user's configuration read to another file.
 fn classify(path: &Path, issues: &mut Vec<DiscoveryIssue>) -> bool {
-    match fs::metadata(path) {
-        Ok(meta) if meta.is_file() => true,
+    match crate::state_fs::classify(path) {
+        Ok(PathEntry::File) => true,
+        Ok(PathEntry::Missing) => false,
+        Ok(PathEntry::Symlink) => {
+            issues.push(DiscoveryIssue {
+                path: path.to_path_buf(),
+                detail: "is a symlink; a config layer is never followed".to_owned(),
+            });
+            false
+        }
         Ok(_) => {
             issues.push(DiscoveryIssue {
                 path: path.to_path_buf(),
@@ -176,7 +188,6 @@ fn classify(path: &Path, issues: &mut Vec<DiscoveryIssue>) -> bool {
             });
             false
         }
-        Err(error) if error.kind() == ErrorKind::NotFound => false,
         Err(error) => {
             issues.push(DiscoveryIssue {
                 path: path.to_path_buf(),

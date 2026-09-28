@@ -22,7 +22,6 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use crate::discovery::{ConfigLayer, PROJECT_CONFIG_DIR, state_root};
@@ -156,9 +155,13 @@ fn read_if_present(
     path: &Path,
     scope: InstructionScope,
 ) -> Result<Option<InstructionSource>, InstructionsError> {
-    match fs::metadata(path) {
+    match crate::state_fs::classify(path) {
+        Ok(crate::state_fs::PathEntry::Missing) => Ok(None),
+        Ok(crate::state_fs::PathEntry::Symlink) => Err(InstructionsError::Unreadable {
+            path: path.to_path_buf(),
+            detail: "is a symlink; an instruction file is never followed".to_owned(),
+        }),
         Ok(_) => read_required(path, scope).map(Some),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(InstructionsError::Unreadable {
             path: path.to_path_buf(),
             detail: error.to_string(),
@@ -170,6 +173,12 @@ fn read_required(
     path: &Path,
     scope: InstructionScope,
 ) -> Result<InstructionSource, InstructionsError> {
+    // A repository can plant `AGENTS.md` as a link to a file outside the
+    // workspace; following it would pull that file into the model's context.
+    crate::state_fs::refuse_symlink(path).map_err(|error| InstructionsError::Unreadable {
+        path: path.to_path_buf(),
+        detail: error.to_string(),
+    })?;
     let content = fs::read_to_string(path).map_err(|error| InstructionsError::Unreadable {
         path: path.to_path_buf(),
         detail: error.to_string(),
