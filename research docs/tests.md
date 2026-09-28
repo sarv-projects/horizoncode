@@ -63,6 +63,55 @@ state, task DAG, settings/command registry, UI, repository map, ACP client, MCP 
 agent directory, plugin/skill runtime, PR lifecycle, cost reservation, or multi-hour
 recovery. Their target gates are specified below and in `ARCH/23`.
 
+## Source status at the 2026-09-28 implementation pass
+
+The first implementation pass ran the baseline commands and produced, for the first
+time, a measured failure list. `cargo clippy --workspace --all-targets -- -D warnings` and
+`cargo test --workspace --no-fail-fast` are clean except for four pre-existing failures
+that also fail at the documented baseline revision `b677443` and are therefore recorded
+as findings (`ARCH/24` `F-65`, `F-66`) rather than silently absorbed.
+`cargo fmt --all --check` also fails at the baseline, with 67 pre-existing diffs; the
+2026-09-28 pass formatted only the files it wrote and reverted unrelated reformatting, so
+this remains an open cleanup item rather than a pass:
+
+| Failing test | What it proves |
+|---|---|
+| `horizoncode-audit` `entry::tests::genesis_matches_its_label` | the pinned `GENESIS_PREV_HASH` is not `blake3(GENESIS_LABEL)` |
+| `horizoncode-audit` `anchor::tests::genesis_root_matches_its_label` | the pinned `GENESIS_PREV_ROOT` is not `blake3(GENESIS_ROOT_LABEL)` |
+| `horizoncode-cli` `e2e_acp::acp_initializes_creates_a_session_and_streams_updates` | a read-only tool call is denied, so no `tool_call_update` reaches `completed` |
+| `horizoncode-cli` `e2e_tools::headless_write_edit_and_sandboxed_bash` | the same denial reaches the headless tool path |
+
+A test that fails at the baseline is a source defect, not a flake; it re-opens the
+requirement it claims to cover.
+
+## Determinism, fault injection, and kill matrices
+
+The infrastructure these matrices require now exists, and is a dev-dependency of the
+test suites only (never linked into the binary):
+
+| Piece | Where | What it provides |
+|---|---|---|
+| `horizoncode_types::clock::Clock` | `crates/horizoncode-types/src/clock.rs` | the injectable clock; the session store stamps records from one, while `horizoncode-audit`, the runner's analytics recorder, guard ticket TTL and analytics day-bucketing still read the host clock and are named as the remaining sweep |
+| `horizoncode-testkit` | `crates/horizoncode-testkit/src/lib.rs` | `TestClock`, `ScriptedFaults`/`FaultOp`, `StoreSnapshot` (byte-level before/after proof), and the kill-point environment contract |
+| Durability seam | `horizoncode_session::CommitSink` | the two commit primitives (`sync_file`, `sync_dir`) a test substitutes to make a directory-sync failure or a real process death deterministic |
+| Session kill matrix | `crates/horizoncode-session/tests/kill_matrix.rs` | real child processes that die from inside the file sync or the directory sync, plus interrupted-final-write states; 20 cycles per scenario, asserting that acknowledged rows stay dense, retained torn bytes are reported, and the store is usable afterwards |
+| Audit writer race | `crates/horizoncode-audit/tests/writer_race.rs` | two real processes contending for one store; 20 cycles asserting unique contiguous sequence numbers and a chain that still verifies |
+| Read-path immutability | `horizoncode-audit/tests/integrity.rs`, `horizoncode-session/tests/list.rs` | byte- and metadata-level proof that `verify`/`replay`/`census`, `read_only`/`scan`/`inspect`/`list` change nothing |
+| Explicit repair | `horizoncode-audit` `AuditLog::repair_segment` | torn-tail repair that preserves the original bytes in a linked artifact, and the `audit repair` surface that drives it |
+
+Two boundaries remain honest gaps and must be reported as `insufficient evidence`
+rather than as passes:
+
+- **real ENOSPC and power loss** need an isolated fixture and explicit authorization
+  (L5). Fault injection proves the *ordering* of the commit steps, not what a
+  particular disk controller does on power loss;
+- **cross-host filesystems** (NFS and similar) are outside the advisory-lock
+  guarantee; the record must name the filesystem it was proven on.
+
+Quarantine policy: a quarantined test carries an owner, a reason, a linked issue and
+an expiry, and a quarantined security-relevant test is a release blocker. No test is
+quarantined in this pass.
+
 ## Verification layers
 
 Use the layer definitions and anti-claims in `ARCH/23`; do not promote lower-layer
@@ -81,8 +130,7 @@ evidence into a higher-layer claim.
 For Rust changes the planned local baseline is `cargo fmt --all --check`,
 `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace`.
 Run crate-focused tests while iterating, then the complete workspace and applicable
-platform/acceptance suites before changing a readiness claim. These commands were not
-run in this documentation audit.
+platform/acceptance suites before changing a readiness claim.
 
 Use deterministic fixtures and injected clocks, IDs, random sources, homes, process
 environments, model transports, and filesystem failures. Live model/provider tests are
