@@ -1,8 +1,9 @@
 # CURRENT_RUN — HorizonCode
 
-Updated 2026-09-28. This handoff covers the **first implementation wave** of the
-durable long-horizon work. It supersedes the documentation-only audit handoff of
-2026-09-27, which remains the record of what was read and why.
+Updated 2026-09-28 (second pass, same day). This handoff covers the **first
+implementation wave** plus the closure of `F-66`/`AX-355` — the permission-seam defect
+the first wave's test run exposed. It supersedes the documentation-only audit handoff
+of 2026-09-27, which remains the record of what was read and why.
 
 ## Active goal
 
@@ -14,13 +15,39 @@ persistence path, permission system, or scheduler:
 2. read-only session paths that never truncate or repair a log (`AX-351`, read-only slice);
 3. a commit durability profile with namespace durability and typed refusal (`AX-352`);
 4. audit read/write integrity: read-only verification, access evidence outside the chain, typed head and enumeration failures, an OS-backed writer lock, explicit repair (`AX-346`, integrity slice);
-5. the determinism and crash infrastructure the acceptance records require (`AX-122`, determinism/crash slice).
+5. the determinism and crash infrastructure the acceptance records require (`AX-122`, determinism/crash slice);
+6. the permission seam: a read-only call is not denied by its own re-assertion, and one call records exactly one policy decision (`AX-355`, closing `F-66`).
 
 ## Where the work stopped
 
 Starting point: Git `53a2654`/`b677443` (docs-only, Rust unchanged since `1c7a1c6`).
 The Rust source has now been changed; the exact revision is the commit this handoff
 travels with.
+
+**Second pass — `AX-355` / `F-66` (permission seam).**
+
+Three separate defects produced one symptom. Root-caused by reading the call path and
+reproducing each cause independently:
+
+1. `GuardPermissionGate::pairs` (`crates/horizoncode-tools/src/guard_gate.rs`) mapped a
+   request naming **no resource** to an empty pair set, while the guard normalizes such a
+   request to the wildcard and scopes its ticket to `**`. A `list` call with `{}` was
+   therefore **allowed** by the rule and then **denied** by its own re-assertion, because
+   the grant covered nothing. Grant bookkeeping now records the wildcard.
+2. The call identity was only `(call_id, action)`. A tool-call id is a correlation token
+   unique among the calls of one response, so an id reused later is a *new* call. Identity
+   is now `(turn, call id, action)`: a reused id in a later turn is decided on its own
+   merits, while a replay **inside** its issuing turn is still refused.
+3. `AuditedGate::authorize` recorded a `policy_decision` for *every* pass, so the
+   single-use spend appeared in the chain as a second outcome for the same call. The trait
+   now has `consume` for the effect boundary, which spends the grant and decides nothing;
+   one call records exactly one decision and the spend is ticket lifecycle.
+
+`PermissionRequest` gained a `turn_id`; `PermissionGate::consume` defaults to `authorize`,
+so a stateless gate is unchanged. The mock provider now mints a unique call id per
+response, as a real provider does — that fixture defect is recorded as `AX-356` rather
+than absorbed. Contracts updated in `ARCH/12` §Tickets + Interfaces and `ARCH/10`
+§Permission assertion; `F-66` rewritten in `ARCH/24` as closed with its residual.
 
 **Contract-first edits (architecture, before code).**
 
@@ -100,10 +127,10 @@ travels with.
   `cargo fmt --all --check` is a pre-existing failure here and must not be reported as
   a pass. Formatting the rest of the tree is its own cleanup task.
 - `cargo clippy --workspace --all-targets -- -D warnings` — pass.
-- `cargo test --workspace --no-fail-fast` — 4 failing tests, all four failing identically
-  at baseline `b677443`:
-  - `horizoncode-audit` `entry::tests::genesis_matches_its_label`, `anchor::tests::genesis_root_matches_its_label` (**F-65**);
-  - `horizoncode-cli` `e2e_acp::acp_initializes_creates_a_session_and_streams_updates`, `e2e_tools::headless_write_edit_and_sandboxed_bash` (**F-66**).
+- `cargo test --workspace --no-fail-fast` — 327 passing, **2 failing**, both failing
+  identically at baseline `b677443`:
+  - `horizoncode-audit` `entry::tests::genesis_matches_its_label` and `anchor::tests::genesis_root_matches_its_label` (**F-65**, open).
+  - The two `F-66` failures measured earlier in the day are now green: `e2e_acp::acp_initializes_creates_a_session_and_streams_updates` and `e2e_tools::headless_write_edit_and_sandboxed_bash`.
 - Baseline comparison was performed in a clean worktree at `b677443`; no test that passed
   there fails here.
 - One unreproduced flake was observed once and not in 11 subsequent runs:
@@ -149,6 +176,10 @@ travels with.
   operation remains `AX-311`.
 - `latest()` returns the newest **readable** session, so `--continue` no longer silently
   resumes a corrupt session.
+- A tool-call id is a correlation token, not a globally unique identity: scoping grants to
+  `(turn, call id, action)` is the fix that makes an id collision across turns stop denying
+  legitimate calls, while in-turn replay protection is unchanged. Any test that builds two
+  requests for "the same call" must give them the **same** turn, or it is testing two calls.
 
 ## Next exact steps
 
@@ -156,12 +187,12 @@ travels with.
    `cargo fmt --all --check` baseline becomes enforceable (`AX-121` builds the gate that
    would catch this).
 1. Commit this wave (see the commit list below) with `TODO.md` and this handoff included.
-2. `AX-355` (F-66) before any further tool-plane work: find why a read-only `list` call is
-   denied and why an allow and a deny are both recorded for it in one turn. Fix at the
-   owning layer (guard rules or tool permission derivation), keep the deny-elevation rule,
-   and re-run the two failing e2e tests.
-3. `AX-354` (F-65): decide whether the genesis label or the pinned constant is
-   authoritative, record the migration consequence, and keep the assertion.
+2. `AX-354` (F-65): run the bounded preimage spike (blake3 over candidate label strings
+   for both genesis names) to learn whether the label text or the constant was the typo,
+   then re-derive per D1 and record the pre-release migration consequence.
+3. `AX-309` slice 1: the **shared segmented event-log core**. Both the session and the run
+   log need the same bounded-segment framing (`DEC-055`), so building it once is what keeps
+   a second persistence engine from appearing, and it is `AX-350`'s prerequisite too.
 4. `AX-350` session half: bounded digest-linked segments, committed head, streaming replay,
    event-byte quota and the protected control reserve — now unblocked by `AX-352` and the
    stable read-only contract. The run-log half still waits for `AX-309`/`AX-312`.
@@ -173,9 +204,12 @@ travels with.
 ## Unresolved questions
 
 - Which side of F-65 is authoritative: the label or the pinned constant (and what a
-  migration of existing chains costs).
-- Whether F-66 is a missing default-allow rule, a resource-pattern mismatch, or a
-  double evaluation of the same call; not yet isolated.
+  migration of existing chains costs). The preimage spike is step 2 above.
+- Whether provider-response admission should reject a duplicate call id or repair it with
+  provenance (`AX-356`); the gate now refuses the collision as a replay, which is correct
+  but lands the diagnosis in the wrong place.
+- The `session.log.*` / `run.log.*` finite defaults (`AX-348`): not yet chosen, and they
+  gate AX-309 slice 1 and AX-350.
 - Whether the segment/head format (`AX-350`) needs a format version bump for the durability
   backend, given that no head file exists yet.
 
@@ -190,6 +224,8 @@ large file, so they are not split further for the sake of a commit boundary.
 4. `fix(audit): record access outside the chain and refuse unverifiable store state`
 5. `feat(cli): add the audit repair surface and the access-record exit code`
 6. `docs: record the implementation pass, the measured findings, and the handoff`
+7. `fix(guard): stop denying a read-only call at its own effect boundary`
+8. `docs: close F-66 and record the admission gap it exposed`
 
 Each commit is self-contained and builds; commit 2 carries the workspace manifest,
 so its body notes the MSRV move that commit 4's OS-backed lock depends on.
