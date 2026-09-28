@@ -31,6 +31,9 @@ persistence path, permission system, or scheduler:
 11. the finite storage ceilings the segmented logs and artifact store need before
    they can be coded: published as `DEC-058`, carried by the config schema with
    lower-only validation, and exposed as typed limit views (`AX-348`, decision slice).
+12. the shared segmented event-log core both session and run history need: canonical
+   envelope, bounded segments with seals, committed head, streaming replay, version
+   refusal, and preserved uncommitted tails (`AX-358`, the `AX-309` slice 1).
 
 **Breadth program (user directive, 2026-09-28).** After the wave above, the user asked to
 plan, check, and build the remaining proposed rows in dependency order without stopping
@@ -161,6 +164,25 @@ typed `LogLimits`/`ArtifactLimits` views are what the storage work will consume.
 The artifact store itself (`BlobRef`, quota reservation, GC) is the next step in
 `AX-348`, not this one.
 
+**Sixth pass — `AX-358`: the shared segmented event-log core.**
+
+`DEC-055` says session and run history use one bounded segmented framing, so
+`horizoncode-eventlog` now implements it: the canonical envelope with a `blake3`
+digest over a versioned domain and recursively sorted keys (`DEC-059`), segments
+that rotate on the `DEC-058` ceilings, seals synchronized before a successor
+segment receives a record, an atomically replaced committed head with typed
+absent/malformed/unreadable states, an OS-backed writer lock, streaming replay
+with a per-line ceiling, refusal of a newer schema version before any segment is
+decoded, and bytes beyond the head preserved and reported rather than truncated.
+The commit order is pinned by tests: a line is durable before the head
+acknowledges it. The suite is 14 unit tests plus 12 log cases (round trip,
+rotation by events and bytes, oversized and stream refusals, restart resume, torn
+and complete tails, a corrupt sealed segment, the version refusal, a second
+writer, an empty log, and a refused durability backend). The session store still
+uses its single-file layout until the `AX-350` migration; run payloads and
+projections are `AX-309`; tail recovery is `AX-311`. The notices gate did its job
+on the dependency change: the regenerated bundle is part of this commit.
+
 **Contract-first edits (architecture, before code).**
 
 - `ARCH/07-SESSION.md`: exact `SessionListResult`/`SessionListEntry`/`SessionListIssue`
@@ -239,7 +261,7 @@ The artifact store itself (`BlobRef`, quota reservation, GC) is the next step in
   `cargo fmt --all --check` is a pre-existing failure here and must not be reported as
   a pass. Formatting the rest of the tree is its own cleanup task.
 - `cargo clippy --workspace --all-targets -- -D warnings` — pass.
-- `cargo test --workspace --no-fail-fast` — **422 passing, 0 failing** at this revision
+- `cargo test --workspace --no-fail-fast` — **450 passing, 0 failing** at this revision
   (the count grows with the new suites; the totals above are per-run, not additive across
   passes). The two `F-65` genesis failures measured at baseline `b677443` are fixed under
   `AX-354`; the two `F-66` failures measured earlier in the day went green under `AX-355`.
@@ -247,6 +269,9 @@ The artifact store itself (`BlobRef`, quota reservation, GC) is the next step in
   `state_root` branches), 4 discovery, 11 settings/provenance (including the
   `DEC-058` defaults table, the lower-only/zero refusals, and the typed limit views),
   6 instructions.
+- `cargo test -p horizoncode-eventlog` — 26 tests: 14 unit (envelope canonicalization
+  and verification, seal digest coverage, content digest, head states/versions) and 12
+  log cases.
 - `cargo test -p horizoncode-cli` — includes the notices gate: 5 unit tests (the
   generator's lock parsing, rendering, determinism, and the four refused edits) and 3
   black-box tests (`--credits` with no configuration, `notices check`, `notices
@@ -307,26 +332,22 @@ The artifact store itself (`BlobRef`, quota reservation, GC) is the next step in
    `cargo fmt --all --check` baseline becomes enforceable (`AX-121` builds the gate that
    would catch this).
 1. Commit this wave (see the commit list below) with `TODO.md` and this handoff included.
-2. The **breadth program** continues with the rest of `AX-348` (the bounded
-   content-addressed artifact store: `BlobRef`, quota reservation, durable
-   write-before-event ordering, typed states, GC), now that its defaults are
-   published; then the TUI/command/settings surfaces (`AX-009`, `AX-344`, `AX-343`),
-   then skills (`AX-110`) and MCP (`AX-106`, `AX-332`). `AX-010` is done; its
-   remaining allowlist/provenance-record work is named in the row, and `DEC-058`'s
-   numbers may be revised only by a new decision.
-3. `AX-309` slice 1: the **shared segmented event-log core**, carrying the published
-   finite defaults from `AX-348`. Both the session and the run log need the same
-   bounded-segment framing (`DEC-055`), so building it once is what keeps a second
-   persistence engine from appearing, and it is `AX-350`'s prerequisite.
-4. `AX-350` session half: bounded digest-linked segments, committed head, streaming replay,
-   event-byte quota and the protected control reserve. The run-log half waits for
-   `AX-309`/`AX-312`.
-5. `AX-311`: the effect journal, which unblocks `AX-351`'s recovery half and gives
+2. The **`AX-350` session migration** onto `horizoncode-eventlog`: bounded
+   digest-linked segments, committed head, streaming replay, event-byte quota and the
+   protected control reserve, keeping the read-only/typed-enumeration contract stable.
+   The run-log half waits for `AX-309`/`AX-312`.
+3. Then the rest of `AX-348` (the bounded content-addressed artifact store:
+   `BlobRef`, quota reservation, durable write-before-event ordering, typed states,
+   GC), now that its defaults are published; then the TUI/command/settings surfaces
+   (`AX-009`, `AX-344`, `AX-343`), then skills (`AX-110`) and MCP (`AX-106`,
+   `AX-332`). `AX-010` is done; its remaining allowlist/provenance-record work is
+   named in the row, and `DEC-058`'s numbers may be revised only by a new decision.
+4. `AX-311`: the effect journal, which unblocks `AX-351`'s recovery half and gives
    `ACC-P1-06`/`ACC-P1-12` their recovery evidence.
-6. Then the rest of the controller chain (`AX-301`, `AX-310`, `AX-312`, `AX-313`,
+5. Then the rest of the controller chain (`AX-301`, `AX-310`, `AX-312`, `AX-313`,
    `AX-317`, `AX-337`, `AX-347`) before any multi-hour claim. The remaining breadth rows
-   (agent directory and ACP client/pools, repo map/LSP, checkpoints/rewind, artifact
-   store, host probe, config recovery, peer adapters, delegation measurement,
+   (agent directory and ACP client/pools, repo map/LSP, checkpoints/rewind,
+   host probe, config recovery, peer adapters, delegation measurement,
    eval/perf, safety/config/provenance) follow in the dependency order recorded in
    §Active goal.
 
@@ -365,6 +386,9 @@ large file, so they are not split further for the sake of a commit boundary.
 16. `docs: record the notices bundle and its gate`
 17. `feat(config): carry the storage ceilings with lower-only validation`
 18. `docs: publish the finite storage ceilings before the storage code`
+19. `feat(eventlog): add the shared event envelope and commit durability backend`
+20. `feat(eventlog): add bounded segments, a committed head, and streaming replay`
+21. `docs: record the shared segmented event-log core`
 
 Each commit is self-contained and builds; commit 2 carries the workspace manifest,
 so its body notes the MSRV move that commit 4's OS-backed lock depends on.

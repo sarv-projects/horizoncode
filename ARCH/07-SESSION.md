@@ -144,7 +144,9 @@ versioned canonical encoding; the digest field itself is excluded from the hashe
 bytes (`DEC-059`). Hashes detect corruption/reordering but do not authenticate a writer (that is
 the audit/authority boundary). `CommittedLogHead =
 {owner_kind, owner_id, generation, committed_seq, committed_event_digest,
-committed_segment_digest, durability_profile, updated_at}`. These shared shapes also
+committed_segment, committed_segment_digest, durability_profile, updated_at}` —
+`committed_segment` and `committed_segment_digest` locate and verify the active
+segment's committed prefix on restart (implementation note with `AX-358`). These shared shapes also
 cover run logs (`ARCH/25`). IDs and ranges are immutable after seal. There is at most
 one active segment per session writer lease; all record, segment, and total-session
 limits are finite values from the effective config. A segment is sealed before a
@@ -190,6 +192,24 @@ durable commit record.
    and reserved bytes, and last committed sequence. Never compact or delete canonical
    events to make room. Retention/export is a separate, authorized post-terminal
    lifecycle with exact digest and evidence-owner checks (`ARCH/28`).
+
+**Source status (2026-09-28, `AX-358`).** The shared framing is implemented in
+`horizoncode-eventlog` and consumed by nothing yet. It provides the canonical
+event envelope with a `blake3` digest over a versioned domain and sorted object
+keys, bounded segments that rotate on the `DEC-058` byte/event ceilings, seals
+written and synchronized before a successor segment receives a record, an
+atomically replaced committed head with typed absent/malformed/unreadable states,
+an OS-backed writer lock, streaming replay with a per-line ceiling, refusal of a
+newer schema version before any segment is decoded, preservation (never
+truncation) of bytes beyond the head, and lower-only limits resolved from the
+`horizoncode-config` storage schema. The commit order is pinned by tests: a line
+is durable before the head acknowledges it, and a seal precedes the successor.
+
+**Not covered here.** The session store still uses its single-file layout until
+the `AX-350` migration; the run/task/attempt/spec/evidence payloads and the
+rebuildable projections are `AX-309`; explicit recovery of an uncommitted tail is
+`AX-311`; the physically allocated control reserve and storage reservations are
+`AX-350`/`AX-312`.
 
 The current implementation's single-file/full-read behavior is recorded in
 `ARCH/24` `F-61`; it does not meet this proposed contract.
