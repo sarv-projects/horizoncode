@@ -154,6 +154,10 @@ results, not the documentation audit's:
   the three `state_root` branches `F-67` fixed.
 - Real ENOSPC, power loss, and cross-host filesystem behavior remain `insufficient
   evidence`: they need an isolated fixture and explicit authorization.
+- Later passes the same day (`AX-010`, `AX-348`'s published ceilings, `AX-358`,
+  `AX-344`, `AX-126`, `AX-110`) kept the gate at zero failing and grew the suite with
+  each; the counts above are the third pass's snapshot, and `CURRENT_RUN.md` owns the
+  current revision's checks.
 
 ## Migration order and validation gates
 

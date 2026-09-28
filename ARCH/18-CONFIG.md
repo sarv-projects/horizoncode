@@ -188,8 +188,8 @@ added so an accumulating key can list every contributing layer), and hierarchica
 `Instructions from: <path>` rendering, and the fail-closed unreadable case. One
 `state_root()` resolves `$HORIZONCODE_HOME` → `~/.horizoncode` → `.` and is consumed
 by the session, audit, analytics, guard, and CLI roots, so the documented layout is
-the implemented one (`F-67`). Skill discovery and progressive disclosure are implemented
-(`AX-110`): `SKILL.md` (or a sibling `<name>.md`) is discovered under the global
+the implemented one (`F-67`). The discovery and activation half of skill handling is
+implemented (`AX-110`, first slice): `SKILL.md` (or a sibling `<name>.md`) is discovered under the global
 `<state>/skills` directory and the project walk, frontmatter is parsed with a
 YAML parser, `{name, description, slash}` alone enter the catalog, and the body
 is returned only by `activate`, which re-reads the file and verifies its digest
