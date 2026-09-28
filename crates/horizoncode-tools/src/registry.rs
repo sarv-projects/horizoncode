@@ -6,11 +6,11 @@ use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use horizoncode_types::{
     ContentPart, SessionId, ToolCall, ToolCallId, ToolDefinition, ToolStatus, TurnId,
     is_valid_tool_name,
 };
-use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::bound::{OutputBounds, bound};
@@ -322,6 +322,7 @@ impl ToolRegistry {
             resources: resources_from_input(&call.arguments),
             session_id: ctx.session_id.clone(),
             source: call.id.clone(),
+            turn_id: ctx.turn_id.clone(),
             metadata: serde_json::json!({
                 "action": action,
                 "tool": call.name,

@@ -114,12 +114,13 @@ pub(crate) fn sort_entries(entries: &mut [std::fs::DirEntry]) {
 
 /// Re-asserts the guard for a tool immediately before its effect.
 ///
-/// This is the second authorization of the one call, and on a gate that issues
-/// tickets it is the point where the ticket is **validated and spent**: the
-/// effect runs against a grant that was checked for scope, expiry, uses, and
-/// policy fingerprint, not against a remembered decision. It carries the same
+/// This is the **spend** of the one authorization the registry already decided,
+/// not a second decision: on a gate that issues tickets the effect runs against a
+/// grant that was checked for scope, expiry, uses, and policy fingerprint rather
+/// than against a remembered decision. It carries the same
 /// `(action, resources, targets)` shape the registry used, so a request that grew
-/// after authorization cannot pass on a narrower grant.
+/// after authorization cannot pass on a narrower grant, and the turn is carried
+/// too, so the spend lands on the grant this call actually holds.
 pub(crate) async fn assert_action(
     ctx: &ToolContext,
     action: &str,
@@ -135,10 +136,11 @@ pub(crate) async fn assert_action(
         resources,
         session_id: ctx.session_id.clone(),
         source: ctx.tool_call_id.clone(),
+        turn_id: ctx.turn_id.clone(),
         metadata: json!({ "self_assert": true }),
         targets,
     };
-    match gate.authorize(&request).await {
+    match gate.consume(&request).await {
         GateDecision::Allow => Ok(()),
         GateDecision::Deny { reason } => Err(ToolError::Denied(reason)),
     }

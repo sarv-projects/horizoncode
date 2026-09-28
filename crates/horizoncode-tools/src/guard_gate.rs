@@ -7,23 +7,32 @@
 //! issues a single-use ticket or persists an exact "always" rule
 //! (`REQ-GUARD-003`).
 //!
-//! ## The ticket is validated, not merely issued
-//! An authorization is only a *proposal*; the effect needs a grant. So a second
-//! authorization for the same call identity — which is exactly what a tool's
-//! re-assertion immediately before its effect is — does not shortcut to `allow`:
-//! it **spends** the ticket, checking its scope, its action, its expiry, its
-//! remaining uses, and the policy fingerprint it was issued under, and then
-//! removes it. "Allow once" therefore means once: a replayed call identity has no
-//! ticket left to spend and is refused.
+//! ## One decision, one grant, one effect
+//!
+//! There are two passes over a call, and they are different acts:
+//!
+//! - [`PermissionGate::authorize`] is the **decision**: it evaluates the policy
+//!   once, records that decision, and issues a single-use grant for it.
+//! - [`PermissionGate::consume`] is the tool's re-assertion immediately before
+//!   its effect: it **spends** that grant, checking scope, action, expiry,
+//!   remaining uses, and the policy fingerprint it was issued under, then removes
+//!   it. It never decides anything, so it is never recorded as a decision.
+//!
+//! Collapsing the two is what produced `F-66`: a call recorded an `allow` and
+//! then a `deny` for the same effect, and every read-only call that named no
+//! resource failed its own re-assertion because the grant's coverage set was
+//! empty. Keeping them apart also means "allow once" still means once — the
+//! grant is consumed at the effect, and a replayed identity has nothing left to
+//! spend.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use horizoncode_guard::{
     ApprovalReply, ApprovalRequest, ApprovalResolver, Guard, GuardRequest, SavedRule, Ticket,
     canonical_action, catastrophic,
 };
-use async_trait::async_trait;
 
 use crate::policy::{
     ApprovalObserver, ApprovalOutcome, ApprovalRecord, GateDecision, PermissionGate,
@@ -48,13 +57,14 @@ impl Grant {
     /// A grant issued for the **whole action** — the wildcard resource a request
     /// carries when the tool named none — covers every resource of that action.
     /// A grant issued for a specific resource covers only that resource, so a
-    /// request cannot widen a narrow grant. This is grant bookkeeping, not policy:
-    /// whether the grant was authorized at all is the guard's answer, recorded
-    /// here at issue time.
+    /// request cannot widen a narrow grant, and a whole-action request is not
+    /// covered by a narrow grant. This is grant bookkeeping, not policy: whether
+    /// the grant was authorized at all is the guard's answer, recorded here at
+    /// issue time.
     fn covers(&self, action: &str, resource: &str) -> bool {
-        self.pairs
-            .iter()
-            .any(|(granted, value)| granted == action && (value == resource || value == "**"))
+        self.pairs.iter().any(|(granted, value)| {
+            granted == action && (value == resource || value == WILDCARD_RESOURCE)
+        })
     }
 }
 
@@ -140,18 +150,33 @@ impl GuardPermissionGate {
             targets: Vec::new(),
         };
         for target in &request.targets {
-            guard_request = guard_request.with_target(target.action.clone(), target.resources.clone());
+            guard_request =
+                guard_request.with_target(target.action.clone(), target.resources.clone());
         }
         guard_request
     }
 
     /// Every `(action, resource)` pair a request names, as the guard sees them.
+    ///
+    /// A request that names no resource is a **whole-action** request, which the
+    /// guard evaluates against the wildcard (`Guard::evaluate_pairs`) and whose
+    /// ticket is scoped to `**` (`Guard::issue_ticket`). This bookkeeping must
+    /// record that same wildcard: mapping it to nothing instead would produce a
+    /// grant that covers no pair at all, and a tool that names its default
+    /// resource at the effect boundary could never spend it. That made every
+    /// resource-less call — `list` with no arguments, for instance — fail its own
+    /// re-assertion after the guard had already allowed it (`F-66`).
     fn pairs(request: &PermissionRequest) -> Vec<(String, String)> {
-        let mut pairs: Vec<(String, String)> = request
-            .resources
-            .iter()
-            .map(|resource| (canonical_action(&request.action).to_owned(), resource.clone()))
-            .collect();
+        let action = canonical_action(&request.action).to_owned();
+        let mut pairs: Vec<(String, String)> = if request.resources.is_empty() {
+            vec![(action, WILDCARD_RESOURCE.to_owned())]
+        } else {
+            request
+                .resources
+                .iter()
+                .map(|resource| (action.clone(), resource.clone()))
+                .collect()
+        };
         for target in &request.targets {
             for resource in &target.resources {
                 pairs.push((
@@ -164,20 +189,18 @@ impl GuardPermissionGate {
     }
 
     /// Returns whether a live grant is held for this call identity.
-    fn is_granted(&self, source: &str, action: &str) -> bool {
-        self.lock_grants()
-            .contains_key(&memo_key(source, action))
+    fn is_granted(&self, request: &PermissionRequest) -> bool {
+        self.lock_grants().contains_key(&identity_key(request))
     }
 
-    fn take_grant(&self, source: &str, action: &str) -> Option<Grant> {
-        self.lock_grants()
-            .remove(&memo_key(source, action))
+    fn take_grant(&self, request: &PermissionRequest) -> Option<Grant> {
+        self.lock_grants().remove(&identity_key(request))
     }
 
     /// Records the grant issued for a call identity.
     fn mark_granted(&self, request: &PermissionRequest, ticket: Ticket) {
         self.lock_grants().insert(
-            memo_key(request.source.as_str(), &request.action),
+            identity_key(request),
             Grant {
                 ticket,
                 pairs: Self::pairs(request),
@@ -246,7 +269,7 @@ impl GuardPermissionGate {
     /// after it was authorized is refused **before** the use is spent, so the
     /// grant cannot be narrowed into a wider effect.
     fn spend(&self, request: &PermissionRequest) -> Result<(), String> {
-        let Some(grant) = self.take_grant(request.source.as_str(), &request.action) else {
+        let Some(grant) = self.take_grant(request) else {
             return Err("no live authorization ticket covers this call".to_owned());
         };
         for pair in Self::pairs(request) {
@@ -286,10 +309,7 @@ impl GuardPermissionGate {
         // the user was shown (`REQ-GUARD-003`).
         for target in &request.targets {
             for resource in &target.resources {
-                save.push(SavedRule::new(
-                    canonical_action(&target.action),
-                    resource,
-                ));
+                save.push(SavedRule::new(canonical_action(&target.action), resource));
             }
         }
         let named: Vec<String> = request
@@ -363,24 +383,30 @@ impl GuardPermissionGate {
 
 #[async_trait]
 impl PermissionGate for GuardPermissionGate {
+    /// Makes the policy decision and issues the grant it implies.
+    ///
+    /// This is the *only* place a call is decided, so a call produces exactly one
+    /// decision. The effect boundary calls [`PermissionGate::consume`], which
+    /// spends the grant rather than deciding again.
     async fn authorize(&self, request: &PermissionRequest) -> GateDecision {
-        let key = memo_key(request.source.as_str(), &request.action);
+        let key = identity_key(request);
         if self.lock_spent().contains(&key) {
             return GateDecision::Deny {
-                reason: "this call was already authorized and its single-use grant spent;                          re-authorize as a new call rather than replaying it"
-                    .to_owned(),
+                reason:
+                    "this call was already authorized and its single-use grant spent; re-authorize \
+                          as a new call rather than replaying it"
+                        .to_owned(),
             };
         }
-        // A grant already exists for this call identity: this is the effect's own
-        // re-assertion, so the grant is spent here rather than waved through.
-        if self.is_granted(request.source.as_str(), &request.action) {
-            return match self.spend(request) {
-                Ok(()) => {
-                    self.lock_spent().insert(key);
-                    self.notify_ticket(request, None, "validated");
-                    GateDecision::Allow
-                }
-                Err(reason) => GateDecision::Deny { reason },
+        // A live grant for this identity means the caller is asking twice where
+        // one decision was already made. Issuing a second grant would make the
+        // effect's own spend ambiguous, so it is refused with the reason.
+        if self.is_granted(request) {
+            return GateDecision::Deny {
+                reason:
+                    "this call already holds a live authorization; spend it at the effect boundary \
+                          instead of authorizing it again"
+                        .to_owned(),
             };
         }
         let guard_request = self.guard_request(request);
@@ -392,7 +418,35 @@ impl PermissionGate for GuardPermissionGate {
                 GateDecision::Allow
             }
             horizoncode_guard::GuardDecision::Deny { reason } => GateDecision::Deny { reason },
-            horizoncode_guard::GuardDecision::Ask => self.resolve_ask(request, &guard_request).await,
+            horizoncode_guard::GuardDecision::Ask => {
+                self.resolve_ask(request, &guard_request).await
+            }
+        }
+    }
+
+    /// Spends the grant the decision issued, at the effect boundary.
+    ///
+    /// The coverage check is re-run here rather than waved through, because the
+    /// request the effect names is the one that must be covered — a request that
+    /// grew since it was authorized is refused before the use is spent, and the
+    /// ticket is validated against the current policy fingerprint, so a widened
+    /// or narrowed policy cannot be spent through the old grant.
+    async fn consume(&self, request: &PermissionRequest) -> GateDecision {
+        if !self.is_granted(request) {
+            // Either the grant was already spent, or this identity never had
+            // one. Both are refusals: an effect runs only on a grant this call
+            // still holds.
+            return GateDecision::Deny {
+                reason: "no live authorization ticket covers this effect".to_owned(),
+            };
+        }
+        match self.spend(request) {
+            Ok(()) => {
+                self.lock_spent().insert(identity_key(request));
+                self.notify_ticket(request, None, "validated");
+                GateDecision::Allow
+            }
+            Err(reason) => GateDecision::Deny { reason },
         }
     }
 
@@ -400,7 +454,9 @@ impl PermissionGate for GuardPermissionGate {
         match self.guard.check(&self.guard_request(request)) {
             horizoncode_guard::GuardDecision::Allow => Some(PolicyOutcome::Allow),
             horizoncode_guard::GuardDecision::Ask => Some(PolicyOutcome::Ask),
-            horizoncode_guard::GuardDecision::Deny { reason } => Some(PolicyOutcome::Deny { reason }),
+            horizoncode_guard::GuardDecision::Deny { reason } => {
+                Some(PolicyOutcome::Deny { reason })
+            }
         }
     }
 
@@ -409,7 +465,24 @@ impl PermissionGate for GuardPermissionGate {
     }
 }
 
-/// A memo key that scopes a grant to both the call identity and the action.
-fn memo_key(source: &str, action: &str) -> String {
-    format!("{source}\u{0}{action}")
+/// A memo key that scopes a grant to the call identity, the turn, and the
+/// action.
+///
+/// The turn belongs in the identity because a provider's tool-call id is a
+/// correlation token: it is only required to be unique among the calls of one
+/// response, and a model that reuses an id in a later turn has issued a *new*
+/// call. Scoping the key this way keeps replay protection where it is exact —
+/// within the turn that issued the grant — instead of turning an id collision
+/// into a denial of a legitimate later call (`F-66`).
+fn identity_key(request: &PermissionRequest) -> String {
+    let turn = request.turn_id.as_ref().map_or("-", |turn| turn.as_str());
+    format!(
+        "{turn}\u{0}{}\u{0}{}",
+        request.source.as_str(),
+        request.action
+    )
 }
+
+/// The resource a whole-action request is evaluated against, matching the
+/// guard's own normalization and its ticket scope.
+const WILDCARD_RESOURCE: &str = "**";

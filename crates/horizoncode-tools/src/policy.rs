@@ -8,8 +8,8 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::fmt::Debug;
 
-use horizoncode_types::{SessionId, ToolCallId};
 use async_trait::async_trait;
+use horizoncode_types::{SessionId, ToolCallId, TurnId};
 use serde_json::Value;
 
 /// One `(action, resources)` pair a call names.
@@ -50,6 +50,15 @@ pub struct PermissionRequest {
     pub session_id: SessionId,
     /// The tool call id, so approvals tie back to the exact call.
     pub source: ToolCallId,
+    /// The turn the call was issued in, when it is inside one.
+    ///
+    /// The call identity is the pair *(turn, call id)*, because a provider's
+    /// tool-call id is a correlation token and is only required to be unique
+    /// among the calls of one response. A turn makes a reused id in a *later*
+    /// turn a different call instead of an indistinguishable replay, while a
+    /// replay inside the turn that issued it is still the same call
+    /// (`ARCH/12` §Tickets).
+    pub turn_id: Option<TurnId>,
     /// Additional non-secret context for the approval surface.
     pub metadata: Value,
     /// Further action domains the same call names, beyond `action`.
@@ -88,8 +97,23 @@ pub enum PolicyOutcome {
 /// to a client (`session/request_permission` in the ACP surface).
 #[async_trait]
 pub trait PermissionGate: Send + Sync + Debug {
-    /// Authorizes one action.
+    /// Authorizes one action. This is the decision point: the call is
+    /// authorized, and a gate that holds grants issues the grant here.
     async fn authorize(&self, request: &PermissionRequest) -> GateDecision;
+
+    /// Spends the authorization a call already holds, at the effect boundary.
+    ///
+    /// A tool re-asserts immediately before its effect, and that second pass is
+    /// *not* a second policy decision — it is the single-use grant being
+    /// consumed. Separating the two keeps a replay from looking like a new
+    /// request and keeps one call from producing a contradictory pair of
+    /// decision records (`ARCH/12` §Tickets, `F-66`).
+    ///
+    /// A stateless gate has nothing to spend and re-evaluates, so the default
+    /// is [`PermissionGate::authorize`].
+    async fn consume(&self, request: &PermissionRequest) -> GateDecision {
+        self.authorize(request).await
+    }
 
     /// Returns whether the action is wholly denied, so the tool is absent from
     /// the model's advertised set rather than merely blocked at call time
@@ -345,6 +369,7 @@ mod tests {
             resources: vec!["a.txt".to_owned()],
             session_id: SessionId::new("ses_test"),
             source: ToolCallId::new("call_1"),
+            turn_id: Some(TurnId::generate()),
             metadata: json!({}),
             targets: Vec::new(),
         }

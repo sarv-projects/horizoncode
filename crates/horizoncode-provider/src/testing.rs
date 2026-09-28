@@ -172,12 +172,21 @@ async fn handle_connection(
         buffer.extend_from_slice(&chunk[..read]);
     }
     let body = &buffer[body_start..(body_start + content_length).min(buffer.len())];
-    if let Ok(value) = serde_json::from_slice::<Value>(body) {
-        recorded
+    // The request number doubles as the response identity, so a tool call this
+    // mock emits carries a unique id the way a real provider's does. A tool-call
+    // id is a correlation token: it is what the tool result is matched against,
+    // so reusing one id across responses would model a provider that breaks its
+    // own protocol, and the tool plane is right to refuse to spend a grant
+    // against an identity that has already been spent (`F-66`).
+    let response_number = {
+        let mut recorded = recorded
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(value);
-    }
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Ok(value) = serde_json::from_slice::<Value>(body) {
+            recorded.push(value);
+        }
+        recorded.len()
+    };
 
     let turn = turns
         .lock()
@@ -189,7 +198,12 @@ async fn handle_connection(
             preamble,
             name,
             arguments,
-        }) => sse_response(tool_call_chunks(&preamble, &name, &arguments)),
+        }) => sse_response(tool_call_chunks(
+            &preamble,
+            &name,
+            &arguments,
+            response_number,
+        )),
         Some(MockTurn::Error {
             status,
             body,
@@ -308,7 +322,13 @@ fn text_chunks(text: &str, finish: &str) -> Vec<Value> {
     chunks
 }
 
-fn tool_call_chunks(preamble: &str, name: &str, arguments: &Value) -> Vec<Value> {
+/// Builds the streamed chunks for one tool call, identified by `response_number`.
+fn tool_call_chunks(
+    preamble: &str,
+    name: &str,
+    arguments: &Value,
+    response_number: usize,
+) -> Vec<Value> {
     let mut chunks = vec![chunk(json!({"role": "assistant", "content": ""}), None)];
     if !preamble.is_empty() {
         chunks.push(chunk(json!({"content": preamble}), None));
@@ -316,7 +336,7 @@ fn tool_call_chunks(preamble: &str, name: &str, arguments: &Value) -> Vec<Value>
     chunks.push(chunk(
         json!({"tool_calls": [{
             "index": 0,
-            "id": "call_mock_1",
+            "id": format!("call_mock_{response_number}"),
             "type": "function",
             "function": {"name": name, "arguments": ""}
         }]}),

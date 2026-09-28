@@ -14,7 +14,9 @@ use horizoncode_analytics::{
     AnalyticsEvent, AnalyticsLog, EventKind as AnalyticsKind, FailureClass, Tokens,
     ToolMeasurement, ToolOutcomeKind,
 };
-use horizoncode_audit::{Actor, AuditLog, AuditRecord, EntryKind, Outcome, PolicyEffect, inputs_digest};
+use horizoncode_audit::{
+    Actor, AuditLog, AuditRecord, EntryKind, Outcome, PolicyEffect, inputs_digest,
+};
 use horizoncode_session::TurnEndStatus;
 use horizoncode_tools::{
     ApprovalObserver, ApprovalRecord, GateDecision, PermissionGate, PermissionRequest,
@@ -785,6 +787,17 @@ impl PermissionGate for AuditedGate {
             }
         }
         decision
+    }
+
+    /// Spends a grant without recording a second decision.
+    ///
+    /// The tool's re-assertion is not a policy decision — it is the single-use
+    /// grant being consumed — and the gate's own observer already records the
+    /// ticket lifecycle for it. Recording it again as a decision is what produced
+    /// the contradictory allow/deny pair for one call in the chain (`F-66`):
+    /// a reader of the evidence saw two outcomes where there was one.
+    async fn consume(&self, request: &PermissionRequest) -> GateDecision {
+        self.inner.consume(request).await
     }
 
     fn classify(&self, request: &PermissionRequest) -> Option<PolicyOutcome> {
