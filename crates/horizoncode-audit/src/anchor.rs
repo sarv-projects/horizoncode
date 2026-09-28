@@ -31,7 +31,12 @@ pub const GENESIS_PREV_ROOT: &str = genesis_prev_root();
 const fn genesis_prev_root() -> &'static str {
     // Pinned here and asserted against the computed value in
     // `tests::genesis_root_matches_its_label`.
-    "ead29c1af873fcbf3077516ed6c06b7747cbe9997358597ec0fface4162bd57c"
+    //
+    // Re-derived 2026-09-28 (`AX-354`/`F-65`) with `GENESIS_PREV_HASH`: the rename
+    // commit `58569f4` changed `GENESIS_ROOT_LABEL` without re-deriving this value.
+    // It is now `blake3(GENESIS_ROOT_LABEL)`, and a pre-rename root chain is refused
+    // at its first record.
+    "6f68ee2bcc647b0f8ffb1cea9e687b897453dfd234a4e0fce8d5c6c728a94106"
 }
 
 /// The label hashed to produce [`GENESIS_PREV_ROOT`].
@@ -818,6 +823,18 @@ mod tests {
             crate::merkle::digest(GENESIS_ROOT_LABEL.as_bytes()),
             GENESIS_PREV_ROOT
         );
+    }
+
+    /// `AX-354`/`F-65`, the root half: the pre-rename derivation is recorded and
+    /// refused, matching the entry-chain note in `ARCH/14`.
+    #[test]
+    fn the_pre_rename_root_genesis_is_not_accepted_as_genesis() {
+        let pre_rename = crate::merkle::digest(b"agentx/audit/roots/genesis/v1");
+        assert_eq!(
+            pre_rename, "ead29c1af873fcbf3077516ed6c06b7747cbe9997358597ec0fface4162bd57c",
+            "the spike result must stay pinned so the migration note is auditable"
+        );
+        assert_ne!(pre_rename, GENESIS_PREV_ROOT);
     }
 
     #[test]

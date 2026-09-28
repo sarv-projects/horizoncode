@@ -25,7 +25,14 @@ pub const HASH_HEX_LEN: usize = 64;
 const fn genesis_prev_hash() -> &'static str {
     // A `const fn` cannot call into `blake3`, so the constant is pinned here and
     // asserted against the computed value in `tests::genesis_matches_its_label`.
-    "4b4889db967c08165e075d20fd730e4b429c461dffca523a6eaea3aa88fc9ce0"
+    //
+    // Re-derived 2026-09-28 (`AX-354`/`F-65`): the rename commit `58569f4` changed
+    // `GENESIS_LABEL` from `agentx/audit/genesis/v1` to `horizoncode/audit/genesis/v1`
+    // without re-deriving this value, which stayed the hash of the old label. The
+    // label is authoritative — it is what the format documents and what any reader
+    // recomputes — so this is `blake3(GENESIS_LABEL)`. A pre-rename store is refused
+    // at its first entry, not silently accepted.
+    "528525102ac611baeb12ba124f6e14b6bf230c10eff54df8815c314ced7d7388"
 }
 
 /// The label hashed to produce [`GENESIS_PREV_HASH`].
@@ -848,6 +855,24 @@ mod tests {
     fn genesis_matches_its_label() {
         let computed = blake3::hash(GENESIS_LABEL.as_bytes()).to_hex().to_string();
         assert_eq!(computed, GENESIS_PREV_HASH);
+    }
+
+    /// `AX-354`/`F-65`: the pinned constants used to be the derivation of the
+    /// *pre-rename* labels, which the rename commit changed without re-deriving.
+    /// The pre-rename value stays recorded here so the migration note in
+    /// `ARCH/14` is checkable, and it is explicitly **not** this store's genesis:
+    /// a chain that starts from it is a pre-release artifact to re-create, not a
+    /// chain to keep accepting.
+    #[test]
+    fn the_pre_rename_genesis_is_not_accepted_as_genesis() {
+        let pre_rename = blake3::hash(b"agentx/audit/genesis/v1")
+            .to_hex()
+            .to_string();
+        assert_eq!(
+            pre_rename, "4b4889db967c08165e075d20fd730e4b429c461dffca523a6eaea3aa88fc9ce0",
+            "the spike result must stay pinned so the migration note is auditable"
+        );
+        assert_ne!(pre_rename, GENESIS_PREV_HASH);
     }
 
     #[test]
