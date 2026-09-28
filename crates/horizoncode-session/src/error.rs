@@ -59,6 +59,26 @@ pub enum SessionError {
     /// A payload could not be encoded or decoded.
     #[error("session payload error: {0}")]
     Payload(String),
+
+    /// The log has no `session/created` row, so it is not a session.
+    #[error("session log at {path} has no session/created event")]
+    HeaderMissing {
+        /// The log path.
+        path: PathBuf,
+    },
+
+    /// The `session/created` row could not be decoded.
+    #[error("invalid session/created payload at {path}: {message}")]
+    HeaderCorrupt {
+        /// The log path.
+        path: PathBuf,
+        /// The decode failure.
+        message: String,
+    },
+
+    /// The requested durability profile cannot be provided here.
+    #[error("session durability refused: {0}")]
+    Durability(String),
 }
 
 impl SessionError {

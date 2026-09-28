@@ -14,20 +14,27 @@
 
 #![forbid(unsafe_code)]
 
+mod durability;
 mod error;
+mod listing;
 mod payload;
 mod session;
 mod store;
 
-pub use horizoncode_types::ToolStatus;
+pub use durability::{CommitSink, DurabilityProfile, StdCommitSink, UnsupportedSink, std_sink};
 pub use error::SessionError;
+pub use horizoncode_types::ToolStatus;
+pub use listing::{
+    SessionIntegrityState, SessionListEntry, SessionListIssue, SessionListIssueKind,
+    SessionListResult,
+};
 pub use payload::{
     AssistantMessagePayload, InputPromotedPayload, ModelRef, SessionCreatedPayload,
     SessionUpdatedPayload, StepEndPayload, StepStartPayload, ToolCallPayload, ToolResultPayload,
     TurnEndPayload, TurnEndStatus, TurnStartPayload,
 };
 pub use session::{LoadedSession, SessionStatus, SessionSummary};
-pub use store::{SessionStore, default_sessions_root};
+pub use store::{LogScanReport, SessionStore, TailState, default_sessions_root};
 
 /// The session-format version written by this build.
 pub const CURRENT_FORMAT_VERSION: u32 = 1;

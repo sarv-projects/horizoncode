@@ -130,7 +130,11 @@ fn list_and_latest_are_ordered_by_activity() {
         )
         .unwrap();
     let listed = store.list();
-    assert_eq!(listed.len(), 2);
+    assert_eq!(listed.items.len(), 2);
+    assert!(listed.enumeration_complete);
+    assert!(listed.issues.is_empty());
+    assert_eq!(listed.items[0].id, first.id);
+    assert_eq!(listed.items[1].id, second.id);
     assert_eq!(store.latest().unwrap(), first.id);
     assert!(store.exists(&second.id));
     assert_eq!(store.load(&first.id).unwrap().status, SessionStatus::Active);
@@ -302,5 +306,8 @@ fn unknown_event_type_is_a_typed_failure() {
 fn missing_session_is_not_found() {
     let (_dir, store) = store();
     let error = store.load(&SessionId::new("ses_missing")).unwrap_err();
-    assert!(matches!(error, horizoncode_session::SessionError::NotFound(_)));
+    assert!(matches!(
+        error,
+        horizoncode_session::SessionError::NotFound(_)
+    ));
 }

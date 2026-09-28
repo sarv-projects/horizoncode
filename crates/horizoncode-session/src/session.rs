@@ -1,6 +1,8 @@
 //! The in-memory session projection built by replaying the log.
 
-use horizoncode_types::{Event, EventKind, Message, SessionId, ToolCall, ToolCallId, TurnId, Usage};
+use horizoncode_types::{
+    Event, EventKind, Message, SessionId, ToolCall, ToolCallId, TurnId, Usage,
+};
 
 use crate::payload::{
     AssistantMessagePayload, InputPromotedPayload, ModelRef, SessionCreatedPayload, StepEndPayload,
@@ -81,16 +83,21 @@ impl LoadedSession {
     pub(crate) fn from_events(
         id: SessionId,
         events: Vec<Event>,
+        path: &std::path::Path,
     ) -> Result<Self, crate::SessionError> {
         let created = events
             .iter()
             .find(|event| event.kind == EventKind::SessionCreated)
-            .ok_or_else(|| {
-                crate::SessionError::Payload("session log has no session/created event".to_owned())
+            .ok_or_else(|| crate::SessionError::HeaderMissing {
+                path: path.to_path_buf(),
             })?;
-        let header: SessionCreatedPayload = created.decode().map_err(|error| {
-            crate::SessionError::Payload(format!("invalid session/created payload: {error}"))
-        })?;
+        let header: SessionCreatedPayload =
+            created
+                .decode()
+                .map_err(|error| crate::SessionError::HeaderCorrupt {
+                    path: path.to_path_buf(),
+                    message: error.to_string(),
+                })?;
         let created_at = created.time;
         let last_active_at = events.last().map_or(created_at, |event| event.time);
         let status = derive_status(&events);
@@ -264,6 +271,33 @@ impl LoadedSession {
             last_active_at: self.last_active_at,
             event_count: self.events.len(),
         }
+    }
+}
+
+/// Builds the listing projection without constructing a full `LoadedSession`.
+///
+/// Enumeration must not go through the repairing load path, so it needs the
+/// summary on its own: header fields, derived status, and the durable event
+/// count.
+pub(crate) fn summary_from(
+    id: SessionId,
+    header: &SessionCreatedPayload,
+    events: &[Event],
+) -> SessionSummary {
+    let created_at = events
+        .iter()
+        .find(|event| event.kind == EventKind::SessionCreated)
+        .map_or(0, |event| event.time);
+    let last_active_at = events.last().map_or(created_at, |event| event.time);
+    SessionSummary {
+        id,
+        title: header.title.clone(),
+        workspace_id: header.workspace_id.clone(),
+        model: header.model.clone(),
+        status: derive_status(events),
+        created_at,
+        last_active_at,
+        event_count: events.len(),
     }
 }
 
