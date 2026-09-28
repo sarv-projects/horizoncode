@@ -192,7 +192,14 @@ fn read_required(
     })
 }
 
-fn project_root(cwd: &Path) -> PathBuf {
+/// The project root for a working directory: the nearest ancestor carrying a
+/// `.git` marker (a directory in a normal checkout, a file in a worktree) or a
+/// `.horizoncode` directory; with no marker, the working directory itself.
+///
+/// This is the boundary both instruction and skill discovery stop at, so a
+/// parent directory cannot contribute context to an unrelated project.
+#[must_use]
+pub fn project_root_for(cwd: &Path) -> PathBuf {
     let mut walk = Some(cwd);
     while let Some(dir) = walk {
         if dir.join(".git").exists() || dir.join(PROJECT_CONFIG_DIR).is_dir() {
@@ -201,6 +208,10 @@ fn project_root(cwd: &Path) -> PathBuf {
         walk = dir.parent();
     }
     cwd.to_path_buf()
+}
+
+fn project_root(cwd: &Path) -> PathBuf {
+    project_root_for(cwd)
 }
 
 fn walk_dirs(root: &Path, cwd: &Path) -> Vec<PathBuf> {

@@ -65,6 +65,64 @@ pub fn run_notices(command: &NoticesCommand) -> Result<u8, CliError> {
     }
 }
 
+/// Runs `/skills [list | show <name>]` (`ARCH/18` §Skill record).
+///
+/// Only metadata is printed: a skill body is loaded on explicit activation by
+/// the context plane, never by a listing surface. Skill content is untrusted
+/// data; rendering it never executes or grants anything.
+pub fn run_skills(workspace: &std::path::Path, show: Option<&str>) -> Result<u8, CliError> {
+    let catalog = horizoncode_config::discover_skills(workspace);
+    for diagnostic in &catalog.diagnostics {
+        eprintln!(
+            "horizoncode: skill {}: {}",
+            diagnostic.path.display(),
+            diagnostic.message
+        );
+    }
+    match show {
+        None => {
+            if catalog.is_empty() {
+                println!("No skills discovered.");
+            } else {
+                for skill in &catalog.skills {
+                    let slash = skill
+                        .slash
+                        .as_ref()
+                        .map_or(String::new(), |slash| format!(" /{slash}"));
+                    println!(
+                        "{}\t{}\t{}{}",
+                        skill.name,
+                        skill.scope.as_str(),
+                        skill.description,
+                        slash
+                    );
+                }
+                if !catalog.shadowed.is_empty() {
+                    println!("{} shadowed location(s)", catalog.shadowed.len());
+                }
+            }
+            Ok(EXIT_SUCCESS)
+        }
+        Some(name) => {
+            let Some(skill) = catalog.get(name) else {
+                return Err(CliError::Config(format!(
+                    "unknown skill `{name}`; run `/skills` to list the catalog"
+                )));
+            };
+            println!("{}", skill.name);
+            println!("  scope:       {}", skill.scope.as_str());
+            println!("  description: {}", skill.description);
+            if let Some(slash) = &skill.slash {
+                println!("  slash:       /{slash}");
+            }
+            println!("  location:    {}", skill.location.display());
+            println!("  digest:      {}", skill.digest);
+            println!("  body:        loaded only on activation");
+            Ok(EXIT_SUCCESS)
+        }
+    }
+}
+
 /// Runs an `audit` subcommand.
 pub fn run_audit(state: &StateDir, command: &AuditCommand) -> Result<u8, CliError> {
     let config = audit_config(state);

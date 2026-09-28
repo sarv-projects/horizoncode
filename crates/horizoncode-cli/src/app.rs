@@ -174,7 +174,10 @@ pub async fn run(args: Cli) -> Result<u8, CliError> {
         && prompt.trim().starts_with('/')
     {
         let invocation = parse(prompt).map_err(|error| CliError::Config(error.to_string()))?;
-        return run_slash_command(&state, &invocation);
+        let workspace = args.cwd.clone().unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        });
+        return run_slash_command(&state, &workspace, &invocation);
     }
     let context = build_context(&args, state)?;
     match args.command {
@@ -184,10 +187,15 @@ pub async fn run(args: Cli) -> Result<u8, CliError> {
 }
 
 /// Runs a registry invocation on the headless surface.
-fn run_slash_command(state: &StateDir, invocation: &Invocation) -> Result<u8, CliError> {
+fn run_slash_command(
+    state: &StateDir,
+    workspace: &std::path::Path,
+    invocation: &Invocation,
+) -> Result<u8, CliError> {
     match invocation {
         Invocation::Usage => surfaces::run_usage(state, None),
         Invocation::Insights { days } => surfaces::run_insights(state, Some(*days)),
+        Invocation::Skills { show } => surfaces::run_skills(workspace, show.as_deref()),
         Invocation::Help { topic } => {
             let text = horizoncode_commands::render_help(topic.as_deref())
                 .map_err(|error| CliError::Config(error.to_string()))?;

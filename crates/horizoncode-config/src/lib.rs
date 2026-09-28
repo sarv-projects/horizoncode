@@ -36,6 +36,7 @@ pub mod discovery;
 pub mod instructions;
 pub mod jsonc;
 pub mod settings;
+pub mod skills;
 pub mod state_fs;
 
 pub use discovery::{
@@ -44,11 +45,17 @@ pub use discovery::{
 };
 pub use instructions::{
     INSTRUCTION_FILE, InstructionScope, InstructionSource, InstructionsError,
-    discover_instructions, discover_instructions_with, read_instruction, render_instructions,
+    discover_instructions, discover_instructions_with, project_root_for, read_instruction,
+    render_instructions,
 };
 pub use settings::{
     ApplyBoundary, ArtifactLimits, ConfigDiagnostic, EffectiveConfig, LogLimits, SettingScope,
     SettingView, load, schema_keys,
+};
+pub use skills::{
+    MAX_DESCRIPTION_BYTES, MAX_NAME_BYTES, SKILL_FILE, SKILLS_DIR, SkillBody, SkillCatalog,
+    SkillDiagnostic, SkillError, SkillScope, SkillSummary, activate, discover_skills,
+    discover_skills_with,
 };
 pub use state_fs::{
     OwnerOnly, PathEntry, classify, refuse_group_or_other_access, refuse_symlink, set_owner_only,

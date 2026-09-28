@@ -62,6 +62,9 @@ tokio = { version = "1.48", features = [
 # Serialization.
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# Skill frontmatter is YAML (`ARCH/18`). The `ng` fork is the maintained
+# continuation of the archived serde_yaml.
+serde_yaml_ng = "0.10"
 # The pinned lockfile is parsed when generating the third-party notices bundle
 # (`ARCH/05` §4, `AX-010`); the version is already resolved in the lock graph.
 toml = "0.8"

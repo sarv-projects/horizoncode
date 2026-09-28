@@ -9,14 +9,37 @@ use std::process::Command;
 
 fn run(prompt: &str) -> std::process::Output {
     let home = tempfile::tempdir().unwrap();
-    Command::new(env!("CARGO_BIN_EXE_horizoncode"))
+    run_with(prompt, home.path(), None)
+}
+
+fn run_with(
+    prompt: &str,
+    home: &std::path::Path,
+    cwd: Option<&std::path::Path>,
+) -> std::process::Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_horizoncode"));
+    command
         .args(["-p", prompt])
         .env_remove("HORIZONCODE_BASE_URL")
         .env_remove("HORIZONCODE_API_KEY")
         .env_remove("HORIZONCODE_MODEL")
-        .env("HORIZONCODE_HOME", home.path())
-        .output()
-        .unwrap()
+        .env("HORIZONCODE_HOME", home);
+    if let Some(cwd) = cwd {
+        command.arg("--cwd").arg(cwd);
+    }
+    command.output().unwrap()
+}
+
+fn skill_workspace() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let skill = dir.path().join(".horizoncode/skills/review/SKILL.md");
+    std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+    std::fs::write(
+        &skill,
+        "---\nname: review\ndescription: review a diff\nslash: review\n---\nSECRET BODY TEXT\n",
+    )
+    .unwrap();
+    dir
 }
 
 #[test]
@@ -83,4 +106,42 @@ fn an_unknown_help_topic_is_refused() {
     assert_eq!(output.status.code(), Some(4), "{:?}", output.status);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("unknown command `/nonsense`"), "{stderr}");
+}
+
+#[test]
+fn skills_list_metadata_without_the_body() {
+    let home = tempfile::tempdir().unwrap();
+    let workspace = skill_workspace();
+    let output = run_with("/skills", home.path(), Some(workspace.path()));
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("review"), "{stdout}");
+    assert!(stdout.contains("project"), "{stdout}");
+    assert!(stdout.contains("review a diff"), "{stdout}");
+    assert!(
+        !stdout.contains("SECRET BODY TEXT"),
+        "a listing must not load or print the body: {stdout}"
+    );
+}
+
+#[test]
+fn skills_show_prints_metadata_and_never_the_body() {
+    let home = tempfile::tempdir().unwrap();
+    let workspace = skill_workspace();
+    let output = run_with("/skills show review", home.path(), Some(workspace.path()));
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("digest"), "{stdout}");
+    assert!(stdout.contains("loaded only on activation"), "{stdout}");
+    assert!(!stdout.contains("SECRET BODY TEXT"), "{stdout}");
+}
+
+#[test]
+fn an_unknown_skill_is_a_typed_refusal() {
+    let home = tempfile::tempdir().unwrap();
+    let workspace = skill_workspace();
+    let output = run_with("/skills show nope", home.path(), Some(workspace.path()));
+    assert_eq!(output.status.code(), Some(4), "{:?}", output.status);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown skill `nope`"), "{stderr}");
 }

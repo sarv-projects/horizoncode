@@ -127,6 +127,16 @@ static REGISTRY: &[CommandDescriptor] = &[
         effect_class: EffectClass::ReadOnly,
     },
     CommandDescriptor {
+        id: "skills",
+        aliases: &[],
+        summary: "List discovered skills or show one skill's metadata.",
+        argument_schema: "[list | show <name>]",
+        owner: "CMP-config",
+        availability: Availability::Available,
+        allowed_surfaces: &[Surface::Headless],
+        effect_class: EffectClass::ReadOnly,
+    },
+    CommandDescriptor {
         id: "usage",
         aliases: &[],
         summary: "Show observed usage and cost.",
@@ -167,6 +177,11 @@ pub enum Invocation {
     },
     /// `/usage`
     Usage,
+    /// `/skills [list | show <name>]`
+    Skills {
+        /// The skill to describe; without one the catalog is listed.
+        show: Option<String>,
+    },
 }
 
 impl Invocation {
@@ -178,6 +193,7 @@ impl Invocation {
             Self::Help { .. } => "help",
             Self::Insights { .. } => "insights",
             Self::Usage { .. } => "usage",
+            Self::Skills { .. } => "skills",
         }
     }
 }
@@ -308,6 +324,13 @@ pub fn parse_on(input: &str, surface: Surface) -> Result<Invocation, CommandErro
         "usage" => match arguments.as_slice() {
             [] => Ok(Invocation::Usage),
             _ => Err(malformed("takes no arguments")),
+        },
+        "skills" => match arguments.as_slice() {
+            [] | ["list"] => Ok(Invocation::Skills { show: None }),
+            ["show", name] => Ok(Invocation::Skills {
+                show: Some((*name).to_owned()),
+            }),
+            _ => Err(malformed("takes `list` or `show <name>`")),
         },
         _ => Err(CommandError::Unknown {
             name: name.to_owned(),
@@ -528,6 +551,17 @@ mod tests {
                 filter: Some("ledger".to_owned())
             }
         );
+        assert_eq!(parse("/skills").unwrap(), Invocation::Skills { show: None });
+        assert_eq!(
+            parse("/skills show review").unwrap(),
+            Invocation::Skills {
+                show: Some("review".to_owned())
+            }
+        );
+        assert!(matches!(
+            parse("/skills show"),
+            Err(CommandError::Malformed { id: "skills", .. })
+        ));
     }
 
     #[test]
@@ -594,7 +628,10 @@ mod tests {
         assert_eq!(complete("u"), vec!["usage"]);
         assert_eq!(complete("he"), vec!["help"]);
         assert!(complete("zz").is_empty());
-        assert_eq!(complete(""), vec!["commands", "help", "insights", "usage"]);
+        assert_eq!(
+            complete(""),
+            vec!["commands", "help", "insights", "skills", "usage"]
+        );
     }
 
     #[test]
