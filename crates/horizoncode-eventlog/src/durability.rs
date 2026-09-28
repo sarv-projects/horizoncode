@@ -1,5 +1,5 @@
-//! The commit durability backend (`ARCH/07-SESSION.md` §Commit durability
-//! backend, `DEC-057`).
+//! The commit durability backend (`DEC-057`, `ARCH/07-SESSION.md` §Commit
+//! durability backend).
 //!
 //! A durability profile is a claim about what a commit acknowledgement has
 //! actually flushed on *this* host, so the backend is a small, explicit
@@ -7,8 +7,11 @@
 //! sync and a directory-entry sync, plus a declaration of whether the platform
 //! can provide the `run_durable` contract at all.
 //!
-//! `run_durable` is the profile a multi-hour run needs. Where the backend
-//! cannot provide it, the profile is **refused** — a weaker interactive profile
+//! The module lives in the shared event-log core because that core is what makes
+//! a commit acknowledgement on behalf of both session and run history; the
+//! session crate re-exports these items so its existing callers keep one import
+//! path. The `run_durable` profile is a multi-hour-run requirement; where the
+//! backend cannot provide it, it is **refused** — a weaker interactive profile
 //! stays available for labeled interactive use and is never presented as
 //! crash-durable.
 

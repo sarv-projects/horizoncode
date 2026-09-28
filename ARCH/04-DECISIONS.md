@@ -1201,3 +1201,25 @@ defaults and ceilings with lower-only validation; the typed limit structs are wh
 acceptance boundaries. Revising a number requires a new decision and a schema
 version note; a benchmark that suggests different values records the revision
 rather than editing this table in place.
+
+## DEC-059 — One content hash: `blake3` for event and artifact identity
+
+**Decision (2026-09-28).** Event digests, segment digests, and artifact identity use
+`blake3`, the hashing dependency named in `ARCH/03` §5. An earlier `ARCH/07` draft
+wrote `SHA-256` for the event digest and `blobs/sha256/` for the artifact path; that
+wording is superseded by this decision rather than implemented. The digest domain
+separators and canonical encodings are versioned, so changing the algorithm or the
+encoding is a schema-version migration, never a silent change.
+
+**Rationale.** Two hash functions inside one trust boundary double the review and
+verification surface and invite mismatched checks. `ARCH/03` §5 chose `blake3` for
+the audit chain and content hashing; the audit chain, the policy fingerprint, and
+session `inputs_digest` already use it. Event and artifact identity is internal and
+format-local, so there is no external interoperability requirement that would
+justify a second algorithm.
+
+**Consequences.** `horizoncode-eventlog` hashes events with `blake3` under the
+versioned domain separator `horizoncode/eventlog/event/v1`, and `ARCH/28`'s
+`ArtifactRef` field is renamed `digest` (the artifact store is not implemented yet,
+so no stored data migrates). Any future change of algorithm or canonical form is a
+schema-version migration with the version checked before partial decode.

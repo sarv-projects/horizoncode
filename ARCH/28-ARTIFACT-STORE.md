@@ -48,7 +48,7 @@ ArtifactRef = {
   namespace_kind: SESSION | RUN,
   namespace_id,
   artifact_id,
-  sha256,
+  digest,   // blake3 (DEC-059)
   media_type,
   encoded_bytes,
   schema_version
@@ -74,7 +74,7 @@ The reserve is a physically allocated controller-only file/journal on the same
 filesystem as the run log (or an equivalent tested hard reservation). A sparse file,
 free-space query, or in-memory quota entry is not physical reservation evidence.
 
-Session events use the compact `BlobRef = {blob_id, sha256, media_type,
+Session events use the compact `BlobRef = {blob_id, digest, media_type,
 encoded_bytes, schema_version}`; the session ID is supplied by the containing log
 and resolves to `ArtifactRef(namespace_kind=SESSION, namespace_id=session_id, ...)`.
 Run records use the full scoped reference. Every owner reference binds ID, digest,

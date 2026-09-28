@@ -1,6 +1,6 @@
 [package]
-name = "horizoncode-session"
-description = "Durable, append-only JSONL session log, replay and resume."
+name = "horizoncode-eventlog"
+description = "The shared bounded segmented event-log core: canonical event envelope, digest chain, seals, committed head, and streaming replay for session and run history."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,15 +8,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-horizoncode-types.workspace = true
-horizoncode-eventlog.workspace = true
 horizoncode-config.workspace = true
+blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-horizoncode-testkit.workspace = true
 tempfile.workspace = true
 
 [lints]

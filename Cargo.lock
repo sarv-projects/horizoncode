@@ -964,6 +964,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizoncode-eventlog"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "horizoncode-config",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "horizoncode-guard"
 version = "0.1.0"
 dependencies = [
@@ -1032,6 +1044,7 @@ name = "horizoncode-session"
 version = "0.1.0"
 dependencies = [
  "horizoncode-config",
+ "horizoncode-eventlog",
  "horizoncode-testkit",
  "horizoncode-types",
  "serde",

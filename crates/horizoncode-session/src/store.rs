@@ -17,7 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use horizoncode_types::{Clock, ContentPart, Event, EventKind, SessionId, ToolStatus, TurnId};
 
-use crate::durability::{CommitSink, DurabilityProfile, std_sink};
+use horizoncode_eventlog::{CommitSink, DurabilityProfile, std_sink};
 use crate::listing::{
     SessionIntegrityState, SessionListEntry, SessionListIssue, SessionListIssueKind,
     SessionListResult,

@@ -14,15 +14,16 @@
 
 #![forbid(unsafe_code)]
 
-mod durability;
 mod error;
 mod listing;
 mod payload;
 mod session;
 mod store;
 
-pub use durability::{CommitSink, DurabilityProfile, StdCommitSink, UnsupportedSink, std_sink};
 pub use error::SessionError;
+pub use horizoncode_eventlog::{
+    CommitSink, DurabilityProfile, StdCommitSink, UnsupportedSink, std_sink,
+};
 pub use horizoncode_types::ToolStatus;
 pub use listing::{
     SessionIntegrityState, SessionListEntry, SessionListIssue, SessionListIssueKind,
