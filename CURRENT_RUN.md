@@ -356,8 +356,10 @@ suggestions and prints no answer with no provider configured.
 
 0. Decide whether to format the rest of the tree in its own change, so the documented
    `cargo fmt --all --check` baseline becomes enforceable (`AX-121` builds the gate that
-   would catch this).
-1. Commit this wave (see the commit list below) with `TODO.md` and this handoff included.
+   would catch this). Every file this handoff's passes touched is `rustfmt`-clean; the
+   workspace-wide check still reports the 67 pre-existing diffs.
+1. Nothing from these passes is uncommitted: the working tree is clean except the
+   user-owned untracked `uipics/` and `.code-intelligence/`.
 2. The **`AX-350` session migration** onto `horizoncode-eventlog`: bounded
    digest-linked segments, committed head, streaming replay, event-byte quota and the
    protected control reserve, keeping the read-only/typed-enumeration contract stable.
@@ -385,6 +387,13 @@ suggestions and prints no answer with no provider configured.
   `ARCH/14` (`AX-354`).
 - ~~Whether provider-response admission should reject a duplicate call id or repair it~~
   Resolved 2026-09-28: reject, before dispatch, with a typed reason (`AX-356`).
+- How the `DEC-058` numbers perform on real workloads: they are published ceilings,
+  deliberately conservative, and may be revised only by a new decision with a
+  schema-version note. No benchmark has run yet.
+- Whether `AX-350`'s session migration needs a format-version bump for the segmented
+  layout: the session header currently names `CURRENT_FORMAT_VERSION`, and the new
+  stream carries its own `CURRENT_SCHEMA_VERSION`; the migration must define how the
+  two relate before it lands.
 - The `session.log.*` / `run.log.*` finite defaults (`AX-348`): not yet chosen, and they
   gate AX-309 slice 1 and AX-350.
 - Whether the segment/head format (`AX-350`) needs a format version bump for the durability
