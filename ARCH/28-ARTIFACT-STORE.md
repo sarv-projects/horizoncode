@@ -177,8 +177,9 @@ expired, or cancelled.
 per-namespace encoded-byte, decoder, per-record/segment/session/run event-log,
 replay-batch, and control-reserve ceilings; current/reserved bytes by storage class;
 physical-reserve allocation/state; retention and orphan grace; filesystem backend
-and actual durability level; and locked policy limits. Numeric defaults are a pre-implementation decision and must be
-finite and published in the generated schema. A cleanup preview reports candidate
+and actual durability level; and locked policy limits. Numeric defaults are published as finite
+ceilings and shipped defaults in `DEC-058` and carried by the `horizoncode-config`
+schema; a configuration may lower them, never raise them. A cleanup preview reports candidate
 count/bytes and owner-source completeness; any incomplete scan disables deletion.
 Users may change retention or lower limits; they cannot force deletion of referenced
 artifacts/log history or raise a compiled safety ceiling. Quota exhaustion names the

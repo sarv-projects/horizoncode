@@ -1136,3 +1136,68 @@ of a universal durability guarantee. See [Rust `File::sync_data`](https://doc.ru
 contract. `ARCH/24` `F-63` records the source durability gap; `TODO.md` `AX-352`
 tracks implementation. Source-level sync calls do not prove host hardware honors
 flushes, so evidence states the tested tier and residual assumptions.
+
+## DEC-058 — Publish finite storage ceilings before the segmented logs exist
+
+**Decision (2026-09-28).** The values below are the compiled **ceilings** and the
+shipped defaults for event-log and artifact storage. A configuration, profile, or
+surface may lower a value; none may raise it, because the compiled ceiling wins
+(`ARCH/18`). Every value is finite and nonzero, so no code path can allocate or
+accept an unbounded payload. They are chosen to bound worst-case work per record,
+per file, and per session/run on a laptop-class filesystem while leaving enough
+room for a multi-hour run; the segment numbers mirror the audit store's proven
+4,096-entry / 8 MiB precedent (`DEFAULT_SEGMENT_MAX_ENTRIES`,
+`DEFAULT_SEGMENT_MAX_BYTES`).
+
+| Setting | Default = compiled ceiling | Why this number |
+|---|---|---|
+| `session.log.max_event_bytes` | 256 KiB (262,144) | A step, decision, or receipt larger than this is payload and belongs in the artifact store (`DEC-053`), not inline |
+| `session.log.max_segment_bytes` | 8 MiB (8,388,608) | Mirrors the audit segment precedent; bounds one file's sync and one segment's replay allocation |
+| `session.log.max_segment_events` | 4,096 | Mirrors the audit entry ceiling; keeps a dense control stream rotating regularly |
+| `session.log.max_session_event_bytes` | 256 MiB (268,435,456) | Roughly a million control events at a realistic average — far above any interactive or multi-hour session, small enough to copy or export from a laptop |
+| `session.log.control_reserve_bytes` | 4 MiB (4,194,304) | Physically allocated control/recovery capacity for terminal, reconciliation, and handoff records |
+| `session.log.replay_batch_events` | 256 | Bounds projection work per batch; replay never loads a whole log |
+| `run.log.max_event_bytes` | 256 KiB (262,144) | Same reasoning as the session record ceiling |
+| `run.log.max_segment_bytes` | 8 MiB (8,388,608) | Same reasoning as the session segment ceiling |
+| `run.log.max_segment_events` | 4,096 | Same reasoning as the session segment ceiling |
+| `run.log.max_run_event_bytes` | 512 MiB (536,870,912) | A run aggregates many task/attempt/evidence streams, so it gets twice the session ceiling |
+| `run.log.control_reserve_bytes` | 16 MiB (16,777,216) | A run's settlement set spans more stores and needs a larger protected reserve |
+| `run.log.replay_batch_events` | 256 | Bounds projection work per batch |
+| `session.artifacts.max_inline_event_bytes` | 64 KiB (65,536) | Keeps a maximal inline event comfortably inside one segment and one replay batch |
+| `session.artifacts.max_object_bytes` | 64 MiB (67,108,864) | Holds test logs, images, and partial model attempts; small enough that one corrupt object cannot exhaust a disk |
+| `session.artifacts.max_session_bytes` | 1 GiB (1,073,741,824) | All artifacts of one session namespace stay copyable for export |
+| `run.artifacts.max_run_bytes` | 2 GiB (2,147,483,648) | A run aggregates evidence from many attempts; twice the session namespace |
+| `session.artifacts.max_decoded_bytes` | 256 MiB (268,435,456) | Decoded pixels plus working buffers stay inside the class budget |
+| `session.artifacts.max_decoded_pixels` | 16,777,216 (4096×4096) | Bounds render/decode work before any provider upload |
+| `session.artifacts.max_expansion_ratio` | 128 | Refuses decompression bombs without rejecting ordinary formats |
+| `session.artifacts.decode_timeout_ms` | 5,000 | Bounds wall clock for one decode; a timeout is typed, never a truncated result |
+| `session.artifacts.retention_days` | 30 | GC eligibility for unreferenced objects; referenced, checkpointed, or exported evidence stays pinned regardless |
+| `session.artifacts.orphan_grace_hours` | 24 | A crash window between byte publication and owner-event commit is recovered, not collected |
+
+**Durability by platform.** The reference backend is the `run_durable` profile from
+`DEC-057`: file `sync_all` followed by parent-directory `sync_all` on Linux and
+macOS. Linux is the implementation and test target; macOS uses the same API path but
+carries a declared, not yet accepted, contract. Windows cannot open a directory
+through the standard API to synchronize it, so `run_durable` is **refused typed**
+there and a multi-hour run is refused with it: a weaker profile is never silently
+substituted (`DEC-057`, `ARCH/18`). Per-platform acceptance records are still
+required (`ACC-P1-13`); this decision publishes the numbers and the refusal rule,
+not verified hardware durability.
+
+**Rationale.** `ARCH/07` and `ARCH/28` both require finite defaults before the
+segmented logs and blob store can be implemented, and the earlier tables said
+"exact values required before implementation". Choosing them once, in the schema
+owner, prevents each store from inventing its own numbers and prevents a project
+file from raising a safety ceiling. The values are deliberately conservative: the
+cost of a limit that is too low is a refusal the operator can see and raise by
+policy; the cost of a limit that is too high or absent is an unbounded allocation
+that no later check can undo.
+
+**Consequences.** The `horizoncode-config` schema group `session.log.*`,
+`run.log.*`, `session.artifacts.*`, `run.artifacts.*` carries these values as
+defaults and ceilings with lower-only validation; the typed limit structs are what
+`AX-309` (shared segmented event log), `AX-348` (artifact store), and `AX-350`
+(session migration) consume. `ACC-P1-09`, `ACC-P1-11`, and `ACC-P1-13` define the
+acceptance boundaries. Revising a number requires a new decision and a schema
+version note; a benchmark that suggests different values records the revision
+rather than editing this table in place.

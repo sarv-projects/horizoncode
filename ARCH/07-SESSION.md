@@ -433,12 +433,12 @@ Checkpoints and portable-session export include a closed-world blob manifest. Cr
 | `session.retention_class` | session | `interactive` | Hibernation/archive thresholds |
 | `session.log.fsync` | session | flush per committed step | Durability vs throughput (`REQ-LOOP-006`) |
 | `session.log.durability_profile` | session | `run_durable` for any multi-hour run; `interactive` only where policy permits | Effective backend/profile is recorded; a multi-hour run refuses unsupported durability or disabled sync |
-| `session.log.max_event_bytes` / `max_segment_bytes` / `max_segment_events` / `max_session_event_bytes` | session | finite generated-schema defaults; exact values required before implementation | Bound each record, file, and session stream; event bytes have a separate ledger from blob bytes |
-| `session.log.control_reserve_bytes` / `replay_batch_events` | session | finite generated-schema defaults; exact values required before implementation | Preserve terminal/reconciliation capacity and bound replay allocations |
+| `session.log.max_event_bytes` / `max_segment_bytes` / `max_segment_events` / `max_session_event_bytes` | session | `DEC-058`: 256 KiB / 8 MiB / 4,096 / 256 MiB | Bound each record, file, and session stream; event bytes have a separate ledger from blob bytes |
+| `session.log.control_reserve_bytes` / `replay_batch_events` | session | `DEC-058`: 4 MiB / 256 events | Preserve terminal/reconciliation capacity and bound replay allocations |
 | `session.migrate.strict` | session | `true` | Refuse unknown/newer versions rather than best-effort |
-| `session.artifacts.max_object_bytes` / `max_session_bytes` | session | bounded product defaults (exact values published in generated schema) | Encoded payload ceilings; managed policy may lower them, never raise compiled safety ceilings |
-| `session.artifacts.max_decoded_pixels` / `max_expansion_ratio` | session | bounded product defaults (exact values published in generated schema) | Decoder resource ceiling before image/media render or model use |
-| `session.artifacts.retention` | session | follows parent session retention | GC eligibility; referenced/checkpointed/exported evidence remains pinned |
+| `session.artifacts.max_object_bytes` / `max_session_bytes` | session | `DEC-058`: 64 MiB / 1 GiB | Encoded payload ceilings; managed policy may lower them, never raise compiled safety ceilings |
+| `session.artifacts.max_decoded_pixels` / `max_expansion_ratio` | session | `DEC-058`: 16,777,216 pixels / 128:1, 5 s timeout | Decoder resource ceiling before image/media render or model use |
+| `session.artifacts.retention_days` / `orphan_grace_hours` | session | `DEC-058`: 30 days / 24 h grace | GC eligibility; referenced/checkpointed/exported evidence remains pinned |
 | `context.compaction.keepTokens` / `buffer` | context | ~8k / ~20k | Projection boundary sizing (`REQ-CTX-002`) |
 | `session.checkpoint.cadence` | session | step boundary | Checkpoint production points |
 | `orch.max_depth` / `max_parallel` | orch | bounded | Child session admission (`REQ-ORCH-005`) |

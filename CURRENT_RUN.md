@@ -28,6 +28,9 @@ persistence path, permission system, or scheduler:
 10. the shipped third-party notices bundle: generated from the pinned dependency
    graph, embedded in the binary for `--credits`, and gated so a dependency change
    cannot ship stale attribution (`AX-010`).
+11. the finite storage ceilings the segmented logs and artifact store need before
+   they can be coded: published as `DEC-058`, carried by the config schema with
+   lower-only validation, and exposed as typed limit views (`AX-348`, decision slice).
 
 **Breadth program (user directive, 2026-09-28).** After the wave above, the user asked to
 plan, check, and build the remaining proposed rows in dependency order without stopping
@@ -141,6 +144,23 @@ lose its notice. `horizoncode notices check` exposes the gate to a release scrip
 (exit `1` when stale). The dependency allowlist (`G-1`) and `Adapt`/`Vendor`
 provenance records are still open and named in the row.
 
+**Fifth pass — `AX-348` decision slice: finite storage ceilings.**
+
+`ARCH/07` and `ARCH/28` both said the numeric defaults were a pre-implementation
+decision, and `AX-309`/`AX-350` are gated on them, so this pass publishes them as
+`DEC-058`: per-record, per-segment, per-stream, control-reserve, replay-batch,
+artifact inline/object/namespace, decoded media, retention, and orphan-grace values,
+each finite and nonzero, with the segment numbers mirroring the audit store's
+4,096-entry / 8 MiB precedent. The same decision records the durability posture:
+Linux is the reference backend, macOS carries a declared contract, and Windows
+cannot sync a directory through the standard API, so `run_durable` is **refused
+typed** there rather than silently weakened. The `horizoncode-config` schema now
+carries all 22 keys with the values as defaults *and* compiled ceilings, so a
+configuration or project may lower a limit but never raise it and zero is rejected;
+typed `LogLimits`/`ArtifactLimits` views are what the storage work will consume.
+The artifact store itself (`BlobRef`, quota reservation, GC) is the next step in
+`AX-348`, not this one.
+
 **Contract-first edits (architecture, before code).**
 
 - `ARCH/07-SESSION.md`: exact `SessionListResult`/`SessionListEntry`/`SessionListIssue`
@@ -223,8 +243,10 @@ provenance records are still open and named in the row.
   (the count grows with the new suites; the totals above are per-run, not additive across
   passes). The two `F-65` genesis failures measured at baseline `b677443` are fixed under
   `AX-354`; the two `F-66` failures measured earlier in the day went green under `AX-355`.
-- `cargo test -p horizoncode-config` — 25 tests: 7 unit (JSONC edge cases, the three
-  `state_root` branches), 4 discovery, 8 settings/provenance, 6 instructions.
+- `cargo test -p horizoncode-config` — 28 tests: 7 unit (JSONC edge cases, the three
+  `state_root` branches), 4 discovery, 11 settings/provenance (including the
+  `DEC-058` defaults table, the lower-only/zero refusals, and the typed limit views),
+  6 instructions.
 - `cargo test -p horizoncode-cli` — includes the notices gate: 5 unit tests (the
   generator's lock parsing, rendering, determinism, and the four refused edits) and 3
   black-box tests (`--credits` with no configuration, `notices check`, `notices
@@ -285,11 +307,13 @@ provenance records are still open and named in the row.
    `cargo fmt --all --check` baseline becomes enforceable (`AX-121` builds the gate that
    would catch this).
 1. Commit this wave (see the commit list below) with `TODO.md` and this handoff included.
-2. The **breadth program** continues with `AX-348` (bounded content-addressed
-   artifacts plus the published finite `session.log.*`/`run.log.*` defaults that gate
-   `AX-309`/`AX-350`), then the TUI/command/settings surfaces (`AX-009`, `AX-344`,
-   `AX-343`), then skills (`AX-110`) and MCP (`AX-106`, `AX-332`). `AX-010` is done;
-   its remaining allowlist/provenance-record work is named in the row.
+2. The **breadth program** continues with the rest of `AX-348` (the bounded
+   content-addressed artifact store: `BlobRef`, quota reservation, durable
+   write-before-event ordering, typed states, GC), now that its defaults are
+   published; then the TUI/command/settings surfaces (`AX-009`, `AX-344`, `AX-343`),
+   then skills (`AX-110`) and MCP (`AX-106`, `AX-332`). `AX-010` is done; its
+   remaining allowlist/provenance-record work is named in the row, and `DEC-058`'s
+   numbers may be revised only by a new decision.
 3. `AX-309` slice 1: the **shared segmented event-log core**, carrying the published
    finite defaults from `AX-348`. Both the session and the run log need the same
    bounded-segment framing (`DEC-055`), so building it once is what keeps a second
@@ -339,6 +363,8 @@ large file, so they are not split further for the sake of a commit boundary.
 14. `docs: record the config slice, F-67, and the unified state root`
 15. `feat(cli): ship and gate the third-party notices bundle`
 16. `docs: record the notices bundle and its gate`
+17. `feat(config): carry the storage ceilings with lower-only validation`
+18. `docs: publish the finite storage ceilings before the storage code`
 
 Each commit is self-contained and builds; commit 2 carries the workspace manifest,
 so its body notes the MSRV move that commit 4's OS-backed lock depends on.

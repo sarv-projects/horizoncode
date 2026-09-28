@@ -188,11 +188,13 @@ added so an accumulating key can list every contributing layer), and hierarchica
 `Instructions from: <path>` rendering, and the fail-closed unreadable case. One
 `state_root()` resolves `$HORIZONCODE_HOME` → `~/.horizoncode` → `.` and is consumed
 by the session, audit, analytics, guard, and CLI roots, so the documented layout is
-the implemented one (`F-67`). The first schema group covers the keys this slice's
-consumers need (`instructions.extra`, `ui.accessibility.reduced_motion`,
-`ui.accessibility.screen_reader`, `ui.notifications.terminal_bell`); every other key
-group above registers in the same registry as its owner lands, so no second settings
-engine appears. **Not covered:** managed locks (`locked_by`) and capability status
+the implemented one (`F-67`). The schema now carries the instruction key, the two
+accessibility flags, the terminal-bell preference, and the storage ceilings and
+defaults published in `DEC-058` (`session.log.*`, `run.log.*`,
+`session.artifacts.*`, `run.artifacts.*`) with typed limit views and lower-only
+validation: a configuration or project may lower a limit, never raise the compiled
+ceiling, and a nonzero rule rejects zero. Every other key group above registers in
+the same registry as its owner lands, so no second settings engine appears. **Not covered:** managed locks (`locked_by`) and capability status
 (`capability_status`) arrive with managed policy; injection of the rendered
 instruction source into the assembled context is `AX-319`; permission rules remain
 validated and evaluated by `CMP-guard`.
