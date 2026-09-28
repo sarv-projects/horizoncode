@@ -99,16 +99,13 @@ pub struct StateDir {
 }
 
 impl StateDir {
-    /// Resolves the state root from `HORIZONCODE_HOME`, falling back to the user's
-    /// home directory.
+    /// Resolves the state root from `$HORIZONCODE_HOME`, falling back to
+    /// `~/.horizoncode`. One resolution for the session, audit, and analytics
+    /// roots lives in `horizoncode-config`.
     #[must_use]
     pub fn from_env() -> Self {
         Self {
-            home: std::env::var_os("HORIZONCODE_HOME")
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
-                .or_else(dirs::home_dir)
-                .unwrap_or_else(|| PathBuf::from(".")),
+            home: horizoncode_config::state_root(),
         }
     }
 

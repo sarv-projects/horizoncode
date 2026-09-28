@@ -29,6 +29,7 @@ horizoncode-analytics = { path = "crates/horizoncode-analytics", version = "0.1.
 horizoncode-runner = { path = "crates/horizoncode-runner", version = "0.1.0" }
 horizoncode-acp = { path = "crates/horizoncode-acp", version = "0.1.0" }
 horizoncode-cli = { path = "crates/horizoncode-cli", version = "0.1.0" }
+horizoncode-config = { path = "crates/horizoncode-config", version = "0.1.0" }
 # Test-only support (clock, fault injection, store snapshots, kill points). It is
 # a dev-dependency of the test suites and is never linked into the binary;
 # `std::fs::File::try_lock` (Rust 1.89) is what removes the need for a

@@ -9,10 +9,10 @@ repository.workspace = true
 
 [dependencies]
 horizoncode-types.workspace = true
+horizoncode-config.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-dirs.workspace = true
 
 [dev-dependencies]
 horizoncode-testkit.workspace = true

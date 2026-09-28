@@ -1,10 +1,13 @@
-//! Config discovery and JSONC parsing (`ARCH/12-GUARD.md`, `ARCH/18-CONFIG.md`).
+//! Guard document parsing (`ARCH/12-GUARD.md`, `ARCH/18-CONFIG.md`).
 //!
-//! Discovery walks global → project (nearest wins). A malformed layer is
-//! rejected and the caller installs a deny-all ceiling for that layer position
-//! so a typo can never widen the effective posture (fail closed).
+//! Layer discovery, the global path, and the JSONC reader are owned by
+//! `horizoncode-config` and re-exported here so the guard keeps one dependency
+//! for its public surface. This module is the guard's strict document
+//! validator: a malformed layer is rejected and the caller installs a deny-all
+//! ceiling for that layer position, so a typo can never widen the effective
+//! posture (fail closed).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::Value;
 
@@ -12,11 +15,10 @@ use crate::decision::GuardMode;
 use crate::error::GuardError;
 use crate::rule::{Effect, Rule, RuleLayer, RuleSource};
 
-/// The configuration directory name used during the project walk.
-pub const PROJECT_CONFIG_DIR: &str = ".horizoncode";
-
-/// The configuration file name.
-pub const CONFIG_FILE: &str = "config.jsonc";
+pub use horizoncode_config::jsonc::strip as strip_jsonc;
+pub use horizoncode_config::{
+    CONFIG_FILE, PROJECT_CONFIG_DIR, global_config_path, project_config_paths,
+};
 
 /// A parsed guard document.
 #[derive(Clone, Debug, Default)]
@@ -29,34 +31,6 @@ pub struct GuardDocument {
     pub approval_timeout_ms: Option<u64>,
     /// The ordered rules.
     pub rules: Vec<Rule>,
-}
-
-/// Returns the global config path: `$HORIZONCODE_HOME/config.jsonc` when set,
-/// otherwise `~/.horizoncode/config.jsonc`.
-#[must_use]
-pub fn global_config_path() -> Option<PathBuf> {
-    let base = std::env::var_os("HORIZONCODE_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(dirs::home_dir)?;
-    Some(base.join(CONFIG_FILE))
-}
-
-/// Walks from `workspace` up to the filesystem root and returns the project
-/// config paths outer-to-inner (the workspace's own file last, so nearest wins).
-#[must_use]
-pub fn project_config_paths(workspace: &Path) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    let mut walk = Some(workspace);
-    while let Some(dir) = walk {
-        let candidate = dir.join(PROJECT_CONFIG_DIR).join(CONFIG_FILE);
-        if candidate.is_file() {
-            found.push(candidate);
-        }
-        walk = dir.parent();
-    }
-    found.reverse();
-    found
 }
 
 /// Reads and parses one config file into a layer.
@@ -241,107 +215,6 @@ fn require_string(
         })
 }
 
-/// Strips `//` and `/* */` comments and trailing commas from JSONC.
-///
-/// # Errors
-/// Returns a message for an unterminated block comment or string.
-pub fn strip_jsonc(input: &str) -> Result<String, String> {
-    let bytes: Vec<char> = input.chars().collect();
-    let mut out = String::with_capacity(input.len());
-    let mut index = 0;
-    let mut in_string = false;
-    while index < bytes.len() {
-        let ch = bytes[index];
-        if in_string {
-            out.push(ch);
-            if ch == '\\' {
-                if let Some(next) = bytes.get(index + 1) {
-                    out.push(*next);
-                    index += 2;
-                    continue;
-                }
-            } else if ch == '"' {
-                in_string = false;
-            }
-            index += 1;
-            continue;
-        }
-        match ch {
-            '"' => {
-                in_string = true;
-                out.push(ch);
-                index += 1;
-            }
-            '/' if bytes.get(index + 1) == Some(&'/') => {
-                while index < bytes.len() && bytes[index] != '\n' {
-                    index += 1;
-                }
-            }
-            '/' if bytes.get(index + 1) == Some(&'*') => {
-                index += 2;
-                loop {
-                    match (bytes.get(index), bytes.get(index + 1)) {
-                        (Some('*'), Some('/')) => {
-                            index += 2;
-                            break;
-                        }
-                        (Some(_), _) => index += 1,
-                        (None, _) => return Err("unterminated block comment".to_owned()),
-                    }
-                }
-            }
-            _ => {
-                out.push(ch);
-                index += 1;
-            }
-        }
-    }
-    if in_string {
-        return Err("unterminated string".to_owned());
-    }
-    Ok(remove_trailing_commas(&out))
-}
-
-fn remove_trailing_commas(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut in_string = false;
-    let mut escaped = false;
-    let chars: Vec<char> = input.chars().collect();
-    for (index, ch) in chars.iter().enumerate() {
-        if in_string {
-            out.push(*ch);
-            if escaped {
-                // The previous character consumed an escape, so this one is data
-                // whether or not it is a quote.
-                escaped = false;
-            } else if *ch == '\\' {
-                escaped = true;
-            } else if *ch == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match ch {
-            '"' => {
-                in_string = true;
-                out.push(*ch);
-            }
-            ',' => {
-                let next = chars[index + 1..]
-                    .iter()
-                    .find(|candidate| !candidate.is_whitespace());
-                if matches!(next, Some('}') | Some(']')) {
-                    // Drop the trailing comma.
-                } else {
-                    out.push(*ch);
-                }
-            }
-            _ => out.push(*ch),
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,60 +237,6 @@ mod tests {
         assert_eq!(document.mode, Some(GuardMode::Plan));
         assert_eq!(document.unmatched, Some(Effect::Deny));
         assert_eq!(document.rules.len(), 1);
-    }
-
-    #[test]
-    fn an_escaped_quote_does_not_end_the_string() {
-        // The trailing-comma pass ran its own string scan and, unlike the comment
-        // pass, did not carry an escape: `\"` closed the string early, so a comma
-        // inside the value was then treated as a trailing comma and deleted, and
-        // the document stopped being valid JSON. The fixture values are encoded
-        // with `serde_json` so the *document* is well-formed and only the
-        // stripper can break it.
-        for value in [
-            "v\",}",
-            "a\\",
-            "say \"hi\", ok",
-            "trailing\\",
-            "\\\"",
-            "x",
-        ] {
-            let text = format!(
-                r#"{{ "resource": {}, "effect": "deny", }}"#,
-                serde_json::to_string(value).unwrap()
-            );
-            let stripped = strip_jsonc(&text).unwrap_or_else(|e| panic!("{value:?}: {e}"));
-            let parsed: serde_json::Value = serde_json::from_str(&stripped)
-                .unwrap_or_else(|e| panic!("{value:?} did not survive stripping: {e}\n{stripped}"));
-            assert_eq!(parsed["resource"], value, "{stripped}");
-            assert_eq!(parsed["effect"], "deny", "{stripped}");
-        }
-    }
-
-    #[test]
-    fn a_backslash_escape_at_the_end_of_a_string_is_handled() {
-        let value = "C:\\";
-        let text = format!(
-            r#"{{ "resource": {}, "effect": "ask", }}"#,
-            serde_json::to_string(value).unwrap()
-        );
-        let stripped = strip_jsonc(&text).unwrap();
-        let parsed: serde_json::Value =
-            serde_json::from_str(&stripped).unwrap_or_else(|e| panic!("{e}\n{stripped}"));
-        assert_eq!(parsed["resource"], value);
-    }
-
-    #[test]
-    fn a_comment_marker_inside_a_string_is_not_a_comment() {
-        let value = "https://example.invalid/a//b";
-        let text = format!(
-            r#"{{ "resource": {}, "effect": "deny" /* a real comment */ }}"#,
-            serde_json::to_string(value).unwrap()
-        );
-        let stripped = strip_jsonc(&text).unwrap();
-        let parsed: serde_json::Value =
-            serde_json::from_str(&stripped).unwrap_or_else(|e| panic!("{e}\n{stripped}"));
-        assert_eq!(parsed["resource"], value);
     }
 
     #[test]

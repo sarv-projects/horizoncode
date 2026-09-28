@@ -13,9 +13,9 @@ path = "src/main.rs"
 
 [dependencies]
 horizoncode-types.workspace = true
+horizoncode-config.workspace = true
 horizoncode-audit.workspace = true
 horizoncode-analytics.workspace = true
-dirs.workspace = true
 horizoncode-session.workspace = true
 horizoncode-provider.workspace = true
 horizoncode-tools.workspace = true

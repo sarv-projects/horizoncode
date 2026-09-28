@@ -28,16 +28,11 @@ use crate::payload::{
 use crate::session::{LoadedSession, SessionStatus, summary_from};
 use crate::{CURRENT_FORMAT_VERSION, SessionError};
 
-/// Returns the default `sessions/` root: `$HORIZONCODE_HOME/sessions` when
-/// `HORIZONCODE_HOME` is set, otherwise `~/.horizoncode/sessions`.
+/// Returns the default `sessions/` root: `<state-root>/sessions`, where the
+/// state root is `$HORIZONCODE_HOME` or `~/.horizoncode` (`ARCH/18`).
 #[must_use]
 pub fn default_sessions_root() -> PathBuf {
-    let base = std::env::var_os("HORIZONCODE_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("sessions")
+    horizoncode_config::state_root().join("sessions")
 }
 
 /// The state of a log's final write.

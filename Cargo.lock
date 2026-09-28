@@ -903,8 +903,8 @@ dependencies = [
 name = "horizoncode-analytics"
 version = "0.1.0"
 dependencies = [
- "dirs",
  "horizoncode-audit",
+ "horizoncode-config",
  "rusqlite",
  "serde",
  "serde_json",
@@ -917,7 +917,7 @@ name = "horizoncode-audit"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "dirs",
+ "horizoncode-config",
  "rand 0.8.8",
  "serde",
  "serde_json",
@@ -931,10 +931,10 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "clap",
- "dirs",
  "horizoncode-acp",
  "horizoncode-analytics",
  "horizoncode-audit",
+ "horizoncode-config",
  "horizoncode-guard",
  "horizoncode-provider",
  "horizoncode-runner",
@@ -950,6 +950,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizoncode-config"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "dirs",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "horizoncode-guard"
 version = "0.1.0"
 dependencies = [
@@ -957,6 +968,7 @@ dependencies = [
  "blake3",
  "dirs",
  "horizoncode-audit",
+ "horizoncode-config",
  "serde",
  "serde_json",
  "tempfile",
@@ -1016,7 +1028,7 @@ dependencies = [
 name = "horizoncode-session"
 version = "0.1.0"
 dependencies = [
- "dirs",
+ "horizoncode-config",
  "horizoncode-testkit",
  "horizoncode-types",
  "serde",

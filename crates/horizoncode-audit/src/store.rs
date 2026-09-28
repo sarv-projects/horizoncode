@@ -54,16 +54,11 @@ pub const SEGMENTS_DIR: &str = "segments";
 /// The `recovery/` directory that holds byte-preserving repair artifacts.
 pub const RECOVERY_DIR: &str = "recovery";
 
-/// Returns the default audit store root: `$HORIZONCODE_HOME/audit` when
-/// `HORIZONCODE_HOME` is set, otherwise `~/.horizoncode/audit`.
+/// Returns the default audit store root: `<state-root>/audit`, where the state
+/// root is `$HORIZONCODE_HOME` or `~/.horizoncode` (`ARCH/18`).
 #[must_use]
 pub fn default_audit_root() -> PathBuf {
-    let base = std::env::var_os("HORIZONCODE_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("audit")
+    horizoncode_config::state_root().join("audit")
 }
 
 /// Values that must never reach the chain.

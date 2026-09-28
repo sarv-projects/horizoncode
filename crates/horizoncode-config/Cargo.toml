@@ -1,6 +1,6 @@
 [package]
-name = "horizoncode-audit"
-description = "Tamper-evident append-only audit chain: blake3 hash chain, signed Merkle roots, anchoring, coverage census."
+name = "horizoncode-config"
+description = "Layered configuration discovery, typed merge with provenance, and hierarchical instruction discovery."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,9 +9,7 @@ repository.workspace = true
 
 [dependencies]
 blake3.workspace = true
-horizoncode-config.workspace = true
-rand.workspace = true
-serde.workspace = true
+dirs.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 

@@ -27,16 +27,11 @@ pub const ROLLUPS_FILE: &str = "rollup.sqlite3";
 /// The pricing snapshot file name.
 pub const PRICING_FILE: &str = "pricing.json";
 
-/// Returns the default analytics root: `$HORIZONCODE_HOME/analytics` when
-/// `HORIZONCODE_HOME` is set, otherwise `~/.horizoncode/analytics`.
+/// Returns the default analytics root: `<state-root>/analytics`, where the
+/// state root is `$HORIZONCODE_HOME` or `~/.horizoncode` (`ARCH/18`).
 #[must_use]
 pub fn default_analytics_root() -> PathBuf {
-    let base = std::env::var_os("HORIZONCODE_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("analytics")
+    horizoncode_config::state_root().join("analytics")
 }
 
 /// The append-only ledger plus its derived rollups.

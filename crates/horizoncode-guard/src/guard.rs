@@ -392,13 +392,9 @@ impl Guard {
     fn names_the_area_deliberately(&self, resource: &str, rules: &[Rule]) -> bool {
         rules.iter().any(|rule| {
             rule.effect == Effect::Allow
-                && rule
-                    .action_matches("fs.read")
-                    .unwrap_or(false)
+                && rule.action_matches("fs.read").unwrap_or(false)
                 && is_anchored_path_pattern(&rule.resource)
-                && rule
-                    .matches("fs.read", resource)
-                    .unwrap_or(false)
+                && rule.matches("fs.read", resource).unwrap_or(false)
         })
     }
 
@@ -445,9 +441,12 @@ impl Guard {
         action: &str,
         resource: &str,
     ) -> Result<Ticket, GuardError> {
-        self.inner
-            .tickets
-            .validate(ticket_id, canonical_action(action), resource, &self.inner.policy_hash)
+        self.inner.tickets.validate(
+            ticket_id,
+            canonical_action(action),
+            resource,
+            &self.inner.policy_hash,
+        )
     }
 
     /// Spends one use of a ticket.
@@ -810,7 +809,7 @@ impl GuardBuilder {
         let global_path = self
             .global_config
             .clone()
-            .or_else(|| self.discover_global.then(global_config_path).flatten());
+            .or_else(|| self.discover_global.then(global_config_path));
         // Posture is merged from every discovered document in the same order the
         // rules are: global first, then project outer-to-inner, so the nearest
         // document wins. A document that omits a key leaves the previous value
