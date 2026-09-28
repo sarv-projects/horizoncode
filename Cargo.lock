@@ -913,6 +913,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizoncode-artifact"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "horizoncode-config",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "horizoncode-audit"
 version = "0.1.0"
 dependencies = [

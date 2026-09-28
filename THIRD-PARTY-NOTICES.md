@@ -9,7 +9,7 @@ reproduced verbatim and are never paraphrased (`DEC-011`, `DEC-030`).
 
 ## Provenance
 
-- Lockfile `Cargo.lock` digest (`blake3`): `e314a92810def6259acaca9f48af953d413bea18da8d4c56f654e91725134182`
+- Lockfile `Cargo.lock` digest (`blake3`): `2b33849db8dabb511c32e1e4a915ab9009a67be2100157036f07981336420d31`
 - Packages in the lock graph: 287 (278 resolved on the generating platform, 9 not present locally)
 
 ## Pinned dependency set
