@@ -19,6 +19,26 @@ persistence path, permission system, or scheduler:
 6. the permission seam: a read-only call is not denied by its own re-assertion, and one call records exactly one policy decision (`AX-355`, closing `F-66`).
 7. provider-response admission owns tool-call id uniqueness, so a malformed batch is refused
    instead of surfacing as a per-call denial (`AX-356`).
+8. the pinned audit genesis constants are reconciled with the labels they claim, with the
+   pre-rename derivation recorded and refused (`AX-354`, closing `F-65`).
+
+**Breadth program (user directive, 2026-09-28).** After the wave above, the user asked to
+plan, check, and build the remaining proposed rows in dependency order without stopping
+between them. The order is: `AX-008` (layered config + `AGENTS.md` discovery — the
+prerequisite for nearly every other row) → `AX-010` (notices/provenance bundle) →
+`AX-348` (bounded content-addressed artifacts, and publishing the finite
+`session.log.*`/`run.log.*` defaults) → `AX-009`/`AX-344`/`AX-343` (TUI shell, typed
+slash commands and `@` references, theme/accessibility settings) → `AX-110` (skill
+discovery) → `AX-106`/`AX-332` (MCP client + schema filtering) →
+`AX-112`/`AX-340`/`AX-341`/`AX-342`/`AX-304` (ACP client, agent directory, profiles,
+per-agent model/quota visibility, peer pools) → `AX-320`/`AX-201`/`AX-202`/`AX-319`
+(revision-bound repo index, tree-sitter map, LSP, context projection) → `AX-207`
+(checkpoints/rewind, needs `AX-348`) → the governance and evidence rows
+(`AX-119`, `AX-120`, `AX-121`, `AX-123`, `AX-124`, `AX-126`, `AX-307`, `AX-318`,
+`AX-321`, `AX-329`, `AX-336`). Reconnaissance for the plan confirmed that none of these
+subsystems exist today: no TUI/LSP/tree-sitter/WASM/MCP dependency, no artifact store,
+no settings module, no notices bundle. The breadth vocabulary exists only as guard
+policy words (`mcp.call`, `skill.install`).
 
 ## Where the work stopped
 
@@ -64,6 +84,20 @@ anything is dispatched; the turn ends failed with a reason naming the id, record
 admission helper and an end-to-end test that drives a real duplicate-id response and asserts both
 the typed refusal and that only one tool result exists. **Not covered:** an id reused across
 turns of one session is still admitted; that history scan belongs with the run stream (`AX-309`).
+
+**Second pass, continued — `AX-354` (`F-65`), the last red test.**
+
+The bounded preimage spike answered the finding's question with exact matches: the pinned
+constants are `blake3("agentx/audit/genesis/v1")` and `blake3("agentx/audit/roots/genesis/v1")`.
+Neither side was a random typo — the constants were correctly derived from the *pre-rename*
+labels, and commit `58569f4` renamed the labels without re-deriving them. The label is
+authoritative: it is the format's documented identity and what a verifier recomputes. Both
+constants are now `blake3(<current label>)`, the original assertions stay, and a new test in
+each module pins the pre-rename value and refuses it
+(`the_pre_rename_genesis_is_not_accepted_as_genesis`). The migration consequence is recorded
+in `ARCH/14` §Genesis derivation: the pre-rename derivation was never shipped, and a store
+that starts from it is refused at sequence 0 rather than accepted under a compatibility rule.
+With this, the workspace has **no failing test**.
 
 **Contract-first edits (architecture, before code).**
 
@@ -143,10 +177,11 @@ turns of one session is still admitted; that history scan belongs with the run s
   `cargo fmt --all --check` is a pre-existing failure here and must not be reported as
   a pass. Formatting the rest of the tree is its own cleanup task.
 - `cargo clippy --workspace --all-targets -- -D warnings` — pass.
-- `cargo test --workspace --no-fail-fast` — 330 passing, **2 failing**, both failing
-  identically at baseline `b677443`:
-  - `horizoncode-audit` `entry::tests::genesis_matches_its_label` and `anchor::tests::genesis_root_matches_its_label` (**F-65**, open).
-  - The two `F-66` failures measured earlier in the day are now green: `e2e_acp::acp_initializes_creates_a_session_and_streams_updates` and `e2e_tools::headless_write_edit_and_sandboxed_bash`.
+- `cargo test --workspace --no-fail-fast` — **332 passing, 0 failing**. The two `F-65`
+  genesis failures measured at baseline `b677443` are fixed under `AX-354`; the two `F-66`
+  failures measured earlier in the day went green under `AX-355`
+  (`e2e_acp::acp_initializes_creates_a_session_and_streams_updates` and
+  `e2e_tools::headless_write_edit_and_sandboxed_bash`).
 - Baseline comparison was performed in a clean worktree at `b677443`; no test that passed
   there fails here.
 - One unreproduced flake was observed once and not in 11 subsequent runs:
@@ -203,28 +238,29 @@ turns of one session is still admitted; that history scan belongs with the run s
    `cargo fmt --all --check` baseline becomes enforceable (`AX-121` builds the gate that
    would catch this).
 1. Commit this wave (see the commit list below) with `TODO.md` and this handoff included.
-2. `AX-354` (F-65): the **only** failing test left. Run the bounded preimage spike
-   (blake3 over candidate label strings for both genesis names) to learn whether the label
-   text or the pinned constant was the typo, then re-derive per D1 and record the
-   pre-release migration consequence.
-3. `AX-309` slice 1: the **shared segmented event-log core**. Both the session and the run
-   log need the same bounded-segment framing (`DEC-055`), so building it once is what keeps
-   a second persistence engine from appearing, and it is `AX-350`'s prerequisite too.
+2. The **breadth program** in the order given in §Active goal, beginning with `AX-008`
+   (layered config + `AGENTS.md` discovery): discover global → project → nearest layers,
+   typed merge with per-key provenance, fail-safe parse behavior, and the instruction
+   source records the context plane consumes.
+3. `AX-309` slice 1: the **shared segmented event-log core**, which also carries the
+   published finite `session.log.*`/`run.log.*` defaults (`AX-348`). Both the session and
+   the run log need the same bounded-segment framing (`DEC-055`), so building it once is
+   what keeps a second persistence engine from appearing, and it is `AX-350`'s prerequisite.
 4. `AX-350` session half: bounded digest-linked segments, committed head, streaming replay,
-   event-byte quota and the protected control reserve — now unblocked by `AX-352` and the
-   stable read-only contract. The run-log half still waits for `AX-309`/`AX-312`.
+   event-byte quota and the protected control reserve. The run-log half waits for
+   `AX-309`/`AX-312`.
 5. `AX-311`: the effect journal, which unblocks `AX-351`'s recovery half and gives
    `ACC-P1-06`/`ACC-P1-12` their recovery evidence.
-6. Then `AX-309` and the controller chain (`AX-301`, `AX-310`, `AX-312`, `AX-313`,
+6. Then the rest of the controller chain (`AX-301`, `AX-310`, `AX-312`, `AX-313`,
    `AX-317`, `AX-337`, `AX-347`) before any multi-hour claim.
 
 ## Unresolved questions
 
-- Which side of F-65 is authoritative: the label or the pinned constant (and what a
-  migration of existing chains costs). The preimage spike is step 2 above.
-- Whether provider-response admission should reject a duplicate call id or repair it with
-  provenance (`AX-356`); the gate now refuses the collision as a replay, which is correct
-  but lands the diagnosis in the wrong place.
+- ~~Which side of F-65 is authoritative~~ Resolved 2026-09-28: the label is authoritative,
+  the pre-rename derivation is refused, and the migration consequence is recorded in
+  `ARCH/14` (`AX-354`).
+- ~~Whether provider-response admission should reject a duplicate call id or repair it~~
+  Resolved 2026-09-28: reject, before dispatch, with a typed reason (`AX-356`).
 - The `session.log.*` / `run.log.*` finite defaults (`AX-348`): not yet chosen, and they
   gate AX-309 slice 1 and AX-350.
 - Whether the segment/head format (`AX-350`) needs a format version bump for the durability
@@ -245,6 +281,8 @@ large file, so they are not split further for the sake of a commit boundary.
 8. `docs: close F-66 and record the admission gap it exposed`
 9. `docs(review): mark the findings wave 1 actually addressed, and say what remains`
 10. `fix(loop): refuse a provider batch that reuses a tool-call id`
+11. `fix(audit): re-derive the genesis constants from the labels they claim`
+12. `docs: close F-65 with the spike evidence and the migration note`
 
 Each commit is self-contained and builds; commit 2 carries the workspace manifest,
 so its body notes the MSRV move that commit 4's OS-backed lock depends on.

@@ -106,6 +106,18 @@ AuditAccessReceipt = {
 - Entries carry **refs, digests, and bounded metadata**, never documents, file
   bodies, prompt text, or completion text.
 
+**Genesis derivation is format identity.** The `prev_hash` of sequence 0 and the
+`prev_root` of the first segment root are `blake3` digests of fixed labels —
+`horizoncode/audit/genesis/v1` and `horizoncode/audit/roots/genesis/v1`. The label
+text and the pinned constant are asserted equal by test
+(`entry::tests::genesis_matches_its_label`,
+`anchor::tests::genesis_root_matches_its_label`), so neither can drift silently.
+The pre-rename `agentx/…` derivation (`4b4889db…` / `ead29c1a…`) was never shipped;
+a store whose first entry carries it is a pre-release artifact, and verification
+refuses it at sequence 0 rather than accepting it under a compatibility rule
+(`AX-354`, spike pinned by `the_pre_rename_genesis_is_not_accepted_as_genesis` in
+both modules).
+
 ## What is recorded
 
 | Class | Examples |
