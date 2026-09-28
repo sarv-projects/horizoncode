@@ -37,6 +37,8 @@ persistence path, permission system, or scheduler:
 13. the typed slash-command registry and composer-reference parser: strict parse with
    suggestions, registry-generated help/search/completion, no fall-through to model
    text, and literal preservation for non-references (`AX-344`).
+14. owner/mode/no-follow state-path hygiene applied through one shared primitive
+   across the stores and the guard's policy config (`AX-126`).
 
 **Breadth program (user directive, 2026-09-28).** After the wave above, the user asked to
 plan, check, and build the remaining proposed rows in dependency order without stopping
@@ -203,6 +205,20 @@ and supports quoted paths; parsing is never resolution and grants no authority.
 Black-box tests prove the safety property: an unknown command exits `4` with
 suggestions and prints no answer with no provider configured.
 
+**Eighth pass — `AX-126`: state-path hygiene.**
+
+One implementation (`horizoncode-config::state_fs`) now answers *is this path a
+symlink, and is this file owner-only*: the stores and discovery walks refuse a
+final-component symlink instead of following it, set `0600`/`0700` on what they
+create, and the event log additionally refuses a lock or head whose mode grants
+group/other access. It is applied to config layers, instruction files (a
+repo-planted `AGENTS.md` link can no longer pull a host file into context — a
+real exfiltration path), the session store, the analytics ledger, the event log,
+the guard's policy config, and the audit store (which now consumes the shared
+primitive instead of keeping its own copy). The residual is stated, not hidden:
+Unix modes only, final component only, check/open TOCTOU, and no containment
+claim — confinement remains `ARCH/13`'s job.
+
 **Contract-first edits (architecture, before code).**
 
 - `ARCH/07-SESSION.md`: exact `SessionListResult`/`SessionListEntry`/`SessionListIssue`
@@ -281,7 +297,7 @@ suggestions and prints no answer with no provider configured.
   `cargo fmt --all --check` is a pre-existing failure here and must not be reported as
   a pass. Formatting the rest of the tree is its own cleanup task.
 - `cargo clippy --workspace --all-targets -- -D warnings` — pass.
-- `cargo test --workspace --no-fail-fast` — **479 passing, 0 failing** at this revision
+- `cargo test --workspace --no-fail-fast` — **489 passing, 0 failing** at this revision
   (the count grows with the new suites; the totals above are per-run, not additive across
   passes). The two `F-65` genesis failures measured at baseline `b677443` are fixed under
   `AX-354`; the two `F-66` failures measured earlier in the day went green under `AX-355`.
@@ -427,6 +443,8 @@ large file, so they are not split further for the sake of a commit boundary.
 21. `docs: record the shared segmented event-log core`
 22. `feat(commands): add the typed slash-command registry and reference parser`
 23. `docs: record the command registry and the reference parser`
+24. `feat(state): refuse symlinked state paths and keep owner-only modes`
+25. `docs: record the state-path hygiene slice and its residual`
 
 Each commit is self-contained and builds; commit 2 carries the workspace manifest,
 so its body notes the MSRV move that commit 4's OS-backed lock depends on.

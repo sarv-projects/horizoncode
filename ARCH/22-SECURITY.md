@@ -450,6 +450,22 @@ not a second definition.
 | Redaction | `redaction.sensitive_names[]` (extend-only) | removing a built-in pattern |
 | Analytics | `analytics.otel`, `analytics.remote_optin` | enabling either |
 
+**Source status (2026-09-28, `AX-126`).** The state-path hygiene primitives are
+implemented once in `horizoncode-config::state_fs` and consumed across the stores:
+a final-component symlink is classified and refused (never followed), a path the
+store creates is set owner-only (`0600` file / `0700` directory), a newly created
+file is exclusive, and the event log refuses a lock or committed head whose mode
+grants group/other access. It is applied to configuration layers, instruction
+files (a repository-planted `AGENTS.md` link cannot pull a host file into the
+model's context), the session store, the analytics ledger, the event log, the
+guard's policy config, and the audit store. **Residual:** the mode checks are
+Unix mode checks — Windows ACL and junction refusal is not implemented and the
+primitive reports the mode as unobservable there; only the final path component
+is classified, so an intermediate-directory symlink is not detected; a
+check/open TOCTOU window remains, and handle-relative no-follow opens are the
+follow-up (`F-02`). No claim of OS containment is made from these checks; they
+are defect reductions, not a sandbox (`ARCH/13` owns confinement).
+
 ## Residual-risk register
 
 Recorded, owned, and reviewed. "Accepted" here means **disclosed and bounded**, not
