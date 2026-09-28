@@ -67,7 +67,8 @@ fn build_runner(harness: &Harness, server: &MockServer, max_steps: usize) -> Run
     // The tool plane scopes its own filesystem operations through the resolved
     // plan and fails closed without one, so the harness carries the plan a
     // workspace profile resolves to.
-    let profile = horizoncode_sandbox::ConfinementProfile::workspace_write(harness.workspace.path());
+    let profile =
+        horizoncode_sandbox::ConfinementProfile::workspace_write(harness.workspace.path());
     let resolved = horizoncode_sandbox::ResolvedProfile {
         backend: "test".to_owned(),
         profile: profile.profile,
@@ -97,6 +98,48 @@ fn build_runner(harness: &Harness, server: &MockServer, max_steps: usize) -> Run
         gate,
         config,
     )
+}
+
+/// `AX-356`: a provider that reuses a correlation id inside one turn is refused
+/// at admission, so the turn fails with a typed reason instead of the loop
+/// correlating a second result to a call that already spent its authorization.
+#[tokio::test]
+async fn a_reused_tool_call_id_fails_the_turn_at_admission() {
+    let harness = harness();
+    let server = MockServer::start(vec![
+        MockTurn::tool_call_with_id("call_dup", "list", json!({})),
+        MockTurn::tool_call_with_id("call_dup", "list", json!({})),
+        MockTurn::text("should never be reached"),
+    ])
+    .await;
+    let runner = build_runner(&harness, &server, 5);
+    let mut observer = RecordingObserver::new();
+
+    let outcome = runner
+        .run_turn(
+            &harness.session_id,
+            "List the workspace twice under one id.",
+            CancelToken::new(),
+            &mut observer,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.status, TurnEndStatus::Failed);
+    assert!(
+        outcome.reason.contains("duplicate tool-call id `call_dup`"),
+        "the refusal must name the id: {}",
+        outcome.reason
+    );
+    // The first call still ran and recorded a result; the refused response was
+    // never dispatched, so no second result exists under that id.
+    let loaded = harness.store.load(&harness.session_id).unwrap();
+    let results = loaded
+        .events
+        .iter()
+        .filter(|event| event.kind == EventKind::ToolResult)
+        .count();
+    assert_eq!(results, 1, "only the admitted call may produce a result");
 }
 
 #[tokio::test]

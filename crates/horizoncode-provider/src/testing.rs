@@ -27,6 +27,21 @@ pub enum MockTurn {
         /// The tool arguments.
         arguments: Value,
     },
+    /// Stream a tool call under a **caller-chosen** id.
+    ///
+    /// Real providers mint a unique id per response. This variant exists so a test
+    /// can model one that does not, which admission must refuse rather than
+    /// mis-correlate (`AX-356`).
+    ToolCallWithId {
+        /// Assistant preamble text.
+        preamble: String,
+        /// The tool name.
+        name: String,
+        /// The tool arguments.
+        arguments: Value,
+        /// The correlation id to emit, verbatim.
+        id: String,
+    },
     /// Fail the request with a status and body.
     Error {
         /// The HTTP status.
@@ -52,6 +67,21 @@ impl MockTurn {
             preamble: String::new(),
             name: name.into(),
             arguments,
+        }
+    }
+
+    /// Builds a tool-call turn that reuses a specific correlation id.
+    #[must_use]
+    pub fn tool_call_with_id(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: Value,
+    ) -> Self {
+        Self::ToolCallWithId {
+            preamble: String::new(),
+            name: name.into(),
+            arguments,
+            id: id.into(),
         }
     }
 }
@@ -204,6 +234,12 @@ async fn handle_connection(
             &arguments,
             response_number,
         )),
+        Some(MockTurn::ToolCallWithId {
+            preamble,
+            name,
+            arguments,
+            id,
+        }) => sse_response(tool_call_chunks_with_id(&preamble, &name, &arguments, &id)),
         Some(MockTurn::Error {
             status,
             body,
@@ -329,6 +365,16 @@ fn tool_call_chunks(
     arguments: &Value,
     response_number: usize,
 ) -> Vec<Value> {
+    tool_call_chunks_with_id(
+        preamble,
+        name,
+        arguments,
+        &format!("call_mock_{response_number}"),
+    )
+}
+
+/// The same stream, under a caller-chosen correlation id.
+fn tool_call_chunks_with_id(preamble: &str, name: &str, arguments: &Value, id: &str) -> Vec<Value> {
     let mut chunks = vec![chunk(json!({"role": "assistant", "content": ""}), None)];
     if !preamble.is_empty() {
         chunks.push(chunk(json!({"content": preamble}), None));
@@ -336,7 +382,7 @@ fn tool_call_chunks(
     chunks.push(chunk(
         json!({"tool_calls": [{
             "index": 0,
-            "id": format!("call_mock_{response_number}"),
+            "id": id,
             "type": "function",
             "function": {"name": name, "arguments": ""}
         }]}),

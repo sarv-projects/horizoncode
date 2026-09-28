@@ -217,6 +217,9 @@ pub enum FailureClass {
     Timeout,
     /// The tool itself failed.
     ToolError,
+    /// The provider's response could not be admitted: it is well-formed HTTP but
+    /// not a usable step (for example two tool calls sharing one correlation id).
+    Protocol,
     /// The turn was cancelled.
     Cancelled,
 }
@@ -230,6 +233,7 @@ impl FailureClass {
             Self::RateLimit => "rate_limit",
             Self::Timeout => "timeout",
             Self::ToolError => "tool_error",
+            Self::Protocol => "protocol",
             Self::Cancelled => "cancelled",
         }
     }

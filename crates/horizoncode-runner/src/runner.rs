@@ -1,8 +1,9 @@
 //! The turn engine.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
+use futures::StreamExt;
 use horizoncode_analytics::FailureClass;
 use horizoncode_provider::Provider;
 use horizoncode_session::{
@@ -17,7 +18,6 @@ use horizoncode_types::{
     CancelToken, ContentPart, Event, EventKind, Message, ModelEvent, ModelRequest, SessionId,
     ToolCall, ToolChoice, ToolStatus, TurnId, Usage,
 };
-use futures::StreamExt;
 use serde_json::Value;
 
 use crate::WRAP_UP_INSTRUCTION;
@@ -149,6 +149,10 @@ impl Runner {
         let mut total_usage = Usage::default();
         let mut last_text: Option<String> = None;
         let mut step = 1usize;
+        // Every tool-call id admitted in this turn. A provider that reuses one is
+        // refused at admission, so the conversation never carries two calls or two
+        // results under one correlation id (`AX-356`).
+        let mut used_call_ids: HashSet<String> = HashSet::new();
 
         while step <= self.config.max_steps {
             if cancel.is_cancelled() {
@@ -315,6 +319,41 @@ impl Runner {
             total_usage.add_assign(accumulator.usage);
             let step_usage = accumulator.usage;
             let (text, calls) = accumulator.settle_calls();
+            // A tool result is correlated to its call by the call id, so two calls
+            // that share one id in the same turn cannot be told apart — and a
+            // reused id is indistinguishable from a replay of the call that
+            // already spent its authorization. Refuse the response rather than
+            // invent a correlation the provider never issued (`AX-356`).
+            if let Err(reason) =
+                admit_call_ids(&mut used_call_ids, calls.iter().map(|(call, _)| call))
+            {
+                self.record_attempt(session_id, &turn_id, step, &reason)?;
+                self.config.recorder.retry(
+                    session_id,
+                    &turn_id,
+                    step as u64,
+                    1,
+                    FailureClass::Protocol,
+                )?;
+                self.close_step(
+                    session_id,
+                    &turn_id,
+                    step,
+                    step_usage,
+                    !tools_enabled,
+                    observer,
+                )?;
+                return self.finish(
+                    session_id,
+                    turn_id,
+                    TurnEndStatus::Failed,
+                    reason,
+                    last_text.or(Some(text).filter(|text| !text.is_empty())),
+                    step,
+                    total_usage,
+                    observer,
+                );
+            }
             if !text.is_empty() {
                 last_text = Some(text.clone());
             }
@@ -810,6 +849,36 @@ fn usage_observed(usage: horizoncode_types::Usage) -> bool {
 
 /// Maps a provider error onto the analytics failure taxonomy. Only the class is
 /// recorded, never the message.
+/// Admits the tool-call ids of one provider response, refusing a duplicate.
+///
+/// A tool-call id is a **correlation token**, not a globally unique identity: the
+/// tool result is matched to its call by that id, and the conversation sent to the
+/// provider carries both. Two calls sharing one id inside a turn therefore make
+/// the exchange ambiguous — either result could belong to either call — and the
+/// second call is also indistinguishable from a replay of the first, whose
+/// single-use authorization is already spent (`ARCH/12` §Tickets).
+///
+/// # Errors
+/// Returns the typed reason naming the offending id. A refusal ends the turn:
+/// repairing the id would mint a value the provider never issued and silently
+/// re-point the correlation, which is exactly the class of quiet repair the
+/// architecture forbids.
+fn admit_call_ids<'a>(
+    prior: &mut HashSet<String>,
+    calls: impl Iterator<Item = &'a ToolCall>,
+) -> Result<(), String> {
+    for call in calls {
+        if !prior.insert(call.id.to_string()) {
+            return Err(format!(
+                "provider returned duplicate tool-call id `{}` in one turn; refusing the response \
+                 rather than correlating two results to one call",
+                call.id
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn failure_class_of(error: &horizoncode_types::ProviderError) -> FailureClass {
     use horizoncode_types::ProviderErrorKind;
     match error.kind {
@@ -895,6 +964,41 @@ impl StepAccumulator {
 mod tests {
     use super::*;
     use crate::observer::NullObserver;
+
+    fn call(id: &str) -> ToolCall {
+        ToolCall::new(id, "read", serde_json::json!({"path": "a.txt"}))
+    }
+
+    /// `AX-356`: a response whose calls share one correlation id is refused,
+    /// naming the id, rather than admitted into an ambiguous conversation.
+    #[test]
+    fn a_response_that_reuses_a_tool_call_id_is_refused() {
+        let mut used = HashSet::new();
+        let calls = [call("call_1"), call("call_2")];
+        assert!(admit_call_ids(&mut used, calls.iter()).is_ok());
+
+        // The same id in a later response of the same turn is a reuse too.
+        let error = admit_call_ids(&mut used, [call("call_1")].iter())
+            .expect_err("a reused id must be refused");
+        assert!(error.contains("duplicate tool-call id `call_1`"), "{error}");
+        assert!(error.contains("refusing the response"), "{error}");
+
+        // A duplicate inside one response is caught before anything is admitted.
+        let mut fresh = HashSet::new();
+        let error = admit_call_ids(&mut fresh, [call("call_9"), call("call_9")].iter())
+            .expect_err("a duplicate within one response must be refused");
+        assert!(error.contains("call_9"), "{error}");
+    }
+
+    /// The refusal must not fire for ordinary unique ids, or every run breaks.
+    #[test]
+    fn unique_ids_are_admitted_and_remembered() {
+        let mut used = HashSet::new();
+        assert!(admit_call_ids(&mut used, [call("a"), call("b")].iter()).is_ok());
+        assert_eq!(used.len(), 2);
+        assert!(admit_call_ids(&mut used, [call("c")].iter()).is_ok());
+        assert_eq!(used.len(), 3);
+    }
 
     #[test]
     fn tool_call_fragments_accumulate_in_index_order() {
