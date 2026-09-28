@@ -263,3 +263,111 @@ fn the_effective_digest_is_stable_and_value_sensitive() {
         .clone();
     assert_ne!(first, changed);
 }
+
+#[test]
+fn the_storage_defaults_are_published_and_finite() {
+    // Every number here is pinned by DEC-058. Changing one requires a new
+    // decision and a schema-version note, not an edit to this test.
+    let dir = tempfile::tempdir().unwrap();
+    let config = load(&discover_with(dir.path(), None));
+    let expected: &[(&str, u64)] = &[
+        ("session.log.max_event_bytes", 262_144),
+        ("session.log.max_segment_bytes", 8_388_608),
+        ("session.log.max_segment_events", 4_096),
+        ("session.log.max_session_event_bytes", 268_435_456),
+        ("session.log.control_reserve_bytes", 4_194_304),
+        ("session.log.replay_batch_events", 256),
+        ("run.log.max_event_bytes", 262_144),
+        ("run.log.max_segment_bytes", 8_388_608),
+        ("run.log.max_segment_events", 4_096),
+        ("run.log.max_run_event_bytes", 536_870_912),
+        ("run.log.control_reserve_bytes", 16_777_216),
+        ("run.log.replay_batch_events", 256),
+        ("session.artifacts.max_inline_event_bytes", 65_536),
+        ("session.artifacts.max_object_bytes", 67_108_864),
+        ("session.artifacts.max_session_bytes", 1_073_741_824),
+        ("run.artifacts.max_run_bytes", 2_147_483_648),
+        ("session.artifacts.max_decoded_bytes", 268_435_456),
+        ("session.artifacts.max_decoded_pixels", 16_777_216),
+        ("session.artifacts.max_expansion_ratio", 128),
+        ("session.artifacts.decode_timeout_ms", 5_000),
+        ("session.artifacts.retention_days", 30),
+        ("session.artifacts.orphan_grace_hours", 24),
+    ];
+    for (key, value) in expected {
+        let view = config.get(key).unwrap_or_else(|| panic!("{key}"));
+        assert_eq!(view.effective_value, json!(value), "{key}");
+        assert!(*value > 0, "{key} must be nonzero");
+        assert_eq!(
+            view.apply_boundary,
+            ApplyBoundary::NextTurn,
+            "{key} applies to new capacity, not retroactively"
+        );
+    }
+}
+
+#[test]
+fn a_storage_limit_can_be_lowered_but_not_raised_or_zeroed() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("project");
+    write(
+        &project.join(".horizoncode/config.jsonc"),
+        r#"{
+            "session": {
+                "log": { "max_event_bytes": 65536 },
+                "artifacts": { "max_object_bytes": 0 }
+            },
+            "run": { "log": { "max_event_bytes": 536870912 } }
+        }"#,
+    );
+
+    let config = load(&discover_with(&project, None));
+    let lowered = config.get("session.log.max_event_bytes").unwrap();
+    assert_eq!(lowered.effective_value, json!(65_536));
+    assert_eq!(lowered.source_scope, SettingScope::Project);
+    assert_eq!(lowered.validation_error, None);
+
+    let zeroed = config.get("session.artifacts.max_object_bytes").unwrap();
+    assert_eq!(
+        zeroed.effective_value,
+        json!(67_108_864),
+        "a rejected value leaves the compiled default effective"
+    );
+    assert_eq!(zeroed.requested_value, Some(json!(0)));
+    assert_eq!(zeroed.validation_error.as_deref(), Some("must be nonzero"));
+
+    let raised = config.get("run.log.max_event_bytes").unwrap();
+    assert_eq!(raised.effective_value, json!(262_144));
+    assert!(
+        raised
+            .validation_error
+            .as_deref()
+            .is_some_and(|error| error.contains("compiled ceiling of 262144")),
+        "{:?}",
+        raised.validation_error
+    );
+}
+
+#[test]
+fn the_typed_limit_structs_reflect_the_effective_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("project");
+    write(
+        &project.join(".horizoncode/config.jsonc"),
+        r#"{ "session": { "log": { "max_event_bytes": 65536 } } }"#,
+    );
+    let config = load(&discover_with(&project, None));
+
+    let session = config.session_log_limits();
+    assert_eq!(session.max_event_bytes, 65_536, "lowered value wins");
+    assert_eq!(session.max_segment_bytes, 8_388_608);
+    assert_eq!(session.replay_batch_events, 256);
+    let run = config.run_log_limits();
+    assert_eq!(run.max_event_bytes, 262_144);
+    assert_eq!(run.max_stream_event_bytes, 536_870_912);
+    let artifacts = config.session_artifact_limits();
+    assert_eq!(artifacts.max_object_bytes, 67_108_864);
+    assert_eq!(artifacts.max_expansion_ratio, 128);
+    assert_eq!(artifacts.retention_days, 30);
+    assert_eq!(config.run_artifact_limits().namespace_bytes, 2_147_483_648);
+}

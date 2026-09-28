@@ -46,5 +46,6 @@ pub use instructions::{
     discover_instructions, discover_instructions_with, read_instruction, render_instructions,
 };
 pub use settings::{
-    ApplyBoundary, ConfigDiagnostic, EffectiveConfig, SettingScope, SettingView, load, schema_keys,
+    ApplyBoundary, ArtifactLimits, ConfigDiagnostic, EffectiveConfig, LogLimits, SettingScope,
+    SettingView, load, schema_keys,
 };
