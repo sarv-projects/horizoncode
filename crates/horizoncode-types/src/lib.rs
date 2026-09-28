@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 pub mod cancel;
+pub mod clock;
 pub mod content;
 pub mod error;
 pub mod event;
@@ -19,6 +20,7 @@ pub mod model;
 pub mod tools;
 
 pub use cancel::CancelToken;
+pub use clock::{Clock, SystemClock, system_clock};
 pub use content::ContentPart;
 pub use error::{ProviderError, ProviderErrorKind};
 pub use event::{Event, EventKind, SurfaceOp};

@@ -1017,11 +1017,21 @@ name = "horizoncode-session"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "horizoncode-testkit",
  "horizoncode-types",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "horizoncode-testkit"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "horizoncode-types",
+ "tempfile",
 ]
 
 [[package]]
