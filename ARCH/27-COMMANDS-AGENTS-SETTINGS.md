@@ -199,9 +199,21 @@ normal guard/confirmation path. Read commands do not acquire write locks.
 | `/quit` | Close client; detached supervised run continues. Offer cancellation separately. | Client lifecycle only |
 
 The registry is versioned. A command is unavailable with a precise reason if its
-owner/capability is absent; it must not become a plausible no-op. At the source
-baseline in `CURRENT_RUN.md`, no interactive slash-command parser or local attach API
-exists; the table is a proposed product contract, not a claim of implementation.
+owner/capability is absent; it must not become a plausible no-op.
+
+**Source status (2026-09-28, `AX-344`).** `horizoncode-commands` implements the typed
+registry and the strict parse: only commands whose owning service exists are
+registered (`/help`, `/commands`, `/usage`, `/insights`, each naming its owner and
+effect class), an unknown name is a typed error with nearest-name suggestions, a
+malformed argument names the grammar, an unavailable owner and an unsupported
+surface are typed refusals, and help, search, and completion are generated from the
+same registry. Nothing falls through to a model prompt. The composer-reference
+parser recognizes the six namespaces, keeps `@name`/email/unknown-delimiter text
+literal, diagnoses an unknown namespace or malformed mention without blocking, and
+supports quoted paths; parsing is not resolution and grants no authority. The rest
+of the table above is still a proposed product contract: these commands register as
+their owners land, mention resolution/attachment is `AX-319`/`AX-340` context and
+registry work, and no local attach API exists.
 `analytics stats|export` and `audit verify|replay|census` are CLI subcommands, not
 aliases in the interactive registry unless explicitly registered later. The CLI attach
 equivalents are `horizoncode run start <run-id> --spec-digest <digest>`,

@@ -34,6 +34,9 @@ persistence path, permission system, or scheduler:
 12. the shared segmented event-log core both session and run history need: canonical
    envelope, bounded segments with seals, committed head, streaming replay, version
    refusal, and preserved uncommitted tails (`AX-358`, the `AX-309` slice 1).
+13. the typed slash-command registry and composer-reference parser: strict parse with
+   suggestions, registry-generated help/search/completion, no fall-through to model
+   text, and literal preservation for non-references (`AX-344`).
 
 **Breadth program (user directive, 2026-09-28).** After the wave above, the user asked to
 plan, check, and build the remaining proposed rows in dependency order without stopping
@@ -183,6 +186,23 @@ uses its single-file layout until the `AX-350` migration; run payloads and
 projections are `AX-309`; tail recovery is `AX-311`. The notices gate did its job
 on the dependency change: the regenerated bundle is part of this commit.
 
+**Seventh pass — `AX-344`: the typed command registry and reference parser.**
+
+`horizoncode-commands` now owns the registry both the headless surface and the
+future TUI consume. Only commands whose owner exists are registered (`/help`,
+`/commands`, `/usage`, `/insights`, each naming its owner and effect class);
+unknown names return typed errors with nearest-name suggestions, malformed
+arguments name the grammar, unavailable owners and unsupported surfaces are
+typed refusals, and help, search, and completion are generated from the same
+registry. The CLI's ad-hoc `/usage`-only parser is gone; `/usage` now takes no
+arguments (the old `--all` was accepted and ignored, which is exactly the
+plausible-no-op the architecture forbids). The composer-reference parser
+recognizes the six namespaces, keeps bare `@name`, email, escaped, and
+unknown-delimiter text literal, diagnoses unknown namespaces without blocking,
+and supports quoted paths; parsing is never resolution and grants no authority.
+Black-box tests prove the safety property: an unknown command exits `4` with
+suggestions and prints no answer with no provider configured.
+
 **Contract-first edits (architecture, before code).**
 
 - `ARCH/07-SESSION.md`: exact `SessionListResult`/`SessionListEntry`/`SessionListIssue`
@@ -261,7 +281,7 @@ on the dependency change: the regenerated bundle is part of this commit.
   `cargo fmt --all --check` is a pre-existing failure here and must not be reported as
   a pass. Formatting the rest of the tree is its own cleanup task.
 - `cargo clippy --workspace --all-targets -- -D warnings` — pass.
-- `cargo test --workspace --no-fail-fast` — **450 passing, 0 failing** at this revision
+- `cargo test --workspace --no-fail-fast` — **479 passing, 0 failing** at this revision
   (the count grows with the new suites; the totals above are per-run, not additive across
   passes). The two `F-65` genesis failures measured at baseline `b677443` are fixed under
   `AX-354`; the two `F-66` failures measured earlier in the day went green under `AX-355`.
@@ -272,6 +292,12 @@ on the dependency change: the regenerated bundle is part of this commit.
 - `cargo test -p horizoncode-eventlog` — 26 tests: 14 unit (envelope canonicalization
   and verification, seal digest coverage, content digest, head states/versions) and 12
   log cases.
+- `cargo test -p horizoncode-commands` — 18 tests over the registry (owners, uniqueness,
+  documented arguments, refusals with suggestions, help/search/completion, surface
+  gating) and the reference parser (namespaces, quoting, escapes, spans, diagnostics).
+- `cargo test -p horizoncode-cli --test commands_cli` — 6 black-box cases: help/list
+  without a provider, an unknown command exiting `4` with suggestions and no output, a
+  malformed argument naming the grammar, and an unknown help topic.
 - `cargo test -p horizoncode-cli` — includes the notices gate: 5 unit tests (the
   generator's lock parsing, rendering, determinism, and the four refused edits) and 3
   black-box tests (`--credits` with no configuration, `notices check`, `notices
@@ -338,10 +364,11 @@ on the dependency change: the regenerated bundle is part of this commit.
    The run-log half waits for `AX-309`/`AX-312`.
 3. Then the rest of `AX-348` (the bounded content-addressed artifact store:
    `BlobRef`, quota reservation, durable write-before-event ordering, typed states,
-   GC), now that its defaults are published; then the TUI/command/settings surfaces
-   (`AX-009`, `AX-344`, `AX-343`), then skills (`AX-110`) and MCP (`AX-106`,
-   `AX-332`). `AX-010` is done; its remaining allowlist/provenance-record work is
-   named in the row, and `DEC-058`'s numbers may be revised only by a new decision.
+   GC), now that its defaults are published; then the TUI and settings surfaces
+   (`AX-009`, `AX-343`), which consume the command registry just landed, then skills
+   (`AX-110`) and MCP (`AX-106`, `AX-332`). `AX-010` and `AX-344`'s headless half are
+   done; their remaining work is named in their rows, and `DEC-058`'s numbers may be
+   revised only by a new decision.
 4. `AX-311`: the effect journal, which unblocks `AX-351`'s recovery half and gives
    `ACC-P1-06`/`ACC-P1-12` their recovery evidence.
 5. Then the rest of the controller chain (`AX-301`, `AX-310`, `AX-312`, `AX-313`,
@@ -389,6 +416,8 @@ large file, so they are not split further for the sake of a commit boundary.
 19. `feat(eventlog): add the shared event envelope and commit durability backend`
 20. `feat(eventlog): add bounded segments, a committed head, and streaming replay`
 21. `docs: record the shared segmented event-log core`
+22. `feat(commands): add the typed slash-command registry and reference parser`
+23. `docs: record the command registry and the reference parser`
 
 Each commit is self-contained and builds; commit 2 carries the workspace manifest,
 so its body notes the MSRV move that commit 4's OS-backed lock depends on.
