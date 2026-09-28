@@ -11,8 +11,8 @@ use std::path::PathBuf;
 
 use horizoncode_analytics::{AnalyticsConfig, AnalyticsLog, insights, usage};
 use horizoncode_audit::{
-    AnchorLevelName, AuditConfig, CensusWindow, ReplayWindow, census, census_strict, replay,
-    verify, write_artifact,
+    AccessLedger, AnchorLevelName, AuditConfig, AuditLog, CensusWindow, ReplayWindow, census,
+    census_strict, replay, verify, write_artifact,
 };
 use serde::Serialize;
 
@@ -38,6 +38,9 @@ pub fn run_audit(state: &StateDir, command: &AuditCommand) -> Result<u8, CliErro
             out,
             allow_uncovered,
         } => run_census(&config, session.as_deref(), out.as_ref(), *allow_uncovered),
+        AuditCommand::Repair { segment, output } => {
+            run_repair(&config, *segment, output.as_deref())
+        }
     }
 }
 
@@ -88,7 +91,7 @@ pub fn run_insights(state: &StateDir, days: Option<u32>) -> Result<u8, CliError>
 }
 
 fn run_verify(config: &AuditConfig, session: Option<&str>, all: bool) -> Result<u8, CliError> {
-    note_access(config, "audit_verify", session.or(Some("all")));
+    record_access(config, "audit_verify", session.or(Some("all")))?;
     let report = match verify(config) {
         Ok(report) => report,
         Err(error) => {
@@ -135,7 +138,7 @@ fn run_replay(
     from: Option<u64>,
     to: Option<u64>,
 ) -> Result<u8, CliError> {
-    note_access(config, "audit_replay", Some(session));
+    record_access(config, "audit_replay", Some(session))?;
     match replay(config, Some(session), ReplayWindow::between(from, to)) {
         Ok(report) => {
             print(&report.render());
@@ -160,7 +163,7 @@ fn run_census(
     };
     // Reading the record is itself security-relevant access, so the access is
     // recorded before the census reads it.
-    note_access(config, "audit_census", session);
+    record_access(config, "audit_census", session)?;
     // Strict by default: an uncovered declared class, or a recorded effect
     // outside the registry, is a defect and fails the command.
     let report = match census_strict(config, window.clone()) {
@@ -214,21 +217,60 @@ fn run_census(
     Ok(EXIT_SUCCESS)
 }
 
-/// Records that this surface read the audit record.
+/// Records that this surface read the audit record, before reading it.
 ///
-/// A write failure is reported but does not fail the read: the caller is
-/// inspecting evidence, and refusing to show it because the *access* could not be
-/// noted would be worse than showing it with the note missing.
-fn note_access(config: &AuditConfig, action: &str, resource: Option<&str>) {
-    let env: Vec<(String, String)> = std::env::vars().collect();
-    match horizoncode_audit::AuditLog::open(config.clone(), &env) {
-        Ok(log) => {
-            if let Err(error) = log.note_access(action, resource.unwrap_or("-")) {
-                eprintln!("horizoncode: audit access note failed: {error}");
-            }
-        }
-        Err(error) => eprintln!("horizoncode: audit access note could not be written: {error}"),
+/// The receipt is written to the independent `audit-access/` stream, which has
+/// its own sequence, chain and lock: recording a read must never open — or
+/// repair — the chain it describes (`ARCH/14-AUDIT.md`, `REQ-AUDIT-008`).
+///
+/// A read whose receipt cannot be persisted is refused. Disclosing evidence
+/// with no durable record of the disclosure is exactly the outcome the access
+/// ledger exists to prevent, so this returns its own exit code rather than
+/// degrading to a warning.
+fn record_access(
+    config: &AuditConfig,
+    action: &str,
+    resource: Option<&str>,
+) -> Result<(), CliError> {
+    let ledger = AccessLedger::open(&config.root).map_err(|error| {
+        eprintln!("horizoncode: audit access record could not be opened: {error}");
+        CliError::Access(format!("{action}: {error}"))
+    })?;
+    ledger
+        .record(action, resource.unwrap_or("-"), None)
+        .map(|_| ())
+        .map_err(|error| {
+            eprintln!("horizoncode: audit access record could not be written: {error}");
+            CliError::Access(format!("{action}: {error}"))
+        })
+}
+
+/// Repairs one segment's interrupted trailing write, explicitly.
+fn run_repair(
+    config: &AuditConfig,
+    segment: u32,
+    output: Option<&std::path::Path>,
+) -> Result<u8, CliError> {
+    let outcome = AuditLog::repair_segment(config, segment).map_err(audit_error)?;
+    if !outcome.repaired {
+        println!("segment {segment}: nothing to repair");
+        return Ok(EXIT_SUCCESS);
     }
+    println!(
+        "segment {segment}: truncated {} incomplete byte(s)",
+        outcome.truncated_bytes
+    );
+    println!("original bytes preserved at: {}", outcome.artifact);
+    if let Some(path) = output {
+        // An operator-chosen copy of the same preserved bytes, so the artifact can
+        // leave the store directory.
+        if let Err(error) = std::fs::copy(&outcome.artifact, path) {
+            eprintln!("horizoncode: could not copy the preserved bytes to {path:?}: {error}");
+            return Ok(EXIT_AUDIT_FAILED);
+        }
+        println!("preserved bytes copied to: {}", path.display());
+    }
+    Ok(EXIT_SUCCESS)
 }
 
 fn print(text: &str) {

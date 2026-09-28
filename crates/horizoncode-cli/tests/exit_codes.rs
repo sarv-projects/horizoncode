@@ -17,6 +17,10 @@ const TABLE: &[(u8, &str)] = &[
     (4, "configuration error"),
     (5, "internal error"),
     (6, "audit verification or the coverage census failed"),
+    (
+        7,
+        "the audit access record could not be written, so nothing was disclosed",
+    ),
 ];
 
 fn help() -> String {
@@ -67,6 +71,11 @@ async fn a_failed_audit_gate_uses_its_own_code() {
     // A verification failure must be distinguishable from an internal error, so
     // a release gate can tell "the evidence is bad" from "the tool broke".
     let home = support::TestHome::new();
+    // The evidence is written directly: `audit verify` is a read surface, so it
+    // no longer creates the chain it inspects, and a test that relied on that
+    // side effect was asserting the defect rather than the contract.
+    seed_audit_entry(&home.audit());
+
     let output = home
         .env_offline()
         .args(["audit", "verify", "--all"])
@@ -88,6 +97,22 @@ async fn a_failed_audit_gate_uses_its_own_code() {
         .await
         .expect("the binary must run");
     assert_eq!(output.status.code(), Some(6));
+}
+
+/// Writes one real audit entry so the read surfaces have something to read.
+fn seed_audit_entry(root: &std::path::Path) {
+    let log = horizoncode_audit::AuditLog::open(
+        horizoncode_audit::AuditConfig::new(root.to_path_buf()),
+        &[],
+    )
+    .expect("the fixture store must open");
+    log.append(
+        horizoncode_audit::AuditRecord::new("ses_seed", horizoncode_audit::EntryKind::Run)
+            .with_actor(horizoncode_audit::Actor::Agent)
+            .with_action("turn_start")
+            .with_outcome(horizoncode_audit::Outcome::Ok),
+    )
+    .expect("the fixture entry must be written");
 }
 
 #[test]

@@ -40,6 +40,10 @@ pub const EXIT_CONFIG: u8 = 4;
 pub const EXIT_INTERNAL: u8 = 5;
 /// Exit code: audit verification or the coverage census failed.
 pub const EXIT_AUDIT_FAILED: u8 = 6;
+/// Exit code: the audit access record could not be written, so nothing was
+/// disclosed. This is distinct from `EXIT_AUDIT_FAILED`: the evidence is not
+/// bad, the record of reading it could not be kept.
+pub const EXIT_ACCESS_FAILED: u8 = 7;
 
 /// A CLI failure.
 #[derive(Debug, Error)]
@@ -72,6 +76,10 @@ pub enum CliError {
     /// The analytics store refused an operation.
     #[error("analytics error: {0}")]
     Analytics(String),
+
+    /// The audit access record could not be written, so nothing was disclosed.
+    #[error("audit access error: {0}")]
+    Access(String),
 }
 
 /// Whether a `CliError` is a configuration error, for exit-code selection.
@@ -246,7 +254,8 @@ fn build_context(args: &Cli, state: StateDir) -> Result<Context, CliError> {
         .or_else(|| env_nonempty("HORIZONCODE_BASE_URL"))
         .ok_or_else(|| {
             CliError::Config(
-                "provider base url is required (set HORIZONCODE_BASE_URL or pass --base-url)".to_owned(),
+                "provider base url is required (set HORIZONCODE_BASE_URL or pass --base-url)"
+                    .to_owned(),
             )
         })?;
     let api_key = env_nonempty("HORIZONCODE_API_KEY").ok_or_else(|| {
@@ -303,7 +312,8 @@ fn build_context(args: &Cli, state: StateDir) -> Result<Context, CliError> {
         // avoidable PII (`ARCH/14-AUDIT.md` §Privacy / PII handling).
         .with_project(workspace_label(&workspace));
 
-    let resolver: Arc<dyn horizoncode_guard::ApprovalResolver> = if guard.mode() == GuardMode::Yolo {
+    let resolver: Arc<dyn horizoncode_guard::ApprovalResolver> = if guard.mode() == GuardMode::Yolo
+    {
         Arc::new(AutoApproveResolver)
     } else if args.format == OutputFormat::Default && std::io::stdin().is_terminal() {
         Arc::new(InteractiveApprovalResolver)

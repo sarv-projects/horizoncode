@@ -201,7 +201,6 @@ async fn every_class_the_run_exercised_is_covered_and_the_rest_are_named() {
         EffectClass::TicketLifecycle,
         EffectClass::ModelCall,
         EffectClass::Cost,
-        EffectClass::RecordAccess,
     ] {
         assert!(
             count(class) >= 1,
@@ -209,6 +208,26 @@ async fn every_class_the_run_exercised_is_covered_and_the_rest_are_named() {
             class.as_str()
         );
     }
+
+    // The read that just happened is recorded in the independent access stream,
+    // not in the chain it describes: recording a read must never open — or
+    // repair — the store being read (`REQ-AUDIT-008`, `DEC-044`).
+    // Read the receipts without holding the writer lock, which belongs to the
+    // process that recorded them.
+    let receipts =
+        horizoncode_audit::read_receipts(&sandbox.home().join("audit-access/access.jsonl"))
+            .unwrap();
+    assert!(
+        receipts
+            .iter()
+            .any(|receipt| receipt.action == "audit_verify"),
+        "the read must be recorded: {receipts:?}"
+    );
+    assert_eq!(
+        count(EffectClass::RecordAccess),
+        0,
+        "a read must not append to the chain it describes"
+    );
 
     // The classes this run had no reason to exercise are reported as gaps, and
     // the strict census refuses them: coverage is a property of a window chosen
@@ -218,7 +237,14 @@ async fn every_class_the_run_exercised_is_covered_and_the_rest_are_named() {
         .iter()
         .map(|class| class.as_str().to_owned())
         .collect();
-    for expected in [EffectClass::Approval, EffectClass::FileWrite] {
+    // `record_access` is a declared class that the chain no longer receives from
+    // inspection, so it is named as uncovered here — the census reports the truth
+    // rather than being satisfied by a read.
+    for expected in [
+        EffectClass::Approval,
+        EffectClass::FileWrite,
+        EffectClass::RecordAccess,
+    ] {
         assert!(
             uncovered.iter().any(|name| name == expected.as_str()),
             "`{}` was expected to be reported uncovered, got {uncovered:?}",

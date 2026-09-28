@@ -13,7 +13,8 @@ Exit codes:
   3  the turn was interrupted
   4  configuration error (missing or invalid settings)
   5  internal error
-  6  audit verification or the coverage census failed";
+  6  audit verification or the coverage census failed
+  7  the audit access record could not be written, so nothing was disclosed";
 
 /// Output format for headless runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -90,6 +91,23 @@ pub enum AuditCommand {
         /// gate does not use it.
         #[arg(long)]
         allow_uncovered: bool,
+    },
+    /// Repair one segment's interrupted trailing write.
+    ///
+    /// An ordinary `audit` or run refuses to open a store with an interrupted
+    /// trailing write. This command preserves the original bytes in a linked
+    /// recovery artifact, truncates only the incomplete tail, and records the
+    /// repair in the chain (`ARCH/14-AUDIT.md`, `DEC-044`).
+    Repair {
+        /// The segment index to repair.
+        #[arg(long, value_name = "N")]
+        segment: u32,
+        /// Where the preserved original bytes should be kept.
+        ///
+        /// The recovery artifact is always written inside the store's
+        /// `recovery/` directory; this path additionally receives a copy.
+        #[arg(long, value_name = "PATH")]
+        output: Option<PathBuf>,
     },
 }
 

@@ -10,7 +10,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use crate::app::{EXIT_CONFIG, EXIT_INTERNAL, is_config_error};
+use crate::app::{EXIT_ACCESS_FAILED, EXIT_CONFIG, EXIT_INTERNAL, is_config_error};
 
 fn main() -> ExitCode {
     let args = args::Cli::parse();
@@ -32,6 +32,12 @@ fn main() -> ExitCode {
             if is_config_error(&error) {
                 eprintln!("horizoncode: configuration error: {error}");
                 ExitCode::from(EXIT_CONFIG)
+            } else if matches!(error, crate::app::CliError::Access(_)) {
+                // The evidence was not disclosed because the record of the
+                // disclosure could not be written; that is its own outcome, not
+                // an internal error and not a bad-evidence verdict.
+                eprintln!("horizoncode: {error}");
+                ExitCode::from(EXIT_ACCESS_FAILED)
             } else {
                 eprintln!("horizoncode: {error}");
                 ExitCode::from(EXIT_INTERNAL)
