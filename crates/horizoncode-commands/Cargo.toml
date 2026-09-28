@@ -1,0 +1,17 @@
+[package]
+name = "horizoncode-commands"
+description = "The typed slash-command registry and composer-reference parser: strict parsing, registry-generated help/completion, and no fall-through to model text."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The command registry is deliberately dependency-light: it is consumed by the
+# headless surface, the future TUI, and ACP, and it must not pull a UI stack
+# into any of them.
+thiserror.workspace = true
+
+[lints]
+workspace = true

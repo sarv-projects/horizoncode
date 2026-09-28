@@ -936,6 +936,7 @@ dependencies = [
  "horizoncode-acp",
  "horizoncode-analytics",
  "horizoncode-audit",
+ "horizoncode-commands",
  "horizoncode-config",
  "horizoncode-guard",
  "horizoncode-provider",
@@ -950,6 +951,13 @@ dependencies = [
  "thiserror",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "horizoncode-commands"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
 ]
 
 [[package]]

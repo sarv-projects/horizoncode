@@ -7,6 +7,7 @@ use std::sync::Arc;
 use horizoncode_acp::AcpOptions;
 use horizoncode_analytics::{AnalyticsConfig, AnalyticsLog};
 use horizoncode_audit::{AuditConfig, AuditLog, RedactionConfig};
+use horizoncode_commands::{Invocation, parse};
 use horizoncode_guard::{
     AutoApproveResolver, DenyAllResolver, Effect, Guard, GuardMode, Rule, canonical_action,
     default_rules,
@@ -166,12 +167,14 @@ pub async fn run(args: Cli) -> Result<u8, CliError> {
         Some(Command::Notices(command)) => return surfaces::run_notices(command),
         Some(Command::Acp) | None => {}
     }
-    // A prompt-shaped invocation of `/usage` or `/insights` is an analytics
-    // query, not a run: it must not require provider settings.
+    // A prompt-shaped slash invocation is a registry command, not a run: it
+    // must not require provider settings, and an unknown or malformed command
+    // is a typed refusal rather than model text (`ARCH/27`).
     if let Some(prompt) = &args.print
         && prompt.trim().starts_with('/')
     {
-        return run_slash_command(&state, &parse_slash_command(prompt)?);
+        let invocation = parse(prompt).map_err(|error| CliError::Config(error.to_string()))?;
+        return run_slash_command(&state, &invocation);
     }
     let context = build_context(&args, state)?;
     match args.command {
@@ -180,79 +183,24 @@ pub async fn run(args: Cli) -> Result<u8, CliError> {
     }
 }
 
-/// A `/usage`-style command parsed out of a prompt.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SlashCommand {
-    /// The command name, without its leading slash.
-    pub name: String,
-    /// The numeric argument, when the command takes one.
-    pub argument: Option<u32>,
-}
-
-/// Parses a `/usage` or `/insights` invocation.
-///
-/// # Errors
-/// Returns [`CliError::Config`] when a slash command names an unknown
-/// subcommand or a malformed argument, rather than silently treating it as a
-/// prompt.
-pub fn parse_slash_command(prompt: &str) -> Result<SlashCommand, CliError> {
-    let trimmed = prompt.trim();
-    if !trimmed.starts_with('/') {
-        return Err(CliError::Config("not a slash command".to_owned()));
-    }
-    let mut parts = trimmed.split_whitespace();
-    let name = parts
-        .next()
-        .unwrap_or_default()
-        .trim_start_matches('/')
-        .to_owned();
-    let rest: Vec<&str> = parts.collect();
-    match (name.as_str(), rest.as_slice()) {
-        ("usage", []) | ("usage", ["--all"]) => Ok(SlashCommand {
-            name,
-            argument: None,
-        }),
-        ("insights", []) => Ok(SlashCommand {
-            name,
-            argument: Some(DEFAULT_INSIGHTS_DAYS),
-        }),
-        // Both `--days 7` and `--days=7` are accepted; a bare `--days` with no
-        // value is a configuration error rather than a silent default.
-        ("insights", ["--days", value]) => Ok(SlashCommand {
-            name,
-            argument: Some(parse_days(value)?),
-        }),
-        ("insights", [value]) if value.starts_with("--days=") => Ok(SlashCommand {
-            name,
-            argument: Some(parse_days(value.trim_start_matches("--days="))?),
-        }),
-        ("insights", _) => Err(CliError::Config(
-            "/insights takes `--days N` and nothing else".to_owned(),
-        )),
-        (other, _) => Err(CliError::Config(format!(
-            "unknown slash command `/{other}`; supported: /usage, /insights [--days N]"
-        ))),
-    }
-}
-
-/// The window `/insights` uses when none is given.
-pub const DEFAULT_INSIGHTS_DAYS: u32 = 7;
-
-fn parse_days(value: &str) -> Result<u32, CliError> {
-    value.parse::<u32>().map_err(|_| {
-        CliError::Config(format!(
-            "/insights takes `--days N`; `{value}` is not a number"
-        ))
-    })
-}
-
-fn run_slash_command(state: &StateDir, command: &SlashCommand) -> Result<u8, CliError> {
-    match command.name.as_str() {
-        "usage" => surfaces::run_usage(state, None),
-        "insights" => surfaces::run_insights(state, command.argument),
-        other => Err(CliError::Config(format!(
-            "unknown slash command `/{other}`"
-        ))),
+/// Runs a registry invocation on the headless surface.
+fn run_slash_command(state: &StateDir, invocation: &Invocation) -> Result<u8, CliError> {
+    match invocation {
+        Invocation::Usage => surfaces::run_usage(state, None),
+        Invocation::Insights { days } => surfaces::run_insights(state, Some(*days)),
+        Invocation::Help { topic } => {
+            let text = horizoncode_commands::render_help(topic.as_deref())
+                .map_err(|error| CliError::Config(error.to_string()))?;
+            print!("{text}");
+            Ok(EXIT_SUCCESS)
+        }
+        Invocation::Commands { filter } => {
+            print!(
+                "{}",
+                horizoncode_commands::render_commands(filter.as_deref())
+            );
+            Ok(EXIT_SUCCESS)
+        }
     }
 }
 
