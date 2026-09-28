@@ -167,6 +167,20 @@ are first-class entries, never omitted.
    unreadable, or incompletely enumerated state. A genuinely initialized empty store
    has an explicit empty-store marker and is not inferred from an I/O failure.
 
+**Source status (2026-09-28).** Steps 1–4 are now implemented: the CLI records access
+in an independent `audit-access/` stream (own sequence, own `blake3` chain, own
+advisory lock) and returns a dedicated exit code without printing record content when
+that record cannot be persisted; `verify`, `replay`, and `census` open no writer path;
+a directory or per-entry enumeration failure is a typed error instead of an empty
+store; the head pointer is read as `Absent | Present | Malformed | Unreadable` and
+ordinary startup refuses anything but a genuinely empty store; a torn tail is a typed
+`RecoveryRequired` refusal repaired only by the explicit `audit repair` command, which
+preserves the original bytes and emits a linked recovery artifact; and a writable
+store holds an OS-backed advisory lock for its lifetime, taken before the head or
+segments are read. Not implemented here: the global `audit_seq`/`segment_seq`
+migration, per-effect prepare/terminal reconciliation, and the `census` coverage
+evidence itself (`AX-346` remainder, `AX-311`).
+
 ### Verify
 ```
 horizoncode audit verify [--session <id>] [--all]

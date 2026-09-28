@@ -74,6 +74,26 @@ Let external editors and peer agents drive HorizonCode, let HorizonCode drive pe
 | `terminal/create`, `terminal/output`, `terminal/wait_for_exit`, `terminal/kill`, `terminal/release` (client → agent, optional) | governed client terminal access | require advertised client capability and resource limits |
 | `session/fork` (unstable in v1), task graph, UI detach, checkpoints/rewind | HorizonCode control API | do not advertise as stable ACP; unstable fork is opt-in and negotiated separately |
 
+**Session listing result and error mapping.** `session/list` (optional, advertised only
+when the exact capability is implemented and tested) projects `SessionListResult`
+(`ARCH/07`) without adding a second notion of listing:
+
+- every entry is returned, including `UNREADABLE`/`CORRUPT`/`UNSUPPORTED`/`RECOVERY_PENDING`
+  rows, each with its typed integrity state; a session is never dropped to make a
+  response tidy;
+- `enumeration_complete = false` is reported as a response-level incomplete result
+  carrying the store-level `SessionListIssue` list, and never as an empty `sessions`
+  array; a client that receives `incomplete` MUST NOT present the list as "no sessions";
+- a listing never loads, repairs, or truncates a log. Recovery is a separate control-API
+  action, so a read-only client can inspect a broken session without changing it;
+- paging is applied over the ordered entry list; issues are not paged away, because an
+  issue that only appears on a later page is indistinguishable from a hidden failure.
+
+A local inspection surface (headless CLI, TUI session picker) uses the same
+`SessionListResult`: a store-level failure is a non-zero exit or an explicit
+"list may be incomplete" row, and an unreadable session stays visible with its typed
+state. Neither surface may substitute "no sessions" for a failed scan.
+
 `session/request_permission` is an **agent-to-client request** when HorizonCode is serving ACP; it is a baseline client method in ACP v1, not an optional capability. In client mode, HorizonCode receives the peer's request. A method-not-found response, disconnect, malformed outcome, or timeout is a typed reject/deny; it is not evidence of a missing negotiated permission capability. Keep directions distinct in type names and logs.
 
 **Child permission bridge.** A child may have an internal session ID unknown to the ACP client. Persist a mapping `{run_id, root_acp_session_id, child_attempt_id, child_session_id, request_id, requester_identity, tool_call_id, action_digest, resource_digest, deadline, state}` before forwarding. Send the permission request with the root ACP session ID as required by the client-facing binding, while retaining the child/requester correlation internally. Accept a reply only once, reauthorize against the parent ceiling and current guard policy, and deliver it to the original child request. Missing mapping, disconnect, invalid reply, or deadline becomes typed denial/cancellation and a terminal child receipt; no unresolved waiter is permitted (`REQ-HORIZON-012`, `DEC-035`).

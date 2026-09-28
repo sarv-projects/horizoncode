@@ -89,13 +89,40 @@ Copying the directory moves the session; replaying it produces the same projecti
 | `created_at` / `last_active_at` | int (epoch ms) | UTC |
 
 `SessionListResult = {items: SessionListEntry[], enumeration_complete,
-issues[]}`. Each entry has a stable session ID, last known projection, and integrity
-state `AVAILABLE | CORRUPT | UNSUPPORTED | UNREADABLE | RECOVERY_PENDING | UNKNOWN`.
-A directory/iterator error sets `enumeration_complete=false` with a typed issue; it is
-never represented as an empty successful list. An indexed session whose log cannot
-be read remains visible as an unavailable entry. A missing/stale index returns an
-explicit stale/rebuild-needed state and does not cause the listing call to recover or
-rewrite canonical logs (`REQ-SESS-006`, `DEC-056`).
+issues[]}`, with these exact shapes:
+
+| Type | Field | Type | Notes |
+|---|---|---|---|
+| `SessionListResult` | `items` | `SessionListEntry[]` | deterministic order: `last_active_at` desc, then session id asc; entries without a projection sort after all projected entries, by id asc |
+| `SessionListResult` | `enumeration_complete` | bool | `false` only when the **store-level** scan itself was incomplete (directory unreadable, iterator error) |
+| `SessionListResult` | `issues` | `SessionListIssue[]` | store-level issues only; per-session issues stay on their entry |
+| `SessionListEntry` | `id` | `SessionId` | stable identity, present even when unreadable |
+| `SessionListEntry` | `summary` | `SessionSummary?` | last known projection; `None` when the header cannot be read |
+| `SessionListEntry` | `integrity` | enum | `AVAILABLE \| CORRUPT \| UNSUPPORTED \| UNREADABLE \| RECOVERY_PENDING \| UNKNOWN` |
+| `SessionListEntry` | `issue` | `SessionListIssue?` | the per-session problem, when the row is not plain `AVAILABLE` |
+| `SessionListIssue` | `kind` | enum | `DIRECTORY_UNREADABLE \| ITERATOR_ERROR \| ENTRY_UNREADABLE \| HEADER_MISSING \| HEADER_CORRUPT \| HEADER_UNSUPPORTED \| LOG_CORRUPT \| LOG_UNSUPPORTED \| TAIL_TORN` |
+| `SessionListIssue` | `session_id` | `SessionId?` | absent for store-level issues |
+| `SessionListIssue` | `path` | text | the exact path examined |
+| `SessionListIssue` | `message` | text | cause, never a bare "unknown" |
+| `SessionListIssue` | `line` | int? | 1-based, when a specific line is at fault |
+| `SessionListIssue` | `bytes_affected` | int? | torn-tail or unreadable size, when known |
+
+Integrity derivation is fixed: an unreadable IO error is `UNREADABLE`; a missing
+`session/created` row is `HEADER_MISSING`/`CORRUPT`; a stored `format_version` newer
+than this build is `UNSUPPORTED`; an unparseable non-final row or a sequence gap is
+`CORRUPT`; an unterminated, unparseable final row is `RECOVERY_PENDING` and still
+carries a usable `summary`; anything else is `AVAILABLE`. A directory/iterator error
+sets `enumeration_complete=false` with a typed store-level issue and is never
+represented as an empty successful list. A per-session problem does **not** clear
+`enumeration_complete`: the scan itself finished, and the bad row is visible. An
+indexed session whose log cannot be read remains visible as an unavailable entry. A
+missing/stale index returns an explicit stale/rebuild-needed state and does not cause
+the listing call to recover or rewrite canonical logs (`REQ-SESS-006`, `DEC-056`).
+
+Enumeration reads the log bytes for a projection but performs no repair, no tail
+truncation, and no synthetic append. The pure scanner behind it is the same one the
+read-only surface uses; only the explicit recovery path may reconcile an incomplete
+tail, and that path is owned by `AX-311`.
 
 ### `SessionEvent` (log row)
 
@@ -167,6 +194,30 @@ durable commit record.
 The current implementation's single-file/full-read behavior is recorded in
 `ARCH/24` `F-61`; it does not meet this proposed contract.
 
+### Commit durability backend
+
+A durability profile names what a commit acknowledgement has actually flushed on the
+host that produced it, not what the host is assumed to do:
+
+| Profile | Contract | Refusal |
+|---|---|---|
+| `interactive` | append is flushed, and `fsync`ed when configured; the containing directory is **not** synchronized. Visible only as interactive work. | never presented as crash-durable |
+| `run_durable` | the event file's bytes are synchronized **and** the containing directory entry is synchronized after any create/rename/seal/head replace, before the caller is told the step committed | refused where the backend cannot prove the directory step; refusal is a typed error, not a warning |
+
+A durability backend is exactly two capabilities — `sync_file` and `sync_dir` — plus a
+declaration of whether it can provide the `run_durable` contract on this platform. A
+failed sync never returns a durable success, and the `run_durable` profile cannot be
+combined with a disabled per-append sync. Recording the backend, the filesystem, and
+the assumptions it makes is the acceptance obligation (`ACC-P1-13`), not a source-level
+`sync` call.
+
+**Source status (2026-09-28).** The backend abstraction, the two profiles, the
+`sync_file`→`sync_dir`→acknowledge ordering, and the refusal rules are implemented in
+the session store (`durability.rs`); tests assert the ordering and the failure paths
+with an injected backend. The physical control/recovery **reserve** and the segmented
+rotation that a multi-hour run needs are not implemented (`AX-350`), so `run_durable`
+currently promises namespace durability of the event log only.
+
 ### Read-only and recovery API boundary
 
 `read_only`, status, list, export inspection, and index verification are pure with
@@ -181,6 +232,15 @@ generation with deterministic closers or returns typed `UNKNOWN`/
 changed payload conflicts. `read_only` remains byte-identical even when the last
 record is incomplete. This contract is `DEC-056`; the current mutation on read path
 is `F-62`.
+
+**Source status (2026-09-28).** One pure scanner now backs `read_only`, `scan`,
+`inspect`, and enumeration: it never truncates a torn tail, never appends, and never
+advances any pointer, and it reports an incomplete final row as `RECOVERY_PENDING`
+with its byte count. The repairing load path is separate and is reachable only from an
+explicit write-capable call. The `recover(session_id, expected_head, recovery_id)`
+operation itself is **not** implemented: effect reconciliation and the quarantined
+new-generation append are `AX-311`, so a torn tail is currently retained and reported
+rather than repaired by a read.
 
 ### Blob reference and commit protocol
 
