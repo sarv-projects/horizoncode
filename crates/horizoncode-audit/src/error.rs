@@ -94,6 +94,52 @@ pub enum AuditError {
     /// The declared configuration is understood but not implemented yet.
     #[error("audit feature `{0}` is declared but not implemented; refusing to downgrade silently")]
     Unsupported(String),
+
+    /// The head pointer is present but cannot be trusted, so ordinary startup
+    /// refuses rather than substituting a derived one
+    /// (`REQ-AUDIT-011`, `DEC-044`).
+    #[error(
+        "audit head at {path} is {state}: {detail}; refusing to treat it as a new or empty store"
+    )]
+    HeadInvalid {
+        /// The head path.
+        path: PathBuf,
+        /// `malformed` or `unreadable`.
+        state: &'static str,
+        /// The underlying cause.
+        detail: String,
+    },
+
+    /// The head pointer is missing while the store holds entries, so the chain's
+    /// last acknowledged position is unknown.
+    #[error(
+        "audit head at {path} is missing while the store holds {entries} entries; explicit recovery is required"
+    )]
+    HeadMissing {
+        /// The head path.
+        path: PathBuf,
+        /// How many entries the segments hold.
+        entries: u64,
+    },
+
+    /// A torn trailing write blocks appending until it is repaired explicitly.
+    #[error(
+        "audit segment(s) {segments:?} have an interrupted trailing write; run the explicit repair instead of appending"
+    )]
+    RecoveryRequired {
+        /// The affected segment indices.
+        segments: Vec<u32>,
+    },
+
+    /// Another process holds the writer lock, so this one must not allocate a
+    /// sequence (`REQ-AUDIT-010`).
+    #[error("audit store lock at {path} is held by another writer: {reason}")]
+    StoreLocked {
+        /// The lock path.
+        path: PathBuf,
+        /// Why the lock could not be taken.
+        reason: String,
+    },
 }
 
 impl AuditError {

@@ -531,6 +531,9 @@ fn a_census_gap_fails_loudly_and_an_unregistered_effect_fails_loudly() {
     }
     // A failing census is loud: non-zero, named classes, and no artifact claim.
     assert!(error.to_string().contains("census failed"), "{error}");
+    // The writer is released before the next one opens: two live writers on one
+    // store is refused by the OS-backed lock, not tolerated (`REQ-AUDIT-010`).
+    drop(log);
 
     // (2) A full store with a hand-injected, undeclared effect class.
     harness.cover_every_class();
@@ -717,7 +720,8 @@ fn replay_reconstructs_the_timeline_and_refuses_a_diverged_chain() {
         r#""action":"turn_start""#,
         r#""action":"turn_stark""#,
     );
-    let error = horizoncode_audit::replay(&harness.config, None, ReplayWindow::default()).unwrap_err();
+    let error =
+        horizoncode_audit::replay(&harness.config, None, ReplayWindow::default()).unwrap_err();
     assert!(
         error
             .to_string()

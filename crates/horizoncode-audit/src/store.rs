@@ -18,7 +18,7 @@
 //! crash between the segment append and the head replace is repaired rather than
 //! mistaken for tampering.
 
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -34,6 +34,9 @@ use crate::entry::{
 };
 use crate::error::AuditError;
 use crate::key::{DeviceKey, load_device_key, load_or_create_device_key, set_owner_only};
+
+/// The writer-lock file name inside the audit store root.
+pub const LOCK_FILE: &str = "lock";
 use crate::redact::Redactor;
 
 /// Default maximum entries per segment.
@@ -48,6 +51,8 @@ pub const ROOTS_FILE: &str = "roots.jsonl";
 pub const HEAD_FILE: &str = "head";
 /// The `segments/` directory name.
 pub const SEGMENTS_DIR: &str = "segments";
+/// The `recovery/` directory that holds byte-preserving repair artifacts.
+pub const RECOVERY_DIR: &str = "recovery";
 
 /// Returns the default audit store root: `$HORIZONCODE_HOME/audit` when
 /// `HORIZONCODE_HOME` is set, otherwise `~/.horizoncode/audit`.
@@ -298,6 +303,10 @@ pub struct AuditLog {
     head: Mutex<Head>,
     writable: bool,
     redactor: Redactor,
+    /// The OS-backed writer lock, held for this store's lifetime so a second
+    /// writer cannot allocate a sequence while this one appends
+    /// (`REQ-AUDIT-010`). A process-local mutex cannot do this.
+    _writer_lock: Option<File>,
 }
 
 impl AuditLog {
@@ -354,6 +363,15 @@ impl AuditLog {
                 config.root.display()
             )));
         }
+        // The lock is taken before the head, the segments, or the sequence are
+        // read, so a second writer cannot observe a head it is about to
+        // invalidate (`REQ-AUDIT-010`). It is taken after the store root exists,
+        // because creating the store is itself a change that needs no lock.
+        let writer_lock = if writable {
+            Some(take_writer_lock(&config)?)
+        } else {
+            None
+        };
         let redactor = config.redaction.redactor(env);
         let key = if writable {
             load_or_create_device_key(&config.root)?
@@ -371,7 +389,47 @@ impl AuditLog {
                 )));
             }
         }
-        let mut head = read_head(&config).unwrap_or_else(Head::empty);
+        // An interrupted trailing write is repaired only by the explicit repair
+        // operation, which preserves the original bytes; an ordinary open refuses
+        // so a reader never silently changes what it is about to read
+        // (`REQ-AUDIT-011`, `DEC-044`).
+        let torn: Vec<u32> = segments
+            .iter()
+            .filter(|segment| segment.torn_tail_bytes > 0)
+            .map(|segment| segment.index)
+            .collect();
+        if writable && !torn.is_empty() {
+            return Err(AuditError::RecoveryRequired { segments: torn });
+        }
+        let head_state = read_head(&config);
+        let disk_entries: u64 = segments
+            .iter()
+            .map(|segment| segment.entries.len() as u64)
+            .sum();
+        let mut head = match head_state {
+            HeadFile::Present(head) => head,
+            HeadFile::Absent if disk_entries == 0 => Head::empty(),
+            HeadFile::Absent => {
+                return Err(AuditError::HeadMissing {
+                    path: config.head_path(),
+                    entries: disk_entries,
+                });
+            }
+            HeadFile::Malformed { detail } => {
+                return Err(AuditError::HeadInvalid {
+                    path: config.head_path(),
+                    state: "malformed",
+                    detail,
+                });
+            }
+            HeadFile::Unreadable { detail } => {
+                return Err(AuditError::HeadInvalid {
+                    path: config.head_path(),
+                    state: "unreadable",
+                    detail,
+                });
+            }
+        };
         if head.version != HEAD_FORMAT_VERSION {
             return Err(AuditError::Config(format!(
                 "audit head format version {} is not supported by this build (expected {})",
@@ -416,12 +474,8 @@ impl AuditLog {
                 head: Mutex::new(head),
                 writable: true,
                 redactor,
+                _writer_lock: writer_lock,
             };
-            for segment in &segments {
-                if segment.torn_tail_bytes > 0 {
-                    log.repair_torn_tail(segment)?;
-                }
-            }
             if recovered > 0 {
                 log.append(
                     AuditRecord::new("-", EntryKind::Run)
@@ -441,6 +495,7 @@ impl AuditLog {
             head: Mutex::new(head),
             writable: false,
             redactor,
+            _writer_lock: writer_lock,
         })
     }
 
@@ -718,13 +773,27 @@ impl AuditLog {
         self.anchor_pending_locked(head).map(|_| ())
     }
 
-    /// Truncates a torn trailing write and records the repair.
-    fn repair_torn_tail(&self, segment: &SegmentContents) -> Result<(), AuditError> {
+    /// Repairs one segment's interrupted trailing write, explicitly.
+    ///
+    /// The original bytes are preserved and linked before anything is truncated,
+    /// the truncated range is named in a recovery artifact, and one `tail_repair`
+    /// entry is appended to the repaired segment so the chain records that a
+    /// repair happened. Committed entries are never rewritten, and the repaired
+    /// chain is a reconstruction of that range, not evidence that the discarded
+    /// bytes were authentic (`DEC-044`).
+    ///
+    /// # Errors
+    /// Returns [`AuditError`] when the segment is unreadable, the artifact
+    /// cannot be written, or the truncation fails.
+    pub fn repair_torn_tail(&self, segment: &SegmentContents) -> Result<(), AuditError> {
         let path = self.config.segment_path(segment.index);
         let metadata = fs::metadata(&path).map_err(|error| AuditError::io(&path, &error))?;
         let keep = metadata
             .len()
             .saturating_sub(segment.torn_tail_bytes as u64);
+        let original = fs::read(&path).map_err(|error| AuditError::io(&path, &error))?;
+        let artifact = self.write_recovery_artifact(segment, &original, keep)?;
+
         let file = OpenOptions::new()
             .write(true)
             .open(&path)
@@ -734,17 +803,60 @@ impl AuditLog {
         file.sync_data()
             .map_err(|error| AuditError::io(&path, &error))?;
         drop(file);
+        sync_dir(&self.config.root)?;
+
         let mut record = AuditRecord::new("-", EntryKind::Run)
             .with_actor(Actor::System)
             .with_action("tail_repair")
             .with_outcome(Outcome::Ok)
             .with_meta("segment", segment.index as i64)
-            .with_meta("truncated_bytes", segment.torn_tail_bytes as i64);
+            .with_meta("truncated_bytes", segment.torn_tail_bytes as i64)
+            .with_meta("recovery_artifact", artifact);
         record.redact_in_place(&self.redactor);
         let tip = self.derive_tip_from_disk();
         let entry = AuditEntry::from_record(&record, tip.0, now_ms(), &tip.1)?;
         append_line(&path, &entry)?;
         Ok(())
+    }
+
+    /// Writes the recovery artifact that preserves a segment's original bytes.
+    fn write_recovery_artifact(
+        &self,
+        segment: &SegmentContents,
+        original: &[u8],
+        keep: u64,
+    ) -> Result<String, AuditError> {
+        let root = self.config.root.join(RECOVERY_DIR);
+        fs::create_dir_all(&root).map_err(|error| AuditError::io(&root, &error))?;
+        crate::key::set_dir_owner_only(&root)?;
+        let name = format!(
+            "{:04}-{}-{keep}.json",
+            segment.index,
+            crate::merkle::digest(original)
+        );
+        let path = root.join(&name);
+        let body = serde_json::json!({
+            "segment": segment.index,
+            "original_bytes": original.len(),
+            "truncated_from": keep,
+            "truncated_bytes": segment.torn_tail_bytes,
+            "digest": crate::merkle::digest(original),
+            "note": "original segment bytes preserved by explicit repair; the repaired range \
+                     is a reconstruction and is not evidence that the discarded bytes were \
+                     authentic",
+        });
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|error| AuditError::io(&path, &error))?;
+        set_owner_only(&path)?;
+        file.write_all(body.to_string().as_bytes())
+            .and_then(|()| file.flush())
+            .and_then(|()| file.sync_data())
+            .map_err(|error| AuditError::io(&path, &error))?;
+        sync_dir(&root)?;
+        Ok(path.to_string_lossy().into_owned())
     }
 
     fn derive_tip_from_disk(&self) -> (u64, String) {
@@ -759,25 +871,7 @@ impl AuditLog {
     }
 
     fn write_head(&self, head: &Head) -> Result<(), AuditError> {
-        let path = self.config.head_path();
-        let temp = path.with_extension("new");
-        let line =
-            serde_json::to_string(head).map_err(|error| AuditError::Config(error.to_string()))?;
-        {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&temp)
-                .map_err(|error| AuditError::io(&temp, &error))?;
-            file.write_all(line.as_bytes())
-                .and_then(|()| file.write_all(b"\n"))
-                .and_then(|()| file.flush())
-                .and_then(|()| file.sync_data())
-                .map_err(|error| AuditError::io(&temp, &error))?;
-        }
-        set_owner_only(&temp)?;
-        fs::rename(&temp, &path).map_err(|error| AuditError::io(&path, &error))
+        write_head(&self.config, head)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Head> {
@@ -829,6 +923,167 @@ fn derive_tip(segments: &[SegmentContents], sealed: &[u32]) -> Tip {
     }
 }
 
+/// Replaces the head pointer atomically and synchronizes the directory entry
+/// that points at it. The head replace is the chain's commit point, so it is
+/// flushed with the same discipline as the segment append it acknowledges.
+fn write_head(config: &AuditConfig, head: &Head) -> Result<(), AuditError> {
+    let path = config.head_path();
+    let temp = path.with_extension("new");
+    let line =
+        serde_json::to_string(head).map_err(|error| AuditError::Config(error.to_string()))?;
+    {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp)
+            .map_err(|error| AuditError::io(&temp, &error))?;
+        file.write_all(line.as_bytes())
+            .and_then(|()| file.write_all(b"\n"))
+            .and_then(|()| file.flush())
+            .and_then(|()| file.sync_data())
+            .map_err(|error| AuditError::io(&temp, &error))?;
+    }
+    set_owner_only(&temp)?;
+    fs::rename(&temp, &path).map_err(|error| AuditError::io(&path, &error))?;
+    sync_dir(&config.root)
+}
+
+/// What an explicit repair did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepairOutcome {
+    /// The segment that was examined.
+    pub segment: u32,
+    /// Whether anything was repaired.
+    pub repaired: bool,
+    /// How many incomplete bytes were truncated.
+    pub truncated_bytes: usize,
+    /// The recovery artifact that preserves the original bytes, when one was
+    /// written.
+    pub artifact: String,
+}
+
+impl AuditLog {
+    /// Repairs one segment's interrupted trailing write, explicitly.
+    ///
+    /// This is the operation an ordinary open refuses to do implicitly. It
+    /// takes the writer lock, preserves and links the original bytes, truncates
+    /// only the incomplete tail, appends one `tail_repair` entry, and advances the
+    /// head. Committed entries are never rewritten: the repaired range is a
+    /// reconstruction, and the artifact says so.
+    ///
+    /// # Errors
+    /// Returns [`AuditError`] when the lock is held, the segment is unreadable, or
+    /// the repair cannot be written durably.
+    pub fn repair_segment(config: &AuditConfig, index: u32) -> Result<RepairOutcome, AuditError> {
+        let _lock = take_writer_lock(config)?;
+        let segment = read_segment(config, index)?;
+        if segment.torn_tail_bytes == 0 {
+            return Ok(RepairOutcome {
+                segment: index,
+                repaired: false,
+                truncated_bytes: 0,
+                artifact: String::new(),
+            });
+        }
+        let path = config.segment_path(index);
+        let metadata = fs::metadata(&path).map_err(|error| AuditError::io(&path, &error))?;
+        let keep = metadata
+            .len()
+            .saturating_sub(segment.torn_tail_bytes as u64);
+        let original = fs::read(&path).map_err(|error| AuditError::io(&path, &error))?;
+        let artifact = write_recovery_artifact(config, index, &original, keep)?;
+
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .map_err(|error| AuditError::io(&path, &error))?;
+        file.set_len(keep)
+            .map_err(|error| AuditError::io(&path, &error))?;
+        file.sync_data()
+            .map_err(|error| AuditError::io(&path, &error))?;
+        drop(file);
+        sync_dir(&config.root)?;
+
+        // The repair is itself an event, derived from the state the truncation
+        // left behind rather than from the state it replaced.
+        let segments = read_segments(config)?;
+        let roots = read_roots(config)?;
+        let sealed: Vec<u32> = roots.iter().map(|record| record.segment).collect();
+        let tip = derive_tip(&segments, &sealed);
+        let mut record = AuditRecord::new("-", EntryKind::Run)
+            .with_actor(Actor::System)
+            .with_action("tail_repair")
+            .with_outcome(Outcome::Ok)
+            .with_meta("segment", index as i64)
+            .with_meta("truncated_bytes", segment.torn_tail_bytes as i64)
+            .with_meta("recovery_artifact", artifact.clone());
+        record.redact_in_place(&crate::redact::Redactor::from_env_vars(&[]));
+        let entry = AuditEntry::from_record(&record, tip.next_seq, now_ms(), &tip.last_hash)?;
+        append_line(&path, &entry)?;
+
+        let mut head = match read_head(config) {
+            HeadFile::Present(head) => head,
+            _ => Head {
+                version: HEAD_FORMAT_VERSION,
+                segment: tip.segment,
+                next_seq: 0,
+                last_hash: GENESIS_PREV_HASH.to_owned(),
+                sealed: sealed.clone(),
+                anchored: Vec::new(),
+            },
+        };
+        head.segment = tip.segment;
+        head.next_seq = entry.seq.saturating_add(1);
+        head.last_hash = entry.entry_hash.clone();
+        write_head(config, &head)?;
+        Ok(RepairOutcome {
+            segment: index,
+            repaired: true,
+            truncated_bytes: segment.torn_tail_bytes,
+            artifact,
+        })
+    }
+}
+
+/// Writes the recovery artifact that preserves a segment's original bytes.
+fn write_recovery_artifact(
+    config: &AuditConfig,
+    index: u32,
+    original: &[u8],
+    keep: u64,
+) -> Result<String, AuditError> {
+    let root = config.root.join(RECOVERY_DIR);
+    fs::create_dir_all(&root).map_err(|error| AuditError::io(&root, &error))?;
+    crate::key::set_dir_owner_only(&root)?;
+    let name = format!(
+        "{:04}-{}-{keep}.json",
+        index,
+        crate::merkle::digest(original)
+    );
+    let path = root.join(&name);
+    let body = serde_json::json!({
+        "segment": index,
+        "original_bytes": original.len(),
+        "truncated_from": keep,
+        "digest": crate::merkle::digest(original),
+        "note": "original segment bytes preserved by explicit repair; the repaired range is a \
+                 reconstruction and is not evidence that the discarded bytes were authentic",
+    });
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| AuditError::io(&path, &error))?;
+    set_owner_only(&path)?;
+    file.write_all(body.to_string().as_bytes())
+        .and_then(|()| file.flush())
+        .and_then(|()| file.sync_data())
+        .map_err(|error| AuditError::io(&path, &error))?;
+    sync_dir(&root)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 /// The sealed roots that are not yet present in the sink.
 fn pending_roots(head: &Head) -> Vec<u32> {
     head.sealed
@@ -838,29 +1093,53 @@ fn pending_roots(head: &Head) -> Vec<u32> {
         .collect()
 }
 
-fn read_head(config: &AuditConfig) -> Option<Head> {
-    let raw = fs::read_to_string(config.head_path()).ok()?;
-    serde_json::from_str(&raw).ok()
+/// What the head pointer file is: absent, present, or unusable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum HeadFile {
+    Absent,
+    Present(Head),
+    Malformed { detail: String },
+    Unreadable { detail: String },
+}
+
+fn read_head(config: &AuditConfig) -> HeadFile {
+    let path = config.head_path();
+    match fs::read_to_string(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => HeadFile::Absent,
+        Err(error) => HeadFile::Unreadable {
+            detail: error.to_string(),
+        },
+        Ok(raw) => match serde_json::from_str::<Head>(&raw) {
+            Ok(head) => HeadFile::Present(head),
+            Err(error) => HeadFile::Malformed {
+                detail: error.to_string(),
+            },
+        },
+    }
+}
+
+/// Takes the OS-backed writer lock, so two processes cannot allocate a sequence
+/// against the same head (`REQ-AUDIT-010`).
+fn take_writer_lock(config: &AuditConfig) -> Result<File, AuditError> {
+    let path = config.root.join(LOCK_FILE);
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|error| AuditError::io(&path, &error))?;
+    set_owner_only(&path)?;
+    lock.try_lock().map_err(|error| AuditError::StoreLocked {
+        path,
+        reason: error.to_string(),
+    })?;
+    Ok(lock)
 }
 
 /// Reads every segment file in index order.
 pub fn read_segments(config: &AuditConfig) -> Result<Vec<SegmentContents>, AuditError> {
-    let dir = config.segments_dir();
-    let mut indices: Vec<u32> = Vec::new();
-    if let Ok(entries) = fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
-                continue;
-            };
-            if let Ok(index) = stem.parse::<u32>() {
-                indices.push(index);
-            }
-        }
-    }
+    let mut indices = segment_indices(config)?;
     indices.sort_unstable();
     let mut out = Vec::with_capacity(indices.len());
     for index in indices {
@@ -941,13 +1220,24 @@ pub fn read_segment(config: &AuditConfig, index: u32) -> Result<SegmentContents,
 /// entry, so a record whose effect class is *not* declared — or one that does
 /// not verify — is still census-able. Coverage and integrity are separate
 /// deliverables.
-#[must_use]
-pub fn segment_indices(config: &AuditConfig) -> Vec<u32> {
-    let mut indices: Vec<u32> = Vec::new();
-    let Ok(entries) = fs::read_dir(config.segments_dir()) else {
-        return indices;
+///
+/// A directory that cannot be enumerated, or an entry that cannot be read, is a
+/// typed error: a store that cannot be listed is not the same as a store with no
+/// entries (`REQ-AUDIT-011`).
+///
+/// # Errors
+/// Returns [`AuditError::Io`] when the `segments/` directory or one of its
+/// entries cannot be read. A missing directory is an empty store, not an error.
+pub fn segment_indices(config: &AuditConfig) -> Result<Vec<u32>, AuditError> {
+    let dir = config.segments_dir();
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(AuditError::io(&dir, &error)),
     };
-    for entry in entries.flatten() {
+    let mut indices: Vec<u32> = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| AuditError::io(&dir, &error))?;
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
             continue;
@@ -959,8 +1249,7 @@ pub fn segment_indices(config: &AuditConfig) -> Vec<u32> {
             indices.push(index);
         }
     }
-    indices.sort_unstable();
-    indices
+    Ok(indices)
 }
 
 /// Reads one segment's stored lines as raw text, without deserializing them.
@@ -1004,6 +1293,20 @@ pub fn read_roots(config: &AuditConfig) -> Result<Vec<RootRecord>, AuditError> {
         out.push(record);
     }
     Ok(out)
+}
+
+/// Synchronizes a directory entry, where the platform allows it.
+fn sync_dir(dir: &Path) -> Result<(), AuditError> {
+    if !cfg!(unix) {
+        return Ok(());
+    }
+    let handle = OpenOptions::new()
+        .read(true)
+        .open(dir)
+        .map_err(|error| AuditError::io(dir, &error))?;
+    handle
+        .sync_data()
+        .map_err(|error| AuditError::io(dir, &error))
 }
 
 fn append_line(path: &Path, entry: &impl ToLine) -> Result<(), AuditError> {
@@ -1158,7 +1461,7 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_tail_is_repaired_and_noted() {
+    fn a_truncated_tail_refuses_an_ordinary_open_until_it_is_repaired() {
         let fixture = Fixture::new();
         {
             let log = AuditLog::open(fixture.config.clone(), &[]).unwrap();
@@ -1168,10 +1471,48 @@ mod tests {
                 .unwrap();
         }
         let path = fixture.config.segment_path(0);
-        let mut raw = fs::read_to_string(&path).unwrap();
+        let original = fs::read_to_string(&path).unwrap();
+        let mut raw = original.clone();
         raw.push_str("{\"seq\":2,\"ts\":3,\"sess");
-        fs::write(&path, raw).unwrap();
+        fs::write(&path, &raw).unwrap();
 
+        // An ordinary open refuses: a reader must not change the bytes it is
+        // about to read (`REQ-AUDIT-011`).
+        let error = AuditLog::open(fixture.config.clone(), &[]).unwrap_err();
+        assert!(
+            matches!(error, AuditError::RecoveryRequired { ref segments } if segments == &[0]),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            raw,
+            "a refused open must not repair the segment"
+        );
+
+        // The explicit repair preserves the original bytes, links them in a
+        // recovery artifact, truncates only the incomplete tail, and records what
+        // it did.
+        let outcome = AuditLog::repair_segment(&fixture.config, 0).unwrap();
+        assert!(outcome.repaired);
+        assert_eq!(outcome.segment, 0);
+        assert_eq!(outcome.truncated_bytes, 21);
+        let artifact = PathBuf::from(&outcome.artifact);
+        assert!(artifact.is_file(), "the original bytes must be preserved");
+        let artifact_body: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&artifact).unwrap()).unwrap();
+        assert_eq!(
+            artifact_body["digest"].as_str().unwrap(),
+            crate::merkle::digest(raw.as_bytes()),
+            "the artifact must digest the bytes that were on disk"
+        );
+        assert!(
+            artifact_body["note"]
+                .as_str()
+                .unwrap()
+                .contains("reconstruction")
+        );
+
+        // The store accepts writers again, and the repair is a recorded entry.
         let log = AuditLog::open(fixture.config.clone(), &[]).unwrap();
         let entries = log.entries().unwrap();
         assert_eq!(entries.len(), 3, "the repair note is a new entry");
@@ -1183,6 +1524,25 @@ mod tests {
                 .and_then(|v| v.as_int()),
             Some(21)
         );
+        assert!(
+            entries[2]
+                .meta
+                .get("recovery_artifact")
+                .and_then(|v| v.as_text())
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn repairing_a_clean_segment_is_a_no_op() {
+        let fixture = Fixture::new();
+        let log = AuditLog::open(fixture.config.clone(), &[]).unwrap();
+        log.append_at(record(EntryKind::Run, "turn_start"), 1)
+            .unwrap();
+        drop(log);
+        let outcome = AuditLog::repair_segment(&fixture.config, 0).unwrap();
+        assert!(!outcome.repaired, "nothing to repair is not an error");
+        assert!(outcome.artifact.is_empty());
     }
 
     #[test]

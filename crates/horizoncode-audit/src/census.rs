@@ -255,7 +255,7 @@ pub fn census(config: &AuditConfig, window: CensusWindow) -> Result<CensusReport
     let mut unregistered: Vec<String> = Vec::new();
     let mut examined = 0u64;
     let mut segments_examined = 0u64;
-    for index in segment_indices(config) {
+    for index in segment_indices(config)? {
         if let Some(allowed) = &window.segments
             && !allowed.contains(&index)
         {

@@ -33,6 +33,10 @@
 //! - **Redaction before hashing.** The pass runs on the record before the hash
 //!   is computed, so a secret can never enter the chain; the redaction itself
 //!   is noted, never the value.
+//! - **Reads leave evidence elsewhere.** Reading the record is recorded in an
+//!   independent `audit-access/` stream with its own sequence, chain and lock, so
+//!   recording a read never opens — or repairs — the chain it describes
+//!   (`REQ-AUDIT-008`, `DEC-044`).
 //!
 //! ## What `verify` proves, and what it does not
 //!
@@ -45,6 +49,7 @@
 
 #![forbid(unsafe_code)]
 
+mod access;
 mod anchor;
 mod census;
 mod entry;
@@ -57,6 +62,10 @@ mod replay;
 mod store;
 mod verify;
 
+pub use access::{
+    ACCESS_DIR, ACCESS_FILE, ACCESS_LOCK, AccessLedger, AccessReceipt, default_access_root,
+    read_receipts,
+};
 pub use anchor::{
     AnchorCadence, AnchorConfig, AnchorSink, DEFAULT_SINK_DIR, FinalizeOptions, GENESIS_PREV_ROOT,
     GENESIS_ROOT_LABEL, HashAlgorithm, OffBox, RootRecord, SINK_FILE, TrustRequirement,
@@ -76,9 +85,9 @@ pub use meta::{Meta, MetaValue};
 pub use redact::{REDACTED, Redactor};
 pub use replay::{ReplayError, ReplayItem, ReplayReport, ReplayWindow, replay};
 pub use store::{
-    AuditConfig, AuditLog, HeadSnapshot, RedactionConfig, SegmentContents, default_audit_root,
-    indices_with_gaps, now_ms, read_roots, read_segment, read_segment_lines, read_segments,
-    segment_indices,
+    AuditConfig, AuditLog, HeadSnapshot, LOCK_FILE, RECOVERY_DIR, RedactionConfig, SegmentContents,
+    default_audit_root, indices_with_gaps, now_ms, read_roots, read_segment, read_segment_lines,
+    read_segments, segment_indices,
 };
 pub use verify::{
     ClaimBoundary, Divergence, DivergenceReason, SegmentSummary, UnanchoredTail, VerifyError,
