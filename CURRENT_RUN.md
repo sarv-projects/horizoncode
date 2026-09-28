@@ -42,6 +42,8 @@ persistence path, permission system, or scheduler:
 15. skill discovery and progressive disclosure with a real frontmatter parser,
    metadata-only catalog, digest-verified activation, and a `/skills` surface
    (`AX-110`, first slice).
+16. the artifact store's byte-admission core: bounded streaming writes, namespace
+   quotas, digest-verified reads, and typed unavailable states (`AX-348`, first slice).
 
 **Breadth program (user directive, 2026-09-28).** After the wave above, the user asked to
 plan, check, and build the remaining proposed rows in dependency order without stopping
@@ -237,6 +239,21 @@ Content is returned verbatim as untrusted data. The headless surface gains
 **Not covered:** the enable/disable/archive lifecycle, context injection and its
 budget (`AX-319`), remote provenance/signing, and plugin contributions.
 
+**Tenth pass — `AX-348`: the artifact store's byte-admission core.**
+
+`horizoncode-artifact` implements the write/read half of `ARCH/28`: `put` streams
+from a reader, hashing and enforcing the `DEC-058` object and namespace ceilings
+while it reads, so an over-cap payload is refused before it is buffered or
+published; staging is exclusive and owner-only and publishes by digest, and an
+existing digest path is re-verified rather than replaced. The per-namespace quota
+ledger is durable, writes are idempotent by operation id with a typed conflict on
+different bytes, and `read`/`stat`/`list` verify digest and length and return
+typed missing/corrupt/unsupported/over-limit results. State paths go through the
+shared hygiene primitive, so a link planted at an object, quota, lock, or
+namespace directory is refused. The suite is 9 integration tests. What remains is
+named in the row: leases and the owner graph, GC, decoders, export/import, the
+physical reserve, and the session/run integration.
+
 **Contract-first edits (architecture, before code).**
 
 - `ARCH/07-SESSION.md`: exact `SessionListResult`/`SessionListEntry`/`SessionListIssue`
@@ -315,7 +332,7 @@ budget (`AX-319`), remote provenance/signing, and plugin contributions.
   `cargo fmt --all --check` is a pre-existing failure here and must not be reported as
   a pass. Formatting the rest of the tree is its own cleanup task.
 - `cargo clippy --workspace --all-targets -- -D warnings` — pass.
-- `cargo test --workspace --no-fail-fast` — **499 passing, 0 failing** at this revision
+- `cargo test --workspace --no-fail-fast` — **508 passing, 0 failing** at this revision
   (the count grows with the new suites; the totals above are per-run, not additive across
   passes). The two `F-65` genesis failures measured at baseline `b677443` are fixed under
   `AX-354`; the two `F-66` failures measured earlier in the day went green under `AX-355`.
@@ -398,9 +415,9 @@ budget (`AX-319`), remote provenance/signing, and plugin contributions.
    digest-linked segments, committed head, streaming replay, event-byte quota and the
    protected control reserve, keeping the read-only/typed-enumeration contract stable.
    The run-log half waits for `AX-309`/`AX-312`.
-3. Then the rest of `AX-348` (the bounded content-addressed artifact store:
-   `BlobRef`, quota reservation, durable write-before-event ordering, typed states,
-   GC), now that its defaults are published; then the TUI and settings surfaces
+3. Then the rest of `AX-348` (reference leases and the owner graph, GC with the
+   incomplete-scan abort, decoders, export/import, the physical reserve, and the
+   session/run integration); then the TUI and settings surfaces
    (`AX-009`, `AX-343`), which consume the command registry and the `/skills`
    surface, then MCP (`AX-106`, `AX-332`) and the plugin/WASM rows. `AX-010`,
    `AX-344`'s headless half, and `AX-110`'s first slice are done; their remaining
@@ -466,6 +483,8 @@ large file, so they are not split further for the sake of a commit boundary.
 25. `docs: record the state-path hygiene slice and its residual`
 26. `feat(config): discover skills with digest-verified activation`
 27. `docs: record the skill slice and what it does not cover`
+28. `feat(artifact): add bounded content-addressed byte admission`
+29. `docs: record the artifact slice and what remains`
 
 Each commit is self-contained and builds; commit 2 carries the workspace manifest,
 so its body notes the MSRV move that commit 4's OS-backed lock depends on.
