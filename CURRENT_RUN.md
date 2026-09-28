@@ -17,6 +17,8 @@ persistence path, permission system, or scheduler:
 4. audit read/write integrity: read-only verification, access evidence outside the chain, typed head and enumeration failures, an OS-backed writer lock, explicit repair (`AX-346`, integrity slice);
 5. the determinism and crash infrastructure the acceptance records require (`AX-122`, determinism/crash slice);
 6. the permission seam: a read-only call is not denied by its own re-assertion, and one call records exactly one policy decision (`AX-355`, closing `F-66`).
+7. provider-response admission owns tool-call id uniqueness, so a malformed batch is refused
+   instead of surfacing as a per-call denial (`AX-356`).
 
 ## Where the work stopped
 
@@ -48,6 +50,20 @@ so a stateless gate is unchanged. The mock provider now mints a unique call id p
 response, as a real provider does — that fixture defect is recorded as `AX-356` rather
 than absorbed. Contracts updated in `ARCH/12` §Tickets + Interfaces and `ARCH/10`
 §Permission assertion; `F-66` rewritten in `ARCH/24` as closed with its residual.
+
+**Second pass, continued — `AX-356` (the residual of `F-66`).**
+
+`ARCH/08` §Admit batch already required it: "on the completed response, validate IDs, schemas,
+sizes, ordering metadata … a batch-level defect (invalid encoding/schema, **duplicate ID**,
+oversized response, or stale workspace fence) dispatches none of its calls". Admission did not
+implement the ID check, so a provider that reused a correlation id was refused deeper down, by
+the gate, as if the *call* were being replayed. The runner now remembers the ids it has admitted
+in a turn and refuses a response that repeats one, before the assistant message is appended or
+anything is dispatched; the turn ends failed with a reason naming the id, recorded as a
+`protocol` failure class (a new `FailureClass` value, additive). Tests: two unit tests over the
+admission helper and an end-to-end test that drives a real duplicate-id response and asserts both
+the typed refusal and that only one tool result exists. **Not covered:** an id reused across
+turns of one session is still admitted; that history scan belongs with the run stream (`AX-309`).
 
 **Contract-first edits (architecture, before code).**
 
@@ -127,7 +143,7 @@ than absorbed. Contracts updated in `ARCH/12` §Tickets + Interfaces and `ARCH/1
   `cargo fmt --all --check` is a pre-existing failure here and must not be reported as
   a pass. Formatting the rest of the tree is its own cleanup task.
 - `cargo clippy --workspace --all-targets -- -D warnings` — pass.
-- `cargo test --workspace --no-fail-fast` — 327 passing, **2 failing**, both failing
+- `cargo test --workspace --no-fail-fast` — 330 passing, **2 failing**, both failing
   identically at baseline `b677443`:
   - `horizoncode-audit` `entry::tests::genesis_matches_its_label` and `anchor::tests::genesis_root_matches_its_label` (**F-65**, open).
   - The two `F-66` failures measured earlier in the day are now green: `e2e_acp::acp_initializes_creates_a_session_and_streams_updates` and `e2e_tools::headless_write_edit_and_sandboxed_bash`.
@@ -187,9 +203,10 @@ than absorbed. Contracts updated in `ARCH/12` §Tickets + Interfaces and `ARCH/1
    `cargo fmt --all --check` baseline becomes enforceable (`AX-121` builds the gate that
    would catch this).
 1. Commit this wave (see the commit list below) with `TODO.md` and this handoff included.
-2. `AX-354` (F-65): run the bounded preimage spike (blake3 over candidate label strings
-   for both genesis names) to learn whether the label text or the constant was the typo,
-   then re-derive per D1 and record the pre-release migration consequence.
+2. `AX-354` (F-65): the **only** failing test left. Run the bounded preimage spike
+   (blake3 over candidate label strings for both genesis names) to learn whether the label
+   text or the pinned constant was the typo, then re-derive per D1 and record the
+   pre-release migration consequence.
 3. `AX-309` slice 1: the **shared segmented event-log core**. Both the session and the run
    log need the same bounded-segment framing (`DEC-055`), so building it once is what keeps
    a second persistence engine from appearing, and it is `AX-350`'s prerequisite too.
@@ -226,6 +243,8 @@ large file, so they are not split further for the sake of a commit boundary.
 6. `docs: record the implementation pass, the measured findings, and the handoff`
 7. `fix(guard): stop denying a read-only call at its own effect boundary`
 8. `docs: close F-66 and record the admission gap it exposed`
+9. `docs(review): mark the findings wave 1 actually addressed, and say what remains`
+10. `fix(loop): refuse a provider batch that reuses a tool-call id`
 
 Each commit is self-contained and builds; commit 2 carries the workspace manifest,
 so its body notes the MSRV move that commit 4's OS-backed lock depends on.
