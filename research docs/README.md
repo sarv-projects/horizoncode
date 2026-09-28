@@ -21,6 +21,7 @@ on a volatile implementation detail.
 - [Codex](codex.md)
 - [OpenCode](opencode.md)
 - [Qwen Code](qwen-code.md)
+- [MiMo-Code](mimo-code.md) — OpenCode-derived fork; compare its deltas separately.
 - [Open Interpreter](openinterpreter.md)
 - [DeepCode](deepcode.md)
 - [DeepSeek-Reasonix](deepseek-reasonix.md)

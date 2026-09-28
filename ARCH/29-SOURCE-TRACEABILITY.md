@@ -48,9 +48,36 @@ content and license at the pin before reuse.
 | U-CLAUDE | [Claude Code public research note](../research%20docs/claude.md) | Public behavior/docs only. Internal source is unavailable; never cite it as a source-code pattern. |
 | U-DSR | [DeepSeek-Reasonix research note](../research%20docs/deepseek-reasonix.md) | Plan/transcript/editor behavior; follow its pinned primary links before choosing a file-level pattern. |
 
-Other peers and tools ([research index](../research%20docs/README.md)) are
-investigation candidates, not blanket requirements. This map intentionally leaves
-an upstream cell blank when no precise inspected file supports that component.
+The broader [architecture review comparison](24-ARCHITECTURE-REVIEW.md) maps the
+additional peers and tools to design findings. The [research index](../research%20docs/README.md)
+lists their individual notes. The table below makes their present disposition
+explicit; the notes hold pinned revisions and public file paths where available.
+A research comparison is
+not a file-by-file implementation lineage or a blanket requirement.
+
+| Additional repository | HorizonCode correspondence | Current evidence level |
+|---|---|---|
+| [Qwen Code](../research%20docs/qwen-code.md) | `ARCH/15`, `ARCH/16`, `AX-112`, `AX-318` — ACP/peer capability asymmetry | Focused source note; no code adoption. |
+| [MiMo-Code](../research%20docs/mimo-code.md) | `ARCH/08`, `ARCH/25`, `AX-338`, `AX-345` — fork-specific failure cases | OpenCode fork and issue reports; no independent-agent quality claim. |
+| [DeepCode](../research%20docs/deepcode.md) | `ARCH/25`, `AX-309..313` — goals, claims, recovery | Focused source note; proposed synthesis. |
+| [Open Interpreter](../research%20docs/openinterpreter.md) | `ARCH/13`, `ARCH/22` — harness/safety posture comparison | Rust/Codex-derived fork; no code adoption. |
+| [jcode](../research%20docs/jcode.md) | `ARCH/16`, `ARCH/23`, `AX-124` — swarm and memory measurement | Published memory figures are not HorizonCode measurements. |
+| [Ouroboros](../research%20docs/ouroboros.md) | `ARCH/02`, `ARCH/25`, `AX-317` — intent baseline/acceptance tree | Focused source note; spec revisions remain local design. |
+| [Hermes Agent](../research%20docs/hermes-agent.md) | `ARCH/07`, `ARCH/25` — gateway and session persistence | General-agent comparison, not task verification. |
+| [cc-haha](../research%20docs/cc-haha.md) | `ARCH/06`, `ARCH/16` — worktree and peer UI | Third-party Claude workspace; not Anthropic source. |
+| [RTK](../research%20docs/rtk.md) | `ARCH/19`, `AX-203` — bounded output view and raw recall | Lossy filtering is an experiment, not a cost guarantee. |
+| [Code Review Graph](../research%20docs/code-review-graph.md) | `ARCH/09`, `AX-320`, `AX-326` — graph/impact/review | Research-only comparison; no index adoption. |
+| [Serena](../research%20docs/serena.md) | `ARCH/09`, `ARCH/21`, `AX-202` — symbol tools/editor bridge | GPL app source is excluded by `ARCH/05`; interface comparison only. |
+| [Superset](../research%20docs/superset.md) | `ARCH/06`, `ARCH/16`, `AX-208` — worktrees/opaque agents | UI/process comparison; not a task-state source. |
+| [CodeBurn](../research%20docs/codeburn.md) | `ARCH/20`, `AX-334`, `AX-342` — usage/cost attribution | Observation comparison; peer quota can be unknown. |
+| [Command Code](../research%20docs/command-code.md) | `ARCH/09`, `AX-321` — preference-memory idea | Core implementation unavailable; no algorithm/schema claim. |
+
+The five baseline peers and DeepSeek-Reasonix have the file-level references above
+and in [26](26-CORE-AGENT-CROSSWALK.md). Other projects named only in the
+[landscape](../research%20docs/research-landscape.md), such as OpenHands and Goose,
+are comparison candidates without dedicated task-level source trails. This map
+intentionally leaves an upstream cell blank when no precise inspected file supports
+that component.
 
 ## Local design-owner map
 
