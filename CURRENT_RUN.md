@@ -39,6 +39,9 @@ persistence path, permission system, or scheduler:
    text, and literal preservation for non-references (`AX-344`).
 14. owner/mode/no-follow state-path hygiene applied through one shared primitive
    across the stores and the guard's policy config (`AX-126`).
+15. skill discovery and progressive disclosure with a real frontmatter parser,
+   metadata-only catalog, digest-verified activation, and a `/skills` surface
+   (`AX-110`, first slice).
 
 **Breadth program (user directive, 2026-09-28).** After the wave above, the user asked to
 plan, check, and build the remaining proposed rows in dependency order without stopping
@@ -219,6 +222,21 @@ primitive instead of keeping its own copy). The residual is stated, not hidden:
 Unix modes only, final component only, check/open TOCTOU, and no containment
 claim — confinement remains `ARCH/13`'s job.
 
+**Ninth pass — `AX-110`: skill discovery and progressive disclosure.**
+
+`horizoncode-config::skills` discovers `SKILL.md` (or a sibling `<name>.md`)
+under the global `<state>/skills` directory and the project walk, parsing real
+YAML frontmatter with `serde_yaml_ng` instead of a bespoke subset. Only `{name,
+description, slash}` enter the catalog; the body is returned only by `activate`,
+which re-reads the file, refuses a symlink, re-parses it, and verifies its
+digest against the listing so a file swapped after listing is a typed mismatch.
+A malformed skill is a diagnostic and never a silent omission, and a nearer
+skill of the same name shadows an outer one with the shadowed location reported.
+Content is returned verbatim as untrusted data. The headless surface gains
+`/skills [list | show <name>]`, which prints metadata and never a body.
+**Not covered:** the enable/disable/archive lifecycle, context injection and its
+budget (`AX-319`), remote provenance/signing, and plugin contributions.
+
 **Contract-first edits (architecture, before code).**
 
 - `ARCH/07-SESSION.md`: exact `SessionListResult`/`SessionListEntry`/`SessionListIssue`
@@ -297,7 +315,7 @@ claim — confinement remains `ARCH/13`'s job.
   `cargo fmt --all --check` is a pre-existing failure here and must not be reported as
   a pass. Formatting the rest of the tree is its own cleanup task.
 - `cargo clippy --workspace --all-targets -- -D warnings` — pass.
-- `cargo test --workspace --no-fail-fast` — **489 passing, 0 failing** at this revision
+- `cargo test --workspace --no-fail-fast` — **499 passing, 0 failing** at this revision
   (the count grows with the new suites; the totals above are per-run, not additive across
   passes). The two `F-65` genesis failures measured at baseline `b677443` are fixed under
   `AX-354`; the two `F-66` failures measured earlier in the day went green under `AX-355`.
@@ -383,10 +401,11 @@ claim — confinement remains `ARCH/13`'s job.
 3. Then the rest of `AX-348` (the bounded content-addressed artifact store:
    `BlobRef`, quota reservation, durable write-before-event ordering, typed states,
    GC), now that its defaults are published; then the TUI and settings surfaces
-   (`AX-009`, `AX-343`), which consume the command registry just landed, then skills
-   (`AX-110`) and MCP (`AX-106`, `AX-332`). `AX-010` and `AX-344`'s headless half are
-   done; their remaining work is named in their rows, and `DEC-058`'s numbers may be
-   revised only by a new decision.
+   (`AX-009`, `AX-343`), which consume the command registry and the `/skills`
+   surface, then MCP (`AX-106`, `AX-332`) and the plugin/WASM rows. `AX-010`,
+   `AX-344`'s headless half, and `AX-110`'s first slice are done; their remaining
+   work is named in their rows, and `DEC-058`'s numbers may be revised only by a
+   new decision.
 4. `AX-311`: the effect journal, which unblocks `AX-351`'s recovery half and gives
    `ACC-P1-06`/`ACC-P1-12` their recovery evidence.
 5. Then the rest of the controller chain (`AX-301`, `AX-310`, `AX-312`, `AX-313`,
@@ -445,6 +464,8 @@ large file, so they are not split further for the sake of a commit boundary.
 23. `docs: record the command registry and the reference parser`
 24. `feat(state): refuse symlinked state paths and keep owner-only modes`
 25. `docs: record the state-path hygiene slice and its residual`
+26. `feat(config): discover skills with digest-verified activation`
+27. `docs: record the skill slice and what it does not cover`
 
 Each commit is self-contained and builds; commit 2 carries the workspace manifest,
 so its body notes the MSRV move that commit 4's OS-backed lock depends on.

@@ -188,11 +188,17 @@ added so an accumulating key can list every contributing layer), and hierarchica
 `Instructions from: <path>` rendering, and the fail-closed unreadable case. One
 `state_root()` resolves `$HORIZONCODE_HOME` → `~/.horizoncode` → `.` and is consumed
 by the session, audit, analytics, guard, and CLI roots, so the documented layout is
-the implemented one (`F-67`). The schema now carries the instruction key, the two
-accessibility flags, the terminal-bell preference, and the storage ceilings and
-defaults published in `DEC-058` (`session.log.*`, `run.log.*`,
-`session.artifacts.*`, `run.artifacts.*`) with typed limit views and lower-only
-validation: a configuration or project may lower a limit, never raise the compiled
+the implemented one (`F-67`). Skill discovery and progressive disclosure are implemented
+(`AX-110`): `SKILL.md` (or a sibling `<name>.md`) is discovered under the global
+`<state>/skills` directory and the project walk, frontmatter is parsed with a
+YAML parser, `{name, description, slash}` alone enter the catalog, and the body
+is returned only by `activate`, which re-reads the file and verifies its digest
+against the listing. A malformed skill file is a diagnostic, never a silent
+omission; a symlinked skill file is refused. The schema now carries the
+instruction key, the two accessibility flags, the terminal-bell preference, and
+the storage ceilings and defaults published in `DEC-058` (`session.log.*`,
+`run.log.*`, `session.artifacts.*`, `run.artifacts.*`) with typed limit views and
+lower-only validation: a configuration or project may lower a limit, never raise the compiled
 ceiling, and a nonzero rule rejects zero. Every other key group above registers in
 the same registry as its owner lands, so no second settings engine appears. **Not covered:** managed locks (`locked_by`) and capability status
 (`capability_status`) arrive with managed policy; injection of the rendered
