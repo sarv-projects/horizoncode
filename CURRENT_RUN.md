@@ -5,6 +5,18 @@ implementation wave** plus the closure of `F-66`/`AX-355` — the permission-sea
 the first wave's test run exposed. It supersedes the documentation-only audit handoff
 of 2026-09-27, which remains the record of what was read and why.
 
+## Source-traceability correction (2026-09-28)
+
+The user identified that owner-design links did not tell an implementing agent which
+local code and exact upstream files to inspect. `ARCH/29-SOURCE-TRACEABILITY.md` now
+records local entry points/tests and pinned peer-file references by design owner,
+including explicit absent implementations and source-coverage limits. Every AX row
+in `TODO.md` links to its first owner's source trail; additional owner links in that
+row still apply. `AGENTS.md`, `ARCH/00` and `ARCH/26` require reading the trail and
+rechecking paths at HEAD. This is documentation/navigation work only; it did not
+change or verify runtime behavior. The source snapshot for the trail is `692eba1`,
+and the checked-out revision must be confirmed again before implementation.
+
 ## Active goal
 
 Deliver the first implementation wave that makes the session log and the audit chain

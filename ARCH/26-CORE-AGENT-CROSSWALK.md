@@ -7,6 +7,9 @@ the user named: [Claude Code](../research%20docs/claude.md),
 Each note was read end to end for this crosswalk. Their pinned commits, upstream
 links and coverage limits live in the notes. This document records a design
 disposition, not a claim that every upstream file or every ARCH line was audited.
+The task-facing [source trail](29-SOURCE-TRACEABILITY.md) now names the concrete
+local entry points/tests and the pinned upstream files for the main patterns.
+Read those files before adapting a pattern; a crosswalk row alone is insufficient.
 Claude Code's internal implementation is not public, so its row rests on
 documented behavior. No upstream code has been copied.
 

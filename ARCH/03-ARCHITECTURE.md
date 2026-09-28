@@ -1,5 +1,10 @@
 # 03 — Architecture
 
+For each component's current source entry point, test seam, absent implementation,
+and pinned upstream research file, follow the owner row in
+[29-SOURCE-TRACEABILITY.md](29-SOURCE-TRACEABILITY.md). This design remains the target
+contract; source and research links are evidence/navigation, not shipped status.
+
 **Status:** target architecture, not a claim about the current executable. At the
 2026-09-27 code snapshot, the workspace contains 11 Rust crates; TUI, configuration,
 repository intelligence, secret broker, MCP, ACP client, and durable orchestration are

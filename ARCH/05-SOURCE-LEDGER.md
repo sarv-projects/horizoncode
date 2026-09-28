@@ -2,6 +2,12 @@
 
 What HorizonCode **builds**, **depends on**, or only **studies**. Entries are organized by role; concrete upstream identities and pinned revisions live in provenance records and [`research docs/`](../research%20docs/). Factual provider/model names may appear where needed for configuration and billing (`DEC-030`). Attribution that a license requires is generated into `THIRD-PARTY-NOTICES.md` at release and **shipped with the binary** (`TODO.md` `AX-010`).
 
+For implementation lookup, [29-SOURCE-TRACEABILITY.md](29-SOURCE-TRACEABILITY.md)
+maps design owners to current local entry points and pinned peer files. A `Pattern`
+row below means research influence only. It is not a record that peer source was
+copied, adapted successfully, or verified in HorizonCode; actual adaptation requires
+the provenance record described in §2.
+
 Legend: **Build** = first-party code · **Depend** = consume a library/SDK · **Pattern** = study only, no code · **Data** = consume data, not code · **Avoid** = never link, copy, or vendor.
 
 ## 1. Disposition by layer

@@ -13,7 +13,10 @@ verified by themselves.
    [`ARCH/03-ARCHITECTURE.md`](ARCH/03-ARCHITECTURE.md), and relevant decisions in
    [`ARCH/04-DECISIONS.md`](ARCH/04-DECISIONS.md).
 4. The owning component/feature design in `ARCH/`; use the owner listed in the matching
-   [`TODO.md`](TODO.md) row. Read [`ARCH/22-SECURITY.md`](ARCH/22-SECURITY.md) and
+   [`TODO.md`](TODO.md) row. Follow that row's link to
+   [`ARCH/29-SOURCE-TRACEABILITY.md`](ARCH/29-SOURCE-TRACEABILITY.md) for current local
+   entry points, tests, pinned upstream files, and explicit absences. Read
+   [`ARCH/22-SECURITY.md`](ARCH/22-SECURITY.md) and
    [`ARCH/23-VERIFICATION.md`](ARCH/23-VERIFICATION.md) for security or evidence claims.
 5. [`research docs/tests.md`](research%20docs/tests.md) for the test inventory, test
    layers, acceptance evidence, local-model matrix, and benchmark protocol.
@@ -35,7 +38,10 @@ verified by themselves.
   current revision and session handoff. If these disagree, investigate and update the
   proper owner. Do not quietly make implementation agree by weakening a requirement.
 - Every TODO task must link to its owning architecture document and state observable
-  acceptance evidence. Update the row when source or evidence changes.
+  acceptance evidence. Its source-trail link is a navigation aid, not proof of
+  implementation. Inspect source at HEAD and update the row and trail when source or
+  evidence changes. A research pattern must carry a pinned repo/file reference or
+  be labelled proposed synthesis; never invent an upstream implementation.
 - A behavior change affecting user intent, a public protocol/API, data semantics,
   security boundary, or permission level needs an explicit decision/requirement update
   before implementation. Record assumptions and unresolved decisions; ask the user when
