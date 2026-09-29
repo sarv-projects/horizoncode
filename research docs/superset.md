@@ -1,5 +1,11 @@
 # Superset: workspaces for parallel coding-agent processes
 
+2026-09-29 coverage follow-up pins revision
+[`f37599e2774a99dce67f21b887c88bac331da6fc`](source-audit-coverage/superset-f37599e.csv):
+10,286 tracked files, 8,569 selected source candidates, 8 full, 3 partial, and 8,558
+unread. This is not an exhaustive codebase read. The per-file ledger and cross-source
+findings are linked from [coverage index](source-audit-coverage/README.md).
+
 > INTERNAL RESEARCH — initial review 2026-09-27 at `3fe2c3636e303ecd3a62d4e63bfaba4428bfbdaf`; focused follow-up 2026-09-28 at `f37599e2774a99dce67f21b887c88bac331da6fc`. Source-path review of workspace model, terminal/session schema, agent launch/binding, hooks, subagent transcript, and resume. Not a line-by-line review of the full repository; no tests or benchmarks were run and no source was copied.
 
 ## HLD

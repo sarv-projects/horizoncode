@@ -9,7 +9,7 @@ completion.
 
 ## Purpose and requirements
 
-Meet `REQ-MEM-001..003`: retain bounded user/project knowledge independently of
+Meet `REQ-MEM-001..007`: retain bounded user/project knowledge independently of
 chat transcripts; make every write attributable and inspectable; and inject
 selected records as a typed, explicitly untrusted context source. Memory should
 reduce repeated repository discovery without turning guesses, stale code facts,
@@ -40,6 +40,12 @@ Invariants:
    provenance. Deletion removes content/indexes and leaves only the minimum
    tombstone needed to prevent stale projection resurrection.
 6. Memory evidence never satisfies a verification or acceptance criterion.
+7. Capture, retrieval, search, export, purge, and child injection use one canonical
+   `ProjectIdentity` and immutable `ContextScope`; a child worktree inherits the
+   admitted Run identity and never derives a new identity from its temporary path.
+8. A replay of the same dispatch in an unchanged context epoch reuses the persisted
+   packet digest and selection. It cannot append or inject the same memory block a
+   second time; deliberate refresh creates a new epoch or explicit invalidation.
 
 ## Data model
 
@@ -48,11 +54,13 @@ MemoryRecord {
   memory_id: UUIDv7,
   scope: user | project,
   scope_id: opaque user/project identity,
+  agent_profile_id?: AgentProfileId, // optional private namespace within parent scope
   kind: preference | workflow | repo_fact | decision | pointer,
   state: candidate | accepted | rejected | superseded | expired | deleted,
   content: bounded UTF-8 text,
   content_digest: blake3,
   source_kind: explicit_user | approved_run | imported,
+  writer_profile_id?: AgentProfileId,
   source_ref?: {store, aggregate_type, aggregate_id, aggregate_seq, event_id,
                 source_revision?, repository_identity?, workspace_id?,
                 source_view?: committed | working_tree | editor_buffer,
@@ -64,11 +72,46 @@ MemoryRecord {
   last_retrieved_at?, schema_version
 }
 
+ProjectIdentity {
+  project_id: opaque UUID,
+  resolver_version,
+  identity_source: explicit_mapping | local_workspace_registry,
+  registered_workspace_ids[],
+  display_label?, // non-authoritative; basename is not an identity key
+  created_seq, updated_seq
+}
+
+ContextScope {
+  scope_id, user_scope_id, project_id?, agent_profile_id?, run_id?,
+  retrieval_policy_digest, excluded_projects[], memory_kinds[],
+  max_records, max_bytes, max_tokens, created_seq
+}
+
 MemoryCandidate {
-  candidate_id, proposed_record, source_refs[], extraction_model?,
+  candidate_id, proposed_record, writer_profile_id?, source_refs[], extraction_model?,
   extraction_config_digest, created_seq, review_state
 }
 ```
+
+The optional `agent_profile_id` narrows visibility within its parent `user` or
+`project` scope; it does not create another storage root or bypass that scope's
+consent, retention, freshness, or deletion behavior. Shared records have no profile
+ID. A profile-private record is eligible only for that stable profile identity and
+the matching user/project scope. Profile deletion or rename does not silently reassign
+records; cleanup follows the explicit memory purge/retention flow.
+
+`CMP-session` owns the canonical local workspace/project identity mapping at its
+workspace-identity seam; it does not create a separate memory identity database. If
+the durable mapping is absent at implementation baseline, add its versioned mapping
+as part of AX-371/AX-379 rather than inventing another store.
+`CMP-orch` pins the resolved `project_id` and `ContextScope` at Run admission, and
+delegated worktrees inherit those IDs. Direct Threads use the same resolver. An
+explicit user mapping may join or relink workspaces; otherwise distinct clones remain
+distinct projects. Raw Git remotes and credential-bearing URLs are never identity
+material. A moved/ambiguous workspace requires explicit relink/recovery; the memory
+reader must not guess by directory basename. All capture/retrieve/search/export/purge
+entry points consume this same identity/scope object, and mismatches fail closed for
+project memory with a visible diagnostic.
 
 The v1 defaults are settled by `DEC-067`: user-global memory is limited to
 preferences/work habits; project memory holds repository facts/decisions under a
@@ -136,18 +179,50 @@ summarizer in the background.
 
 ### Retrieve / inject
 
-1. `CMP-context` sends a typed query containing user/project scope, task text,
-   repository identity, selected workspace, source view (committed tree, working
+1. `CMP-context` sends a typed query containing the resolved `ProjectIdentity`,
+   immutable `ContextScope`, task text, selected workspace, source view (committed tree, working
    tree, or editor buffer), and a byte/token budget.
 2. `CMP-memory` returns ranked record IDs, exact record revisions, provenance,
    age/state, and bounded excerpts. Filtering by scope and accepted-state occurs
    before ranking.
-3. The caller binds the selected records and digests to the `ContextEpoch`.
+3. The caller binds the selected records and digests to the `ContextEpoch` and the
+   canonical dispatch packet. A stable dispatch ID plus epoch key makes retry/replay
+   idempotent; the same epoch does not append the records again as new conversation
+   history. A changed project identity or policy digest invalidates retrieval and
+   requires a newly admitted context epoch.
    Project memory is wrapped as untrusted data, separate from instructions. If a
    record is unavailable or stale, context reports that status rather than
    silently using a prior copy.
 4. Retrieval usage may inform later ranking/decay, but frequent retrieval does
    not increase factual confidence.
+
+### Child context and profile memory
+
+`CMP-orch` creates a `ContextPacket` for each child dispatch under `REQ-MEM-005..007`;
+a worker never receives ambient parent or sibling context. The packet
+contains the approved task contract, acceptance criteria and constraints, effective
+instruction/permission snapshots, workspace revision, bounded referenced artifacts,
+and explicit omitted-context markers. `fork=none` is the default. A bounded fork may
+include only named committed/visible source references within a byte/token budget and
+the effective policy. Full history is available only to a same-trust native worker
+when explicitly authorized; external agents cannot receive an implicit full fork.
+
+Profile memory is an optional namespace in the existing memory store, keyed by stable
+`AgentProfileId` plus user or repository identity. It is disabled by default. Retrieval
+requires the intersection of user/managed policy, Run consent, profile setting,
+adapter capability, and data-egress scope. Project config may narrow but never widen
+that authority. At dispatch, retrieve only accepted, current, scope-authorized records
+relevant to the child's task; bind exact record IDs, revisions, and digests to the
+child's `ContextEpoch`. Parent and sibling namespaces are never implicitly included.
+Child-generated writes enter the existing candidate/review flow and cannot directly
+accept, re-scope, alter provenance, or delete records. Injected memory remains
+untrusted data and cannot change policy or satisfy verification.
+
+The UI and usage ledger show which memory/profile/context sources were included,
+excluded, stale, or unavailable, along with their size and observed usage when the
+adapter reports it. Do not estimate an external agent's hidden context as zero. If
+memory is disabled or retrieval fails, continue without it only when the task contract
+allows that omission; otherwise pause with a typed missing-context result.
 
 ### Inspect, supersede, and delete
 
@@ -189,11 +264,20 @@ deleted content after tombstone compaction.
 | Crash after SQLite commit before audit/Thread delivery | Canonical memory event and projection remain committed; durable outbox retries idempotently and UI reports pending audit delivery |
 | Outbox target is permanently unavailable | Do not claim cross-store audit completion; retain outbox, surface typed pending/failure, and never duplicate the memory event |
 | FTS/index lag or corruption | Report indexed sequence/coverage; rebuild from canonical records; never turn incomplete search into a complete miss |
+| Capture and injection resolve different project/worktree identities | Compare against the one canonical `ProjectIdentity`; refuse project retrieval, surface the mismatch, and require explicit relink rather than matching by basename or sharing another project's records |
+| Project identity record is missing, corrupt, or newer than this binary | Preserve memory records; mark project scope `UNKNOWN`, disable project retrieval/write until compatible explicit recovery or relink; never silently mint a replacement identity |
+| Project identity record path is symlinked or owner permissions are unsafe | Refuse access and report a typed state-integrity failure; do not follow the link or fall back to a project file |
+| Resume/compaction repeats a memory hook for the same epoch | Deduplicate by stable dispatch ID and packet digest; do not inject already-present memory twice; reselect only after explicit epoch invalidation |
 | Source/dirty-buffer digest changed | Keep candidate/history, mark `SOURCE_CHANGED`, do not silently rewrite provenance |
 | Workspace or editor buffer cannot be compared | Mark `SOURCE_UNVERIFIED`; exclude repository fact from default retrieval |
 | Disk full / scope limit | Refuse new write with visible reason; existing accepted data remains readable |
 | Concurrent edit/delete | Compare expected revision; return conflict or idempotent deletion receipt |
 | User disables memory | Stop new writes/injection as configured and provide inspect/purge; do not infer deletion from disabled retrieval |
+| Child profile asks for memory outside effective user/Run/adapter policy | Reject retrieval with `MEMORY_POLICY_DENIED`; record the omitted source without exposing its content |
+| External adapter cannot prove memory/context controls | Inject no profile memory by default; report capability as unsupported/unknown rather than assuming isolation |
+| Selected profile memory is stale, rejected, superseded, or over budget | Exclude it and report the reason; do not silently substitute parent/sibling memory |
+| Child writes a memory candidate | Accept only through the existing candidate API with child provenance; do not auto-approve or widen scope |
+| Hook or retry attempts duplicate context injection | Deduplicate by dispatch/input receipt and context source revision; preserve one auditable packet per actual model invocation |
 | Backup restore after delete | Apply retained deletion tombstones or require explicit user confirmation before resurrecting data |
 
 ## Privacy, security, and operations
@@ -218,7 +302,12 @@ crashes immediately before/after SQLite commit and before/after outbox delivery,
 idempotent audit/Thread reconciliation, clean-vs-dirty repository trees, file rename,
 dirty generation changes, and unsaved-buffer digest mismatch.
 Memory retrieval must also be compared with a no-memory baseline on repeated
-repository tasks; fewer tokens alone is not a success metric.
+repository tasks; fewer tokens alone is not a success metric. For child contexts,
+prove there is no implicit parent/sibling transcript or memory inheritance; enforce
+profile ID plus user/project scope isolation; test policy intersection and external
+capability uncertainty; reject direct child acceptance or re-scoping; bind selected
+record revisions to the child ContextEpoch; and exercise fan-out usage accounting and
+deduplication after compaction/restart.
 
 ## Source status and provenance
 
@@ -230,4 +319,4 @@ research reference, not a copied implementation; see `research docs/codex-memory
 
 ## Requirements mapping
 
-`REQ-MEM-001..004`; `REQ-CTX-007`; `REQ-SEC-002`.
+`REQ-MEM-001..007`; `REQ-CTX-007`; `REQ-SEC-002`.

@@ -258,6 +258,9 @@ test-data revision.
   A claimed auto-resume must not become unrecoverable if the host exits before launch:
   expire/reconcile the claim, inspect the outbox and process table, and prove no second
   writer launches while outcome is unknown. Inject stale/forged hook events and verify
+  the specific reservation-committed/run-directory-not-yet-created window, and the
+  process-launched/launch-response-not-yet-delivered window: restart must return the
+  original receipt or keep the outcome `UNKNOWN`, never create a duplicate run/worker.
   they cannot change the bound workspace/launch status; test missing hooks and child
   roster after restart as `UNKNOWN`, never as “no child.” Reject symlink traversal in
   any transcript reader and keep private reasoning out of user-visible artifacts.
@@ -267,6 +270,14 @@ test-data revision.
   settlement, and a changed strategy creates a new Attempt. Run this with native,
   ACP-capable, and opaque CLI fixtures; mark unavailable peer data `unknown` rather
   than inventing evidence.
+- External adapter upgrade/reconnect (`AX-318`): pin each live execution to the local
+  adapter build digest and negotiated protocol/capability snapshot. Pause an execution,
+  activate a new adapter build for future work, then reconnect. The old execution must
+  either continue under a compatible old adapter or transition to a reconciled/blocked
+  state before a new adapter takes ownership. Exercise capability removal, protocol
+  mismatch, unknown peer version, cursor reset, duplicate/stale events, and route/model
+  catalog refresh. Prove usage/event provenance names the exact build that observed
+  it; do not infer compatibility from a version string alone.
 - Thread/Execution identity migration (`AX-379`): migrate legacy session IDs and
   event/index names in a copied fixture without changing identity, dropping committed
   events, duplicating a conversation, or making search/navigation cursors point at a
@@ -315,6 +326,36 @@ test-data revision.
   schema/property tests, control API receipts, adapter capability fixtures, process
   kill matrix, TUI interaction captures, and headless transcripts under
   `acceptance/agent-questions/<build-id>.json` for `ACC-P1-16`.
+- Mixed question batches: make the provider return one valid question call beside
+  `write`, `bash`, and network/effect calls. Assert that no sibling dispatches while
+  input is pending, then verify each receives `not_run_question_boundary` only after
+  the durable answer and the model replans. Return malformed question arguments,
+  duplicate question calls, and malformed siblings; each invalid batch must dispatch
+  zero calls. Race an external ACP elicitation against already-started calls; verify
+  new dispatch is fenced and each in-flight effect is cancelled or reconciled as
+  `UNKNOWN`, never assumed rolled back (`REQ-TOOL-006`, `ACC-P1-16`).
+- Model-facing compacted-history retrieval (AX-385 / `ACC-P1-19`): after compaction
+  removes older visible turns, search and read only the controller-selected current
+  Thread; reject any model-supplied foreign Thread ID; revalidate immutable message
+  refs before read; enforce query/page/byte/token budgets; and return exact
+  `COMPLETE`/`PARTIAL`/`EXPIRED`/`UNAVAILABLE` coverage. Exercise compaction, rename,
+  index rebuild, retention expiry, partial/corrupt index, FTS5 unavailable, tool-output
+  opt-in then opt-out, hidden-reasoning exclusion, cancellation, duplicate/malformed
+  refs, prompt injection in recalled text, disabled feature, and crash/reconnect. Prove
+  history can inform a worker but cannot satisfy Evidence, grant permissions, or change
+  approved specification. Compare UI search and tool search against the same authorized
+  canonical oracle; retain references, not a second archive. Verify
+  `search.model_history_retrieval=false` by default, project config cannot enable it,
+  explicit user opt-in enables it only while `search.enabled=true`, and disabling or
+  purging search immediately prevents new history retrieval.
+- Route-specific system-prompt update semantics (`ACC-P1-20`): default to complete
+  effective-prompt replacement. A fake adapter may use in-history updates only when a
+  pinned route capability says later system messages replace the effective prompt;
+  compare requests after baseline update/removal, compaction, resume, tool-schema change,
+  provider refresh, and route change. Unknown/malformed capability must replace. Stable
+  prefix or cache usage alone is not evidence of semantic support. Separate deterministic
+  request-construction fixtures from optional, authorized live cache-hit/billing tests;
+  mocks cannot prove remote cache behavior.
 - Crash before effect; after external effect but before receipt; between event append
   and SQLite projection; during task settlement; while applying patch; during checkout,
   merge, checkpoint, or PR creation. Restart reconciles before replay and never treats
@@ -400,7 +441,41 @@ test-data revision.
   no-memory baseline. Verify that memory cannot grant permissions or satisfy task
   evidence. If extraction is explicitly enabled, test leases, retry backoff, bounded
   concurrency, cancellation, and cost budget; default startup must issue no memory
-  model calls.
+  model calls. For every child dispatch, verify `ContextPacket` construction from the
+  approved task/spec and pinned workspace, exact source refs and byte/token budgets,
+  `fork=none` defaults, and explicit missing/excluded-context markers. Assert parent
+  transcript, sibling transcript, and parent auto-memory are never copied implicitly;
+  bounded forks include only authorized named user-visible committed references, and
+  full history is unavailable to external adapters. Exercise memory policies `none`,
+  `relevant_shared`, and `shared_and_profile` across user/managed ceilings, Run
+  consent, project/profile preference, adapter capability and egress; project settings
+  must never widen the effective policy. Verify per-profile + repository isolation,
+  no sibling leakage, accepted/current/task-relevant filtering, and exact record
+  revision/digest binding to the child's `ContextEpoch`. A child write must only create
+  a candidate with immutable provenance. Test stale/rejected/superseded/over-budget
+  records, disabled memory, missing/corrupt store (continue without memory only when
+  allowed), unsupported/unknown external capabilities, nested children, and hook or
+  retry duplicate-injection idempotency across restart/compaction. Record actual
+  per-dispatch input/cost when observed and retain `unknown` otherwise; fan-out cost
+  must multiply by each actual provider dispatch rather than being reported once for
+  shared source text. Compare completion/quality to a no-memory baseline while also
+  measuring added context tokens and latency. Exercise `ProjectIdentity` resolution
+  across Thread creation, Run admission, memory capture/retrieve/search/export/purge,
+  and worker worktrees; all paths must use the same immutable `ContextScope`. Test
+  same-repo worktrees, distinct clones, moved repositories, explicit relink, monorepo
+  subdirectories, ambiguous/missing identity, and credential-bearing Git remotes.
+  Child worktrees inherit the parent Run identity; never key by basename or persist
+  raw remote URLs. Corrupt/newer identity records, symlink substitution, unsafe file
+  modes, state backup/restore, and lost identity must fail closed without minting a new
+  ProjectId or deleting memory. Replay the same dispatch ID under the same ContextEpoch and verify
+  the packet digest/source selection is stable and context is not appended/injected a
+  second time; an explicit epoch refresh may select changed records. Assert stable
+  rendering contains no volatile timestamp that breaks provider prefix reuse. The
+  Agents panel's read-only Context view must match the exact dispatched packet digest
+  and epoch, distinguish selected/excluded/stale/unavailable/unsupported sources, and
+  show bounded observed/estimated/unknown usage without exposing secrets. Changing a
+  profile memory setting affects only future attempts; it cannot rewrite an active
+  packet or make a previous context view appear current.
 - Audit and effect recovery (`AX-372`): verify current local keyed-MAC semantics and
   reject claims of public signature or off-box authenticity. Exercise key replacement,
   relocation, rotation, sink loss, and bundle verification under the selected proof
@@ -442,6 +517,12 @@ test-data revision.
   Reconnect must use durable cursors and report gaps; an SSE reconnect or peer UI
   source trace alone does not prove replay correctness. This pass inspected source
   only; it did not launch OpenCode's TUI or run HorizonCode UI tests.
+- UI/server history-boundary tests (OpenHands Canvas comparison): load a bounded recent
+  page, scroll older pages, inject a cursor gap, unsupported filter, empty fallback
+  page, out-of-order event, duplicate event, websocket resend, and optimistic echo.
+  The UI must mark incomplete coverage, replace projections from canonical replay, and
+  never let an optimistic bubble or empty fallback prove event absence, export
+  completeness, or Task evidence. Test reconnect and server restart independently.
 - Session-artifact fault matrix: concurrent writes racing the encoded-byte quota;
   oversize streaming without preallocation; temp-file symlink/replace races; duplicate
   digest with mismatching bytes; file flush, atomic rename, directory-flush and event
@@ -606,6 +687,13 @@ examples are not permanent fixtures; Go remains a subscription service. If no el
 model/account exists, report `not applicable` or `blocked` with evidence, never PASS.
 Do not run this live test by default in CI.
 
+Provider projection fixtures must include absent, malformed, and conflicting optional
+capability fields. In particular, a missing `tool_call` field must not enable tool
+calling; `supported | unsupported | unknown` must survive refresh, cache, route
+snapshot, UI explanation, and request-materialization paths. Unknown capability may
+not satisfy a required task capability and must not silently emit that feature in the
+provider request. Include refresh rollback and old-snapshot/new-catalog cases.
+
 ### UI, commands, settings, and accessibility
 
 - Use an actual terminal matrix: truecolor, 256-color, ANSI-16, monochrome,
@@ -637,6 +725,11 @@ Do not run this live test by default in CI.
   states, stale evidence, spec revision invalidation, integrated revision mismatch,
   and layout changes while events arrive. Clicking a worker opens its thread/detail but
   does not alter task state or implicitly cancel it.
+- Credential-boundary tests for a future desktop/web client must prove API keys and
+  session credentials do not reside in browser localStorage/sessionStorage as the
+  canonical secret store; a UI adapter receives opaque refs, redacts diagnostics, and
+  cannot turn confirmation policy or client-tool annotations into sandbox/confinement
+  evidence.
 - Workflow Builder tests (AX-377) cover typed parameters, graph cycle/missing dependency
   rejection, input validation, template version migration, changed-template digest,
   model/profile availability, permission ceiling, budget reservation, review-before-run,
@@ -663,7 +756,11 @@ Do not run this live test by default in CI.
   latency, peak transcript/search/tree size and allocation behavior on fixed terminal
   sizes and corpus digests. Measure HorizonCode process tree separately from provider
   or local model server. No RAM target becomes a release claim until a baseline and
-  reference hardware are published.
+  reference hardware are published. Include a large preloaded history with sustained
+  token deltas while scrolling/searching; measure allocations, render latency, retained
+  virtualized-window size, and whether stale events are coalesced without losing
+  durable boundaries. OpenHands Agent Canvas's array-copy event append is a source-path
+  risk signal, not a reproduced defect or an architecture to copy.
 - Every semantic color is configurable through `/settings`; validate contrast and
   preserve distinct status/error/warning/approval meaning without color. Preview before
   apply; invalid or conflicting palettes are rejected with a useful explanation.
@@ -699,6 +796,24 @@ Do not run this live test by default in CI.
   soft-warning "continue" response is not recorded as user approval to raise a hard
   budget. Reset/stale quota windows and Kilo-style ephemeral warning state are not
   valid defaults for HorizonCode persisted settings.
+- Provider quota-observer contract tests (AX-386) are distinct from model usage
+  accounting: verify per-provider/account in-flight coalescing, one waiter cancelling
+  without cancelling another, forced refresh under minimum intervals, persisted 429
+  backoff, 401/403 and unsupported states, timeout and malformed/partial multi-window
+  responses, reset rollover, last-good retention, cache bound/pruning/reopen, provider
+  failure isolation, and that the adapter cannot read raw credentials or write auth
+  state while `CMP-secrets` remains the only owner of its authorized token refresh.
+  Assert a provider quota response can never mutate/release a local budget reservation.
+  Test UI freshness and
+  status labels separately from source parsing.
+- Provider quota command tests must prove `/providers quota` and
+  `hzcode providers quota` read only the local cache, while explicit refresh requires a
+  supported documented endpoint and emits no credential/body data in output or audit.
+  Disabling background refresh must not disable explicit refresh; provider failure must
+  not block metadata refresh, inference, or another provider's quota view.
+  Project instructions/config cannot enable polling. Confirmed local clear/retention
+  removes whole observations and dependent analytics projections while leaving provider
+  credentials and remote account state unchanged.
 - Test notification preferences independently: per-event/per-channel disable, sound
   off, terminal bell off, quiet hours, rate limiting, desktop permission denied, and
   required approval/stop persistence. Muting sound or desktop delivery never hides the
@@ -765,6 +880,12 @@ Aider, Qwen Code, OpenHands, Goose). Use at least three pairs only as smoke evid
 publish sample size, distributions, confidence intervals or uncertainty, raw per-task
 outcomes, failures, and rerun policy. Do not compare public leaderboard scores as though
 they were same-condition trials.
+
+Treat event-store replay benchmarks separately from code-task benchmarks. The OpenHands
+SDK replay/index/recovery benchmark is a candidate only after its runtime repository,
+script, dataset, event corpus, and license are independently pinned and reviewed; it
+measures storage/replay behavior, not SWE-Bench issue-solving quality. Keep it in a
+separate lane and do not combine its score with coding-agent task success.
 
 ### Public benchmarks to include
 
@@ -931,4 +1052,7 @@ stale spec evidence, or hard-budget exhaustion blocks `accepted` status.
 
 Use deterministic provider fixtures to pin a managed attempt's selected route and ordered fallback list, then change/refresh the catalog while the attempt is active. Inject transport failures before content, partial text, tool-call deltas, auth/quota/policy/protocol errors, cancellation, and budget exhaustion. Verify that only the typed pre-content transient case can move to an already-pinned compatible route, that every dispatch gets its own immutable route and usage evidence, and that visible text/tool calls are never duplicated. Include stale route, endpoint/policy denial, incompatible context/tool/vision requirements, and crash/recovery between fallback reservation and provider dispatch.
 
-Prompt-cache fixtures cover automatic provider caching, explicit cache breakpoints, session-affinity/cache keys, unsupported routes, and local OpenAI-compatible endpoints. Confirm exact request encoding and reported cache-read/write usage for each supported adapter/model; generic API compatibility alone must leave cache support and savings `unknown`. Cached input remains a distinct accounting class and cannot reduce the recorded input total. Record provider ID/model/adapter version, capability and pricing digests, raw request fixture digest, usage source, and tested environment. These tests use no live service. A separately authorized live OpenCode Go check remains the narrow task in AX-364 and is not implied by P1 fixture success.
+Prompt-cache fixtures cover byte-stable request prefixes, explicitly supported cache-control encoding, session-affinity/cache keys, unsupported routes, and local OpenAI-compatible endpoints. Confirm request reconstruction and translation of separately reported cache-read/write usage for each supported adapter/model; generic API compatibility alone must leave cache support and savings `unknown`. Cached input remains a distinct accounting class and cannot reduce the recorded input total. Record provider ID/model/adapter version, capability and pricing digests, raw request fixture digest, usage source, and tested environment. Deterministic fixtures use no live service and cannot prove a remote cache hit or lower bill. A separately authorized live OpenCode Go check remains the narrow task in AX-364 and is not implied by P1 fixture success.
+
+
+Search query fixtures for AX-369 must include literal SQL/FTS wildcard characters (`%`, `_`, quotes), case-folding and Unicode normalization, alongside exact phrases; user text is literal unless wildcard syntax is explicitly designed and rendered in the UI. These cases prevent SQL `LIKE` implementation details from changing user intent.

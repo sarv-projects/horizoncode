@@ -105,7 +105,7 @@ All surfaces and services read/write through the store; no module opens the JSON
 
 ```
 $HORIZONCODE_HOME/sessions/<thread-id>/
-  header.json          # thread_id, format_version, workspace_id, run/task/attempt IDs?, parent_thread_id?, created_at, lineage
+  header.json          # thread_id, format_version, project_id, workspace_id, run/task/attempt IDs?, parent_thread_id?, created_at, lineage
   events/
     head.json          # last durably acknowledged seq + event digest; canonical commit watermark
     segment-<first-seq>.open   # bounded active segment; never exceeds configured ceiling
@@ -117,6 +117,10 @@ $HORIZONCODE_HOME/sessions/<thread-id>/
   manifest.json        # rebuildable format/index + sorted segment and artifact refs
 ```
 
+The canonical user-local project identity record is separate:
+`$HORIZONCODE_HOME/projects/<project-id>/identity.json`. It is owner-only state,
+not repository-controlled input.
+
 Copying the directory moves the Thread conversation and referenced blobs only; it does not copy, transfer, or resume an associated managed Run, Task, Attempt, workspace lease, permission grant, budget, effect, or verification state. Replay produces the same conversation projections on any host that supports its `format_version`, event/segment schema, and every referenced blob schema. A global `state.db` (SQLite) indexes all Threads for `list`/search and is always rebuildable by streaming headers and segments. `head.json` is the committed high-water mark and must match the last complete event digest; the ordered segment bytes plus the head are canonical. Seals detect segment truncation/reorder and bind each segment to its predecessor. `manifest.json`, SQLite, and cached offsets are rebuildable accelerators and cannot authorize skipping data or lowering the committed head. Directory enumeration/read errors fail closed. A separate explicit Run bundle may export approved specification/task/evidence metadata and artifact references under `ARCH/25`/`ARCH/28` policy; importing it creates a new Run identity, excludes credentials and live authority, and never claims that the workspace or external effects were transferred.
 
 ### `Thread` record
@@ -127,6 +131,7 @@ Copying the directory moves the Thread conversation and referenced blobs only; i
 | `run_id` | RunId? | present only when managed by a durable Run |
 | `task_id` | TaskId? | optional task association for navigation; not task ownership |
 | `attempt_id` | AttemptId? | attempt currently owning this conversation; a changed strategy creates a new Attempt and Thread |
+| `project_id` | ProjectId | stable user-local project scope; shared across explicitly linked workspaces/worktrees, never inferred from display name |
 | `workspace_id` | text | resolved workspace identity; re-resolved before any resumed write |
 | `parent_thread_id` | ThreadId? | set for delegated child Threads; parent linkage is not a task dependency |
 | `external_bindings` | bounded refs | peer-native Thread/Session IDs and negotiated capabilities; never authority or local identity |
@@ -452,6 +457,23 @@ maintenance pass. Turning search off can purge all derived content while preserv
 canonical thread history. Deleting/expiring a thread removes its message docs,
 aliases, and FTS entries transactionally with the authorized retention operation.
 
+### Model-facing history retrieval (proposed; `AX-385`)
+
+When compaction has removed prior visible messages from the provider context, the
+controller may materialize `history_search` and `history_read` through the planned
+shared `CMP-session` history/search API once AX-369 is implemented. Their Thread scope comes from the authenticated tool invocation;
+the model cannot supply another Thread ID or search the global archive. Search returns
+at most a bounded number of short excerpts and immutable message/event IDs. Read
+requires one of those references and a bounded page size, then revalidates the digest
+and authorization against the canonical Thread stream. Both tools return an explicit
+`COMPLETE | PARTIAL | EXPIRED | UNAVAILABLE` coverage state; no match under partial
+coverage is not a complete miss. Hidden reasoning, ephemeral deltas, uncommitted rows,
+and tool output excluded by the configured search preference are never retrievable.
+Results carry role/time/source refs, are framed as untrusted historical context, and
+cannot satisfy verification or restore permission/goal authority. Use the same
+rebuildable index and canonical event reader as UI search; do not create a second
+per-Thread archive or persistence owner. See `REQ-TOOL-007` and `ARCH/10`.
+
 The current workspace dependency is pinned at `Cargo.toml`/`Cargo.lock`; exact
 upstream implementation evidence and the local FTS5 build flag are recorded in
 [`ARCH/29`](29-SOURCE-TRACEABILITY.md#arch07) and the test plan. OpenChamber's pinned
@@ -643,6 +665,7 @@ Representative vocabulary (additive evolution only):
 | Table | Key | Purpose |
 |---|---|---|
 | `thread` | `id` | list/search; mirrors the header |
+| `project_workspace` | `(project_id, workspace_id)` | Rebuildable lookup into canonical user-local `projects/<project-id>/identity.json`; workspace aliases are explicit; raw remotes/credentials are excluded |
 | `thread_event` | `(thread_id, seq)` unique | rebuildable bounded-page index; `type`, `time`, `segment_id`, offset, event digest |
 | `thread_log_head` | `thread_id` | committed sequence/digest, segment digest, durability profile; verified against bytes before use |
 | `thread_log_segment` | `(thread_id, first_seq)` unique | range, event count/bytes, seal digest and predecessor; rebuilt/verified from files |
@@ -656,6 +679,20 @@ Representative vocabulary (additive evolution only):
 | `subagent_catalog` | `(thread_id, child_id)` | durable child facts inherited by forks |
 
 Constraints mirror the reference discipline: `seq` is unique and dense per thread, the committed log is append-only, and message/input/context rows are projections — never authoritative. The projection must stream/rebuild without holding the full log or full message history in memory.
+
+`ProjectIdentity` is persisted as a canonical, owner-only state record, not as an
+instruction from the repository. First enrollment creates an opaque UUID for the
+canonical workspace root. Git worktrees created by `CMP-orch` inherit the same
+ProjectId while receiving their own WorkspaceId. Independent clones remain separate
+until the user explicitly links them; moved roots require relink if the local mapping
+cannot verify them. Display names and directory basenames are labels only, and raw Git
+remote URLs (which may contain credentials) are never stored or hashed as identity
+material. The SQLite `project_workspace` mapping is a rebuildable projection; the
+owner-only `identity.json` record is canonical. Losing that record makes project
+identity `UNKNOWN` and disables project-memory retrieval until explicit recovery.
+Corrupt/newer-schema records, unsafe ownership/modes, and symlink substitutions are
+typed integrity failures. Recovery preserves existing project memories and requires
+an explicit relink; it never silently mints a replacement ProjectId.
 
 ### Context epoch
 

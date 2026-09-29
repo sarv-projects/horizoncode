@@ -40,7 +40,7 @@ steps in a turn (`CMP-runner` sets the bound; tools enforce the final guard).
 | Counterpart | Direction | Contract |
 |---|---|---|
 | `CMP-runner` | caller | `materialize(permissions) -> { definitions, settle }`; `settle(call, context) -> Settlement` |
-| `CMP-guard` | callee | `assert({ action, resources, save?, metadata?, sessionID, agent, source })` before any effect |
+| `CMP-guard` | callee | `assert({ action, resources, save?, metadata?, threadID, agent, source })` before any effect |
 | `CMP-mcp` | provider | registers mirrored remote tools with a namespaced name and its own permission action |
 | `CMP-sandbox` | callee | executes shell/patch effects through the confined process path |
 | `CMP-session` | write | tool call/result events; managed output paths |
@@ -160,6 +160,7 @@ engine.
 | Candidate | Fit and constraint | Status |
 |---|---|---|
 | Skill activation | Add a first-party invocation path for discovered skills: verify the listed digest, load only the selected body/references, frame all content as untrusted instructions/data, and run any script only through the governed process path. Discovery and `/skills list/show` currently exist; model invocation does not. | proposed; bounded under AX-110 follow-up |
+| Prior Thread history | After compaction, let a worker search/read bounded pages of its own committed, visible Thread history via the planned shared `CMP-session` verified history/search API after AX-369 is implemented. Use immutable event/message IDs, suppress hidden reasoning/transient content, label incomplete/unavailable, and frame results as untrusted context. Do not add a second archive or cross-Thread model search. | proposed under AX-385; depends on AX-369 and AX-379 |
 | Symbol/LSP navigation | Reuse repository-intelligence's versioned LSP/SCIP interface for symbol, references, diagnostics, and optionally rename previews. Do not duplicate an LSP client in the tool crate; edits still go through `edit`/patch and guard. Serena may be an MCP integration. | proposed; prioritize read-only calls |
 | Web search/fetch | Useful for documented tasks, but only through a mediated egress service with redirect revalidation, DNS/IP checks, private/link-local denial, byte/deadline caps, content provenance, and untrusted-result framing. | proposed; no direct arbitrary URL fetch |
 | MCP resources/prompts | MCP tools are already the first integration surface. Add resources/prompts only with user-visible provenance, URI allowlists, size bounds, change notifications, and explicit selection; do not silently inject server content. | staged proposal; validate pinned MCP revision first |
@@ -280,6 +281,22 @@ observable; otherwise report `UNSUPPORTED`/`UNKNOWN` without inventing a local a
 surface. Headless execution returns `NEEDS_INPUT` plus the stable request reference;
 it never guesses an answer, including under `--yes`.
 
+**Question and tool batch arbitration (`REQ-TOOL-006`).** Validate the full bounded
+provider response before any member can dispatch. If one valid `question` call shares
+the batch with other tool calls, persist the batch as `SUSPENDED_FOR_INPUT`, dispatch
+only the question request, and mark every sibling `SUPPRESSED_BY_QUESTION`; this
+includes otherwise-safe reads, since their results could influence effects that should
+wait for the user's clarification. After the durable answer receipt is committed,
+settle siblings with typed `not_run_question_boundary` results and resume the model so
+it can replan from the answer. The batch may contain only one question-tool call (that
+call may contain several question items). A malformed question, more than one question
+call, or any other malformed member rejects the whole unstarted batch and dispatches
+zero calls. Record the provider response/usage and the suppression receipts. Do not
+replay or infer sibling effects. An external ACP elicitation that arrives after calls
+have begun first fences new dispatch and requests cancellation; in-flight effects are
+reconciled individually and never assumed rolled back. This supplements, and does not
+replace, normal per-effect authorization.
+
 Answers are untrusted user content. They cannot grant effect authority, approve a
 goal, change policy, or pass a task. The question card is visually and behaviorally
 distinct from a permission request and goal-start confirmation (`ARCH/06`, `ARCH/25`).
@@ -301,7 +318,7 @@ finalizer removes its tools; in-flight calls fail typed (`Unknown tool`).
 Every `execute` calls the guard *before* touching any effect:
 
 ```
-assert({ action, resources, save?, metadata?, sessionID, agent, source })
+assert({ action, resources, save?, metadata?, threadID, agent, source })
 ```
 
 The tool's re-assertion immediately before its effect **consumes** the authorization
@@ -389,7 +406,7 @@ before any call in the malformed response is dispatched (`ARCH/25` ToolBatch).
 
 `todowrite` is a typed, bounded progress update for the current attempt, not a
 filesystem or general session-store write. `CMP-runner` validates and appends the
-attempt-local progress event; workers cannot write canonical session/run events,
+attempt-local progress event; workers cannot write canonical Thread/Run events,
 change task/evidence states, approve requirements, or mint verification evidence
 through this tool. Its projection is recoverable from the event and never becomes the
 completion source of truth.
@@ -519,6 +536,8 @@ only reflects the resulting advertised set.
 | `REQ-TOOL-003` | Permission-filtered materialization removes wholly-denied tools. |
 | `REQ-TOOL-004` | Settlement splits model content from UI detail. |
 | `REQ-TOOL-005` | Name validation `^[A-Za-z][A-Za-z0-9_-]{0,63}$`. |
+| `REQ-TOOL-006` | Question calls form a tool-batch control boundary; valid mixed batches suspend without siblings, invalid/multiple calls dispatch nothing, and external elicitation fences/reconciles. |
+| `REQ-TOOL-007` | Optional bounded history retrieval uses the planned shared CMP-session owner; only current Thread visible committed records, with stable references and untrusted-data framing. |
 | `REQ-LOOP-003` | Parallel-safe vs exclusive declarations + scheduler barriers. |
 | `REQ-LOOP-005` | Aborted calls yield typed partial results. |
 | `REQ-GUARD-001..004` | Guard asserted per call; fail closed; remembered patterns. |
@@ -526,7 +545,7 @@ only reflects the resulting advertised set.
 | `REQ-PROTO-005` | Headless/ACP behavior with no surface-owned loop logic. |
 | `REQ-SEC-002/003` | Tool output is untrusted. Targets are validated before use, but the ownership is split: `CMP-guard` authorizes (allow/ask/deny) and `CMP-sandbox` enforces reach — the tool plane only extracts resources and may raise, never lower, a decision. |
 | `REQ-SEC-025` | Path-shaped shell arguments are extracted into `fs.*` resources on one guard request alongside the command-prefix resource; deny-glob → `deny`, outside-root → `ask`, unconfineable tier → refuse, all decided by the guard (`DEC-024`, `DEC-025`). |
-| `REQ-HORIZON-031` | Agent-message tools use controller-authenticated run/attempt identity, explicit same-Run recipients, guarded bounded posting, and safe-boundary Session inbox promotion (`ARCH/32`). |
+| `REQ-HORIZON-031` | Agent-message tools use controller-authenticated run/attempt identity, explicit same-Run Thread recipients, guarded bounded posting, and safe-boundary Thread-inbox promotion (`ARCH/32`). |
 
 ## Open questions
 

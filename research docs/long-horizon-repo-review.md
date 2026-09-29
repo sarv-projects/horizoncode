@@ -38,6 +38,37 @@ test `backend/tests/test_checkpoint_lineage.py::test_unknown_pending_tasks_do_no
 documents that compatibility behavior. Do not generalize the strict lineage guarantee
 to that fallback, and do not copy the permissive fallback into HorizonCode recovery.
 
+### 2026-09-29 clarification and compacted-history follow-up
+
+Pinned DeerFlow `8a3a309d1ce8bac8418251be29d4e4297a20c5eb`. This was not an exhaustive
+source read: the inventory contains 3,375 tracked files and 2,700 selected code files
+(776,316 lines); 10 were read fully, 14 partially, and 2,676 not fully read. The
+per-file coverage ledger is
+[`source-audit-coverage/deer-flow-8a3a309d.csv`](source-audit-coverage/deer-flow-8a3a309d.csv).
+No tests were run.
+
+DeerFlow's clarification middleware filters a response containing a valid or malformed
+`ask_clarification` from its sibling tool calls:
+[`clarification_middleware.py:75-94,396-447`](https://github.com/bytedance/deer-flow/blob/8a3a309d1ce8bac8418251be29d4e4297a20c5eb/backend/packages/harness/deerflow/agents/middlewares/clarification_middleware.py).
+That behavior highlighted a missing sentence in HorizonCode's batch LLD, now owned by
+`REQ-TOOL-006`/`AX-380`: validate before dispatch, suspend all siblings for one valid
+question, and reject malformed/multiple question calls without side effects. This is a
+proposed HorizonCode contract, not a copy of DeerFlow's middleware.
+
+DeerFlow also exposes bounded `history_search`/`history_read` tools for pre-compaction,
+visible history with stable source references and explicit unavailability:
+[`task_continuity/tools.py`](https://github.com/bytedance/deer-flow/blob/8a3a309d1ce8bac8418251be29d4e4297a20c5eb/backend/packages/harness/deerflow/agents/task_continuity/tools.py),
+[`archive.py`](https://github.com/bytedance/deer-flow/blob/8a3a309d1ce8bac8418251be29d4e4297a20c5eb/backend/packages/harness/deerflow/agents/task_continuity/archive.py),
+and [durable-context framing](https://github.com/bytedance/deer-flow/blob/8a3a309d1ce8bac8418251be29d4e4297a20c5eb/backend/packages/harness/deerflow/agents/middlewares/durable_context_middleware.py).
+HorizonCode has canonical Thread history and a proposed `CMP-session` FTS/history API,
+but no model-facing retrieval tool. `ContextItem.source=session` is selection metadata,
+not a retrieval interface; UI search (`AX-369`) likewise does not automatically expose
+history to an agent. Proposed `AX-385` adds only bounded, current-Thread wrappers over
+the same verified history/index owner; it adds no archive store, excludes hidden
+reasoning and disabled tool output, reports partial/expired coverage, and treats
+retrieved text as untrusted context rather than evidence. `AX-385` depends on `AX-369`
+and Thread identity migration `AX-379`.
+
 **HorizonCode disposition:** incorporate a post-evaluation revision/input recheck,
 bounded continuation/no-progress policy, and lineage-aware checkpoint retention into
 `ARCH/25` acceptance cases. Keep independent code/task verification; DeerFlow's goal
@@ -93,6 +124,35 @@ route only. This does not demonstrate universal prompt-cache behavior. **Horizon
 disposition:** represent cache capability/request/usage per provider and model; preserve
 unknown when unreported; test each provider route. Keep strict projection validation,
 goal revisions, and durable input inbox patterns as candidates for `ARCH/07`/`ARCH/25`.
+
+### DeepSeek Harness cache follow-up (2026-09-29)
+
+Pinned at `4878cdabd87d4041bdaff61d04c966883b9fd07a`. This remained a targeted review:
+14,004 tracked paths; 5,484 selected code files / 1,144,523 source lines; 2 full,
+9 partial, and 5,473 not fully read. See the [coverage ledger](source-audit-coverage/deepseek-harness-4878cdab.tsv).
+
+The follow-up traced prefix and system-prompt semantics. Cache reuse depends on a
+byte-identical prefix for the same route; usage separates input, cache-read, and
+cache-creation counts. DeepSeek Harness supports appending a changed system prompt
+inside history only for models whose endpoint defines a later system message as the
+complete effective prompt. It validates that route-specific option, and its integration
+tests are DeepSeek-only and opt-in. Relevant pinned paths: `packages/core/agent-loop/README.md`
+“KV Cache effect”; `packages/llm/llm-deepseek/src/translate.ts:34-43,143-160`;
+`packages/llm/llm/src/types.ts:167-188`; `packages/llm/llm-pi-ai/src/config.ts:153-160,326-349`;
+`packages/core/agent-loop/src/agent.ts:410-417`; and
+`packages/llm/llm-deepseek/tests/runtime.e2e.ts:357-443`.
+
+HorizonCode already requires deterministic provider rendering, stable prefix ordering,
+route-pinned cache capabilities, separate provider-reported usage, and unknown on
+missing evidence (`ARCH/09`, `ARCH/11`, `ARCH/19`, `ACC-P1-18`, `AX-384`). This review
+adds only a route-specific `in_history_system_prompt_update` capability. Complete
+effective-prompt replacement remains the safe default; the optimization is enabled
+only when exact request-construction tests prove the effective prompt after update,
+removal, compaction, resume, and tool-schema changes. It is independent from cache-hit
+support. Deterministic fixtures prove request bytes/usage parsing, not remote cache hits
+or lower billing; those require separately authorized route-specific live conformance.
+Do not copy DeepSeek auth/model assumptions, cache block sizing, or prompt-update
+semantics to other providers.
 
 ## DeepCode
 

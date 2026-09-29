@@ -83,7 +83,7 @@ system-wide run/work admission sequencer; updater code cannot kill or mark a run
 complete. The initial contract defers replacement until all Runs are terminal and
 all worker/direct-turn permits and effects are settled. `CMP-orch` then owns the
 atomic maintenance fence: it closes admission for new runs/work, validates canonical
-run/session/control state, and grants a one-use `MaintenancePermit` bound to the
+Run/Thread/control state, and grants a one-use `MaintenancePermit` bound to the
 update operation, install identity, controller generation, and current binary digest.
 The fence remains held through activation and health check or rollback. If quiescence
 cannot be proved, the permit expires, or the controller is unavailable, activation

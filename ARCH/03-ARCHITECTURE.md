@@ -42,7 +42,7 @@ A **single Rust workspace** producing one core executable per platform where fea
 │     Guard → sandbox/egress → effects; Audit records effect truth   │
 │                                      │                              │
 │                                      ▼                              │
-│   session/run streams · SQLite projections/indexes · audit chain    │
+│   Thread/Run streams · SQLite projections/indexes · audit chain    │
 │   · immutable artifacts · Git workspaces/checkpoints                 │
 └─────────────────────────────────────────────────────────────────────┘
                  │ model traffic                    │ external tools
@@ -76,7 +76,7 @@ target component and is not implemented at the source snapshot above.
 |---|---|---|---|
 | `CMP-runner` | Runner / Loop | Control | One admitted turn's provider/tool step loop, continuation, cancellation and terminal receipt; `CMP-orch` grants system-wide run/work admission before dispatch |
 | `CMP-execution-host` | Worker execution host | Runtime boundary | Idempotent local process launch, process/adapter handle ownership, heartbeat and exit observation, termination, and restart observations for `WorkerExecution`; no durable task-state, permission, or verification authority |
-| `CMP-session` | Thread store | Persistence | Durable HorizonCode Threads (legacy component/crate name), segmented event log, committed head, bounded replay, read-only listing, explicit recovery, checkpoints, canonical Thread artifact references, and the rebuildable message/title search projection plus verified navigation (`ARCH/07`) |
+| `CMP-session` | Thread store | Persistence | Durable HorizonCode Threads (legacy component/crate name), segmented event log, committed head, bounded replay, read-only listing, explicit recovery, checkpoints, canonical Thread artifact references, user-local ProjectIdentity/workspace registry, and rebuildable message/title search projection plus verified navigation (`ARCH/07`) |
 | `CMP-artifact` | Artifact store | Persistence | Scoped immutable payload bytes, digest verification, bounded reads, physical emergency-space reservation, owner pins, import/export staging and safe garbage collection (`ARCH/28`) |
 | `CMP-context` | Context engine | Capability | Assembly, budget, task-specific repo context, selection, compaction, pins/excludes; consumes revision/freshness evidence from `CMP-repo-intel` |
 | `CMP-repo-intel` | Repository intelligence | Capability | Lazy, incremental, revision-bound file/symbol/reference/diagnostic map; lexical fallback and task-scoped context packages (`ARCH/09`); no separate authority or duplicate index owner |
@@ -86,7 +86,7 @@ target component and is not implemented at the source snapshot above.
 | `CMP-orch` | Durable run controller | Control plane | Durable task DAG, system-wide `SupervisorControlStream` and cross-process run/work/maintenance admission, budget/event-storage reservations, physically allocated control reserve, fenced leases, stop/recovery, sub-agent scheduling, bounded Run-scoped agent mailbox/delivery reconciliation, durable `WorkerExecution` lifecycle reconciliation, merge arbitration; invokes independent verifier (`ARCH/16`, `ARCH/25`, `ARCH/32`) |
 | `CMP-guard` | Policy guard | Trust | Ordered allow/ask/deny rules; approval lifecycle |
 | `CMP-sandbox` | Sandbox | Trust | Platform confinement through explicitly selected backends; current Linux namespaces and macOS Seatbelt source; Windows backend unavailable; Landlock/seccomp remain target layers, not current guarantees |
-| `CMP-secrets` | Secret broker | Trust | Credential resolution; redaction; never-log guarantees |
+| `CMP-secrets` | Secret broker | Trust | Credential references/resolution; brokered-value non-disclosure; bounded known-value/pattern redaction |
 | `CMP-audit` | Audit log | Trust | Append-only hash-chained execution record; verification |
 | `CMP-acp` | ACP edge | Surface | ACP server (stdio) and client modes; protocol mapping |
 | `CMP-mcp` | MCP edge | Capability | MCP host: server lifecycle, tool/resource/prompt mirroring, dedupe |
@@ -130,7 +130,7 @@ Terminal states: `completed | failed | interrupted | declined`. Exactly one per 
 1. **Surfaces ↔ control.** TUI, headless, and ACP are thin clients of one control interface. No surface contains loop logic (`REQ-PROTO-005`).
 2. **Tools ↔ policy.** Tools are pure definitions; the registry materializes a permission-filtered set; the guard authorizes effects. A denied tool is absent, not merely blocked (`REQ-TOOL-003`).
 3. **Capability ↔ trust.** Every effectful capability call passes through the guard and sandbox and appends to audit. No privileged shortcut exists.
-4. **Data ↔ control.** Persistence is event-sourced; the model-visible context is a projection, never the source of truth. Session/run logs own artifact references; `CMP-artifact` owns immutable bytes and rebuildable indexes, not run or session truth.
+4. **Data ↔ control.** Persistence is event-sourced; the model-visible context is a projection, never the source of truth. Thread/Run logs own artifact references; `CMP-artifact` owns immutable bytes and rebuildable indexes, not Run or Thread truth.
 5. **Protocols are edges.** ACP/MCP adapt to the control plane; they never re-implement it. ACP communicates with an agent after it is found and enabled; it is not itself the profile registry or installer.
 6. **Commands are dispatch descriptors, not another command engine.** `CMP-command` resolves a stable command ID and typed arguments, then invokes the owning control/config/analytics/guard service. TUI and headless syntax stays separate where appropriate.
 7. **Extension families stay distinct.** Agent adapters, provider adapters, MCP servers, skills, plugins, tools, panels, and commands have different trust and lifecycle contracts even when discovered through a shared catalog UI.
@@ -143,7 +143,7 @@ Terminal states: `completed | failed | interrupted | declined`. Exactly one per 
 | TUI | `ratatui` + `crossterm` | Mature; retained control of cells; one binary |
 | Async runtime | Tokio | Cancellation, timers, process and network IO |
 | HTTP | `reqwest` | Provider transports |
-| Persistence | SQLite (`rusqlite`) projections/indexes plus segmented session/run event streams, a separate audit chain, and immutable artifact storage | Each store has one authority and explicit replay/reconciliation links; a single JSONL log is not the entire persistence architecture (`ARCH/07`, `ARCH/14`, `ARCH/25`, `ARCH/28`) |
+| Persistence | SQLite (`rusqlite`) projections/indexes plus segmented Thread/Run event streams, a separate audit chain, and immutable artifact storage | Each store has one authority and explicit replay/reconciliation links; a single JSONL log is not the entire persistence architecture (`ARCH/07`, `ARCH/14`, `ARCH/25`, `ARCH/28`) |
 | Git | `gitoxide`, shelling to system git for worktrees | Worktree isolation and diff/status |
 | Parsing | `tree-sitter` | Repo map, syntax highlight |
 | Language servers | LSP client | Symbols and diagnostics |
@@ -158,7 +158,7 @@ Terminal states: `completed | failed | interrupted | declined`. Exactly one per 
 
 - **One provider/model catalog service, multiple explicit sources.** The executable resolves a small curated, provenance-bearing primary offline. OpenCode's provider/model metadata source is a documented, automatically refreshed data feed, enabled by default and disableable in settings; generic enrichment remains opt-in. Catalog breadth is separate from adapter/auth support, and no feed grants credentials, loads code, or changes arbitrary endpoints (`DEC-021`, `DEC-060`).
 - **One route abstraction.** A route is the orthogonal tuple `Protocol × Endpoint × Auth × Framing`, plus defaults. Vendor quirks live in protocol adapters, not in the loop (`REQ-PROV-003`).
-- **One executor.** Bounded retries with exponential jitter and `Retry-After`; typed failure reasons; full secret redaction.
+- **One executor.** Bounded retries with exponential jitter and `Retry-After`; typed failure reasons; brokered-credential non-disclosure and bounded redaction of recognized secret patterns. Arbitrary workspace text is not claimed to be perfectly secret-scanned (`REQ-SEC-009`, `ARCH/22`).
 - **One router.** Policy-driven selection (cost, latency, capability, tags), optionally eval-gated; every decision observable (`REQ-PROV-005`).
 - **Native Rust OpenCode integration.** The general OpenCode feed and Go `/models` directory are separate fixed-origin data sources; the Go connector uses the user's own eligible Go API key for inference and HorizonCode's own request identity. Go model IDs cannot choose endpoint paths or protocols: a locally versioned route map binds documented `/responses`, `/chat/completions`, and `/messages` paths to native Rust adapters, and unknown/new models remain visible but unavailable until a compatible signed HorizonCode release adds and verifies a mapping. Adapter changes ship in HorizonCode releases; metadata refresh cannot download executable behavior (`DEC-060`, `ARCH/11`).
 - **Pinned routes.** Active attempts pin an immutable provider/model descriptor and adapter snapshot. Metadata refresh changes only future picker/route choices; changing a live route requires an explicit controller-mediated replan.

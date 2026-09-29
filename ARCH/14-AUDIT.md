@@ -32,8 +32,11 @@ with operational events. Audit reads and exports are themselves access-controlle
   non-recursive access receipt to a separately verifiable access-evidence stream
   before disclosing audit content. If that receipt cannot be made durable, refuse the
   disclosure (`REQ-AUDIT-008`, `DEC-044`).
-- Guarantee **secret redaction**: credentials never enter an entry
-  (`REQ-PROV-004`, `REQ-AUDIT-003`).
+- Guarantee **brokered-credential non-disclosure**: broker-resolved credential values
+  and typed secret fields never enter an audit entry. Apply known-value and bounded
+  pattern redaction to allowlisted metadata; arbitrary unstructured text is excluded,
+  rejected, or kept behind an explicit artifact/access policy and is not claimed to be
+  perfectly secret-scanned (`REQ-PROV-004`, `REQ-AUDIT-003`, `ARCH/22`).
 - Reference durable receipts for effects rather than duplicating payloads.
 - **Authenticate and anchor** finalized segment roots at a declared anchoring level —
   the current device-key MAC is local verification only; any future portable or
@@ -548,7 +551,7 @@ sizes remain open until benchmarked against long-run workload and disk-failure t
 |---|---|
 | `REQ-AUDIT-001` | Every individual effect has a prepared intent and one terminal receipt under a stable ID; reconciliation checks the mapping. |
 | `REQ-AUDIT-002` | Hash chain + Merkle roots with an `audit verify` command that states what it does and does not prove. |
-| `REQ-AUDIT-003` | `CMP-secrets` redaction pass before any entry is chained. |
+| `REQ-AUDIT-003` | `CMP-secrets` blocks broker-resolved credential values and typed secret fields, then redacts configured/broker-known values and bounded recognized patterns before chaining allowlisted metadata. Arbitrary free text is not claimed to be perfectly scanned; see the residual in `ARCH/22`. |
 | `REQ-AUDIT-004` | Root authentication is non-disableable and its algorithm/key owner are explicit. The current BLAKE3 keyed MAC is local-only. `local-sink` is the target default; off-box verification requires independently verifiable public-key proof or trusted counter-signature. A configured-but-unreachable sink fails closed; do not describe the local MAC as a public signature. |
 | `REQ-AUDIT-005` | Class census and per-effect reconciliation both fail on gaps. |
 | `REQ-AUDIT-006` | Cross-store consistency invariant with the Thread log and analytics ledger (`DEC-020`). |
@@ -557,7 +560,7 @@ sizes remain open until benchmarked against long-run workload and disk-failure t
 | `REQ-AUDIT-009` | `audit_seq` is globally monotonic; `segment_seq` is local to a segment; verify is read-only and authorized repair creates a separate, provenance-linked artifact. |
 | `REQ-AUDIT-010` | The OS-backed lock serializes writers across processes before head/segment/sequence reads; lock loss fences the writer. |
 | `REQ-AUDIT-011` | Missing/corrupt/inaccessible/incompletely enumerated state is distinct from a new empty store; readers fail typed and normal writer startup refuses implicit repair. |
-| `REQ-PROV-004` | Credentials never appear in audit entries; provider calls logged as counts/refs only. |
+| `REQ-PROV-004` | Broker-resolved credentials are not logged; provider calls use typed counts/refs and bounded redaction. Arbitrary echoed content remains subject to the `ARCH/22` residual. |
 | `REQ-SESS-002` | Replay reconstructs a Thread timeline from persisted evidence. |
 | `REQ-SESS-004` | Model, mode, and permission configuration recorded with the Thread. |
 | `REQ-HORIZON-003` | Cost entries feed enforceable, fail-closed budgets. |

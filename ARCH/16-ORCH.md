@@ -13,11 +13,11 @@ Run units of work — native workers, external agents, background jobs, and depe
 - **Depth/count guard.** Enforce max depth, max total per tree, max parallel, and per-lane concurrency from configuration; a spawn may narrow these but never widen them (`REQ-ORCH-005`).
 - **Permission derivation.** A child's effective authority is the parent's ceiling intersected with the spawn's declared scope; no child ever exceeds its parent.
 - **Receipts.** Schema-validated summaries (status, scope, summary, findings, changed files, tests, artifacts, blockers, confidence, usage, partial marker) delivered under a no-authority header. Full transcripts stay in the child's own log.
-- **Agent messaging.** Own a bounded, optional Run-scoped mailbox for explicit operator/worker recipients; append message and delivery facts to the existing Run stream and bridge recipients through idempotent `CMP-session` inbox receipts. The mailbox is not another task graph, thread tree, policy owner, or completion authority (`REQ-HORIZON-031`, `ARCH/32`).
+- **Agent messaging.** Own a bounded, optional Run-scoped mailbox for explicit operator/worker recipients; append message and delivery facts to the existing Run stream and bridge recipients through idempotent `CMP-session` Thread-inbox receipts. The mailbox is not another task graph, thread tree, policy owner, or completion authority (`REQ-HORIZON-031`, `ARCH/32`).
 - **Isolation.** Read-only in-process, git worktree, or ACP as per-spawn options; write-capable workers MUST use a fenced worktree or a serialized governed write channel. `inprocess` is never the default for concurrent mutation (`REQ-ORCH-002`).
 - **Background jobs.** Fire-and-forget children that do not block the parent turn; completion wakes the parent at a boundary only when it is live and the child was not cancelled.
 - **Execution lifecycle.** Persist each process/adapter incarnation as `WorkerExecution` in the run stream. `CMP-execution-host` owns idempotent spawn/observe/terminate mechanics; `CMP-orch` owns the durable execution state, fencing, reconciliation, retry eligibility, and attempt/task truth. A PID or peer handle disappearing is `UNKNOWN` until reconciled; a process exit never means Task `PASSED` (`REQ-HORIZON-028`).
-- **System-wide admission sequencer.** Own the durable `SupervisorControlStream` and cross-process admission lock. Run admission, every model-driven worker or direct-turn execution, and executable maintenance are serialized here; each grant is acknowledged only after its control event and canonical run/session record reconcile. This prevents direct turns outside a durable Run from racing an update, and makes one global admission decision authoritative without moving task truth out of per-run streams (`REQ-HORIZON-029`, `ARCH/25`, `DEC-062`).
+- **System-wide admission sequencer.** Own the durable `SupervisorControlStream` and cross-process admission lock. Run admission, every model-driven worker or direct-turn execution, and executable maintenance are serialized here; each grant is acknowledged only after its control event and canonical Run/Thread record reconcile. This prevents direct turns outside a durable Run from racing an update, and makes one global admission decision authoritative without moving task truth out of per-run streams (`REQ-HORIZON-029`, `ARCH/25`, `DEC-062`).
 - **Application maintenance fence.** Before a signed update replaces the executable, atomically close admission for new runs and all new model-driven worker/direct-turn executions, prove that no active or unknown execution/effect remains, and issue a one-use `MaintenancePermit` bound to the update operation, install identity, controller generation, and current binary digest. Keep the permit/fence through replacement and health check or rollback. On controller restart, reconcile the updater and helper before reopening admission; expiry alone cannot release an uncertain fence (`REQ-UPDATE-005`, `ARCH/30`).
 - **Durable task graph.** A persisted DAG with dependencies, per-node budgets (tokens, cost, wall-clock, tool-calls), attempts, artifacts, and resumability across compaction and restart (`REQ-HORIZON-002`).
 - **Worktree lifecycle.** Create, key, lease, diff, merge, and reap worktrees.
@@ -33,7 +33,7 @@ Run units of work — native workers, external agents, background jobs, and depe
 - `CMP-execution-host` — host process lifecycle and reconciled launch/exit receipts; it cannot change run/task/attempt states.
 - `CMP-runner` — one run per child Thread; parent/child cancellation tokens.
 - `CMP-guard` — permission derivation and approval routing for child asks.
-- `CMP-context` — per-child context assembly; `fork` policy (none/bounded/full) with a bounded inherited snapshot, never the parent transcript.
+- `CMP-context` — per-child context assembly; explicit `ContextPacket` and `fork` policy (none/bounded/full); bounded forks name exact visible source references and never copy the rendered parent prompt implicitly.
 - `CMP-provider` — model selection per child role.
 - `CMP-acp` — transport for ACP-isolated children (`REQ-PROTO-004`).
 - `CMP-sandbox` — path-scoped worktree writes.
@@ -78,13 +78,14 @@ execution's full lifetime.
 **SubagentOptions / SubagentRef.** `worker` resolves to an `AgentProfile` in
 `ARCH/27`; a role is a selection policy that yields a profile or native role adapter,
 not an arbitrary executable path. The resolved profile revision and capability
-snapshot are pinned to every `AgentAttempt`.
+snapshot are pinned to the canonical `Attempt` as an immutable worker-binding
+snapshot; they do not create a second attempt aggregate.
 
 ```
 SubagentOptions {
   worker: role|profile_id,
   task: { objective, prompt?, success_conditions? },
-  context: { fork: none|bounded|full, refs[] },
+  context: { fork: none|bounded|full, refs[], memory_policy?: none|relevant_shared|shared_and_profile },
   tools?: loadout_ref,
   model?: ModelRef|inherit|peer_managed, # accepted only if adapter can apply/report it
   isolation: readonly_inprocess|worktree|acp, # write isolation is explicit
@@ -94,7 +95,34 @@ SubagentOptions {
   delivery: { await?: bounded(ms)|none, wake?: bool = true, surface?: parent|ui }
 }
 SubagentRef { agent_id, nickname?, thread_ref, work_id, status, parent_turn_id }
+
+ContextPacket {
+  packet_id, dispatch_id, packet_digest, run_id, task_id, attempt_id, thread_id,
+  context_epoch_id, project_id, context_scope_digest,
+  approved_task_contract_ref, spec_digest, selected_source_refs[],
+  instruction_refs[], skill_refs[], memory_refs[],
+  permission_snapshot_digest, workspace_revision, byte/token_budget,
+  omitted_context[], created_seq
+}
 ```
+
+`CMP-context` builds each packet independently from the child's task and pinned
+workspace, not by copying the parent's rendered prompt. `fork=none` is the default.
+The optional spawn-level memory policy only narrows the AgentProfile policy and the
+user/managed ceiling; it cannot enable memory on its own.
+`bounded` may carry only explicitly referenced, committed, user-visible history within
+the task budget and effective memory policy. `full` is a native-only, same-trust
+boundary exception requiring explicit user authorization; external adapters cannot
+receive an implicit full transcript. Agent profile memory is off by default. When
+enabled, only accepted, current, relevant records from the profile's authorized
+user/project namespace may be added, and each exact revision/digest is recorded in the
+child ContextEpoch. Parent/sibling memory and transcript are not implicitly inherited.
+The child can only submit new memory candidates through `CMP-memory`; it cannot write
+accepted records directly. External adapters default to no memory injection unless
+user/managed policy and negotiated data-egress capability both allow the specific
+loadout. UI/usage reports show which source classes were included, excluded or stale;
+provider-reported input usage is attributed to each actual child dispatch, so fan-out
+cost is not hidden or counted as shared once.
 
 **Receipt** — `{status, scope, summary, findings[], changed_files[], tests[], artifacts[], blockers[], confidence, usage, will_wake, partial}`. Receipts are untrusted data: scanned for instruction-shaped content and size-capped, with a full-log artifact ref when larger.
 
@@ -126,7 +154,7 @@ changes scheduler behavior.
 
 ## Lifecycle & flows
 
-1. **Spawn.** Validate against depth/count/concurrency bounds → derive permission ceiling → create the child Thread → return `SubagentRef` immediately. Spawn is never coupled to child completion unless a bounded `await` is requested.
+1. **Spawn.** Validate against depth/count/concurrency bounds → derive permission ceiling → build and persist the bounded `ContextPacket` and its digest → reserve packet and dispatch budget → create the child Thread → return `SubagentRef` immediately. A child cannot start before packet provenance, project identity, workspace revision, and policy snapshot are pinned. The stable dispatch ID makes a retried spawn return the same packet/receipt instead of injecting duplicate context; an intentional refresh creates a new ContextEpoch. Spawn is never coupled to child completion unless a bounded `await` is requested.
    Before spawning, estimate prompt/context replay, expected wall-time, verification and merge cost. If the task is not independent or its projected overhead exceeds its budget/value, run sequentially or decline delegation (`REQ-ORCH-006`).
 2. **Run.** The child runs an ordinary turn loop with its own context and tools. A background child emits typed progress; it does not steal parent focus.
 3. **Completion.** Two modes: a bounded foreground wait (park the parent on the child) or a queue-only wake at a turn boundary. Wake is suppressed unless the parent is live and the child was not cancelled. A bounded wait that overruns its budget auto-backgrounds rather than freezing the parent.
@@ -136,7 +164,7 @@ changes scheduler behavior.
 7. **Merge arbitration.** Order candidates by a stable topological order then task ID from pinned base revisions; completion timing is not an input. Apply clean patches; on conflict, stop that branch and record evidence. Reverify the combined integration revision.
 8. **Task graph.** Nodes become ready only when every dependency has current independent `PASS` evidence bound to the approved spec and tested revision. The graph persists and resumes after compaction or restart; a resumed node reuses an effect or result only after reconciliation.
 9. **Team run + CI.** Fan out a backlog within concurrency bounds; feed CI results back as node evidence; clean work applies, conflicts surface.
-10. **Peer coordination.** Check sender capability and recipient membership, reserve bounded event/inbox resources, append one Run message event and idempotent per-recipient outbox IDs, then admit references to eligible Session inboxes. Promote only at a safe provider-turn boundary. Never wake or restart paused/terminal workers; a message never changes Task state. Full schema and recovery semantics are in `ARCH/32`.
+10. **Peer coordination.** Check sender capability and recipient membership, reserve bounded event/inbox resources, append one Run message event and idempotent per-recipient outbox IDs, then admit references to eligible Thread inboxes. Promote only at a safe provider-turn boundary. Never wake or restart paused/terminal workers; a message never changes Task state. Full schema and recovery semantics are in `ARCH/32`.
 
 **Scheduling & concurrency.**
 - Independent nodes dispatch in parallel up to `max_parallel`; dependent nodes wait on a settle barrier.
@@ -160,7 +188,7 @@ the canonical `SupervisorControlStream`. That same sequencer arbitrates new run 
 and every model-driven worker/direct-turn execution, so the decision cannot race a
 client that bypasses the durable Run API. Before granting, the controller reconciles
 all Run, task, worker, direct-turn, external-effect, and recovery state against canonical
-run/session streams and active host/peer observations. It refuses a permit if any
+Run/Thread streams and active host/peer observations. It refuses a permit if any
 execution/effect is active or `UNKNOWN`, a control intent is unresolved, a projection
 is stale, or a required recovery reserve is unavailable. A concurrent start or work
 dispatch receives typed `maintenance_in_progress` and cannot create unowned work or
@@ -193,7 +221,7 @@ and enter typed recovery; do not allow a new run to race a possibly partial swap
 | Update requested while a Run, work permit, or effect is nonterminal/unknown | Do not issue a permit; stage/defer the update and preserve normal run/work admission |
 | Run start or direct-turn dispatch races maintenance acquisition | `SupervisorControlStream` arbitration chooses one winner; maintenance blocks new run/work admission with `maintenance_in_progress`, or already admitted work/nonterminal Run makes update acquisition return `Busy` |
 | Worker/turn caller disconnects before settle receipt | Keep the permit `UNKNOWN`; reconcile against the canonical Thread/run stream and host/peer before maintenance or a replacement writer is allowed |
-| Run/session record write fails after admission intent | Do not acknowledge admission; retain the unresolved intent, reconcile the canonical stream/launch receipt, and fail closed for conflicting work or maintenance |
+| Run/Thread record write fails after admission intent | Do not acknowledge admission; retain the unresolved intent, reconcile the canonical stream/launch receipt, and fail closed for conflicting work or maintenance |
 | Supervisor stream is corrupt, newer-schema, or its lock/durability cannot be established | Refuse admission and update activation; surface typed recovery/unsupported-backend state rather than falling back to a stale SQLite count |
 | Controller/helper crashes with a maintenance permit | Keep admission fenced until process, binary digests, and swap outcome are reconciled; expiry alone never releases it |
 | Duplicate receipt delivery | At-most-once per parent incarnation |

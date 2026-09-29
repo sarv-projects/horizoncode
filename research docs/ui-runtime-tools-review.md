@@ -48,6 +48,12 @@ binary. GPL source is not copied.
 
 ## OpenHands is not one runtime
 
+The scoped Agent Canvas frontend inventory at pin
+`f174ba8465233e46e66ab2c5667b358f1d6676d6` contains 2,379 tracked files and 2,094
+selected source candidates: 4 full, 6 partial, and 2,084 unread. This is not a full
+frontend or runtime audit. See the [coverage ledger](source-audit-coverage/openhands-frontend-f174ba84.csv)
+and [cross-source findings](source-audit-coverage/targeted-superset-openhands-findings.md).
+
 The checked OpenHands/OpenHands head is Agent Canvas (frontend/control plane); it
 delegates runtime ownership to separate Software Agent SDK/Agent Server projects. Do
 not attribute SDK runtime features to Canvas itself. The SDK event-sourcing benchmark
@@ -75,6 +81,15 @@ Evidence: [main/renderer architecture ADR](https://github.com/hotovo/aider-desk/
 **HorizonCode:** reinforces one privileged service owner and declarative profiles, but
 retain event-store transactions and crash-recovery requirements; do not copy its
 per-file task persistence as a durability design.
+
+The separately reviewed OpenHands software-agent-sdk lease store accepts a malformed
+lease record as if no lease existed before starting a new generation. That is a
+useful negative example: a malformed record cannot prove the prior owner is dead.
+HorizonCode's workspace/execution reconciliation must preserve an `UNKNOWN` owner and
+fencing generation on corrupt or unreadable lease state, then require authoritative
+host reconciliation or explicit review before admitting a second writer. See
+`F-86`, `AX-359`, and `ACC-H1-04`; this is an acceptance requirement, not a claim that
+HorizonCode currently implements that recovery.
 
 ## Provider-specific prefix caching
 

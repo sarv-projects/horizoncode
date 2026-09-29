@@ -1601,3 +1601,75 @@ semantics, `ARCH/25` owns managed budget reservations/effects, and `ARCH/23` plu
 audit, and delivery evidence show every attempted provider/model, outcome, data
 exposure boundary, and spend. No chain entry may be inferred from live metadata or
 provider identity alone.
+
+## DEC-071 — Provider quota observations are advisory and separately owned
+
+**Status:** proposed target architecture; no provider quota reader or cache exists.
+
+**Decision (2026-09-29).** Optional provider-account quota observations are fetched
+only by documented, authorized read-only `CMP-provider` adapters. Background refresh
+is disabled unless the user enables it at user/managed scope for that provider;
+project configuration cannot enable it. Manual refresh is available where supported.
+A bounded provider-owned cache stores immutable-while-retained observations and a
+rebuildable latest view with provenance and freshness. `CMP-analytics` and the UI
+project those source facts but never fetch or own them. Observed provider windows can
+produce a clearly labeled warning only; they never influence routing or dispatch,
+modify or replace HorizonCode's atomic local reservations, or become an enforceable
+shared-account ceiling. Explicit cache clear/retention removes complete records and
+their derived analytics rows without revoking provider credentials. The secret broker
+remains the sole credential resolver/refresh owner.
+
+**Rationale.** Quota endpoints, windows, reset semantics, and credential requirements
+vary or may not exist. Optional read-only observation supports accurate operator
+visibility without letting stale/provider-reported state weaken local spend controls
+or silently introduce credential-store access.
+
+**Consequences.** `REQ-PROV-014`, `ARCH/11`, `ARCH/20`, `ARCH/27`, `AX-386`, and the
+quota-observer fixtures define implementation and verification. A provider with no
+documented and authorized quota surface remains `unsupported`/`unknown`; no generic
+header scraping or other application's local transcript/account scraping is added.
+
+## DEC-072 — Build child context explicitly; isolate memory by profile
+
+**Status:** proposed target architecture; no ContextPacket builder or child memory
+namespace exists in the implementation.
+
+**Decision (2026-09-29).** A worker starts with a fresh context assembled by
+`CMP-context` from a bounded, revision-bound `ContextPacket`: approved task/spec
+contract, explicit source references, effective instructions and skills, permission
+ceiling, and task-relevant accepted memory permitted by the effective memory policy.
+`fork=none` is the default. Parent transcript, sibling transcript, and parent auto-
+memory are not copied wholesale. An explicitly authorized bounded fork carries only
+named committed user-visible message references and a budget; full-history fork is
+limited to a native first-party worker within the same trust/data boundary and remains
+unavailable to external adapters. External peers receive no memory by default; a
+user/managed setting and the adapter's negotiated data-egress capability must both
+permit each memory loadout.
+
+Optional `AgentProfile` memory is a namespace under the existing user/project memory
+store, keyed by stable profile ID, never a second storage service. Shared memory and
+profile-private memory are selected independently, filtered for accepted/current
+status and child-task relevance, and pinned by record ID/revision/digest to the child
+`ContextEpoch`. Children can submit candidates through the existing `CMP-memory`
+review path, but cannot directly accept, re-scope, or delete records. Injected memory
+remains untrusted context, not authority or evidence. The UI and usage ledger expose
+the loadout sources, omissions/staleness, and input-token impact where observed.
+
+**Rationale.** Official Claude Code documentation describes fresh subagent context,
+explicit skill preloading, and separately configured per-subagent memory; parent auto-
+memory does not automatically transfer. `claude-mem` public documentation describes
+hook-based context injection, while a historical issue reports duplicated context in
+agent teams but does not establish current behavior. The robust transferable pattern
+is deliberate child-context construction, not automatic parent-context duplication.
+The user-linked `codeaashu/claude-code` repository explicitly identifies its source as
+leaked and unlicensed; only its README/Licence claims were read, and no source detail is
+used. See `research docs/claude.md` and `research docs/claude-mem.md`.
+
+**Consequences.** Add `REQ-MEM-005..007`; `ARCH/09`, `ARCH/16`, `ARCH/18`, `ARCH/27`,
+and `ARCH/33` own packet assembly, policy/settings, profile namespaces, project
+identity, idempotent injection, and retrieval. `CMP-session` is the shared workspace /
+project identity seam; `CMP-orch` pins it to a Run and child worktrees inherit it.
+`AX-371` remains the implementation owner, coordinated with Thread migration under
+AX-379. Acceptance measures fan-out token multiplication and tests identity
+consistency, policy, privacy, staleness, idempotent resume/compaction, nested-child,
+and external-adapter boundaries before enabling memory by default.

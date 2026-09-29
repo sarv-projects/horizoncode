@@ -312,3 +312,46 @@ Pinned source references: [Go route mapping and client requirements](https://git
 [installer path](https://github.com/anomalyco/opencode/blob/083ed266e058dc3d2d1b377ff5540859d79de110/packages/opencode/src/installation/index.ts),
 [compaction](https://github.com/anomalyco/opencode/blob/083ed266e058dc3d2d1b377ff5540859d79de110/packages/core/src/session/compaction.ts),
 and [V2 session lifecycle/deferred work](https://github.com/anomalyco/opencode/blob/083ed266e058dc3d2d1b377ff5540859d79de110/specs/v2/session.md).
+
+## 2026-09-29 provider and exhaustive-coverage follow-up
+
+At the same pinned OpenCode commit, the source inventory matched 3,630 code-like
+files, 730,816 lines, and 28,280,753 bytes for the declared extension set. The
+reviewer ledger recorded 14 full-file reads, 10 partial-file reads, and 3,606 files
+unread. This is not a literal all-code-file review. The complete per-file ledger was
+kept at `/tmp/opencode-audit-083-coverage.csv` for this audit session; the full-read
+paths were `packages/app/src/pages/home/home-session-search-controller.ts`,
+`packages/app/src/pages/home/home-sessions-controller.tsx`,
+`packages/core/src/models-dev.ts`, `packages/core/src/plugin/models-dev.ts`,
+`packages/core/src/plugin/provider/dynamic.ts`,
+`packages/core/src/plugin/provider/openai-compatible.ts`,
+`packages/core/src/plugin/provider/opencode.ts`,
+`packages/core/src/session/context-epoch.ts`,
+`packages/core/src/session/event.ts`, `packages/core/src/session/input.ts`,
+`packages/core/src/session/run-coordinator.ts`, `packages/core/src/session/schema.ts`,
+`packages/opencode/src/session/llm/request.ts`, and
+`packages/tui/src/component/dialog-session-list.tsx`. Other findings are cited to
+partial file ranges and are not represented as whole-file inspections.
+
+Provider registration is not one self-contained, portable connector. The feed supplies
+catalog data; provider execution merges config/auth/plugin state and loads bundled or
+dynamically installed JavaScript SDK adapters. Copying the execution system “as-is”
+would also import that runtime and its package-execution boundary. HorizonCode's native
+Rust adapters are a compatibility implementation, not a source-code transplant. The
+feed's inspected cache/fetch path parses JSON and casts it to TypeScript types without
+runtime schema decoding. The provider projection also defaults absent `tool_call`
+metadata to enabled. HorizonCode therefore needs strict local schema validation and
+tri-state capabilities; absence must remain `unknown`, not become permission to send
+tools or claim cache support. Evidence: [`models-dev.ts`](https://github.com/anomalyco/opencode/blob/083ed266e058dc3d2d1b377ff5540859d79de110/packages/core/src/models-dev.ts#L184-L195),
+[`provider projection`](https://github.com/anomalyco/opencode/blob/083ed266e058dc3d2d1b377ff5540859d79de110/packages/opencode/src/provider/provider.ts#L1340-L1359),
+and [`dynamic SDK loading`](https://github.com/anomalyco/opencode/blob/083ed266e058dc3d2d1b377ff5540859d79de110/packages/core/src/plugin/provider/dynamic.ts#L6-L29).
+
+OpenCode's local-model documentation uses configured OpenAI-compatible endpoints for
+LM Studio/Ollama; it does not establish a universal local runtime or uniform tool/cache
+capabilities. See the pinned [provider documentation](https://github.com/anomalyco/opencode/blob/083ed266e058dc3d2d1b377ff5540859d79de110/packages/web/src/content/docs/providers.mdx#L1497-L1527)
+and the Ollama example at lines 1692–1729. Its title search uses SQL `LIKE`; the
+reviewed query did not visibly escape `%` or `_`. Horizon's literal phrase search
+should not inherit wildcard behavior accidentally.
+
+No OpenCode tests, live UI, or provider request were run. The pinned source review
+remains a focused architecture audit; 3,606 code-like files were not read.

@@ -16,11 +16,13 @@ on a volatile implementation detail.
 - [Warp and oh-my-pi runtime review](warp-ohmypi-review.md) — pinned orchestration, provider registry, persistence, compaction, permissions, and recovery paths; test-path coverage limitations are explicit.
 - [Research landscape and source index](research-landscape.md)
 - [Test strategy and benchmark plan](tests.md)
+- [Upstream source-audit coverage ledgers](source-audit-coverage/README.md) — per-file read status for selected pinned reviews; not exhaustive repository-reading claims.
 
 ## Coding-agent source maps
 
 - [Aider](aider.md)
 - [Claude Code](claude.md) — public documentation only; implementation is not public.
+- [claude-mem](claude-mem.md) — focused public lifecycle/subagent-memory review and one pinned hook-manifest read; not a full source audit.
 - [Cline](cline.md)
 - [Codex](codex.md)
 - [Codex memory pipeline](codex-memory.md) — memory-specific source review and limits.

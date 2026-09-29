@@ -56,6 +56,26 @@ These are schema families, not a claim to reproduce every internal field. The au
 
 Do not parse undocumented JSONL as an HorizonCode integration contract without version detection, fixture tests, and a fallback for schema changes. Where the official SDK or ACP adapter is available, use the supported protocol surface.
 
+## User-linked third-party archive: README-only leads
+
+The user-linked [`codeaashu/claude-code` README](https://github.com/codeaashu/claude-code/blob/main/README.md)
+claims tool families including file operations, notebook editing, `glob`/`grep`, web
+search/fetch, shell, MCP/LSP, subagents, team messaging, tasks, worktrees, and deferred
+tool discovery. These are README claims from a repository that identifies its source
+as leaked proprietary Anthropic code and says it is unlicensed; the listed counts are
+internally inconsistent. Only the README and LICENSE were read to establish this
+provenance boundary. No source tree, branch, implementation detail, code, schema, or
+asset was used. Treat the inventory only as a set of prompts to compare against
+independently sourced designs.
+
+The general families already have HorizonCode owners or proposed rows: file/search
+and shell tools plus lazy schema materialization in `ARCH/10`; web search/fetch in
+`AX-376`; MCP/LSP in `ARCH/21`/`AX-202`; subagent delegation and messaging in
+`ARCH/16`/`ARCH/32`; worktrees in `ARCH/25`; and workflow authoring in `AX-377`.
+Notebook-specific editing is not added: the README alone does not establish a user
+need, a safe notebook cell/output contract, or an independent implementation source.
+No extra tool is justified by this unverified inventory.
+
 ## Main task flow
 
 1. Load repository context, CLAUDE.md/AGENTS.md, settings, available tools and extensions.
@@ -74,6 +94,7 @@ Claude Code's official guide presents this as an adaptive loop, not a determinis
 - The transcript is stored locally as plaintext JSONL. New sessions begin with fresh context; auto-memory and instruction files can carry learnings forward.
 - Auto-compaction may discard early conversational detail; persistent project rules belong in CLAUDE.md.
 - Subagents isolate context and return a summary. Background agents and agent teams support broader parallel workflows.
+- `SubagentStart` hooks receive the child `agent_id` and `agent_type`; their `additionalContext` output is appended before the child's first prompt. The hook cannot block creation. Repeated hook delivery skips a context copy that is still present, and adds it again after compaction removes it. This is a Claude Code-specific context-delivery behavior, not a durable cross-agent idempotency or authorization contract.
 - File snapshots enable undo of file edits, but Git is separate and external service side effects cannot be rewound by file checkpoints.
 
 Anthropic's public [long-running harness research](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) and [planner/generator/evaluator work](https://www.anthropic.com/engineering/harness-design-long-running-apps) describe experimental patterns beyond what can be claimed as an internal Claude Code implementation: initializer/coder handoffs, durable feature lists/progress, Git checkpoints, separate evaluator roles and longer-running app checks. They are research approaches, not proof of a universal best design.
@@ -100,6 +121,12 @@ For HorizonCode orchestration, treat a peer session as an ExternalAttempt with a
 
 **HorizonCode implications:** keep intent/spec/task state outside the peer conversation; wrap each peer call in a durable adapter attempt; map permission requests into HorizonCode Guard; require a diff and evidence bundle; preserve user clarification and approval decisions; never treat file rewind as rollback for remote side effects.
 
+For child context, `SubagentStart` is a useful adapter hook but runs too late to be
+HorizonCode's policy gate: it cannot prevent creation. HorizonCode must authorize and
+persist its bounded `ContextPacket` before dispatch; an adapter hook may deliver only
+that already-approved packet. HorizonCode's stable dispatch ID and `ContextEpoch`
+digest remain the replay authority, including across compaction and reconnect.
+
 ## Source and public-document index
 
 - [How Claude Code works](https://code.claude.com/docs/en/how-claude-code-works)
@@ -111,3 +138,41 @@ For HorizonCode orchestration, treat a peer session as an ExternalAttempt with a
 - [Memory](https://code.claude.com/docs/en/memory)
 - [Anthropic long-running agent research](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents)
 - [Planner/generator/evaluator research](https://www.anthropic.com/engineering/harness-design-long-running-apps)
+
+## 2026-09-29 subagent memory and source-boundary follow-up
+
+The official [`sub-agents`](https://code.claude.com/docs/en/sub-agents) and
+[`memory`](https://code.claude.com/docs/en/memory) pages were rechecked on
+2026-09-29. A normal child starts in a fresh context with its own prompt and the
+delegation message; applicable instruction files, Git status, and explicitly
+preloaded skill bodies are also included. The parent's conversation transcript,
+output style, and auto-memory do not carry over; a fork is a distinct exception.
+Explore/Plan and `omitClaudeMd` have further instruction-loading exceptions.
+Subagent memory is separately configured per agent with `user`, `project`, or
+`local` scope. When enabled, that agent gets its own memory instructions and Read,
+Write, and Edit tools, plus the first 200 lines or 25 KB of that memory's
+`MEMORY.md`; topic notes are loaded on demand. Skills named in the profile are
+preloaded in full. These are documented product contracts, not evidence about
+undocumented storage internals.
+
+The user-linked [`codeaashu/claude-code` README](https://github.com/codeaashu/claude-code/blob/main/README.md)
+was inspected as a lead list only at the visible main snapshot reported as
+`6a2590911df240ff5ea56aa355696cfb94d128cb`; README cache freshness is uncertain.
+It describes tool, command, service, bridge, coordinator, skill, plugin, task,
+memory, and remote subsystems, but is internally inconsistent about inventory
+counts. The repository explicitly calls its `src/` leaked Anthropic source and
+says it is not licensed for redistribution; its LICENSE says `UNLICENSED`.
+Therefore no `src/`, backup branch, leaked copy, or implementation detail was
+inspected or adopted. Its list is not source-verified and does not justify adding
+a second HorizonCode tool catalog. Public reporting on the March 31, 2026
+source-map disclosure is [Axios](https://www.axios.com/2026/03/31/anthropic-leaked-source-code-ai);
+this is incident context only, not a technical source.
+
+HorizonCode disposition is recorded in `DEC-072`, `REQ-MEM-005..007`,
+`ARCH/16`, `ARCH/27`, and `ARCH/33`: synthesize a per-child context packet from
+the approved task contract, explicit source references, effective policy, and
+bounded memory retrieval. Do not inherit the parent's transcript or all memory
+implicitly. Optional agent-profile memory remains provenance-bound context;
+child writes go through the existing reviewable memory-candidate path. See
+`ARCH/26` for the decision crosswalk and `research docs/tests.md` for acceptance
+cases.

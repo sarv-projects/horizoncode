@@ -35,3 +35,43 @@ Useful for provider-parser modularity, cross-agent cost attribution, usage dashb
 ## Primary references
 
 [Architecture](https://github.com/getagentseal/codeburn/blob/main/docs/architecture.md) · [Provider index](https://github.com/getagentseal/codeburn/blob/main/docs/providers/README.md) · [SQLite helper](https://github.com/getagentseal/codeburn/blob/main/src/sqlite.ts) · [Sync and privacy](https://github.com/getagentseal/codeburn/blob/main/docs/sync/README.md) · [README](https://github.com/getagentseal/codeburn/blob/main/README.md) · [Releases](https://github.com/getagentseal/codeburn/releases)
+
+## 2026-09-29 quota-observation follow-up
+
+The preceding note remains a focused review at `2a7d9588d88ac4fd938f4f13462de51735d59334`.
+A separate targeted source-path audit used CodeBurn pin
+[`b8a9f3cc5290adfd17add6c92444dc56f2aea3e9`](https://github.com/getagentseal/codeburn/tree/b8a9f3cc5290adfd17add6c92444dc56f2aea3e9)
+and KiloCode pin
+[`2dfe6fc876fd7c99132c0dc7565d4edd1ce2b8c0`](https://github.com/Kilo-Org/kilocode/tree/2dfe6fc876fd7c99132c0dc7565d4edd1ce2b8c0).
+This is not an exhaustive source-tree read; neither upstream tests nor live quota APIs
+were executed.
+
+CodeBurn's quota reader has useful operational distinctions: connected, stale,
+transient, access-denied, and rate-limited states; independent provider refreshes;
+coalescing in-flight requests; per-provider opt-out; cancellation generations; a
+minimum refresh floor; and persisted 429 backoff. One package also disables a live
+quota query where fetching would require write access to another application's auth
+file. These observations support read-only credential boundaries and retained stale
+state, but do not establish a shared budget authority.
+
+KiloCode's `command-budget.ts` is a timeout/quarantine policy for spawned Git/GitHub
+polling commands, not model token or money budgeting. Its `MaxCostNudge` is a volatile
+per-session soft notification with a user continuation prompt; usage aggregation can
+include descendant agents. HorizonCode already has durable controller-owned warnings,
+hard caps, per-agent/provider attribution, and explicit unknown usage. These are not
+gaps to copy from KiloCode.
+
+HorizonCode disposition is `DEC-071` / `REQ-PROV-014` / `AX-386`: add optional,
+documented, read-only provider quota observation with opt-in polling, bounded refresh,
+per-account coalescing, explicit window/unit/freshness and separate provider-owned
+observations. The provider's observation can never release or enlarge HorizonCode's
+atomic local reservation. Importing CodeBurn's arbitrary local transcript readers or
+cross-app credential access is deferred because it introduces privacy/schema-drift
+and credential-ownership contracts not required for in-product quota visibility.
+
+Focused source references: CodeBurn `src/providers/types.ts:28-63,110-164`,
+`app/electron/quota/types.ts:1-27`, `app/electron/quota/index.ts:38-197`; KiloCode
+`packages/kilo-vscode/src/agent-manager/command-budget.ts:1-50`,
+`packages/core/src/kilocode/cost/max-cost-nudge.ts:1-12,24-45,101-127`,
+`packages/opencode/src/kilocode/session/model-usage.ts:10-42,66-200`, and
+`packages/opencode/src/kilocode/session/cost-propagation.ts:7-65`.

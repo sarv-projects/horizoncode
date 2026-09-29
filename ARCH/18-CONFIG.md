@@ -15,7 +15,7 @@ Resolve everything that shapes a turn — model, mode, permissions, instructions
 - **Skills.** Discover `SKILL.md` (and sibling markdown with frontmatter), route by description, and inject instructions only when activated and only within the context budget.
 - **Hooks.** Register pre/post tool, session, and compaction hooks with explicit ordering and tighten-not-loosen semantics.
 - **Plugins.** Load a manifest, gate it, and expose only declared extension points; plugin code runs sandboxed.
-- **Memory settings.** Configure scope, consent mode, size/retention bounds, and retrieval policy for `CMP-memory`; config does not store, infer, or consolidate memory records.
+- **Memory settings.** Configure user/project scope, consent mode, size/retention bounds, retrieval policy, and optional per-agent memory policy for `CMP-memory`; config does not store, infer, or consolidate memory records. Child memory defaults to none, and project configuration cannot widen user/managed policy or Run consent (`REQ-MEM-005..007`, `DEC-072`).
 - **MCP/provider config.** Supply server and provider entries; secret fields are references only.
 - **Agent profile and command config.** Load profile and declarative command descriptors from validated sources; config never launches or trusts an executable. See `ARCH/27` for separate discovery/install/trust/enable lifecycle.
 - **Operator preferences.** Store theme tokens, accessibility, notification channels, sound, warning thresholds, update-check preferences, and user defaults. Preferences never disable the guard or rewrite run/task evidence. `updates.origin`, trust roots, and signing policy are compiled/managed trust settings, not user/project preferences (`ARCH/30`).
@@ -65,7 +65,9 @@ resolved by this precedence (see below).
 
 Each value records `(layer, file, scope, schema_version, applied_at)`; arrays use per-field merge semantics rather than a blanket concatenation rule. User settings may select another model/provider/agent within the allowed capability set; an explicit session or run selection starts a new effective settings/context epoch.
 
-**Authority merge is separate and monotonic.** Hard runtime limits and managed policy form a non-overridable ceiling. User restrictions, project restrictions, and session/run restrictions may narrow it, but project/run content cannot grant a capability, raise a budget ceiling, weaken a permission rule, enable an extension, or widen a network destination. Effective authority is the intersection of ceilings, not a last-writer-wins field. A user approval may authorize one requested effect within the ceiling; it does not rewrite the persistent policy. See `ARCH/12`, `ARCH/22`, and `DEC-031`.
+Agent memory policy is an authority-constrained preference: project/profile configuration may select `none` or narrow an already authorized shared-memory mode, but only user/managed policy plus explicit Run consent may enable retrieval. The resolved policy, selected records, and exact record revisions are snapshotted into the child `ContextEpoch`; later config changes affect future dispatches only.
+
+**Authority merge is separate and monotonic.** Hard runtime limits and managed policy form a non-overridable ceiling. User restrictions, project restrictions, and Thread/Run restrictions may narrow it, but project/run content cannot grant a capability, raise a budget ceiling, weaken a permission rule, enable an extension, or widen a network destination. Effective authority is the intersection of ceilings, not a last-writer-wins field. A user approval may authorize one requested effect within the ceiling; it does not rewrite the persistent policy. See `ARCH/12`, `ARCH/22`, and `DEC-031`.
 
 **File formats.**
 
@@ -86,6 +88,12 @@ shell snippets are not a command handler. Agent profile executable declarations 
 inert until separately staged, probed, trusted, and enabled. ACP Registry entries,
 local paths, native agents, MCP servers, skills, plugins, and provider records retain
 their source type and do not inherit one another's trust decision (`ARCH/27`).
+
+An agent profile may declare a memory preference (`none`, `relevant_shared`, or
+`shared_and_profile`), but this field cannot grant access. The effective policy is
+computed from user/managed ceiling, Run consent, profile preference, adapter
+capability, and egress scope. Unknown external capability means no profile memory
+injection; it is not treated as support.
 
 **Discovery walk (illustrative; directory names fixed at implementation).**
 
@@ -195,7 +203,9 @@ default. Active attempts retain their immutable route snapshot.
 
 `search.enabled=true`, `search.index_tool_output=false`,
 `search.include_archived=true`, `search.keep_renamed_title_aliases=true`, and
-`search.page_size=20` are user-scope preferences. Search text indexing is local and
+`search.page_size=20`, and `search.model_history_retrieval=false` are user-scope
+preferences. Model-facing history retrieval requires `search.enabled=true`, is off by
+default, and cannot be enabled by project config or model/tool output. Search text indexing is local and
 does not send content to a model or network service. A user's disable/purge choice is
 not overridden by project configuration; managed policy may disable search for a
 deployment. `search.index_tool_output` can include only tool-result text explicitly
@@ -203,7 +213,7 @@ marked displayable in the committed session projection. Query-byte, page-size,
 index-work, concurrent-query, and deadline limits are finite compiled ceilings that
 configuration may lower only. Turning `search.enabled` off disables queries and
 indexing and offers an explicit purge of derived index content; it never deletes
-canonical session history. Search dates are presented in the selected UI timezone;
+canonical Thread history. Search dates are presented in the selected UI timezone;
 stored/query boundaries are UTC.
 
 `updates.check_on_start=true`, `updates.notify=true`,
@@ -286,7 +296,7 @@ config digest is pinned to the run and changes create a new context/policy epoch
 ## Open questions
 
 1. **`CMP-config` registration.** Resolved: `CMP-config` is registered in `ARCH/03-ARCHITECTURE.md` §2 (Capability layer). No further `DEC-*` is needed for registration; the extension surfaces it configures remain governed by `DEC-018`.
-2. **Memory requirements.** Resolved: memory is covered by `REQ-MEM-001..004` in `ARCH/02-REQUIREMENTS.md` (bounded persistence, attributable/inspectable writes, typed context injection, separate scopes/consent/export/purge). `ARCH/33` sets v1 compaction to no automatic summarization or eviction; capacity pressure refuses new writes. Remaining open details are exact per-scope size bounds and disclosed retention/expiry values.
+2. **Memory requirements.** Resolved: memory is covered by `REQ-MEM-001..007` in `ARCH/02-REQUIREMENTS.md` (bounded persistence, attributable/inspectable writes, typed context injection, separate scopes/consent/export/purge, child-context/profile-memory isolation, and canonical project identity). `ARCH/33` sets v1 compaction to no automatic summarization or eviction; capacity pressure refuses new writes. Remaining open details are exact per-scope size bounds and disclosed retention/expiry values.
 3. **Config format authority.** JSONC is primary; whether YAML is a supported authoring format (and how it maps to JSONC precedence) is undecided.
 4. **Plugin permission model.** Whether plugins request capability grants or surface grants, and how review depth maps to v1.
 5. **Hook surface freeze.** The exact v1 hook event set and whether experimental transform hooks ship or are deferred.

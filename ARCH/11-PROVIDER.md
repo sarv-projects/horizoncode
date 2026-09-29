@@ -12,8 +12,9 @@ Turn a vendor-neutral model request into provider traffic and back, and choose w
 - **Catalog service.** Load a small, curated, versioned primary catalog offline; refresh the explicitly approved OpenCode provider/model sources in the background by default, and allow generic enrichment only when enabled. Validate and record provenance and project records into descriptors. External metadata is advisory data, never code, credential, auth-method, or arbitrary-host authority (`REQ-PROV-002`, `REQ-SEC-017`, `DEC-021`, `DEC-060`).
 - **Route abstraction.** The orthogonal tuple `Protocol × Endpoint × Auth × Framing` plus per-route defaults; vendor quirks live only in protocol adapters (`REQ-PROV-003`).
 - **Wire protocol adapters.** A fixed, small adapter set plus one generic compatible adapter for arbitrary endpoints. Adding a provider is route data, not a new code path.
-- **Executor.** Request send, bounded retries, watchdogs, `Retry-After` handling, full secret redaction, typed error classification.
+- **Executor.** Request send, bounded retries, watchdogs, `Retry-After` handling, typed error classification, and the bounded credential-redaction guarantees in `REQ-PROV-004` / `ARCH/14`; do not claim perfect scanning of arbitrary payload text.
 - **Usage and cost accounting.** Observed vs estimated split; inclusive totals plus a non-overlapping breakdown.
+- **Quota observation.** Optional read-only adapters for documented provider account/quota endpoints. `CMP-provider` owns capability checks, user opt-in/manual refresh, normalization, bounded coalescing/backoff, freshness, and a protected bounded observation cache. It does not own HorizonCode budget reservations or infer limits from response headers unless a provider contract explicitly defines them.
 - **Router.** Strategy-based selection, health/cooldown, typed fallback chains, optional eval gating, fail-closed budget gates, and an observable decision record.
 - **Model projection.** Availability, defaults, small-utility-model selection, and per-model option/variant merge.
 
@@ -74,9 +75,10 @@ Route {
 |---|---|
 | `id`, `provider` | stable identity |
 | `context_window`, `max_output` | limits feeding `CMP-context` arithmetic |
-| `tool_calling` | `none · basic · parallel` |
+| `tool_calling` | `supported: none · basic · parallel`, or `unknown`; missing metadata never defaults to enabled |
 | `reasoning_modes[]` | normalized effort levels the model supports |
-| `vision`, `streaming`, `structured_output` | transport/normalization flags |
+| `vision`, `streaming`, `structured_output` | tri-state `supported | unsupported | unknown`; unknown does not satisfy a route requirement |
+| `in_history_system_prompt_update` | `supported | unsupported | unknown`; `supported` means the route treats a later system message as the complete effective prompt. Unknown/unsupported uses full prompt replacement. This is not a prompt-cache capability. |
 | `cost{in,out,cache_read,cache_write,tiers[],currency,basis,over_200k?,reported_actual?}` | source-currency-aware; each value has currency and `actual | estimated | included | unknown` basis; never combine unlike currencies (`REQ-ANALYTICS-007`) |
 | `latency_class`, `locality` | ranking inputs; `local` describes configured endpoint placement only and does not prove zero egress, privacy, or offline behavior |
 | `tokenizer` | tokenizer ref for budget estimation |
@@ -181,9 +183,11 @@ or third-party marks. A refresh failure retains the curated primary and last val
 source cache and marks stale/unavailable status; it does not block a route already
 explicitly configured.
 
-**Provider route snapshot** — before an attempt starts, persist `ProviderRouteSnapshot = {provider_id, model_id, endpoint_origin, endpoint_path, protocol_id, adapter_version, auth_method_id, capability_digest, limits_digest, price_digest, metadata_source, metadata_retrieved_at, catalog_digest, model_record_digest, credential_ref_id}`. It contains no credential value or refresh token. Endpoint, auth ref, and protocol must come from local configuration or the fixed OpenCode connector, never from arbitrary catalog metadata. The snapshot is immutable for that route attempt and is referenced by its context epoch, model attempt, usage, verification, and recovery records. A managed attempt also pins the selected route and permitted ordered fallback chain (`DEC-070`); each route actually dispatched has its own snapshot. Refresh may alter later picker results, not an active attempt. A deliberate route change creates a new attempt/context epoch and reruns capability, policy, and budget checks (`REQ-PROV-008`, `REQ-PROV-012`).
+**Provider route snapshot** — before an attempt starts, persist `ProviderRouteSnapshot = {provider_id, model_id, endpoint_origin, endpoint_path, protocol_id, adapter_version, auth_method_id, capability_digest, system_prompt_update_mode, limits_digest, price_digest, metadata_source, metadata_retrieved_at, catalog_digest, model_record_digest, credential_ref_id}`. `system_prompt_update_mode` is `REPLACE` by default or `APPEND_EFFECTIVE` only for a conformance-proven route; it is never `UNKNOWN` at dispatch because unknown resolves to `REPLACE`. It contains no credential value or refresh token. Endpoint, auth ref, and protocol must come from local configuration or the fixed OpenCode connector, never from arbitrary catalog metadata. The snapshot is immutable for that route attempt and is referenced by its context epoch, model attempt, usage, verification, and recovery records. A managed attempt also pins the selected route and permitted ordered fallback chain (`DEC-070`); each route actually dispatched has its own snapshot. Refresh may alter later picker results, not an active attempt. A deliberate route change creates a new attempt/context epoch and reruns capability, policy, and budget checks (`REQ-PROV-008`, `REQ-PROV-012`).
 
 **Prompt caching is a negotiated route capability, not a universal provider feature.** A provider adapter may advertise explicit cache-write/cache-read semantics only where the concrete provider/model API documents them and a conformance test verifies request encoding and usage reporting. The context renderer may preserve stable-prefix ordering for any route, but it MUST NOT claim remote cache hits, inject provider-specific cache markers, or calculate savings without that route capability. Local compatible endpoints report cache usage as `unknown` unless the concrete server/model probe establishes it. Cache accounting is a separate usage class and never reduces the recorded input-token total. Provider-specific cache keys, retention, privacy, and invalidation rules stay within that adapter and its pinned capability snapshot.
+
+System-prompt update semantics are independently route-scoped. Full effective-prompt replacement is the fallback. In-history updates are enabled only if the exact model/endpoint documents that the latest system message replaces the effective prompt and adapter fixtures verify request reconstruction across source addition, update, removal, compaction, resume, and tool-schema change. Cache support does not imply in-history update support; unknown behavior forces replacement.
 
 ## OpenCode registry and native Go adapter
 
@@ -282,6 +286,20 @@ current.
 
 **Router state** — per-deployment health, cooldown expiry, latency estimate, in-flight count, observed rate-limit hints, and (optional) published eval scores.
 
+**Provider quota observation contract.** A provider integration may advertise `quota_observation: supported | unsupported | unknown` independently of inference/auth support. Only documented endpoints and the exact authorized account credential may be used; no hidden endpoint probing, another CLI's credential cache, or refresh outside `CMP-secrets`. Background polling is user opt-in per provider and disabled by default; project settings/instructions cannot enable network refresh. Explicit `/providers quota refresh <provider>` is available where documented. Refresh uses one in-flight request per provider/account, bounded timeout/body/window count, cancellation generations, provider-specific minimum intervals, and persisted 429/backoff state. Timeout, 401/403, 429, provider error, parse error, and missing capability produce distinct states and do not erase last-good data. Authentication and quota denial are not retried as transient failures. The user can clear the local observation cache without changing the provider account or credential.
+
+```text
+QuotaObservation {
+  observation_id, provider_id, account_ref, source_endpoint_id,
+  retrieved_at, observed_state,
+  windows: [{window_id, kind, unit, used?, remaining?, limit?,
+             starts_at?, resets_at?, reported_at?, basis}],
+  response_digest, schema_version
+}
+```
+
+`account_ref` is a stable locally keyed pseudonym derived from the local auth-reference identity; do not persist email, raw account ID, credential, or response body. `observed_state` is `connected | stale | transient_error | rate_limited | access_denied | unsupported | unknown`; each window's `basis` is `provider_reported | locally_configured | unknown`. Missing fields stay absent/unknown, not zero. Validate window count, unique window IDs, unit/value consistency, nonnegative values where defined, timestamp ordering, and schema bounds before append. `CMP-provider` owns immutable-while-retained quota-observation records and a rebuildable latest-by-account projection in its protected provider-state store; commit an observation before publishing it to analytics/UI, and never rewrite a retained observation during projection rebuild. The append path is locked across processes, validates schema version and digest, and fails visibly rather than silently resetting on corrupt state. Bound record bytes, entry count, retention age, and per-account windows; pruning retains the latest valid snapshot. Explicit clear/retention deletion removes whole expired records and their derived analytics rows rather than editing an observation in place. `CMP-analytics` references these source facts and is not the owner. Quota observations may produce a clearly labeled UI warning only; they do not influence routing or dispatch. Opaque external agents keep quota `unknown` unless the adapter reports a provenance-backed value.
+
 ## Lifecycle & flows
 
 1. **Catalog load.** On boot, load the curated primary and validated caches, then schedule due OpenCode metadata refresh in the background; generic enrichment refresh runs only when opted in. Resolve records lazily. Projection merges provider and model fields (`provider.api` defaults overlaid by model overrides). Each view shows source, retrieval time, expiry, and stale/error state.
@@ -290,6 +308,7 @@ current.
 4. **Routing.** Filter (policy-allowed, healthy, not cooling down, meets task requirements: context size, vision, tool-calling, reasoning) → rank by configured strategy → pick → persist the selected route and ordered permitted fallback chain at managed-attempt admission → record an observable decision. A catalog refresh cannot change an admitted chain. Cross-provider fallback follows `DEC-070`/`REQ-PROV-012`: it is allowed only for a typed transient failure before any provider content or tool-call delta is exposed, and only to a pre-pinned compatible, authorized route with a successful budget reservation. Auth, authorization, quota, policy/egress, protocol/schema, capability, cancellation, and post-exposure failures never silently switch providers. Each actual dispatch has its own immutable route snapshot and usage record; cooldown is applied to the failed deployment.
 5. **Eval gating.** When enabled, selection is bounded by published per-model suite scores and a configured threshold; the gate is deterministic and the score set is versioned.
 6. **Budget gates.** Token/cost ceilings are evaluated before sending; an exhausted budget fails closed with a typed reason and no silent downgrade.
+7. **Quota refresh.** When enabled, resolve the documented provider quota capability and account reference → coalesce a refresh → call through the owning Guard/secret broker → validate and normalize bounded windows → append a provider-owned observation and atomically advance its latest projection → publish a redacted freshness event. On failure, retain last-good data and publish the stale/error state. No observed value changes a local reservation.
 
 **Routing strategies** (configurable, composable): weighted, lowest-latency, lowest-cost, least-busy, rate-limit-aware, and tag/class-based (task class → model class). Degrade rules are explicit: if a requirement cannot be met the result is guidance/requires-user-action, never a silent capability downgrade.
 
@@ -307,6 +326,9 @@ current.
 | Unknown | Typed `unknown`; contains no secret and no raw body beyond the redacted, truncated cap |
 | Route absent | Typed `no-route`; guidance, not a crash |
 | Catalog refresh failure | Keep the curated primary and any valid cached source snapshot; expose stale/unavailable provenance and a redacted diagnostic; never invent rows or block an explicitly configured route |
+| Quota refresh unavailable, denied, rate-limited, or malformed | Preserve last-good snapshot; expose distinct state and age; never coerce missing values to zero, erase state, or change local reservations |
+| Multiple quota consumers refresh simultaneously | Coalesce by provider/account; cancellation of one waiter must not cancel other waiters; forced refresh obeys provider minimum interval and backoff |
+| Provider exposes only some quota windows or units | Store each reported window independently; mark omitted windows unknown and do not combine unlike units or reset periods |
 | Metadata changes during a run | Keep the attempt's pinned route/adapter/context snapshot; apply changes only to future route choices and require explicit replanning if the route is no longer available |
 | Go record contains an unknown origin, host, auth type, protocol, or path | Refuse that model route with a typed reason; do not follow the host, guess an adapter, or attempt credentials |
 | Provider has an unregistered or unauthorized sign-in flow | Keep the provider/auth row in the complete inventory as `needs_registration` or `policy_unavailable`; do not imitate another client or read its credential cache |
@@ -318,10 +340,12 @@ current.
 ## Configuration
 
 - `catalog.primary_revision`, `catalog.enrichment.enabled` (false by default), `catalog.enrichment.source`, `catalog.enrichment.ttl`, `catalog.enrichment.refresh_interval`, `catalog.cache_path`; `providers.opencode.metadata_refresh.enabled` (true by default), `providers.opencode.metadata_refresh.interval` (one hour by default), and a connector-owned fixed origin; there is no bundled full-dataset `offline_snapshot` setting.
+- User-scope `providers.<id>.quota_observation.enabled` (false by default), `.refresh_interval` (provider minimum and managed maximum enforced), `.cache_max_age`, `.cache_max_entries`, `.cache_max_bytes`; project scope cannot enable polling. Explicit refresh remains available when automatic observation is disabled. These settings control observation/warnings only and do not alter routing or budget ceilings.
 - Provider entries: id, base endpoint, auth-method ref, env key names, per-model overrides, extra headers (values are secret refs).
 - `routing.strategy`, `routing.weights`, `routing.fallbacks[]`, `routing.cooldown`, `routing.eval{gates,threshold,scores_ref}`.
 - `retry.max`, `retry.base_delay_ms`, `retry.max_delay_ms`, `retry.respect_retry_after`.
-- `budget.max_tokens`, `budget.max_spend` (per session/run; fail closed).
+- `budget.max_tokens`, `budget.max_spend` (per direct Thread or managed Run; nested
+  Attempt/worker reservations are atomic within the owning ceiling and fail closed).
 - `redaction.sensitive_names[]` (headers, query keys, body fields) — extend-only, never reduce the built-in set.
 
 ## Requirements mapping
@@ -331,9 +355,10 @@ current.
 | `REQ-PROV-001` | Hosted compatible endpoints, local runtimes, a broad catalog, and arbitrary custom endpoints via the generic adapter |
 | `REQ-PROV-002` | Curated primary data works offline; OpenCode metadata refresh is enabled by default but disableable, source-pinned, validated, provenance-carrying advisory input and cannot replace active route snapshots or grant auth/host authority |
 | `REQ-PROV-003` | Quirk handling (thinking passthrough, reasoning fields, streaming framing) isolated inside each protocol adapter |
-| `REQ-PROV-004` | Credentials are refs; redaction covers headers, query, and echoed body values; nothing reaches logs/prompts/telemetry/audit |
+| `REQ-PROV-004` | Credentials are references; broker-resolved values are never intentionally supplied to prompts or persisted. Typed provider diagnostics and receipts exclude secret fields and apply known-value plus bounded pattern redaction before persistence; arbitrary echoed text retains the explicit residual in `ARCH/14` and `ARCH/22`. |
 | `REQ-PROV-005` | Policy-configurable, optionally eval-gated routing with an observable decision record |
 | `REQ-PROV-008..012` | Immutable route and fallback snapshots, native Go request identity, complete provider/auth coverage states, bounded refresh, and capability-gated provider cache semantics |
+| `REQ-PROV-014` | Documented, opt-in read-only quota observation with bounded refresh, retained freshness, and no authority over local reservations |
 | `REQ-HORIZON-003` | Token/cost ceilings evaluated pre-send and fail closed |
 | `REQ-ANALYTICS-007` | Preserve source currency and amount basis; mixed-currency totals are bucketed or explicitly converted with provenance |
 | `REQ-CTX-004` | Overflow surfaced as a terminal typed flag so the context engine performs exactly one compact-and-retry |

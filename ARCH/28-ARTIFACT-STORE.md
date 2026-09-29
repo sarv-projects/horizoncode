@@ -3,12 +3,12 @@
 ## Purpose and ownership
 
 `CMP-artifact` is the shared service for immutable, size-bounded payloads referenced
-by durable session and run records: image/media inputs, large tool output, model
+by durable Thread and Run records: image/media inputs, large tool output, model
 partial attempts, original requests, test logs/reports, and other retained evidence.
 It owns byte admission, scoped content-addressed storage, digest verification,
 reference leases, import/export staging, physical emergency-space allocation for
 controller records, retention pins, and garbage collection. It
-does **not** own session/run/task truth, model interpretation, permissions for external
+does **not** own Thread/Run/Task truth, model interpretation, permissions for external
 effects, or the audit chain.
 
 Canonical event stores remain authoritative for *why* an artifact exists and which
@@ -178,7 +178,7 @@ expired, or cancelled.
 ## Settings and UI contract
 
 `/settings session storage` exposes requested/effective inline-event, per-object,
-per-namespace encoded-byte, decoder, per-record/segment/session/run event-log,
+per-namespace encoded-byte, decoder, per-record/segment/Thread/Run event-log,
 replay-batch, and control-reserve ceilings; current/reserved bytes by storage class;
 physical-reserve allocation/state; retention and orphan grace; filesystem backend
 and actual durability level; and locked policy limits. Numeric defaults are published as finite
@@ -211,7 +211,7 @@ integrity failure.
 | Partial owner-store enumeration | Abort the GC sweep with no deletion. |
 | Missing/corrupt/unsupported artifact on replay | Typed placeholder; dependent evidence becomes `INSUFFICIENT_EVIDENCE` until repaired from verified source. |
 | Decoder/parser resource exhaustion | Terminate decoder, retain immutable source, return typed unavailable/rejected. |
-| Required durability mode unsupported | Refuse durable run/session operation; no silent fallback. |
+| Required durability mode unsupported | Refuse durable Run/Thread operation; no silent fallback. |
 | Physical control reserve cannot be proved or disappears after restart | Refuse activation or keep run `RECONCILING`/`STOPPED`; a ledger-only reservation cannot satisfy the guarantee. |
 | Migration interrupted | Source namespace remains authoritative; discard/rebuild target from source and verify full ref graph before atomic manifest switch. |
 | GC delete response lost | Tombstone stays; reconcile actual object existence before repeat. |
@@ -231,5 +231,5 @@ primitive (`AX-126`): symlinked namespaces, staging, quota, lock, and object pat
 are refused, and created files/directories are owner-only. **Not implemented:**
 reference leases and the owner graph, GC mark/delete (including the
 incomplete-enumeration abort), decoders for `max_decoded_bytes`/pixels/expansion,
-export/import, the physical control reserve, and the session/run integration that
+export/import, the physical control reserve, and the Thread/Run integration that
 appends the reference only after the bytes are durable.

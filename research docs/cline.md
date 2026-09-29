@@ -160,3 +160,45 @@ Additional pinned paths: [Hub transport](https://github.com/cline/cline/blob/787
 - [Hub transport / Agenda disablement and completion mapping](https://github.com/cline/cline/blob/787ad1b077d8b697892dc3bfcd42e7c65b88789e/sdk/packages/core/src/hub/server/hub-server-transport.ts)
 - [Subprocess boundary](https://github.com/cline/cline/blob/787ad1b077d8b697892dc3bfcd42e7c65b88789e/sdk/packages/core/src/runtime/tools/subprocess-sandbox.ts)
 - [Web fetch executor](https://github.com/cline/cline/blob/787ad1b077d8b697892dc3bfcd42e7c65b88789e/sdk/packages/core/src/extensions/tools/executors/web-fetch.ts)
+
+## 2026-09-29 exact-pin deep-dive and coverage
+
+The source was fetched into a separate temporary checkout at the documented exact pin
+`787ad1b077d8b697892dc3bfcd42e7c65b88789e` (v4.1.21); the existing local clone was
+v4.1.20 at `254f40c4b592d1e662b84f2ba06fe45dca77cab3`. The v4.1.21 pin had 4,116 Git
+paths, 4,105 materialized files, and 3,521 source/config candidates totaling 1,040,878
+lines under the reviewer's extension filter. Sixteen code files were fully read, eight
+partially read, and 3,497 candidates remained unread in full. The per-file ledger was
+`/tmp/cline-v421-read-ledger.tsv` during this audit session; this is a scoped deep-dive,
+not an exhaustive source read. Full reads covered `ClineCore.ts`, the session manifest,
+Agenda and team stores/types, team and runtime spawn tools, MCP timeout/policy, the
+session FTS search service, provider Go test, subagent UI row, and usage projection;
+partial reads and exact ranges are in that ledger.
+
+Additional source-verified observations:
+
+- Team task `completed` is a collaboration status written by the worker, not
+  independent acceptance. Team restart can reconstruct/requeue a teammate or mark it
+  interrupted; the inspected runtime loader reads snapshots rather than replaying the
+  event history. HorizonCode keeps Task PASS exclusively with current verifier evidence.
+- The Team child tool surface and research-only `use_subagents` feature differ; do not
+  assume every Cline subagent is read-only. The UI can show child status, tool activity,
+  context usage, cost, and expandable result/error. HorizonCode should show these per
+  Thread while preserving `actual | estimated | unknown` usage provenance.
+- The FTS search index is derived and reconciled against session/message file
+  revisions; it has bounded scan/candidate/text limits and suppresses deleted-session
+  hits. Its reviewed query behavior does not provide exact phrase, selected-Thread, or
+  date filters. HorizonCode's stronger complete-coverage/message-jump design remains
+  appropriate; add source-version, tombstone-race, IME, and literal wildcard fixtures.
+- v4.1.21 retries a token/context truncation once only when there was no tool activity,
+  preserves partial output if retry fails, retries transient provider failures using
+  the prepared request, and propagates local provider-catalog failures instead of
+  silently returning an empty list. HorizonCode's `ARCH/08` already limits compaction
+  retry to safe pre-effect cases; provider attempts must retain partial bytes/usage and
+  must not replay side effects.
+- MCP readiness has separate install/configure, credential, connection, timeout,
+  disable, and restart states. HorizonCode's market/connect flow should keep these
+  states distinct rather than equating installation with readiness.
+
+No Cline tests or UI were run. Exact source path references and release-specific scope
+remain pinned above; v4.1.20 observations must not be substituted for v4.1.21 behavior.

@@ -9,7 +9,7 @@ truth.
 ## Requirements and scope
 
 This module satisfies `REQ-HORIZON-011`, `REQ-HORIZON-013`,
-`REQ-HORIZON-029..030`, and `REQ-PROTO-005`. Durable run/session records remain in
+`REQ-HORIZON-029..030`, and `REQ-PROTO-005`. Durable Run/Thread records remain in
 their canonical owners (`ARCH/07`, `ARCH/16`, `ARCH/25`). ACP and MCP remain external
 protocol adapters (`ARCH/15`). The initial local server listens only on a same-host
 OS IPC endpoint; it does not expose a TCP listener, remote attach, SSH forwarding
@@ -33,7 +33,7 @@ flowchart LR
   S --> CFG[CMP-config]
   S --> U[CMP-update]
   O --> R[Canonical run/control streams]
-  SS --> H[Canonical session streams]
+  SS --> H[Canonical Thread streams]
 ```
 
 | Component | Owns | Does not own |

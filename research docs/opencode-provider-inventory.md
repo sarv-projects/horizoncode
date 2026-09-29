@@ -19,12 +19,19 @@ or any statement about current availability.
 OpenCode currently describes at least four different things:
 
 1. **The dynamic model data feed.** OpenCode's pinned `packages/core/src/models-dev.ts`
-   defaults to `https://models.opencode.ai/api.json`, validates a schema, uses a
-   five-minute freshness window, a cross-process file lock, a temporary file plus
+   defaults to `https://models.opencode.ai/api.json`, parses JSON and casts it to
+   provider types without runtime schema validation in the inspected load/fetch path,
+   uses a five-minute freshness window, a cross-process file lock, a temporary file plus
    rename, and a 60-minute background refresh. The code permits OpenCode-specific
    feed/path overrides. HorizonCode's proposed adapter uses only the fixed reviewed
    origin and an allowlisted inert projection; it does not execute the feed's `npm`
-   package names or trust its `env`, endpoint, header, or auth data.
+   package names or trust its `env`, endpoint, header, or auth data. In the inspected
+   path, disk loading uses `fs.readJson`/`JSON.parse` and a TypeScript cast, and fetched
+   text is likewise cast rather than runtime-decoded against the declared provider
+   schema ([`models-dev.ts`](https://github.com/anomalyco/opencode/blob/083ed266e058dc3d2d1b377ff5540859d79de110/packages/core/src/models-dev.ts#L184-L195),
+   [`fs-util.ts`](https://github.com/anomalyco/opencode/blob/083ed266e058dc3d2d1b377ff5540859d79de110/packages/core/src/fs-util.ts#L102-L107)).
+   HorizonCode must independently enforce its own strict bounded schema and reject
+   malformed records; OpenCode's type declarations are not validation evidence.
 2. **The public provider documentation directory.** The page currently describes 51
    named provider sections plus `Custom provider`, and explicitly says it shows “some”
    providers in detail. It is not the complete provider catalog. Its overview says

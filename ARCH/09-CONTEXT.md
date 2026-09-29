@@ -89,6 +89,16 @@ the admitted baseline and the log position it belongs to. History projection
 excludes system rows at or below `baseline_seq`, so a baseline is rendered once
 and only deltas advance.
 
+The context source's `update(previous,current)` is an internal projection delta, not
+permission to append a new system message to every provider history. The adapter uses
+complete effective-prompt replacement by default. A route may use an in-history
+system-prompt update only when its pinned model capability proves that a later system
+message replaces the effective prompt (rather than accumulating, being ignored, or
+being rejected) and request fixtures verify that exact semantics. Unknown routes
+replace; changing this mode changes the context epoch and route snapshot. This
+optimization is separate from cache-hit support and is never inferred from generic
+protocol compatibility.
+
 **`Checkpoint`** — the compaction artifact: `{ summary, recent, shadowed_range,
 shadowed_seqs, shadowed_token_count, trigger, model }`. The event log is never
 rewritten; the checkpoint is a projection boundary.
@@ -315,13 +325,27 @@ prompt stable.
 
 ### 11. Sub-agent and worktree sharding
 
-`REQ-ORCH-001/002/005`. Each child assembles its own context; the parent passes
-a bounded snapshot (the task plus explicitly inherited refs), never its
-transcript. Project rules are delivered to children. Worktree-isolated children
-receive their own repository root and therefore their own repo map and index
-scope. Children return receipts; only receipts enter the parent's context.
-Depth and count are bounded by configuration (`CMP-orch` enforces the bound;
-the engine only shards).
+`REQ-ORCH-001/002/005`, `REQ-MEM-005..007`. `CMP-context` builds a separately
+budgeted, revision-bound `ContextPacket` for every child. It includes the approved
+task/spec, selected source refs, effective instructions/skills, permission snapshot,
+workspace revision, and explicit omissions. Parent and sibling transcripts and
+auto-memory are excluded by default; `fork=none` is the default. A bounded fork
+requires exact committed/user-visible references, byte/token limits, and effective
+policy authorization. Full history is limited to explicit same-trust native dispatch;
+an external adapter cannot receive it implicitly. Profile memory is off by default
+and, when enabled, is independently retrieved from the existing memory store under
+user/managed policy, Run consent, profile preference, adapter capability, and egress
+scope. Only accepted/current/task-relevant records are eligible; record IDs, revisions,
+and digests are pinned to the child `ContextEpoch`. Children return receipts; only
+receipts enter the parent's context. Worktree-isolated children receive their own
+repository root and repo-index scope. Depth and count are bounded by configuration
+(`CMP-orch` enforces bounds; `CMP-context` only assembles the packet).
+
+Each actual child dispatch records included/excluded source classes and observed input
+usage independently. Fan-out input cost is charged per dispatch; a context artifact
+shared by several workers is not counted as a single provider input unless the route
+reports a cache hit. Unknown external usage stays unknown. Memory retrieval failure is
+visible; it may be omitted only when the task permits that omission.
 
 ## Failure modes
 
@@ -365,6 +389,7 @@ overridable. No key changes an authorization decision (`CMP-guard` owns that).
 | `REQ-CTX-005` | Hierarchical `AGENTS.md` discovery as a typed source (§6). |
 | `REQ-PERF-003` | Incremental indexing off the loop (§7). |
 | `REQ-ORCH-001/002/005` | Sharded child context + receipts (§11). |
+| `REQ-MEM-005..007` | Child ContextPackets use explicit bounded references and replay idempotency; optional profile memory is policy-gated, namespace-scoped, revision-pinned, and uses the canonical project identity/scope (§11, `ARCH/33`). |
 | `REQ-HORIZON-002` | The task graph survives compaction because canonical task state is reloaded from the durable run/task store; a context checkpoint may carry only a bounded, revision-bound summary/reference, never authoritative task truth. |
 | `REQ-SEC-002` | Instructions/retrieved content framed as untrusted data. |
 

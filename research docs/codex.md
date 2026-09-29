@@ -357,3 +357,31 @@ and [sandbox selection](https://github.com/openai/codex/blob/67a709665ac7b50311b
 - [Codex long-horizon experiment](https://developers.openai.com/blog/run-long-horizon-tasks-with-codex)
 - [Codex ExecPlans cookbook](https://github.com/openai/openai-cookbook/blob/main/articles/codex_exec_plans.md)
 - [Codex goal source at `368e5eae`](https://github.com/openai/codex/blob/368e5eae2f006a70a91dddfdc96e6b2d11498f81/codex-rs/state/src/runtime/goals.rs)
+
+## 2026-09-29 additional source verification and coverage limit
+
+A separate read-only pass inspected the local Codex checkout at
+[`13a966fc652d1037c7ee93a15b2bdfa0610748ae`](https://github.com/openai/codex/commit/13a966fc652d1037c7ee93a15b2bdfa0610748ae),
+which is a shallow September 22 snapshot and is **not** the same source revision as
+the September 27 broad pin above. Nine complete files were read (786 lines): the
+ThreadGoal model and both migrations, the Goal continuation template, app-server-client
+and daemon READMEs, agent-graph types, and agent-message-board API/types. Several large
+runtime/protocol/store files received bounded partial reads; provider/tool/MCP code,
+most UI/settings, sandbox internals, memory internals, compaction, and most of the
+agent/thread runtime remain unread. Inventory at the local checkout: 8,437 tracked
+paths, of which the declared source-like extension filter matched 6,291 files and
+approximately 346,250 lines. This is not an exhaustive Codex codebase read.
+
+The focused Goal processor review found that the SQLite GoalService update commits
+before the rollout event append is attempted; rollout append failure is warned, but
+the response and notification still proceed. This is a split-store consistency risk
+in this Codex path, not a pattern for HorizonCode to copy. HorizonCode's cross-stream
+contract remains stricter: disagreement is an incident requiring reconciliation, and
+neither projection write nor event append alone implies activation or task completion.
+Evidence: local checkout `codex-rs/app-server/src/request_processors/thread_goal_processor.rs:174-244`
+(partial file read); Goal state model `codex-rs/state/src/model/thread_goal.rs:60-71`
+(full file read).
+
+The full-file coverage and partial-path list are recorded in the 2026-09-29 source
+audit handoff. Do not treat the local checkout as evidence for behavior at the separate
+`67a709...`, `368e5eae`, or `41ed72c` source pins.

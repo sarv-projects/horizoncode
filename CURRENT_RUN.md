@@ -2,49 +2,139 @@
 
 ## Active handoff — architecture audit continuation (2026-09-29)
 
-### Latest line-by-line reconciliation pass
+### Checkout and handoff status
 
-Reviewed the audit reports for `ARCH/00–08`, `ARCH/09–20` (17 intentionally unused),
-and `ARCH/21–33`, then reconciled them with current requirements, decisions, TODO,
-source trails, and focused Rust source paths. Added/reconciled F-76..F-83 and AX-371..383
-where a missing contract or delivery task had been identified. Key corrections: analytics
-is now explicitly a derived, source-referenced projection; audit retention has sealed
-archive, capacity-reservation, and disk-pressure behavior (numeric ceilings still need
-benchmarks); memory has one SQLite event authority, idempotent cross-store outboxes,
-dirty-worktree/editor-buffer provenance, and an explicit no-auto-compaction v1 policy;
-ACP docs separate the current server method set from absent client/lifecycle features;
-security tables label target controls and call out absent secret injection; message-post
-idempotency is separate from per-recipient Thread delivery; tool-output recall has a
-dedicated artifact-backed task.
+Checked-out Git revision: `7e4b03d2d35d4a012827ea3980ec893b91768677`.
+The reviewed Rust source baseline remains `23d4ce8`; the current working diff is
+documentation-only. `TODO.md` contains 130 unique task IDs: 46 `implemented` and 84
+`proposed`, with an owning architecture link and source-traceability link on every
+row; none is `verified` or `accepted`. `TODO.md` is authoritative for the next
+implementation task. Its current first action is AX-370, the source-confirmed guard
+fix; older implementation queues later in this file are historical and must not
+override that row or its dependencies.
 
-This is a documentation/source audit, not implementation. The only current-source
-defects directly confirmed in this pass remain AX-370's external-path action mismatch
-and flattened policy-layer precedence; source separately preserves global/project deny
-ceilings, so do not report those denies as bypassed. No regressions were written or run.
-Docs-only static QA passed on checkout HEAD `a158cb4c24fae7118e373e637573678c05e90c42`:
-70 Markdown files across `ARCH/`, `research docs/`, and the root instruction/handoff
-files were scanned; 929 repository-local inline links and 129 fragments resolved; all
-127 TODO task IDs are unique and each row has an architecture owner and source-trail
-link; root Markdown is limited to the four permitted files; and `git diff --check`
-passes. The Rust-source diff is empty. This does not verify external URLs, runtime
-behavior, tests, benchmarks, provider calls, or UI behavior. The older QA counts below
-are prior snapshots, not current verification.
+Latest documentation-only checks: `git diff --check` passes; all 602 local links in
+`TODO.md` resolve to files and anchors; `CURRENT_RUN.md` has no local links. The
+active architecture/research link scan is recorded below. No product tests,
+benchmarks, provider calls, or UI runs were performed. The documentation changes are
+uncommitted. Preserve existing untracked workspace data.
+
+### Current architecture/source reconciliation
+
+The complete active architecture set (`ARCH/00–33`, with 17 intentionally unused) was
+read in three non-overlapping line-by-line reviews and reconciled with requirements,
+decisions, TODO, and source trails. Current fixes align the Thread model across
+security, tools, orchestration, analytics, search, UI, artifact, update, and app-server
+contracts; make provider fallback/cache semantics explicit; tighten the optional
+unconfined grant boundary; and align the P1 acceptance matrix at 20 rows. Findings
+F-84..F-90 add the broad legacy Yolo Ask conversion, pinned-provider fallback exposure,
+malformed owner-lease acceptance, conservative unknown provider-capability semantics,
+model-facing compacted-history retrieval, immutable adapter-build provenance, and
+canonical question-batch arbitration. F-91 / DEC-071 / REQ-PROV-014 add an optional
+provider-owned quota-observation store and read-only refresh path after the KiloCode /
+CodeBurn audit; observations can drive visible warnings only, never routing or local
+budget reservations. AX-386 records the LLD, settings/command surface, failure cases,
+and test contract across ARCH/02, 04, 11, 20, 27, 29, TODO, and tests.md. The
+LongHorizon-Harness launch-crash acceptance names reservation/run-directory and
+process-launch/receipt windows. OpenHands SDK review found no new completion/effect
+model to adopt; its replay measurements remain a separate storage microbenchmark.
+F-23's overbroad secret-scanning guarantee was corrected to distinguish broker-held
+credentials from arbitrary workspace text. AX-370, AX-384, AX-359, AX-360, and AX-328
+own the implementation and acceptance work.
+
+This remains a documentation/source audit, not implementation. Source-confirmed guard
+defects are the external-path action mismatch and flattened rule-layer precedence; the
+legacy Yolo posture also converts every surviving Ask to Allow, contrary to the
+approved bounded grant. Source separately preserves global/project deny ceilings; do
+not report those denies as bypassed. No product regression tests were added or run.
+Documentation-only checks must be rerun against the current revision before handoff;
+earlier QA counts belong to earlier commits and are not current evidence.
+
+### Claude Code and subagent memory follow-up
+
+Two requested bounded research passes completed (`/root/claude_public_arch` and
+`/root/claude_mem_injection`). The Claude Code pass used official
+public docs plus the README/license of `codeaashu/claude-code` solely to establish its
+stated leak/unlicensed provenance; its `src/` and backup branch were not opened. No
+leaked implementation was used. Official docs say ordinary subagents start with fresh
+context, do not inherit parent transcript or auto-memory, and can receive explicit
+skills and their own bounded profile memory. The claude-mem pass inspected its pinned
+Apache-2.0 hook manifest plus public docs and historical/open issue reports; the hook
+implementation and full source tree were not read. Its duplicate-memory reports are
+version/setup-specific evidence, not proof that the defect persists at the reviewed
+release.
+
+The resulting target contract is recorded in `DEC-072`, `REQ-MEM-005..007`, and
+`ARCH/09`, `ARCH/16`, `ARCH/18`, `ARCH/27`, `ARCH/33`: bounded per-child
+`ContextPacket`; `fork=none` and profile memory off by default; no implicit parent or
+sibling context; optional profile namespace in the existing memory store; explicit
+policy/capability intersection; accepted/current/task-relevant records pinned to the
+child `ContextEpoch`; candidate-only child writes; and visible source/usage disclosure.
+The official `SubagentStart` hook can append context but cannot block spawn; it avoids
+re-injection while the copy remains present and re-adds it after compaction. This is
+recorded as adapter delivery behavior, while controller authorization and persisted
+dispatch/epoch digests remain authoritative.
+`AX-371`, `ARCH/29`, and `research docs/tests.md` now include the source limits,
+implementation trail, and fan-out/isolation/recovery acceptance cases. No product
+tests or upstream tests ran in this docs-only pass.
+
+Current documentation checks: `git diff --check` passes. A local Markdown-link scan
+checked 122 Markdown files; all 11 unresolved paths are in the pre-existing generated
+notices/archive documents, while the changed architecture/research documents resolve.
+No implementation tests or live-provider calls were run.
 
 ### Upstream source-review extension — scoped results
 
-The three pinned core codebases were inventoried and reviewed across their primary
-runtime/schema/failure owners, and the source reports have been reconciled into their
-research notes. **This is not a literal line-by-line read of every tracked upstream
-file.** OpenCode pin `083ed266e058dc3d2d1b377ff5540859d79de110`: 6,642 tracked paths;
-focused provider/auth/catalog/Go, session/V2 input/compaction, subagent, search, update,
-TUI and desktop paths. Codex pin `67a709665ac7b50311b93e32612c9a8281684787`: 8,683
-paths, 153 Rust workspace members; selected runtime, thread/goal/agent, app-server,
-provider/tool/MCP, memory/context/compaction and sandbox paths; vendored/generated/
-snapshots inventoried and excluded from line-reading. Cline pin
-`787ad1b077d8b697892dc3bfcd42e7c65b88789e`: 4,116 paths; selected SDK/core/Agenda/
-Team/Hub/provider/MCP/CLI/web-fetch paths. No upstream tests or live UIs/providers were
-run. Exact counts and file references are in `research docs/opencode.md`, `codex.md`,
-and `cline.md`.
+The current-turn OpenCode/Codex/Cline follow-up used per-file coverage ledgers where
+available. **None was an exhaustive all-source-file read.** OpenCode pin
+`083ed266e058dc3d2d1b377ff5540859d79de110`: 3,630 files in the declared source
+extension inventory, 14 fully read, 10 partial, 3,606 unread. Codex local source
+checkout `13a966fc652d1037c7ee93a15b2bdfa0610748ae` (not the research note's broader
+pin): 6,291 source-like files, 9 fully read (786 lines), several partial, remaining
+files unread. Cline pin `787ad1b077d8b697892dc3bfcd42e7c65b88789e`: 3,521 source/config
+candidates, 16 fully read (4,118 lines), 8 partial, 3,497 unread. Exact citations are
+in their research notes. Two detailed per-file ledgers are temporary audit artifacts,
+not durable project files. No upstream tests, live UIs, or providers were run.
+
+The user renewed the request for exhaustive source review across more named
+repositories. Targeted read-only reviews are now complete for DeerFlow, DeepSeek Harness,
+Superset, and OpenHands Agent Canvas. Durable ledgers are under
+`research docs/source-audit-coverage/`; none was an exhaustive repository read. DeerFlow
+selected 2,700 code files (10 full, 14 partial, 2,676 unread); DeepSeek Harness selected
+5,484 (2 full, 9 partial, 5,473 not fully read); Superset selected 8,569 (8 full, 3
+partial, 8,558 unread); OpenHands Agent Canvas selected 2,094 (4 full, 6 partial,
+2,084 unread). The OpenHands UI checkout is not its runtime or benchmark suite. Codex
+has no durable per-file ledger yet. Earlier notes for other named repositories are
+focused research, not whole-tree reads. Claude Code has no published implementation
+tree; official docs and the third-party `cc-haha` source remain separate evidence
+classes. Do not claim all requested codebases were fully read.
+
+The 2026-09-29 OpenHands software-agent-sdk pass read 8 files fully, 8 partially,
+and inventoried 1,771 unread tracked paths; it is targeted, not exhaustive. The Kilo/
+CodeBurn quota pass is also a focused source-path audit, not full-tree coverage. A
+newer OpenHands/OpenHands Canvas pass pinned `94e156a8c7b7a468d7c60bda3a38757bfbfd4a79`
+and inventoried 2,115 candidates: 27 full, 13 partial, 2,075 unread. It confirms that
+frontend history paging, websocket resend, and optimistic state are UI catch-up
+projections, not durable task/effect recovery; partial history remains visibly
+incomplete, and browser localStorage API keys are not an acceptable secret-broker
+pattern. No tests or benchmarks ran. The separately requested Ruflo/Nanobot/Hermes and
+ECC/wshobson passes produced bounded focused reports after inventory startup. They are
+now recorded in the source-audit coverage README and crosswalk, but none is exhaustive:
+Ruflo 5/2,993 full/unread; Nanobot 4/21/1,224 full/partial/unread; Hermes
+4/13/12,359; ECC 6/8/2,279; and wshobson 2/10/1,156. Their findings are limited to
+the cited swarm, subagent, delivery, registry, catalog, hook, adapter, and installer
+paths; no upstream tests or runtime commands ran. Do not generalize them to their full
+repositories.
+
+The 2026-09-29 crosswalk added three scoped architecture changes: optional current-Thread
+history retrieval after compaction via the shared Thread index (AX-385); exact local
+adapter build and negotiated-capability provenance with reconnect renegotiation (AX-318);
+and an explicit question-call batch suspension state (AX-380). DeepSeek Harness's
+route-specific in-history system-prompt replacement semantics are modeled as a
+conformance-gated optimization; full prompt replacement remains the safe default. No
+universal cache mechanism was added. Superset/OpenHands did not justify a new orchestration
+subsystem; their current designs already map to AX-359/AX-318. Their event-array update
+path only adds a large-history/streaming stress fixture to AX-374, not a reproduced bug.
 
 Aider was refreshed against upstream `main` commit
 `5dc9490bb35f9729ef2c95d00a19ccd30c26339c` (2026-05-22): its 691 tracked paths and
@@ -56,11 +146,13 @@ third-party `cc-haha` workspace remain separate evidence classes.
 
 The source review corrected Cline's nonexistent desktop/JetBrains source paths,
 disabled-at-pin Agenda behavior, Team dependency edges, completion semantics, and the
-limits of its subprocess/web-fetch boundaries (`F-83`). OpenCode research now records
+limits of its subprocess/web-fetch boundaries (`F-83`). OpenCode research records
 title-only/bounded search, update confirmation/signature differences, Go route diversity,
-compaction loss, and V2 deferred recovery limits. Codex research adds non-atomic turn
-admission, BM25 tool discovery, compaction behavior, and platform-specific sandbox
-availability. Re-run documentation QA after any further report-driven edits.
+compaction loss, V2 deferred recovery limits, and strict local capability-validation
+requirements (`F-87`). Codex research records non-atomic Goal/rollout persistence,
+unbounded client event-queue behavior, message-board receipt semantics, and its
+thread-scoped rather than task-verified goal model. Re-run documentation QA after any
+further report-driven edits.
 
 The currently confirmed target layout is **Explorer/editor on the left, chat fixed in
 the center, and verified Tasks on the right**. All three regions resize through

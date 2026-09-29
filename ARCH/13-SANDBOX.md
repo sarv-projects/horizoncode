@@ -66,6 +66,29 @@ trait SandboxProvider: Send + Sync {
 }
 ```
 
+**Unconfined grant schema (control receipt, never project configuration).** The
+exception named by `REQ-SEC-021` is not a `ConfinementProfile` boolean. It is a
+controller-minted, one-use authorization record:
+
+```text
+UnconfinedExecutionGrant {
+  grant_id, run_id?, task_id?, attempt_id?, worker_execution_id?,
+  authenticated_principal_ref, effect_classes[], resource_scope_digest,
+  worker_boundary: DISTINCT_IDENTITY | ISOLATED_VM,
+  private_state_boundary_digest, policy_digest, preview_digest,
+  issued_at, expires_at, consumed_at?, revoked_at?, audit_receipt_ref
+}
+```
+
+The grant is minted only after the trusted UI displays the effective reach and lost
+protections and receives explicit confirmation. It is consumed atomically before
+spawn, scoped to the named work and a short expiry, and cannot be copied into project
+config or inherited by child workers. If a distinct worker identity/VM cannot keep
+the controller, credentials, canonical Run/Thread/audit stores, and operator-control
+IPC outside the worker view, unconfined execution is unavailable; same-UID process
+separation or a hidden socket path is insufficient. The grant never changes Guard
+authorization or claims an OS containment guarantee for host paths within its scope.
+
 Callers hold a resolved profile, not a backend. Backends are selected by tier:
 
 | Tier | Backend | Notes |
@@ -302,7 +325,7 @@ requirement rather than by downgrading it silently.
 | Capabilities retained after setup | Abort the spawn; audited |
 | Network denied at runtime | Typed violation returned to the tool; audited |
 | Process hang | Watchdog → interrupt/cancel; tree reaped |
-| Explicit unconfined execution | A project/agent/config flag cannot enable it. It may run only after a trusted local user grants a one-run, expiring `UnconfinedExecutionGrant` that names the exact task/effect classes and surfaces the lost filesystem/process/network protections before confirmation. The grant cannot override hard denies, private controller/credential/audit boundaries, managed locks, or an unavailable required backend. No same-user confidentiality boundary is claimed. Refuse when the caller requires any capability the unconfined backend cannot enforce, when the grant/audit receipt cannot be durably recorded, or for unattended managed work without that exact approved grant. Never the default. |
+| Explicit unconfined execution | A project/agent/config flag cannot enable it. It may run only after a trusted local user grants a one-run, expiring `UnconfinedExecutionGrant` for an exact task/effect scope and isolated worker boundary. The grant cannot override hard denies, private controller/credential/audit boundaries, managed locks, or required enforcement. No same-UID confidentiality or sandbox guarantee is claimed. Refuse if a distinct worker identity/VM cannot preserve private controller state, if the caller requires any capability the backend cannot enforce, if the grant/audit receipt cannot be durably recorded, or for unattended managed work without that exact approved grant. Never the default. |
 
 ## Configuration
 
@@ -358,7 +381,7 @@ network policy.
 | `REQ-TOOL-003` | Denied tools are absent via Guard; the sandbox independently confines the rest. |
 | `REQ-SEC-003` | This module is the sole path-reach enforcer: in-process operations use `check_path`; spawned tools use the selected OS boundary. The profile is refused when that boundary cannot establish required scope. |
 | `REQ-SEC-025` | Sole path-reach owner: scoped roots and deny/protected paths are checked at use and applied by the selected tier. Acceptance records name whether evidence is in-process, mount-view, or kernel policy; a tier that cannot enforce the required boundary refuses the effect (`DEC-024`, `DEC-025`). |
-| `REQ-SEC-026` | The worker view excludes canonical run/session/audit state, credentials, operator-control IPC, and the trusted controller home on every profile. `full-access` requires a distinct worker identity or isolated view; otherwise it is unavailable. |
+| `REQ-SEC-026` | The worker view excludes canonical Run/Thread/audit state, credentials, operator-control IPC, and the trusted controller home on every profile. `full-access` requires a distinct worker identity or isolated view; otherwise it is unavailable. |
 | `REQ-LOOP-005` | Cancellation propagates to process trees; partial state stays inspectable. |
 | `REQ-ORCH-003` | Per-subagent writable scopes are non-overlapping worktrees or explicitly merged. |
 | `REQ-PERF-001` | Startup probe is bounded; the warm-cache prompt target is unaffected. |
