@@ -55,7 +55,7 @@ MemoryRecord {
   source_kind: explicit_user | approved_run | imported,
   source_ref?: {store, aggregate_type, aggregate_id, aggregate_seq, event_id,
                 source_revision?, repository_identity?, workspace_id?,
-                source_view: committed | working_tree | editor_buffer?,
+                source_view?: committed | working_tree | editor_buffer,
                 path?, file_digest?, dirty_generation?, buffer_digest?, span_digest?},
   freshness: CURRENT | SOURCE_CHANGED | SOURCE_UNAVAILABLE | SOURCE_UNVERIFIED,
   approved_by?: principal, approved_at?: sequence,

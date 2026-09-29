@@ -10,13 +10,16 @@ reviewer can ask "what is the threat here?" and get a falsifiable answer.
 
 It is a threat model, not a promise. The tables distinguish the **designed control**
 from its **source and acceptance status**; an intended boundary is not an implementation
-claim. `ARCH/24`, `CURRENT_RUN.md`, and `TODO.md` are the dated source inventory and
-delivery ledger. Each row names a **control**, a **residual risk** so nothing is
-over-claimed, and a **mitigation to implement** so the gap is tracked. Where a risk
-cannot be closed at all, it is recorded in the residual-risk register rather than
-quietly mitigated.
+claim. In the control column, a statement explicitly described as current/source-backed
+is a bounded observation at the reviewed baseline; all unqualified controls are target
+design unless a dated implementation/evidence record says otherwise. See `ARCH/29`
+for source paths, `ARCH/24` for dated findings, and `TODO.md` for delivery status.
+No row claims acceptance merely because a control is designed. Each row names a
+**residual risk** and a **mitigation to implement** so gaps remain visible. Where a risk
+cannot be closed, it is recorded in the residual-risk register rather than quietly
+treated as mitigated.
 
-Posture is **fail closed** throughout: an unknown permission, an unmaterializable
+The target posture is **fail closed** throughout: an unknown permission, an unmaterializable
 confinement profile, an unreadable policy layer, an unverifiable audit anchor, an
 unpinned extension, and an unclassifiable failure are all *refusals*, never silent
 success (`ARCH/01-VISION.md` §3, `DEC-005`, `DEC-012`, `DEC-018`).
@@ -176,7 +179,7 @@ Assumed **non**-adversaries: the OS user themselves (see the trust-boundary note
 
 ### T-1 — Filesystem and tool plane (`CMP-tools`, `CMP-sandbox`, `CMP-session` client fs)
 
-| ID | Asset | Attack | Existing control | Residual risk | Mitigation to implement |
+| ID | Asset | Attack | Designed control (current source status noted where applicable) | Residual risk | Mitigation to implement |
 |---|---|---|---|---|---|
 | `F-01` | `AS-1`,`AS-8` | Relative traversal (`../../`) or an absolute path outside the workspace reaches host files | Guard floor rule; path API validation; read/write roots; deny globs; spawn-time OS confinement where implemented | In-process lexical/canonical path checks can race with symlink or mount changes; caller-side `check_path` does not prove OS containment; each platform backend has different scope | Use handle-relative/no-follow APIs and revalidation for in-process effects; use and acceptance-test the OS backend for children; document tier-specific mount/read/descendant limits, fail closed when required reach cannot be enforced, and assert guard/sandbox grammar parity (`DEC-024`, `ARCH/10`, `ARCH/13`) |
 | `F-02` | `AS-1`,`AS-3` | A symlink/junction inside a granted root points at a denied or foreign path | Canonicalization before policy; backend-specific enforcement; refuse a symlinked policy/config path | Check-then-open window: the link can be swapped between validation and use | Revalidate through a handle-relative/no-follow open where supported; deny on mismatch with a typed error; no policy decision is made on a non-canonical path; record platform cases where these APIs are unavailable |
@@ -187,7 +190,7 @@ Assumed **non**-adversaries: the OS user themselves (see the trust-boundary note
 
 ### T-2 — Shell and process execution (`CMP-tools` `bash`, `CMP-sandbox` `spawn`)
 
-| ID | Asset | Attack | Existing control | Residual risk | Mitigation to implement |
+| ID | Asset | Attack | Designed control (current source status noted where applicable) | Residual risk | Mitigation to implement |
 |---|---|---|---|---|---|
 | `E-01` | `AS-4` | Command/argument injection by string-concatenating model- or file-supplied text into a shell | Argv-based spawn; policy evaluated on a command token prefix | Any future convenience wrapper that builds a shell string reintroduces `FO-4` | Static gate: no shell-string construction on the tool path; a lint/CI check plus a test that a crafted argument containing shell metacharacters is passed through inertly; reject NUL/newline in an argument |
 | `E-02` | `AS-2` | Environment injection: an attacker-supplied env value overrides a required one, or the host env leaks ambient credentials | Child env filtered; secret fields are references only; header/query/body redaction | Host environment may already contain tokens (VCS/net helpers) that a child would inherit | Explicit child-env allowlist; never forward HorizonCode-resolved credential material; record the child's env **shape** (names) in audit, never values |
@@ -198,7 +201,7 @@ Assumed **non**-adversaries: the OS user themselves (see the trust-boundary note
 
 ### T-3 — Egress and network (`CMP-tools` fetch tools, `CMP-provider`, `CMP-mcp` HTTP, `CMP-sandbox` network policy)
 
-| ID | Asset | Attack | Existing control | Residual risk | Mitigation to implement |
+| ID | Asset | Attack | Designed control (current source status noted where applicable) | Residual risk | Mitigation to implement |
 |---|---|---|---|---|---|
 | `N-01` | `AS-8`,`AS-2`,`AS-7` | SSRF to loopback, private, link-local, or reserved ranges, directly or by name | One mediated egress; `net.connect` rule on `host:port`+protocol; `network: none` by default | DNS answer can change between resolution and connect (rebinding) | **Resolve-then-check-then-connect-to-the-validated-address**; re-validate on every connection attempt; a name that resolves into a denied range is refused with a typed error |
 | `N-02` | `AS-8` | Redirect (3xx) to a denied host, or a redirect chain that changes the host silently | Redirects are a fetch-tool concern; policy applies per request | An implementation may follow a redirect before re-authorizing | Cap redirect depth; **re-authorize each hop** against `net.connect`; surface the host change; never follow a cross-host redirect silently |
@@ -210,7 +213,7 @@ Assumed **non**-adversaries: the OS user themselves (see the trust-boundary note
 
 ### T-4 — Context assembly and prompt injection (`CMP-context`, `CMP-runner`, `CMP-tools` output, `CMP-orch` receipts)
 
-| ID | Asset | Attack | Existing control | Residual risk | Mitigation to implement |
+| ID | Asset | Attack | Designed control (current source status noted where applicable) | Residual risk | Mitigation to implement |
 |---|---|---|---|---|---|
 | `P-01` | `AS-1`,`AS-2`,`AS-4` | A fetched page contains instruction-shaped text that the model follows as a command | Content framed as untrusted, non-instructional data; consequential actions still require a decision | **A sufficiently persuasive payload can still influence model behavior.** We do not claim reliable detection | Containment, not detection: content cannot grant authority; provenance is carried with the item; an injection corpus test asserts the corpus produces **no unauthorized effect** (not that the text is flagged); user-visible provenance on fetched content |
 | `P-02` | `AS-3` | Repository text — `AGENTS.md`, comments, READMEs, test fixtures, docstrings — asserts policy or approval | Instruction files are a typed source injected as data; project config may only narrow | A project file can still try to say "ignore your rules" | Project-scoped configuration is explicitly untrusted: it cannot set `unmatched: allow`, cannot enable unconfined/full access, cannot change guard mode to widen; schema-level rejection, not just evaluation-time filtering |
@@ -222,9 +225,9 @@ Assumed **non**-adversaries: the OS user themselves (see the trust-boundary note
 
 ### T-5 — Secrets and observability surfaces (`CMP-secrets`, `CMP-provider`, `CMP-audit`, `CMP-analytics`, `CMP-tui`, `CMP-headless`)
 
-| ID | Asset | Attack | Existing control | Residual risk | Mitigation to implement |
+| ID | Asset | Attack | Designed control (current source status noted where applicable) | Residual risk | Mitigation to implement |
 |---|---|---|---|---|---|
-| `S-01` | `AS-2` | A secret is placed in a prompt or context item | Use-style injection at call time; the broker never returns a value to caller code that assembles prompts | A new call site could ask for a value instead of a use | Type-level no-return secret API; a CI check that prompt-assembly code has no secret accessor; corpus scan of recorded transcripts |
+| `S-01` | `AS-2` | A secret is placed in a prompt or context item | Target: use-style injection at call time; current source status: OS vault integration and scoped secret injection are absent (`AX-105`) | A new call site could ask for a value instead of a use | Implement a type-level no-return secret API; a CI check that prompt-assembly code has no secret accessor; corpus scan of recorded transcripts |
 | `S-02` | `AS-2` | A secret leaks through a `Debug`/error/panic path | Typed errors; no raw provider body; redaction pass; `missing_debug_implementations` lint | A panic message or a `tracing` field can bypass the redaction pass | No `Debug` on secret-bearing types; a redacting panic hook; an error-construction lint; test by forcing each error path with a canary secret |
 | `S-03` | `AS-2`,`AS-5` | A secret reaches an audit entry or an analytics row | Redaction before chaining; entries carry refs/digests/bounded metadata, never prompt or completion text | External text that *echoes* a secret (a hostile tool or a provider error body) is persisted as ordinary content | Redaction runs over **all** persisted external text, not only known secret fields; a redaction failure refuses the entry rather than chaining it |
 | `S-04` | `AS-2`,`AS-9` | A secret appears in the TUI (approval string, transcript, diff preview) | Redaction before display; approval metadata is non-secret context only | A raw diff or managed-output preview can contain a secret from the workspace | Canary run asserting no plaintext secret in any rendered frame; preview/spill paths are covered by the same redaction pass |
@@ -235,7 +238,7 @@ Assumed **non**-adversaries: the OS user themselves (see the trust-boundary note
 
 ### T-6 — Guard, policy, and privilege (`CMP-guard`)
 
-| ID | Asset | Attack | Existing control | Residual risk | Mitigation to implement |
+| ID | Asset | Attack | Designed control (current source status noted where applicable) | Residual risk | Mitigation to implement |
 |---|---|---|---|---|---|
 | `G-01` | `AS-3` | A decision is made on a non-canonical resource, so the matched rule is not the applied rule | Canonicalization requirement in the resource model | Enforcement depends on every caller canonicalizing | `CMP-guard` refuses a non-canonical resource with a typed error rather than guessing |
 | `G-02` | `AS-3`,`FO-13` | Untrusted project config sets `unmatched: "allow"` or widens a ceiling | `unmatched` may never be `allow`; outer-scope deny is a non-overridable ceiling | Validation is only as good as the schema path | Schema-level rejection of `unmatched: "allow"` in every layer; test that a project layer cannot widen a global deny |
@@ -250,7 +253,7 @@ Assumed **non**-adversaries: the OS user themselves (see the trust-boundary note
 
 ### T-7 — Audit integrity (`CMP-audit`)
 
-| ID | Asset | Attack | Existing control | Residual risk | Mitigation to implement |
+| ID | Asset | Attack | Designed control (current source status noted where applicable) | Residual risk | Mitigation to implement |
 |---|---|---|---|---|---|
 | `D-01` | `AS-5` | Entry removed, reordered, truncated, or modified in place | Hash chain + dense `seq` + per-segment Merkle roots; `audit verify` reports the failing `seq` | A local actor who also rewrites the local roots defeats local-only verification | Roots are always signed and anchored at a **declared level**; the default is `local-sink`, a validated append-only sink outside the audit store root (`DEC-022`, `REQ-AUDIT-004`); see `D-02` |
 | `D-02` | `AS-5`,`FO-8` | Rewrite entries **and** recompute local roots to hide the tampering | Signed segment roots; anchoring at a declared level; the `local-trust` posture is labeled everywhere | The default is `local-sink`, which is stronger than the old local-only default but weaker than `off-box`; **fabrication and the unanchored tail are not detected by any local anchor** | Surface the anchoring **level** wherever audit history is shown; make `off-box` required for any deployment declaring an off-box trust requirement; a run that cannot reach its configured anchor fails the release gate rather than degrading silently; `audit verify` renders the precise claim boundary (`REQ-AUDIT-007`) |
@@ -263,7 +266,7 @@ Assumed **non**-adversaries: the OS user themselves (see the trust-boundary note
 
 ### T-8 — Orchestration, sub-agents, and peer agents (`CMP-orch`, `CMP-acp` client mode)
 
-| ID | Asset | Attack | Existing control | Residual risk | Mitigation to implement |
+| ID | Asset | Attack | Designed control (current source status noted where applicable) | Residual risk | Mitigation to implement |
 |---|---|---|---|---|---|
 | `O-01` | `AS-4`,`FO-9` | A child requests authority its parent does not hold | Effective child authority = parent ceiling ∩ declared scope ∩ agent rules; limits may only narrow | Derivation is spread across spawn, tool materialization, and per-call assert | Assert the intersection at spawn and re-assert at each effect; a spawn that would exceed the ceiling is rejected typed |
 | `O-02` | `AS-4` | A peer-supplied path/tool/argument is forwarded without local authorization | Core tickets never cross the ACP boundary; the peer returns a receipt | A forwarded `fs`/`terminal` client call could be treated as pre-approved | Every peer request is a **proposal** re-authorized locally; a forwarded request that matches a saved rule still records its own decision |
@@ -277,7 +280,7 @@ Assumed **non**-adversaries: the OS user themselves (see the trust-boundary note
 
 ### T-9 — Extensions and supply chain (`CMP-config`, `CMP-mcp`, skills, plugins, hooks, dependencies, catalog data)
 
-| ID | Asset | Attack | Existing control | Residual risk | Mitigation to implement |
+| ID | Asset | Attack | Designed control (current source status noted where applicable) | Residual risk | Mitigation to implement |
 |---|---|---|---|---|---|
 | `X-01` | `AS-10`,`AS-1` | A malicious skill's instructions subvert the run | Deny-by-default enable; pin by version/hash; quarantine scan; instructions are untrusted data | Content is judged at review time only | Injection corpus per skill batch; provenance shown before enable; a pin mismatch refuses to load until re-pinned |
 | `X-02` | `AS-10` | Pin bypass through digest normalization (line endings, Unicode normalization, case, path spelling, file-set omission) | Pin is a version + content hash | A naive digest over raw bytes or names can be made to collide across equivalent encodings | Digest over a **normalized** canonical file-set manifest (relative path, normalized bytes, mode) rather than names; a mismatch refuses; add normalization fixtures to the test corpus |
@@ -294,7 +297,7 @@ Assumed **non**-adversaries: the OS user themselves (see the trust-boundary note
 
 ### T-10 — Cost, quotas, and denial of service (`CMP-runner`, `CMP-orch`, `CMP-tools`, `CMP-context`, `CMP-provider`)
 
-| ID | Asset | Attack | Existing control | Residual risk | Mitigation to implement |
+| ID | Asset | Attack | Designed control (current source status noted where applicable) | Residual risk | Mitigation to implement |
 |---|---|---|---|---|---|
 | `C-01` | `AS-7` | An unbounded tool-call/step loop; the model raises its own step limit | Bounded step count; last-step forcing (tools unmaterialized, tool choice none) | A configured limit may be too high to be a real bound | Step/tool-call ceilings come only from configuration, never from model output; a session ceiling bounds the total; the last-step wrap-up is asserted by test |
 | `C-02` | `AS-7` | Unbounded token/cost spend, including via compaction loops | Pre-send and pre-step budget evaluation; fail closed; tree totals capped by the session ceiling | Unknown pricing could under-enforce a cost ceiling | A ceiling with unknown pricing fails **closed** on the cost term, or is explicitly declared token-only; observed vs estimated never conflated |
@@ -307,7 +310,7 @@ Assumed **non**-adversaries: the OS user themselves (see the trust-boundary note
 
 ### T-11 — Local state, portability, and the local attacker (`CMP-session`, `CMP-audit`, `CMP-analytics`, `CMP-config`)
 
-| ID | Asset | Attack | Existing control | Residual risk | Mitigation to implement |
+| ID | Asset | Attack | Designed control (current source status noted where applicable) | Residual risk | Mitigation to implement |
 |---|---|---|---|---|---|
 | `L-01` | `AS-2` | An untrusted worker process, including one launched under the same host account, reads/modifies canonical state or forges a control receipt | Canonical state/control paths are outside the worker view; controller-issued worker principal; distinct identity or isolated view where required (`REQ-SEC-026`, `DEC-050`) | A backend that only checks paths in-process or exposes inherited descriptors/control tokens does not prove isolation | Process-level adversarial acceptance for each backend; refuse dispatch/profile when private state and operator IPC are reachable |
 | `L-02` | `AS-3`,`AS-5`,`AS-6` | A local writer tampers with config, cache, or logs to influence future runs | Hash-chained audit; signed/anchored roots; config digest; policy snapshot on the session | Local-only roots do not stop a local root actor | Ownership/permission validation at load; refuse on mismatch; surface tampering; anchor off-box where the deployment requires it |

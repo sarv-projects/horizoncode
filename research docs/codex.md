@@ -305,6 +305,47 @@ assumption that repeated model turns are inherently useful. Codex's Goal record 
 useful precedent for visible objective/status/budget fields; the scheduler still needs
 deterministic pause/wait/stop/no-progress control that survives restart.
 
+## 2026-09-29 source-inventory and subsystem follow-up
+
+The pinned commit `67a709665ac7b50311b93e32612c9a8281684787` contains 8,683 tracked
+paths, 153 Rust workspace members, 4,924 Rust files, 758 TypeScript files, 1,433
+snapshots, and 2,065 Rust files matching common test-attribute patterns (a file count,
+not a test count). The follow-up inspected representative execution, schema,
+persistence, and failure paths across ThreadManager, Goals, agent admission and graph,
+app-server, providers, tool discovery, MCP, context/compaction, plugins/skills, and
+platform sandbox/network code. It inventoried but did not line-read 51 vendored files,
+1,050 generated protocol-schema files, or 1,433 snapshots; it did not read all 8,683
+paths or run Codex tests.
+
+Additional implementation details that affect HorizonCode design:
+
+- Codex atomically reserves child-spawn slots, but `check_turn_admission` and
+  `admit_turn` are separate, advisory checks; concurrent turn admission is not an
+  atomic budget reservation. Keep HorizonCode's single atomic nested reservation
+  authority rather than treating Codex's two controls as equivalent.
+- Tool discovery uses cached English BM25 over deferred tool specs and materializes
+  matched schemas for a subsequent model call. It is model-tool discovery, not semantic
+  repository symbol search. MCP tools enter the shared typed executor and run in
+  parallel only when read-only/parallel-safe annotations allow it. MCP startup
+  distinguishes timeout and reauthentication failures and returns operator guidance.
+- Compaction has distinct pre-turn/manual and mid-turn context-injection modes; it
+  retries transient errors with bounded backoff, trims on context overflow, stops on
+  interruption/budget exhaustion, replaces history with a checkpoint, and recomputes
+  usage. Repeated compaction may reduce accuracy. Local compaction inference traces are
+  disabled pending a first-class lifecycle, a useful observability gap to retain in
+  HorizonCode's test plan.
+- Sandbox selection can return `None` when a platform backend is absent. Managed
+  networking also has backend-specific requirements, including elevated Windows paths
+  and Linux/WSL1 restrictions. HorizonCode must report the actual tier/backend and
+  refuse required confinement that cannot be established; it must not claim uniform
+  managed-egress coverage from the policy setting alone.
+
+Pinned evidence: [agent admission API](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/core/src/agent/api.rs),
+[tool search handler](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/core/src/tools/handlers/tool_search.rs),
+[MCP executor](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/core/src/tools/handlers/mcp.rs),
+[compaction](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/core/src/compact.rs),
+and [sandbox selection](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/sandboxing/src/manager.rs).
+
 ## Source index
 
 - [Core agent controller](https://github.com/openai/codex/tree/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/core/src/agent)

@@ -2,6 +2,36 @@
 
 > INTERNAL RESEARCH — source snapshot: latest listed Aider release v0.86.0, commit **a4be6ccd87ebaa59b361f3f028d116ce1761b626**, released 2025-08-09. The release page still lists v0.86.0 as latest when checked 2026-09-27. This is a materially older release than the other pinned systems; verify current status before selecting it. This map follows core Python runtime paths rather than every module and test.
 
+### Main-branch refresh (2026-09-29)
+
+The upstream `main` snapshot inspected for this refresh is
+[`5dc9490bb35f9729ef2c95d00a19ccd30c26339c`](https://github.com/Aider-AI/aider/commit/5dc9490bb35f9729ef2c95d00a19ccd30c26339c),
+dated 2026-05-22. The official [release page](https://github.com/Aider-AI/aider/releases)
+still identifies v0.86.0 / `a4be6cc` as the latest GitHub release when checked on
+2026-09-29. Thus the old release pin remains the latest release, while `main` contains
+later, unreleased changes; release status and source-branch status must not be
+conflated.
+
+The shallow source snapshot contains 691 tracked files: 521 under `aider/`, 87 under
+`tests/`, and 23 under `scripts/`. This refresh compared all 38 changed paths beneath
+`aider/` since the release pin, then inspected the changed model, repo-map, repository,
+command, and base-coder paths plus relevant tests. It is a bounded change audit, not a
+claim that all 691 files, every test, or all unchanged source were read line by line.
+The main-branch delta adds current model names/aliases and model-specific options in
+`aider/models.py`, updates Tree-sitter language-pack compatibility and language tags in
+`aider/repomap.py`, and changes outside-repository/read-only file admission around
+auto-commit settings in `aider/commands.py`; `/ok` is a convenience alias for an
+affirmative `/code` request. The inspected `tests/` tree had no direct `cmd_ok` or
+`/ok` test match. No Aider tests were run. The current Aider still uses static model
+metadata/settings and LiteLLM routing; these changes do not establish an OpenCode-like
+provider registry or HorizonCode-style task/evidence controller.
+
+Pinned changed source: [model aliases and capabilities](https://github.com/Aider-AI/aider/blob/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/aider/models.py),
+[repo map](https://github.com/Aider-AI/aider/blob/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/aider/repomap.py),
+[file admission and `/ok`](https://github.com/Aider-AI/aider/blob/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/aider/commands.py),
+[base coder commit behavior](https://github.com/Aider-AI/aider/blob/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/aider/coders/base_coder.py),
+and [repo-map tests](https://github.com/Aider-AI/aider/blob/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/tests/basic/test_repomap.py).
+
 ## Evidence boundary and HLD
 
 Aider is a terminal-first, Git-aware pair-programming tool. It combines a Python CLI/chat loop, model API integration through LiteLLM, edit-format-specific coding strategies, repository map retrieval, file/command/Git helpers and optional lint/test feedback.

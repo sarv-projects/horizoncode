@@ -217,7 +217,7 @@ acceptance matrix, the determinism/flake policy, the budgets, and the release ga
 
 ## MEM (persistent memory)
 
-- `REQ-MEM-001` — The agent MUST maintain a persistent project/user memory store distinct from sessions, with bounded size and an explicit compaction policy.
+- `REQ-MEM-001` — The agent MUST maintain a persistent project/user memory store distinct from Threads, with bounded size and an explicit compaction policy.
 - `REQ-MEM-002` — Memory writes MUST be attributable and inspectable; the agent MUST NOT silently persist model guesses as facts.
 - `REQ-MEM-003` — Memory MUST be injectable as a typed context source.
 - `REQ-MEM-004` — Memory MUST support separate user-global and project scopes with no cross-project leakage. Explicit user-directed saves may create a reviewable candidate. Automatic extraction MUST be opt-in by default; automatic acceptance MUST remain off. Global scope is for user preferences/work habits, while repository facts and decisions default to stable project identity and carry source revision/provenance. `/memory` MUST inspect, search, approve/reject, supersede, export, and purge records by scope; disabled retrieval MUST be distinct from deletion.

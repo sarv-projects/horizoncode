@@ -264,3 +264,51 @@ undocumented methods, restrictions, and incomplete source evidence remain `unkno
 unavailable. The Go discovery list and the documentation route table also disagree, so
 the Go adapter must not infer a wire protocol for new model IDs. Current Go price and
 free-offer claims are volatile and not live inference-test evidence.
+
+## 2026-09-29 source-inventory and flow follow-up
+
+The pinned tree at `083ed266e058dc3d2d1b377ff5540859d79de110` has 6,642 tracked paths,
+including 2,735 TS, 609 TSX, 1,262 SVG, 254 PNG, 779 Markdown/MDX files, 905 test-file
+candidates, 95 migration paths, and 14 specs. This pass inspected the main provider,
+auth, session/V2 input and compaction, subagent, search, update, and UI owners plus
+selected tests/specs; it did not read every path, provider, test, migration, or asset.
+The full file inventory and limitations are recorded in the reviewer handoff; no
+OpenCode tests, UI, or live provider request were run.
+
+Important source-confirmed distinctions at this pin:
+
+- **Catalog versus callable route:** the Go model directory/global catalog is broader
+  than the V2 runner's three adapter families (`@ai-sdk/openai`, `@ai-sdk/anthropic`,
+  and URL-backed OpenAI-compatible). Go docs map individual IDs across `/responses`,
+  `/chat/completions`, and `/messages`. Metadata presence is not protocol support.
+  OpenCode also loads/invokes provider JavaScript identified by metadata; Horizon's
+  inert projection and locally implemented Rust routes avoid granting refreshed data
+  code execution authority. For Go affinity, use HorizonCode's own honest User-Agent
+  and stable opaque per-conversation ID; do not copy OpenCode project/client identity
+  headers or expose local project identifiers.
+- **Search:** server search is title-only SQL `LIKE`, while the home UI searches loaded
+  title/project-name records in memory and caps its session window at 64; API defaults
+  are 100. The inspected app/core paths contain no FTS message index. SQL wildcard
+  characters `%` and `_` are not escaped. This does not meet full-history/exact-phrase/
+  jump-to-message requirements; Horizon's indexed message-content design remains a
+  deliberate addition.
+- **Updates:** configured autoupdate can install patch releases without an explicit
+  confirmation; non-patch/notify cases prompt, and the TUI offers skip/version
+  suppression/restart. The inspected curl path executes a fetched shell installer;
+  no signature/checksum validation was visible in that path. Horizon's confirmation-
+  first signed update and maintenance fence remain the selected safer design.
+- **Compaction and V2 lifecycle:** durable history and compaction boundaries survive,
+  but the compaction summary may replace non-text tool attachments with MIME/name
+  markers and truncate tool text to 2,000 characters. The V2 spec explicitly defers
+  crash continuation, inbox backlog limits, local tool-fanout bounds, and provider
+  timeout/watchdog policy. Horizon should retain raw artifact/history references and
+  keep its separate bounded `Attempt`/`WorkerExecution` recovery contract.
+
+Pinned source references: [Go route mapping and client requirements](https://github.com/anomalyco/opencode/blob/083ed266e058dc3d2d1b377ff5540859d79de110/packages/web/src/content/docs/go.mdx),
+[V2 model adapters](https://github.com/anomalyco/opencode/blob/083ed266e058dc3d2d1b377ff5540859d79de110/packages/core/src/session/runner/model.ts),
+[session title search](https://github.com/anomalyco/opencode/blob/083ed266e058dc3d2d1b377ff5540859d79de110/packages/opencode/src/session/session.ts),
+[home search](https://github.com/anomalyco/opencode/blob/083ed266e058dc3d2d1b377ff5540859d79de110/packages/app/src/pages/home/home-session-search-controller.ts),
+[upgrade flow](https://github.com/anomalyco/opencode/blob/083ed266e058dc3d2d1b377ff5540859d79de110/packages/opencode/src/cli/upgrade.ts),
+[installer path](https://github.com/anomalyco/opencode/blob/083ed266e058dc3d2d1b377ff5540859d79de110/packages/opencode/src/installation/index.ts),
+[compaction](https://github.com/anomalyco/opencode/blob/083ed266e058dc3d2d1b377ff5540859d79de110/packages/core/src/session/compaction.ts),
+and [V2 session lifecycle/deferred work](https://github.com/anomalyco/opencode/blob/083ed266e058dc3d2d1b377ff5540859d79de110/specs/v2/session.md).

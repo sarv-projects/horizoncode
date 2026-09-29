@@ -286,7 +286,7 @@ config digest is pinned to the run and changes create a new context/policy epoch
 ## Open questions
 
 1. **`CMP-config` registration.** Resolved: `CMP-config` is registered in `ARCH/03-ARCHITECTURE.md` §2 (Capability layer). No further `DEC-*` is needed for registration; the extension surfaces it configures remain governed by `DEC-018`.
-2. **Memory requirements.** Resolved: memory is covered by `REQ-MEM-001..004` in `ARCH/02-REQUIREMENTS.md` (bounded persistence, attributable/inspectable writes, typed context injection, separate scopes/consent/export/purge). Remaining open details are exact per-scope size bounds and eviction thresholds.
+2. **Memory requirements.** Resolved: memory is covered by `REQ-MEM-001..004` in `ARCH/02-REQUIREMENTS.md` (bounded persistence, attributable/inspectable writes, typed context injection, separate scopes/consent/export/purge). `ARCH/33` sets v1 compaction to no automatic summarization or eviction; capacity pressure refuses new writes. Remaining open details are exact per-scope size bounds and disclosed retention/expiry values.
 3. **Config format authority.** JSONC is primary; whether YAML is a supported authoring format (and how it maps to JSONC precedence) is undecided.
 4. **Plugin permission model.** Whether plugins request capability grants or surface grants, and how review depth maps to v1.
 5. **Hook surface freeze.** The exact v1 hook event set and whether experimental transform hooks ship or are deferred.

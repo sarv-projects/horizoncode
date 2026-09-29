@@ -420,6 +420,13 @@ test-data revision.
   be deterministic, quarantine invalid rows, and show exact incomplete-coverage ranges
   in query/export; it must never turn unknown/missing usage into zero or task/effect
   success.
+- Tool formatter/recall (`AX-383`): compare each command-family formatter against
+  unfiltered output on paired tasks. Check exact original-byte retrieval, artifact
+  digest/ownership/retention and pin behavior, formatter omissions against verifier
+  evidence, argv and stream/exit semantics, and fallback when artifact admission,
+  recall, or decoding fails. Measure verified task success, evidence recall, tokens
+  by class, provider-reported cost, latency/retries, and RSS; byte reduction by itself
+  is not a pass criterion.
 - Skill/tool capability inventory (`AX-373`): test skill discovery, explicit
   activation, content digest changes between discovery and use, symlink/frontmatter
   rejection, progressive reference loading, scope and privacy, and advertised tool

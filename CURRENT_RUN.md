@@ -1,6 +1,66 @@
 # CURRENT_RUN — HorizonCode
 
-## Active handoff — architecture audit continuation (2026-09-28)
+## Active handoff — architecture audit continuation (2026-09-29)
+
+### Latest line-by-line reconciliation pass
+
+Reviewed the audit reports for `ARCH/00–08`, `ARCH/09–20` (17 intentionally unused),
+and `ARCH/21–33`, then reconciled them with current requirements, decisions, TODO,
+source trails, and focused Rust source paths. Added/reconciled F-76..F-83 and AX-371..383
+where a missing contract or delivery task had been identified. Key corrections: analytics
+is now explicitly a derived, source-referenced projection; audit retention has sealed
+archive, capacity-reservation, and disk-pressure behavior (numeric ceilings still need
+benchmarks); memory has one SQLite event authority, idempotent cross-store outboxes,
+dirty-worktree/editor-buffer provenance, and an explicit no-auto-compaction v1 policy;
+ACP docs separate the current server method set from absent client/lifecycle features;
+security tables label target controls and call out absent secret injection; message-post
+idempotency is separate from per-recipient Thread delivery; tool-output recall has a
+dedicated artifact-backed task.
+
+This is a documentation/source audit, not implementation. The only current-source
+defects directly confirmed in this pass remain AX-370's external-path action mismatch
+and flattened policy-layer precedence; source separately preserves global/project deny
+ceilings, so do not report those denies as bypassed. No regressions were written or run.
+Docs-only static QA passed on checkout HEAD `a158cb4c24fae7118e373e637573678c05e90c42`:
+70 Markdown files across `ARCH/`, `research docs/`, and the root instruction/handoff
+files were scanned; 929 repository-local inline links and 129 fragments resolved; all
+127 TODO task IDs are unique and each row has an architecture owner and source-trail
+link; root Markdown is limited to the four permitted files; and `git diff --check`
+passes. The Rust-source diff is empty. This does not verify external URLs, runtime
+behavior, tests, benchmarks, provider calls, or UI behavior. The older QA counts below
+are prior snapshots, not current verification.
+
+### Upstream source-review extension — scoped results
+
+The three pinned core codebases were inventoried and reviewed across their primary
+runtime/schema/failure owners, and the source reports have been reconciled into their
+research notes. **This is not a literal line-by-line read of every tracked upstream
+file.** OpenCode pin `083ed266e058dc3d2d1b377ff5540859d79de110`: 6,642 tracked paths;
+focused provider/auth/catalog/Go, session/V2 input/compaction, subagent, search, update,
+TUI and desktop paths. Codex pin `67a709665ac7b50311b93e32612c9a8281684787`: 8,683
+paths, 153 Rust workspace members; selected runtime, thread/goal/agent, app-server,
+provider/tool/MCP, memory/context/compaction and sandbox paths; vendored/generated/
+snapshots inventoried and excluded from line-reading. Cline pin
+`787ad1b077d8b697892dc3bfcd42e7c65b88789e`: 4,116 paths; selected SDK/core/Agenda/
+Team/Hub/provider/MCP/CLI/web-fetch paths. No upstream tests or live UIs/providers were
+run. Exact counts and file references are in `research docs/opencode.md`, `codex.md`,
+and `cline.md`.
+
+Aider was refreshed against upstream `main` commit
+`5dc9490bb35f9729ef2c95d00a19ccd30c26339c` (2026-05-22): its 691 tracked paths and
+38 changed `aider/` paths since v0.86.0 were inventoried; the model, repo-map,
+repository, command and base-coder deltas were inspected. The note distinguishes this
+branch from the still-latest published v0.86.0 release and does not claim a full-tree
+read. Claude Code has no published implementation tree; its official docs and the
+third-party `cc-haha` workspace remain separate evidence classes.
+
+The source review corrected Cline's nonexistent desktop/JetBrains source paths,
+disabled-at-pin Agenda behavior, Team dependency edges, completion semantics, and the
+limits of its subprocess/web-fetch boundaries (`F-83`). OpenCode research now records
+title-only/bounded search, update confirmation/signature differences, Go route diversity,
+compaction loss, and V2 deferred recovery limits. Codex research adds non-atomic turn
+admission, BM25 tool discovery, compaction behavior, and platform-specific sandbox
+availability. Re-run documentation QA after any further report-driven edits.
 
 The currently confirmed target layout is **Explorer/editor on the left, chat fixed in
 the center, and verified Tasks on the right**. All three regions resize through
@@ -77,11 +137,11 @@ their failure cases rather than creating duplicate systems.
 
 Follow-up reviews added Kilo's quota/cache, soft warning, Agent Manager, and question
 flows at its pinned revision, and found no local atomic budget authority in those
-surfaces. Independent reviews are continuing on Warp/oh-my-pi and `ARCH/00..08`; their
-reports are pending. Repository reviews are focused path traces, not claims that every
-file in each large upstream repository has been read.
+surfaces. The Warp/oh-my-pi and `ARCH/00..08` reports are now complete. Repository
+reviews are focused path traces, not claims that every file in each large upstream
+repository has been read.
 
-Documentation QA after the latest doc pass: 66 Markdown files under `ARCH/` and
+Prior documentation QA snapshot (before the 2026-09-29 reconciliation edits): 66 Markdown files under `ARCH/` and
 `research docs/` checked; 901 repository-local links and heading/HTML fragments pass
 after URL decoding (`THIRD-PARTY-NOTICES.md` is excluded because SPDX identifiers are
 labels); `git diff --check` passes; all 125 TODO task IDs are unique and each source
@@ -90,8 +150,8 @@ trail link/anchor resolves. The only root Markdown files are `AGENTS.md`,
 benchmark, provider call, or UI run was performed. `.code-intelligence/` and
 `uipics/` remain untouched untracked user data. No staging or commit has occurred.
 
-Review continued against HEAD
-`cbba87b9c6a33fc6faac31cdef9b38d2aae67243` and source baseline `23d4ce8`. The OpenCode
+Review continued against checkout HEAD `a158cb4c24fae7118e373e637573678c05e90c42`
+(docs only) and unchanged Rust source baseline `23d4ce8`. The OpenCode
 UI/API comparison remains pinned to
 `083ed266e058dc3d2d1b377ff5540859d79de110`. The old notes below are evidence/history;
 they do not override newer user decisions or architecture records.
@@ -193,9 +253,10 @@ run admission, direct-turn/worker execution admission, and update maintenance mu
 share the durable `SupervisorControlStream` and cross-process lock. `ARCH/16`, `ARCH/25`,
 `ARCH/30`, `TODO.md`, and the update tests now describe that fence and its crash
 reconciliation; it is still proposed and no updater/controller implementation exists.
-Final documentation QA for this continuation is pending. Continue the architecture
-cross-check after that QA; this pass is not the end of the requested whole-architecture
-review.
+The 2026-09-29 docs-only link/status QA for the current snapshot is recorded in the
+active handoff at the top of this file. Continue the upstream source audit and reconcile
+any resulting architecture changes before treating the whole-architecture review as
+finished.
 Updated 2026-09-28 (second pass, same day). This handoff covers the **first
 implementation wave** plus the closure of `F-66`/`AX-355` — the permission-seam defect
 the first wave's test run exposed. It supersedes the documentation-only audit handoff
