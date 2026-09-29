@@ -302,7 +302,7 @@ requirement rather than by downgrading it silently.
 | Capabilities retained after setup | Abort the spawn; audited |
 | Network denied at runtime | Typed violation returned to the tool; audited |
 | Process hang | Watchdog → interrupt/cancel; tree reaped |
-| Explicit unconfined mode (policy flag) | Allowed only with audited opt-in; surfaced loudly; never default |
+| Explicit unconfined execution | A project/agent/config flag cannot enable it. It may run only after a trusted local user grants a one-run, expiring `UnconfinedExecutionGrant` that names the exact task/effect classes and surfaces the lost filesystem/process/network protections before confirmation. The grant cannot override hard denies, private controller/credential/audit boundaries, managed locks, or an unavailable required backend. No same-user confidentiality boundary is claimed. Refuse when the caller requires any capability the unconfined backend cannot enforce, when the grant/audit receipt cannot be durably recorded, or for unattended managed work without that exact approved grant. Never the default. |
 
 ## Configuration
 

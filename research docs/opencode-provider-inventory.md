@@ -6,9 +6,13 @@ were retrieved at that time; they are live service data, not data pinned by a so
 commit. The original integration-file review is pinned at
 `083ed266e058dc3d2d1b377ff5540859d79de110`; a supplementary provider/catalog/API
 review was checked at current OpenCode `dev` commit
-`7f964bbb00e505178847e2c08721b0fff56208f9` on 2026-09-28. Official docs and live
-catalogs are volatile. Recheck both the exact upstream files and the live API before
-implementation or any statement about current availability.
+`7f964bbb00e505178847e2c08721b0fff56208f9` on 2026-09-28. A later focused provider
+recheck at `083ed266…` read selected feed, auth, provider-loader, and prompt-cache
+paths; it does not supersede every claim from the separately pinned `7f964bbb…`
+review, nor constitute a full read of every provider module. Both scopes and exact
+files are listed in their follow-up tables below. Official docs and live catalogs
+are volatile. Recheck both exact upstream files and live APIs before implementation
+or any statement about current availability.
 
 ## Do not collapse these source sets
 
@@ -492,6 +496,35 @@ separate, data-only operation. A HorizonCode updater may deliver reviewed connec
 and route changes in a later signed application release; a model-feed refresh must
 never replace executable adapter behavior. Active attempts retain their selected
 provider, model, protocol, adapter version, route-map revision, and metadata digest.
+
+## Focused provider/cache recheck at the 083ed pin
+
+At `083ed266e058dc3d2d1b377ff5540859d79de110`, the follow-up fully read
+`packages/core/src/models-dev.ts` (266 lines), `packages/core/src/plugin/models-dev.ts`
+(183), `packages/core/src/plugin/provider.ts` (71),
+`packages/core/src/plugin/provider/dynamic.ts` (31),
+`packages/core/src/plugin/provider/openai-compatible.ts` (17),
+`packages/core/src/plugin/provider/opencode.ts` (320),
+`packages/opencode/src/auth/index.ts` (97), and
+`packages/opencode/src/provider/auth.ts` (229). It read selected ranges, not all
+2,094 lines, of `packages/opencode/src/provider/provider.ts`, plus ranges 358–407,
+465–490, and 1220–1388 of `provider/transform.ts`; local endpoint documentation was
+also checked. The later `7f964bbb…` supplementary review above remains a separate,
+newer scoped source review, not a full provider-tree audit.
+
+The feed is projected into executable OpenCode loaders, including package/SDK
+selection. HorizonCode's accepted `DEC-060` intentionally takes only inert metadata
+and uses its own Rust adapters, fixed origins, credential handling, and validated
+protocol routes. Do not copy feed-provided `npm`, `env`, URL, header, or auth behavior
+into a Horizon runtime adapter.
+
+Prompt caching differs by provider path: selected paths mark cache breakpoints,
+while selected SDK routes construct cache-affinity keys or require explicit opt-in.
+This is evidence for adapter/model-level capability negotiation, not a universal
+OpenAI-compatible behavior. Horizon's local OpenAI-compatible endpoints have no
+cache capability until the concrete server/model pair passes request and usage
+conformance. See `DEC-070`, `REQ-PROV-012`, and `ARCH/11` for the resulting
+route-pinning and cache-accounting contract.
 
 ### Go connector test matrix for a future implementation
 

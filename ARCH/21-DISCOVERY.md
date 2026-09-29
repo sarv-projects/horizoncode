@@ -94,7 +94,7 @@ registration or the guard (`REQ-CTX-010`).
 
 Gating fields: `disable-model-invocation` (user-only skills such as `/deploy`), `user-invocable: false` (model-only background knowledge), `paths` (glob scope), `context: fork` (run in an isolated sub-session), and `allowed-tools` (**an approval hint, never a sandbox**).
 
-**Curator.** Enable/disable is expressed in config and reflected back into SKILL.md frontmatter so state is portable; a lockfile pins externally sourced skills by version/hash. Discovery runs a quarantine scan; fetched sources are pinned before use, never trusted from a live index.
+**Curator.** Enable/disable is stored in HorizonCode-owned config/lock state keyed by canonical skill identity and the discovered source digest. HorizonCode MUST NOT edit upstream or user-authored `SKILL.md` frontmatter to persist activation. A changed digest invalidates the old activation and requires review/re-pin; a lockfile pins externally sourced skills by version/hash. Discovery runs a quarantine scan; fetched sources are pinned before use, never trusted from a live index.
 
 ## 3. Plugins & hooks (`CMP-config`)
 

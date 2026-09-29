@@ -31,8 +31,12 @@ Useful pinned paths: [`goal.py`](https://github.com/bytedance/deer-flow/blob/8a3
 [`checkpoint_lineage.py`](https://github.com/bytedance/deer-flow/blob/8a3a309d1ce8bac8418251be29d4e4297a20c5eb/backend/app/gateway/checkpoint_lineage.py),
 and [`checkpoint_retention.py`](https://github.com/bytedance/deer-flow/blob/8a3a309d1ce8bac8418251be29d4e4297a20c5eb/backend/app/gateway/checkpoint_retention.py).
 Recovery uses leases/heartbeats and marks abandoned runs erroneous instead of blindly
-replaying interrupted tool sequences. Checkpoint replay follows parent lineage and
-rejects missing/unsafe lineage.
+replaying interrupted tool sequences. The parent-lineage replay path validates lineage
+and rejects missing/unsafe links. A separate legacy chronological fallback is weaker:
+when pending-task state cannot be read, it may still select a replay base. The focused
+test `backend/tests/test_checkpoint_lineage.py::test_unknown_pending_tasks_do_not_block_selection`
+documents that compatibility behavior. Do not generalize the strict lineage guarantee
+to that fallback, and do not copy the permissive fallback into HorizonCode recovery.
 
 **HorizonCode disposition:** incorporate a post-evaluation revision/input recheck,
 bounded continuation/no-progress policy, and lineage-aware checkpoint retention into
@@ -94,11 +98,16 @@ goal revisions, and durable input inbox patterns as candidates for `ARCH/07`/`AR
 
 The planner uses `planning_checkpoint.json`, append-only `planning_attempts.jsonl`,
 and `planning_result_meta.json`. Snapshot writes use temp-and-replace, while JSONL
-append has no transaction/fsync guarantee. Plan shape is validated and attempts are
-recorded. The implementation runner has planned-file tracking, wall-time/iteration
-limits, loop detection, and a sensitive-path denylist, but “all planned files
-implemented” is not test-based acceptance. Its backup/restore journal covers app state,
-not project worktrees or executables.
+append has no transaction/fsync guarantee. The inspected plan validator is loose:
+required section-name substrings can make `valid` true after YAML parsing fails, even
+though `yaml_valid` is false (`planning_runtime.py:130-171`). Treat it as a shape hint,
+not a plan-integrity or acceptance gate. The implementation runner has planned-file
+tracking, wall-time/iteration limits, loop detection, and a sensitive-path denylist,
+but “all planned files implemented” is not test-based acceptance. Its inspected loop
+path calls `loop_detector.record_success()` after the tool result even though the
+legacy `isError` field was not populated; verify the actual result semantics before
+relying on that reset behavior (`code_implementation_workflow.py:268-276`). Its
+backup/restore journal covers app state, not project worktrees or executables.
 
 Pinned paths: [`planning_runtime.py`](https://github.com/HKUDS/DeepCode/blob/84c37f79c726bd12e74e39541adceb8b5e47b0d5/workflows/planning_runtime.py),
 [`agent_orchestration_engine.py`](https://github.com/HKUDS/DeepCode/blob/84c37f79c726bd12e74e39541adceb8b5e47b0d5/workflows/agent_orchestration_engine.py),

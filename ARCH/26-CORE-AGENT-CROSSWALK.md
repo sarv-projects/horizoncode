@@ -69,20 +69,18 @@ These are distinct upstream choices, not a universal naming convention:
 | Cline public SDK/source map | Session plus separate team/task records in some flows | Team tasks and session children are related but have different persistence/usage semantics | Depends on selected session/team feature; do not collapse its agenda task, task run, team task, and session into one ID. |
 | HorizonCode target | `ThreadId` is the durable conversation identity; `CMP-session` remains the persistence component/crate name | Run → Task DAG → Attempt → one or more Threads; the Thread parent/child tree is separate from the Task DAG | Durable run/attempt and Thread behavior are target contracts with partial foundations; a durable process incarnation is currently absent and proposed by `REQ-HORIZON-028`/`AX-359`. The schema/API migration is `AX-379`. |
 
-**Disposition.** Keep one HorizonCode persisted conversation ID. The target
-`Session` contract already defines the required Thread-like concept (durable
-history, turns/items, context epochs, input inbox and parent-child lineage); the
-current implementation has only the foundations called out in `ARCH/29`. Renaming
-it or adding a second `Thread` table would create two IDs for one fact without
-providing additional recovery. Keep Task DAG edges separate from the conversation tree. Add
-`WorkerExecution` for a specific process/adapter incarnation under an Attempt, with
-durable launch intent, fence, observation and terminal/unknown outcome. A process
-exit, Session close, ACP `session/close`, or child receipt remains an execution or
-conversation event, never independent Task PASS evidence.
+**Disposition.** Follow accepted `DEC-069`: keep exactly one HorizonCode `ThreadId`
+for each durable conversation, with `WorkerExecution` for each live process/adapter
+incarnation. The legacy `CMP-session` component/crate and old on-disk field names may
+remain migration details; they do not define a second HorizonCode `Session` domain
+object. External OpenCode/ACP/provider session IDs are bindings to a Thread, not
+HorizonCode identity. Keep Task DAG edges separate from the conversation tree. A
+process exit, Thread close, ACP `session/close`, or child receipt remains an execution
+or conversation event, never independent Task PASS evidence.
 
 This recommendation is falsifiable: acceptance must kill/restart the controller
 around launch, heartbeat, client disconnect, peer completion and effect settlement;
-prove that one durable Session/Attempt can be reconciled without duplicate writes;
+prove that one durable Thread/Attempt can be reconciled without duplicate writes;
 prove unknown peer outcomes remain blocked; and prove the integrated Task still
 requires revision-bound independent evidence. This review does not establish those
 behaviors as implemented.

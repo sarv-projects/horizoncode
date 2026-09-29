@@ -197,7 +197,7 @@ normal guard/confirmation path. Read commands do not acquire write locks.
 | `/settings runtime` | Show local supervisor availability/state, attached vs supervised mode, last recovery result, effective finite idle policy, connected clients, and any detach limitation. Allow local-only detach/idle preferences; do not expose remote bind or weaken IPC ceilings. | User-scope settings; changing attach mode does not start a Run or cancel active work; see `ARCH/31` |
 | `/agents [list]` | Open the Agents panel and run/child tree. | Read only |
 | `/agents show <profile>` | Show provenance, install path/version, supported capabilities, model control, permissions, limits, and last probe. | Read only |
-| `/agents message send <session-ref> <text>` | Open the explicit recipient composer or send literal remaining text to a selected same-Run member; return the durable message ID and per-recipient delivery state. | Requires `agent.message` authority, recipient membership, run enablement, and budget/storage admission; never falls through to model text |
+| `/agents message send <thread-ref> <text>` | Open the explicit recipient composer or send literal remaining text to a selected same-Run member; return the durable message ID and per-recipient delivery state. | Requires `agent.message` authority, recipient membership, run enablement, and budget/storage admission; never falls through to model text |
 | `/agents message list [--task <id>] [--agent <ref>] [--state <state>]` | Page the current Run's message history with sender/recipient, task, time, reply, and delivery status; reconnect uses the Run event cursor. | Read only within the caller's Run membership |
 | `/agents discover [source]` | Search local executable paths or a configured remote catalog; return candidates only. | Network lookup requires opt-in and guard; no install or launch |
 | `/agents add <path-or-catalog-id>` | Add a local command path or stage an explicitly selected catalog distribution. Validate path/hash/platform/license/manifest before writing. | Install is a separately guarded effect; not trusted/enabled by add |
@@ -239,7 +239,7 @@ normal guard/confirmation path. Read commands do not acquire write locks.
 | `/mcp [search|installed|create|show <id>|install <id>|connect <id>|enable|disable <id>]` | Open the centered extension-manager overlay on Search, Installed, or Create. Search uses the official MCP Registry as data-only metadata plus a small versioned HorizonCode-curated catalog. Install stages a selected source/version, reviews package/license/transport/config, gets secrets from `CMP-secrets`, probes `initialize` and discovered capabilities, then requests per-tool policy before enabling. | Registry listing is not trust. Install, credential entry, probe, and enable are separate observable states; no tools execute before explicit policy approval |
 | `/skills [list|show <id>|enable|disable <id>]` | Inspect pinned skill metadata and activation state; body loaded on activation only. | Skill content is untrusted; never grants authority |
 | `/plugins [list|show <id>|enable|disable <id>]` | Inspect plugin source/hash/license/surfaces and separately enable declared surfaces. | Install and enable are distinct guarded effects |
-| `/memory [global|project|candidates|search <query>|show <id>|forget <id>]` | Open the memory inspector for user-global preferences, this project's knowledge, and pending candidates. Explicit saves create candidates; auto-extraction is opt-in, acceptance always requires user review. | Local scoped storage; user/project clear and export are explicit, audited actions |
+| `/memory [global|project|candidates|search <query>|show <id>|approve <id>|reject <id>|supersede <id> <candidate-id>|forget <id>|export [scope]|purge [scope]]` | Open the memory inspector or perform an explicit, scope-bound lifecycle action. Explicit saves create candidates; auto-extraction is opt-in; acceptance always requires user review. `supersede` requires the current accepted revision and a reviewed candidate; export creates an explicit local artifact; purge writes a tombstone before removing searchable content and reports pending audit/outbox reconciliation. | Local scoped storage; mutations are audited and idempotent by request ID; user/project clear and export are explicit actions |
 | `/permissions [show]` | Explain effective permission rules and source/locks; editable policy opens `/settings permissions`. | No one-shot grant by merely viewing |
 | `/panels` / `/focus` / `/dock` | Open panel picker, focus workspace, or change layout. | Local UI preference only |
 | `/pr [prepare|status]` | Prepare a PR evidence packet or inspect remote status. `/pr create` is a later explicit, confirmed effect. | Network reads/creates governed separately; see `ARCH/25` |
@@ -408,8 +408,8 @@ AgentCapabilitySnapshot {
   observed_at, probe_environment, raw_response_digest
 }
 
-AgentAttempt {
-  attempt_id, parent_attempt_id?, run_id, task_id, profile_id, profile_revision,
+WorkerBindingSnapshot { // one-to-one metadata projection on canonical Attempt; not a second Attempt aggregate
+  attempt_id, profile_id, profile_revision,
   adapter_kind, capability_snapshot_id?, external_session_id?, event_cursor?,
   selected_model?, model_source, model_status: observed|configured|inherited|peer_managed|unknown,
   workspace_id, base_commit, write_scope_digest, authority_ceiling_digest,
@@ -440,10 +440,11 @@ widen a run. A limit unsupported by a peer is displayed as `monitor-only` or
 `provider-observed`, `user-configured`, or `unknown`; only provider-documented API
 quota data can be marked provider-observed.
 
-Agent profiles are definitions; `AgentAttempt` is an invocation; provider/model
-records remain in `CMP-provider`; durable tasks stay in `CMP-orch`; sessions stay in
-`CMP-session`; ACP protocol identifiers are external correlation IDs. No agent owns
-the run or its acceptance state.
+Agent profiles are definitions; `Attempt` in `CMP-orch` is the canonical invocation;
+`WorkerBindingSnapshot` is only its adapter/profile metadata, not another lifecycle
+owner. Provider/model records remain in `CMP-provider`; HorizonCode conversation
+history is a Thread owned by `CMP-session`; protocol Session identifiers remain
+external bindings. No agent owns the run or its acceptance state.
 
 ### Model selection and quota accounting
 

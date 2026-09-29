@@ -121,11 +121,11 @@ RunPostureGrant = { run_id, actor, classes[], scope_digest, policy_digest,
 fn evaluate(action, resources, ctx) -> Decision:
     layers = [user_policy, project_restrictions, agent_restrictions,
               session_restrictions]
-    if any matching managed or user rule is deny: return deny
     for each resource:
         base = resolve_last_match_within_layer(user_policy, action, resource)
                ?? configured_unmatched_effect          # deny by default
-        restrictions = resolved effects from project, agent, and thread layers
+        restrictions = resolved matching effects from project, agent, and Thread layers
+                       # no match is NoOpinion, not a synthetic deny
         effect = max_restrictiveness(base, restrictions) # deny > ask > allow
     return combine_resources(effect) and apply_external_floor(action)
 ```
@@ -136,6 +136,14 @@ fn evaluate(action, resources, ctx) -> Decision:
   through a trusted settings surface; lower-trust project content cannot widen it.
   A one-use approval ticket authorizes only the exact pending effect and does not
   rewrite persistent policy.
+- **No-match semantics.** A lower-trust layer with no matching rule contributes
+  `NoOpinion`; it does not synthesize a deny that masks the user policy. The user
+  policy's configured unmatched effect is applied only when that layer has no match.
+  Explicit project, agent, or Thread rules are restrictions and compose monotonically
+  with that base (`deny > ask > allow`), so they can make a request more restrictive
+  but cannot relax an explicit or default user/global ask/deny. Explain output reports
+  `NoOpinion` distinctly from an explicit allow. Test no-match, explicit allow/ask/
+  deny, and unmatched defaults at every layer.
 - **External-directory floor.** After the deny ceiling and layered rule evaluation, an
   `fs.*` resource naming an absolute path outside the granted roots that matched
   neither a deny glob nor an explicit user/global allow for that same action and

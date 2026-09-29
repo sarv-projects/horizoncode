@@ -1,6 +1,6 @@
 # 20 — Analytics
 
-`CMP-analytics`. Observability for long-horizon work. **Local-first**: the analytics path performs no network egress.
+`CMP-analytics`. Observability for long-horizon work. **Local-first**: the default analytics path performs no network egress. An explicitly enabled OTEL/remote exporter is a separate guarded, sanitized outbound effect, disabled by default and subject to managed policy.
 
 ## Source status
 
@@ -20,7 +20,7 @@ Answer, truthfully and on demand: what did this session/turn cost, which tools a
 ## Responsibilities
 
 - Record per-turn usage and cost, attributable per session, model, and project.
-- Record per-tool outcomes (accept/reject, errors, latency, bytes changed).
+- Record per-tool execution outcomes (started/settled/denied/error, latency, bytes changed), distinct from independently verified Task/Run acceptance.
 - Record reliability signals (retries, failure reasons, cancellations) and routing outcomes.
 - Roll events up into queryable aggregates; serve them to the TUI and headless surfaces.
 - Export machine-readable data locally.
@@ -54,10 +54,10 @@ Cost semantics: **observed vs estimated** must never be conflated. `Money` rows 
 
 Metric definitions:
 - **Usage/cost**: token classes + original money amount by model and currency, with actual/estimated/included/unknown basis; optional converted view is separately identified.
-- **Tool**: calls, `accepted|rejected|bypassed`, accept-rate, error count, p50/p95 latency, bytes changed (lines added/removed for edit-class tools).
+- **Tool**: calls, `executed|denied|failed|cancelled`, error count, p50/p95 latency, bytes changed (lines added/removed for edit-class tools). “Executed” does not mean the resulting Task passed or the user accepted it.
 - **Session/run**: sessions, turns/session, tool-calls/turn, commits/PRs attributed, prompt-cache hit-rate.
 - **Reliability**: latency histogram, retries, failure taxonomy (auth / rate-limit / timeout / tool-error / cancelled), cancel rate.
-- **Routing**: per-model accept-rate, cost-per-success, fallback frequency.
+- **Routing**: per-model verified-task pass rate only when linked verifier evidence exists; separately report invocation error rate, unknown outcome, cost per verified pass, and fallback frequency. Never use a worker/tool's self-reported completion as success.
 
 ## Lifecycle & flows
 

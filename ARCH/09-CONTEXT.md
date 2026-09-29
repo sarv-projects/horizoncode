@@ -100,7 +100,7 @@ rewritten; the checkpoint is a projection boundary.
 Requests are assembled in a fixed order so the prefix stays cache-stable
 (`REQ-CTX-005`, stable-prefix discipline):
 
-`tool definitions` (materialized by `CMP-tools`, counted) → `system sources` (typed, ordered, frozen for the generation: env, date,
+`tool definitions` (materialized by `CMP-tools`, counted) → `system sources` (typed, ordered, frozen for the generation: allowlisted non-secret runtime metadata, date,
 instructions, mode) → provider-specific rendering and cache boundary (if supported)
 → `history` (projected messages, oldest → newest, with tool results interleaved
 at their position) → `dynamic suffix` (current task, retrieved items, new
@@ -252,7 +252,8 @@ diff.
 `REQ-CTX-001`. Build is incremental and never blocks the loop (`REQ-PERF-003`).
 
 ```
-git-tracked files
+repository files in the selected source view (tracked by default; dirty, untracked,
+and unsaved-buffer views are explicit, revision-bound inputs)
   → ignore rules (build/vendor/vendor dirs, size caps)
   → tree-sitter tags per file: definitions + references
   → file graph: edge A→B when A references a symbol defined in B
@@ -357,7 +358,7 @@ overridable. No key changes an authorization decision (`CMP-guard` owns that).
 
 | Requirement | Where satisfied |
 |---|---|
-| `REQ-CTX-001` | Ranked repo map from tracked files + language parsing (§7). |
+| `REQ-CTX-001` | Ranked repo map from the configured source view + language parsing (§7); every edge and excerpt carries freshness/provenance. |
 | `REQ-CTX-002` | Trigger rule, serialized tail + structured summary (§3, §4). |
 | `REQ-CTX-003` | Eval-gated compaction, not window-fit only (§5). |
 | `REQ-CTX-004` | Pre-send estimate + overflow compaction-and-retry (§3, §4). |

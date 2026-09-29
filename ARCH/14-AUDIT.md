@@ -169,13 +169,20 @@ are first-class entries, never omitted.
 
 ## Secret redaction guarantees
 
-- `CMP-secrets` performs a redaction pass on the canonicalized entry **before**
-  hashing and append; a value that fails the redaction check is replaced by a typed
-  placeholder, and the redaction itself is noted (not the secret).
-- Secrets are never written to the chain, roots, verify output, replay output, or any
-  derived export. Credentials exist only in the vault.
-- Redaction covers environment-derived values, URL userinfo, authorization headers,
-  and any field whose name matches the secret pattern set.
+- `CMP-audit` accepts a typed, allowlisted event schema; arbitrary free-form prompt,
+  tool, workspace, or provider text is not an audit field. `CMP-secrets` supplies
+  known credential values for defense-in-depth redaction before hashing and append;
+  a rejected value is replaced with a typed placeholder and only the redaction event
+  is recorded.
+- Credentials handled by the secret broker MUST never be written to the chain,
+  roots, verify/replay output, or derived export. Pattern and known-value redaction
+  covers recognized URL userinfo, authorization fields, and configured/brokered
+  secret values; it cannot prove detection of every arbitrary secret embedded in
+  repository or tool text. Such free text is excluded by schema, and that residual
+  is disclosed rather than claiming perfect scanning.
+- Acceptance uses planted secrets of varied lengths and encodings across every
+  allowed field and output path, and verifies that unknown unstructured text is
+  rejected or stored only as a bounded artifact with separate policy and access.
 
 ## Lifecycle & flows
 

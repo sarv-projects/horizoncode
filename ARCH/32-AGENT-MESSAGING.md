@@ -127,9 +127,9 @@ typed terminal failure while the outbox retries under the original finite budget
 The system never tells the sender “delivered” until the matching Thread receipt is
 durable.
 
-`ACTIVE` and `WAITING` sessions may accept a bounded durable inbox item if their
-session owner supports it; `WAITING` items remain queued and do not wake the worker.
-Only `ACTIVE` sessions promote at a safe provider-turn boundary. `PAUSED`,
+`ACTIVE` and `WAITING` Threads may accept a bounded durable inbox item if their
+Thread owner supports it; `WAITING` items remain queued and do not wake the worker.
+Only `ACTIVE` Threads promote at a safe provider-turn boundary. `PAUSED`,
 `CANCELLED`, `CLOSED`, terminal, stale-fenced, and unknown external workers are not
 woken or given an implicit restart; their delivery is an explicit typed terminal
 state. A message arriving while a model step runs is promoted at the
@@ -141,9 +141,9 @@ messages according to `REQ-HORIZON-014`.
 
 - UTF-8 body limit is 4 KiB by default and 16 KiB absolute. No binary payloads or
   attachments in v1. Reject invalid encoding, oversize payloads, empty recipient
-  sets, duplicate recipients, self-delivery, unknown/foreign sessions, and stale
+  sets, duplicate recipients, self-delivery, unknown/foreign Threads, and stale
   attempt membership before append.
-- A post may target at most 8 recipient sessions. Each session has a configurable
+- A post may target at most 8 recipient Threads. Each Thread has a configurable
   finite pending-message cap (default 64). Run event bytes and per-attempt tool-call
   ceilings provide additional hard bounds. Each setting has a schema-level maximum;
   the run-start review pins its effective digest.
@@ -170,7 +170,7 @@ messages according to `REQ-HORIZON-014`.
    ceiling, profile capability, recipient membership, and active settings. A child
    cannot grant itself or another child broader scope. Operator send is authenticated
    through the trusted control session.
-2. A worker may read only messages addressed to its current Session and explicitly
+2. A worker may read only messages addressed to its current Thread and explicitly
    visible Run metadata. It cannot list other Runs, inspect non-member sessions, or
    impersonate another sender. Stale attempt IDs and cross-run IDs fail closed.
 3. Every message is untrusted data, including messages from another first-party
@@ -197,7 +197,7 @@ send a message. Send returns a receipt immediately with `posted`, `pending`, or 
 typed rejection; later transitions appear from the Run event cursor. Slow clients
 replay from a sequence or receive an explicit gap/resnapshot state.
 
-`/agents message send <session-ref> <text>` and
+`/agents message send <thread-ref> <text>` and
 `/agents message list [--task <id>] [--agent <ref>] [--state <state>]` are typed
 `CMP-command` descriptors. `<text>` is parsed as the remaining literal text, never
 shell syntax. Help/completion comes from the same registry. The native UI command

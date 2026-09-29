@@ -60,7 +60,7 @@ Durable Run / Task / Attempt (`CMP-orch`)
         │                                         │
         └──── records receipt, events, UNKNOWN ───┘
 
-`CMP-session` stores the conversation (Session, turns, items, replay).
+`CMP-session` stores the durable conversation (`ThreadId`, turns, items, replay); the historic component/crate name does not imply a HorizonCode `Session` domain object (`DEC-069`).
 `CMP-verifier` evaluates the resulting workspace/evidence independently.
 Only `CMP-orch` advances Task state; process exit or conversation closure is not PASS.
 ```

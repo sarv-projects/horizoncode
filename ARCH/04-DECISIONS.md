@@ -1020,8 +1020,9 @@ committed work.
 **Consequences.** `REQ-SESS-005`, `ARCH/07`'s `BlobRef`, commit protocol, migration and
 projection schema, `ARCH/06` typed unavailable UI state, `ARCH/18`/`ARCH/27` bounded
 storage settings, `ACC-P1-09`, and `research docs/tests.md` define the contract. Numeric
-default ceilings and platform-specific durability guarantees remain implementation
-decisions that must be fixed before shipping; no unbounded default is allowed.
+default ceilings are selected by `DEC-058`; workload and platform-specific durability
+still need implementation evidence and acceptance before shipping. No unbounded
+default is allowed.
 `ARCH/24` `F-58` records the design gap; `TODO.md` `AX-348` tracks delivery.
 
 ## DEC-054 — Recover only proven remaining-context output truncation once
@@ -1196,10 +1197,11 @@ not verified hardware durability.
 segmented logs and blob store can be implemented, and the earlier tables said
 "exact values required before implementation". Choosing them once, in the schema
 owner, prevents each store from inventing its own numbers and prevents a project
-file from raising a safety ceiling. The values are deliberately conservative: the
-cost of a limit that is too low is a refusal the operator can see and raise by
-policy; the cost of a limit that is too high or absent is an unbounded allocation
-that no later check can undo.
+file from raising a safety ceiling. The values are conservative starting ceilings:
+if a ceiling is too low, the operator gets a visible refusal and may lower the
+configured value no further; raising the compiled ceiling requires a reviewed schema
+and release decision. The cost of a ceiling that is too high or absent is an
+unbounded allocation that no later check can undo.
 
 **Consequences.** The `horizoncode-config` schema group `session.log.*`,
 `run.log.*`, `session.artifacts.*`, `run.artifacts.*` carries these values as
@@ -1568,3 +1570,34 @@ source traces, and tests must use `ThreadId` for HorizonCode conversations and c
 name external session bindings. `AX-379` owns the cross-document schema/API migration
 and compatibility plan. Preserve legacy on-disk history through an explicit
 versioned/idempotent migration; never rewrite or duplicate a conversation silently.
+
+## DEC-070 — Freeze provider fallback policy per managed attempt
+
+**Status:** proposed architecture decision; route retry/failover implementation and
+acceptance remain open.
+
+**Decision (2026-09-29).** At managed-attempt admission, persist the selected route
+and an ordered, policy-approved fallback chain with provider/model/adapter capability
+and pricing references. A metadata refresh cannot edit that chain. Each actual
+provider/model dispatch receives its own immutable route snapshot and usage identity.
+Cross-route fallback is permitted only for a typed transient failure before any
+provider content or tool-call delta has been exposed to the runner, only when the
+next entry was in the pinned chain, satisfies the task's required capabilities and
+permission/egress policy, and has budget reserved. Authentication, authorization,
+quota exhaustion, policy/egress denial, protocol/schema errors, capability mismatch,
+user cancellation, and any failure after content/tool-call exposure do not trigger
+cross-provider fallback. Such outcomes are surfaced for bounded retry, replan, or
+user action according to their typed class. Same-route transport retries remain
+bounded by `ARCH/11` and count against the same logical request budget.
+
+**Rationale.** Pinning only the currently selected model is insufficient if a retry
+can silently switch provider, endpoint, cost basis, or data recipient. A bounded,
+pre-authorized chain preserves recoverability without changing an active task's
+authority or concealing where data was sent.
+
+**Consequences.** Add `REQ-PROV-012`; `ARCH/11` owns route resolution and retry
+semantics, `ARCH/25` owns managed budget reservations/effects, and `ARCH/23` plus
+`research docs/tests.md` own failover and crash acceptance. `/usage`, run review,
+audit, and delivery evidence show every attempted provider/model, outcome, data
+exposure boundary, and spend. No chain entry may be inferred from live metadata or
+provider identity alone.

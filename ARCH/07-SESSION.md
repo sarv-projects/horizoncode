@@ -326,8 +326,8 @@ SearchQuery {
   text: bounded UTF-8,
   thread_id?: ThreadId,
   project_id?: ProjectId,
-  created_from_utc_ms?: i64,   // inclusive
-  created_before_utc_ms?: i64, // exclusive
+  matched_from_utc_ms?: i64,   // inclusive; message commit or matched title-event time
+  matched_before_utc_ms?: i64, // exclusive; message commit or matched title-event time
   role?: USER | ASSISTANT_DISPLAY | TOOL_DISPLAY,
   include_archived: bool,
   sort: RECENT | RELEVANCE,

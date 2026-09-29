@@ -60,7 +60,7 @@ make({
   toModelOutput?: ({ input, output }) -> Content[],
 })
 
-ToolContext { sessionID, runID?, taskID?, attemptID?, agent, assistantMessageID, toolCallID }
+ToolContext { threadID, runID?, taskID?, attemptID?, agent, assistantMessageID, toolCallID }
 Content = { type: "text", text }                 // current model-visible variant
 // Image/audio/file variants are proposed protocol work, not implemented content.
 ```
@@ -449,7 +449,7 @@ Other effectful tools needing human permission remain governed separately:
   `taskID`, and `attemptID` from authenticated execution context; model arguments
   cannot choose the sender, widen recipient membership, or forge principal identity.
   Message body is untrusted, size-bounded, and never sent to a provider until the
-  recipient Session's safe-boundary promotion (`ARCH/32`).
+  recipient Thread's safe-boundary promotion (`ARCH/32`).
 
 ## Data / state model
 

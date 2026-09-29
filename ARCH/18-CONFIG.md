@@ -172,7 +172,7 @@ provenance, while `CMP-orch` owns active limits, `CMP-provider` owns usage facts
 | Plugin crash loop | Auto-disable + audit; core unaffected |
 | Plugin version skew | Rejected typed against the contract compat window |
 | MCP server entry invalid | That server is disabled typed; other servers unaffected |
-| Memory bound exceeded | Write rejected typed; deterministic eviction for existing records |
+| Memory bound exceeded | Reject the new candidate/write with a visible typed result; never evict or summarize existing records automatically (`ARCH/33`) |
 
 ## Configuration
 
