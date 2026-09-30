@@ -325,14 +325,13 @@ Required release engineering scripts are proposed under `scripts/release/`:
 
 These paths do not currently exist. The first release may use an audited manual
 release procedure before automation, but it must preserve the same verification and
-signing gates. Shell/PowerShell bootstrap convenience wrappers are deferred until
+signing gates. Required Bash/PowerShell convenience wrappers remain release-blocked until
 their own trust bootstrap is demonstrated; they may only call the verified installer
 and may not implement cryptography, unpack untrusted paths, disable signature checks,
 or execute downloaded content directly.
 
-Optional user-facing launchers are `scripts/install.sh` and
-`scripts/install.ps1`; they are not required if signed native packages and the
-signed HorizonCode binary provide clear installation paths. If supplied, each
+Required user-facing launchers are `scripts/install.sh` and
+`scripts/install.ps1`, alongside supported native packages. Each
 wrapper must have a pinned release artifact, verify the separately authenticated
 installer before launch, validate platform/architecture, and call the same signed
 installer API. Neither is a self-updater, package-manager replacement, or trust
@@ -399,3 +398,47 @@ Source checked at `cbba87b9c6a33fc6faac31cdef9b38d2aae67243` (2026-09-28): no
 `scripts/` directory exists; `crates/horizoncode-cli/src/args.rs` has no `upgrade`
 command. `Cargo.toml` has no selected TUF client. These are proposed designs; the
 source/acceptance trace is `ARCH/29` `AX-365..366`.
+
+An accepted binary update invalidates cached ExecutionEnvironmentSnapshot probe
+results for the new binary/runtime identity. The first managed launch after update
+must re-probe and record a fresh snapshot before resuming an Attempt; schema migration
+and rollback preserve prior snapshot references and never silently rewrite history
+(DEC-089).
+
+## Final updater lifecycle clarification
+
+Install, Later, Details and check commands share the same update action IDs, owner
+state and operation receipt. Install consent binds the exact target/version/digest/
+channel/install identity and disclosed restart consequences. If the target changes,
+obtain fresh consent; a verified earlier target never authorizes arbitrary latest code.
+Decline/cancel does not affect running coding work. Paused/nonterminal Runs still
+prevent activation in the initial contract. After terminal-work maintenance and update,
+environment probe caches are invalidated before any future attempt launch; prior
+snapshot references remain immutable. Network check authorization is distinct from
+install authorization, and unavailable metadata never renders as up-to-date.
+
+## Required wrappers and first-run onboarding (DEC-095)
+
+Proposed installer functions: detect_target, inspect_existing_install, verify_bootstrap,
+verify_target, stage_install, activate_atomic, configure_path_opt_in, verify_launch,
+rollback_activation, write_install_receipt. Bash and PowerShell wrappers delegate to
+the same signed installer; no handwritten cryptography, eval, policy bypass or unsigned
+download execution. Parameters: target version/channel, explicit install directory,
+dry-run, no-PATH-change and offline verified bundle. Avoid privilege escalation for
+user installs; system install is a separate explicit platform path. Do not change
+PowerShell execution policy or shell startup files automatically. PATH update shows
+exact scoped diff, supports decline, preserves formatting and handles spaces/Unicode.
+Concurrent installs lock target; reject wrong OS/arch/libc, symlink target, partial
+download, corrupt metadata, stale signatures, disk full and manager-owned overwrite.
+Cancellation preserves prior usable install; activation failure uses known-good rollback.
+No external installer is published before the bootstrap trust and platform gates pass.
+
+First launch: immediate welcome/prompt -> choose local/provider route or Skip -> secure
+credential broker/auth when needed -> show effective permissions and observed confinement
+-> optional litePSM Connect -> optional project instruction preview -> Ready. Steps are
+skippable/back/cancellable and resumable, except prerequisites for a selected capability.
+No network/probe, AGENTS overwrite, marketplace install, telemetry or payment action
+occurs merely from launching. Empty/missing provider offers configure or local route;
+offline mode retains settings. Project init writes only an approved diff. Existing
+sessions open without repeating onboarding. /settings can revisit each step.
+Acceptance ACC-INSTALL-02; delivery AX-410. Scripts remain proposed, not present.

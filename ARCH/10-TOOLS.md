@@ -101,13 +101,13 @@ is absent from the advertised definitions, not merely blocked at call time.**
 
 ```
 materialize(permissions):
-  entries = application registrations ⊕ scoped local registrations (last wins)
+  entries = validated application registrations + scoped registrations (reserved built-ins protected; collisions rejected or explicitly source-qualified)
   for each entry: action = decorator-permission ?? name;
       if whollyDisabled(action): remove        // scope-closed calls answer stale
 return { definitions, settle }
 ```
 
-- **`whollyDisabled`** — the last rule matching the action has resource `*` and
+- **`whollyDisabled`** — the composed Guard snapshot denies the entire action scope; historical upstream last-rule behavior is not Horizon policy. The legacy source condition was resource `*` and
   effect `deny`. A partial/pattern denial is *not* removal; it is enforced at
   call time by the guard (the tool stays advertised because it is usable for
   other resources).
@@ -210,8 +210,7 @@ against the current raw digest and preserve atomic all-file preflight semantics.
 ## Built-in tools: source baseline and target
 
 The table is split deliberately: source presence is not inferred from a target
-contract. At HorizonCode Rust source baseline `23d4ce8` (confirmed unchanged for
-Rust/Cargo manifests through source-map commit `cbba87b`), these are the first-party tools
+contract. At HorizonCode Rust source baseline `80400370c7898459f7e7c24642caba9af31379d1`, these are the first-party tools
 registered by `horizoncode-tools`; `question` is registered only when the caller
 selects interactive mode. The registry has no model-visible skill, web, agent,
 mailbox, LSP, or image tool at that baseline. See `ARCH/29` for exact files/tests.
@@ -533,7 +532,7 @@ settlement, so both projections are derived from one execution.
 
 ## Headless question delivery
 
-`REQ-PROTO-005`. **Current source status at `23d4ce8`:** `question` is registered only
+`REQ-PROTO-005`. **Current source status at `80400370c7898459f7e7c24642caba9af31379d1`:** `question` is registered only
 when `BuiltinOptions::interactive` is true; headless `QuestionTool` returns
 `Unavailable` and there is no durable `NEEDS_INPUT` broker. This is an implementation
 gap recorded by `AX-380`, not the target contract.
@@ -659,3 +658,50 @@ only reflects the resulting advertised set.
    the question broker is available; otherwise omit the tool and pause with typed
    `QUESTION_UNSUPPORTED`. Do not synthesize an answer or ask the model to continue.
    Current code remains interactive-only; see the source-status block and AX-380.
+
+## Canonical tool/effect pipeline and CapabilityPack (proposed)
+
+Admission order is model proposal → schema validation → registry/capability check →
+Guard authorization → atomic budget reservation → sandbox preparation → durable
+effect-prepare receipt → execution → settlement → bounded output/artifact storage →
+observation. A failed stage prevents later stages; a successful command exit does not
+by itself settle an external effect or create verification evidence.
+
+`CapabilityPack` is a versioned declarative set of tools, skills, and verifier
+references. Members retain individual source, compatibility, enablement and trust
+state. A pack cannot install/enable members, grant Guard permissions, or create a
+second execution runtime (`ARCH/21`, `ARCH/35`).
+
+## Final tool execution refinements (proposed, DEC-091)
+
+Pre-execution validation/authorization/budget failure prevents execution. A failure
+after execution still requires settlement, capture persistence, audit receipt or
+UNKNOWN reconciliation; it cannot skip recovery or repeat the effect because output
+encoding failed. The target ToolFailure includes typed code, phase, effect reference,
+execution certainty, and retry disposition in a versioned schema.
+
+Preflight every patch target before mutation. Multi-file edits use staged validated
+content and per-file CAS receipts; a partial publication is reported and reconciled.
+No universal atomic multi-file filesystem transaction is claimed. The current source
+algorithm remains a baseline observation until AX-314 implements that target.
+
+ProjectId is the canonical project identity; WorkspaceId identifies mutable state.
+The canonical native progress tool is `todo`; historical `todowrite` references name
+an upstream pattern and do not register another tool. Its updates are AttemptProgress
+proposals, never task/evidence truth. Registration rejects duplicate/reserved built-in
+names; last-wins source behavior is not permission to shadow. Materialization consumes
+the composed Guard result, not a separate last-rule policy shortcut.
+
+Full captured output is an immutable ArtifactRef with bounded display/model excerpts,
+not a duplicated in-memory full string. Capture cap and recall expiry are visible.
+Tool-capture retention and general artifact retention are distinct named policy
+classes owned by ARCH/28, not competing cleanup stores. Serialize overlapping
+mutation scopes with stable workspace/path lock ordering; independent fenced scopes
+may proceed concurrently. Unknown scope takes an exclusive workspace lock, and
+waiting for a child/input never holds a lock that child/control work needs.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+ARCH37 conservative argument-aware scheduling refines fixed tool-name modes. Reserved built-ins cannot be shadowed last-wins, and Guard precedence is never last-matching-rule. Project identity is ProjectId, not WorkspaceId. ToolFailure includes code, phase, effect certainty, retryability and reconciliation reference. Stored output uses ArtifactRef; removed calls already started must settle/reconcile. Code Mode nests the same governed tool path.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.

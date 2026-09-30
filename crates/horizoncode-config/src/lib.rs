@@ -54,8 +54,8 @@ pub use settings::{
 };
 pub use skills::{
     MAX_DESCRIPTION_BYTES, MAX_NAME_BYTES, SKILL_FILE, SKILLS_DIR, SkillBody, SkillCatalog,
-    SkillDiagnostic, SkillError, SkillScope, SkillSummary, activate, discover_skills,
-    discover_skills_with,
+    SkillDiagnostic, SkillError, SkillInspection, SkillScope, SkillSummary, activate,
+    discover_skills, discover_skills_with, inspect_skill,
 };
 pub use state_fs::{
     OwnerOnly, PathEntry, classify, refuse_group_or_other_access, refuse_symlink, set_owner_only,

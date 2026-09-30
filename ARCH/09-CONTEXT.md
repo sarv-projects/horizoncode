@@ -1,7 +1,7 @@
 # 09 — Context Engine
 
 Module-level design for `CMP-context` (Capability layer). This document owns
-*what the model sees now*: assembly, budget, repo map, symbols, selection,
+*what the model sees now*: assembly, budget, selected repo-map projections, selection,
 compaction, pins/excludes, and context sharding. It does not own the durable
 event log (`CMP-session`), routing/window resolution (`CMP-provider`), policy
 (`CMP-guard`), or sub-agent scheduling (`CMP-orch`).
@@ -17,7 +17,7 @@ reconstructable model request. Two properties are non-negotiable:
 2. **Budget honesty.** The engine proactively estimates cost before every request to
    avoid predictable overflow (`REQ-CTX-004`). Estimation cannot guarantee provider
    acceptance: if a provider still reports overflow before streamed content begins,
-   the runner permits exactly one bounded compact-and-retry of the same step; a
+   with auto compaction enabled the runner permits exactly one bounded compact-and-retry of the same step; with auto=false it pauses/refuses typed. A
    second overflow becomes a typed failure. No mid-stream retry is allowed.
 
 ## Responsibilities
@@ -30,7 +30,7 @@ Owns:
 - ordered assembly and rendering of typed instruction sources discovered and
   validated by `CMP-config` (`ARCH/18`); this component does not discover files;
 - the ranked repository map (repo map) under a token budget;
-- symbol intelligence via LSP plus an index-exchange ingest;
+- consumption of revision-bound symbol/LSP/index results from CMP-repo-intel (ARCH/36);
 - deterministic selection (embeddings are a deferred fallback, never the first path);
 - the compaction engine and its trigger rule;
 - eval-gated compaction quality;
@@ -86,7 +86,7 @@ comparison state for one admitted source. **`Snapshot`** is the record
 `key -> SourceSnapshot` for one generation. **`Generation`** is
 `{ baseline: string, snapshot: Snapshot }`.
 
-**`ContextEpoch`** (persisted) — `{ baseline, snapshot, baseline_seq }`. It pins
+**`ContextEpoch`** (persisted, versioned target) — `{ epoch_id, baseline, snapshot, baseline_seq, brief_digest, policy_digest, route_digest, tool_snapshot_digest, source_heads[], packet_ref, generation }`. It pins
 the admitted baseline and the log position it belongs to. History projection
 excludes system rows at or below `baseline_seq`, so a baseline is rendered once
 and only deltas advance.
@@ -133,9 +133,7 @@ request plus a `Snapshot` for the next reconcile.
 
 ### 2. Baseline, update, reconcile
 
-- **initialize** — observe every source concurrently; all must be `Available`,
-  otherwise initialization is *blocked* with the missing keys named. A missing
-  source is never silently treated as removed.
+- **initialize** — observe sources concurrently; mandatory policy/instruction sources must be `Available` before dispatch. Optional discovery/index sources may stay loading/unavailable and are omitted with explicit status until the next safe epoch. A previously admitted required source is never silently treated as removed.
 - **reconcile** — compare current values to the snapshot. Each source yields
   `Unchanged` or `Updated(render)`; a decode mismatch, or a vanished key without
   a removal renderer, forces a full **replace**. Reconcile returns `Unchanged`,
@@ -474,6 +472,11 @@ map alone.
 | `compaction.keep.tokens` | serialized tail retained verbatim | `8000` |
 | `compaction.summary.max_tokens` | summarize-call cap | `4096` |
 
+| `tool_output.max_lines` | model-visible tool-output line bound | `2000` |
+| `tool_output.max_bytes` | model-visible tool-output byte bound | `51200` |
+| `repo_map.budget_tokens` | repo-map allowance | design default (see open questions) |
+| `context.eval_gate` | enable the retrieval-eval gate | `true` |
+
 The 0.5 trigger is HorizonCode's selected default (`DEC-006`), not an iCode-derived
 value. iCode's pinned `service/context/compaction/budgets.py` separately derives an
 output-token reserve and context safety margin from the model profile before choosing
@@ -481,13 +484,9 @@ its trigger (`SRC-035`/`U-ICODE-COMPACTION`). HorizonCode adopts the reserve-awa
 its configurable 0.5 threshold remains evaluated against the selected route's resolved
 context window, and output/buffer/uncertainty capacity remains a separate hard fit
 guard.
-| `tool_output.max_lines` | model-visible tool-output line bound | `2000` |
-| `tool_output.max_bytes` | model-visible tool-output byte bound | `51200` |
-| `repo_map.budget_tokens` | repo-map allowance | design default (see open questions) |
-| `context.eval_gate` | enable the retrieval-eval gate | `true` |
 
-Config discovery is global → project, nearest wins; values are per-model-class
-overridable. No key changes an authorization decision (`CMP-guard` owns that).
+Config discovery follows ARCH/18’s authoritative scope precedence; values may have
+validated per-model-class overrides without widening authority. No key changes an authorization decision (`CMP-guard` owns that).
 
 ## Requirements mapping
 
@@ -519,3 +518,49 @@ overridable. No key changes an authorization decision (`CMP-guard` owns that).
    facts and what regression margin blocks a strategy change.
 6. **Embedding/rerank trigger.** The concrete recall metric and threshold that
    would move selection away from its deterministic-first design.
+
+## ExecutionBrief and lifecycle hooks (proposed, `DEC-086`)
+
+`ExecutionBrief` is a small deterministic rendering of current canonical state for a
+new context epoch or post-compaction resume. It contains `run_id?`, `task_id?`, phase,
+approved objective excerpt, completed milestones, key decisions, active blockers,
+next safe action, referenced source revisions, and a digest. Build it from the
+canonical approved `ExecutionPlan`, Task/Run events, current Evidence, and workspace
+snapshot; do not persist it as a second plan or trust worker-authored prose. Persist
+only the brief artifact reference/digest when required for epoch replay. Regenerate
+when any source sequence/revision changes and fail closed on unresolved/stale inputs.
+
+Context lifecycle events are typed (`ContextPressure`, `PreCompaction`,
+`CompactionCommitted`, `PostCompactionResume`, `ModelChanged`, `WorkerChanged`,
+`RecoveryResume`). Hooks may request bounded reassembly but cannot commit Run state,
+change permissions, or select a different route without the existing owner. Preserve
+the existing 50% automatic trigger and separate hard-fit/output reserve.
+
+## Final context boundaries and attestation (proposed, DEC-091)
+
+CMP-repo-intel in ARCH/36 owns parsing, symbol/index generation, scanner snapshots,
+LSP/SCIP and query freshness. Repository-map/scanner algorithms described here are
+consumer selection/rendering requirements, not a second index implementation.
+CMP-context owns ranking, token budgets, instruction framing and request assembly.
+Provider route facts travel through foundation contracts, avoiding a cyclic provider ↔
+context implementation dependency.
+
+ExecutionBrief is versioned and deterministically built from authorized canonical
+source heads. It includes a source-head vector, scope, generation, ordered source
+references, content digest, and bounded excerpts of objective/milestones/decisions/
+blockers/next action. Configuration supplies finite item/byte/token ceilings before
+release. Missing/stale inputs yield typed unavailable/refresh-required results; no
+invented empty success brief. A direct turn uses its admitted Thread/input scope,
+with optional Run/Task fields, never a fabricated Run. Rebuild only at the documented
+lifecycle boundary and bind the brief, route and policy to ContextEpoch.
+
+Semantic results must match the requested workspace and dirty-buffer revision.
+Partial current lexical reads may be labeled fallback; a stale semantic subgraph
+cannot be silently treated as fresh. Stable cached prefixes may contain explicitly
+framed, digest-pinned untrusted data; cache location never grants instruction authority.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+CMP-context consumes revision-bound structural data owned by ARCH36; it does not own AST/LSP/symbol indexes. Required authority/instruction sources gate dispatch; optional intelligence/MCP/skill catalogs load asynchronously. ARCH37 stable prefix/volatile tail ordering refines earlier date-first sketches; adapter wire semantics win. Context projections do not execute deterministic queries without scope authorization.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.

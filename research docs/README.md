@@ -16,6 +16,7 @@ on a volatile implementation detail.
 - [Warp and oh-my-pi runtime review](warp-ohmypi-review.md) — pinned orchestration, provider registry, persistence, compaction, permissions, and recovery paths; test-path coverage limitations are explicit.
 - [Research landscape and source index](research-landscape.md)
 - [Test strategy and benchmark plan](tests.md)
+- [Interaction, performance and litePSM implementation review](interaction-performance-litepsm-review-2026-09-30.md) — full architecture read-through, pinned implementation notes, and documented compatibility gates.
 - [Upstream source-audit coverage ledgers](source-audit-coverage/README.md) — per-file read status for selected pinned reviews; not exhaustive repository-reading claims.
 
 ## Coding-agent source maps
@@ -53,6 +54,7 @@ on a volatile implementation detail.
 - [Agent tool, skill, and command adoption](agent-tool-skill-command-adoption.md) — focused pinned Codex deferred-tool-search, OpenCode LSP, and Grok skill-collision/create patterns; no code copied.
 - [iCode TUI and interaction-pattern review](icode-ui-review.md) — pinned source-guided review of composer, commands, path scanning, task/workflow inspection, extension configuration, and explicit non-adoptions.
 - [Extension marketplace and connector strategy](extension-marketplace-review.md) — official Codex, Claude Code, Grok Build, MCP Registry, and Agent Skills source review; catalog count definition, connector/provider/connection distinction, source adapters, and product-local runtime boundary.
+- [Architecture evolution source review](architecture-evolution-review-2026-09.md) — pinned AutoGPT Platform, planning-with-files, LobsterAI, SuperAGI, and AG-UI patterns; license/scope limits and explicit non-adoptions.
 - [Compaction upstream comparison](compaction-upstream-comparison.md) — pinned Codex, Grok Build, and OpenCode threshold/trigger semantics, plus historical OpenCode `auto: false` failure reports; no code copied.
 - [Helix editor architecture](helix-editor.md) — module-boundary comparison only; no code reuse.
 
@@ -63,3 +65,11 @@ The current implementation/status handoff is [`../CURRENT_RUN.md`](../CURRENT_RU
 and the delivery ledger is [`../TODO.md`](../TODO.md). For evidence rules, use
 [`../ARCH/23-VERIFICATION.md`](../ARCH/23-VERIFICATION.md); this directory's
 [`tests.md`](tests.md) gives the concrete test and benchmark plan.
+
+## Complete architecture audit (2026-09-30)
+
+[Final findings and per-file disposition](architecture-final-audit-2026-09-30.md) — full
+36-file read-through, UI/action journeys, schema/ownership/integrity refinements and
+explicit delivery limits. [Coverage](source-audit-coverage/architecture-final-2026-09-30.json).
+
+- [Interaction, performance and litePSM review](interaction-performance-litepsm-review-2026-09-30.md): fresh full ARCH read coverage, source observations, proposed feature contracts and remaining gates.

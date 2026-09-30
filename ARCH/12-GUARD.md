@@ -101,7 +101,7 @@ RunPostureGrant = { run_id, actor, classes[], scope_digest, policy_digest,
   segments. Pattern grammar is shared with `CMP-sandbox` deny globs so a pattern
   means the same thing to Guard and to the kernel. A malformed pattern makes its
   config layer invalid, never a silent no-op.
-- **Tickets** are immutable once issued; `uses` is decremented atomically at
+- **Ticket claims** are immutable once issued; a separate consumption ledger decrements remaining uses atomically at
   validation so a bounded-use ticket can never be spent twice (both outcomes audited).
   Stale `provider_epoch`, expiry, or revocation ⇒ `InvalidState`.
 
@@ -223,7 +223,7 @@ Issue a ticket bound to the action, resources, `expires_at`, `provider_epoch`, a
    - `reject` — fail the deferred (`Declined`); reject all other pending requests in
      the same session so one denial cannot be routed around.
 4. Timeout is per action class; default is expiry ⇒ deny, surfaced and audited.
-5. Session/process teardown fails every still-pending request as declined.
+5. Connection teardown invalidates its unanswered challenges; durable underlying blockers remain pending. Explicit effect/Run cancellation has its own target-scoped receipt. Reconnect issues a fresh challenge.
 
 ### Tickets
 Effects never execute without a valid ticket. Validation checks scope match, `uses`,
@@ -334,7 +334,7 @@ for approval.
 | Decision deadline exceeded | Deny with reason; never an implicit allow. |
 | Approval timeout | Per-class expiry; default deny, surfaced. |
 | Foreign approval response, closed connection, expired challenge, or changed reviewed resource | `WrongPrincipal`, `CANCELLED`, `EXPIRED`, or `STALE_APPROVAL`; no ticket is minted/used and a fresh explicit review is required. |
-| Saved-rule store corrupt | Ignore the saved layer (drop to stricter rules); warn; audited. |
+| Saved-rule store corrupt | Reject activation and fence affected effects; retain last validated snapshot as stale, warn and audit. Never silently discard an authority layer |
 | Ticket replay / stale epoch | `InvalidState`; audited; re-authorize normally. |
 | Concurrent bounded-use tickets | Atomic decrement; loser fails `InvalidState`; both audited. |
 | Unknown or project-supplied authority mode | Reject that field/layer; remain at `plan` or the previous stricter effective posture. Never infer auto-approval. |
@@ -347,7 +347,7 @@ restrictions. File discovery precedence is distinct from policy authority. The
 effective policy resolves last-match only inside one layer, then composes
 monotonically (`deny > ask > allow`); never apply find-last-wins across layers.
 
-**Source status after the `AX-370` fix (2026-09-29, source baseline `23d4ce8`).** `horizoncode-guard` now
+**Source status after the `AX-370` fix (2026-09-30, source baseline `80400370c7898459f7e7c24642caba9af31379d1`).** `horizoncode-guard` now
 resolves find-last-wins within the user/global base and within each restriction layer,
 composes the layers monotonically (`deny > ask > allow`), applies the
 external-directory floor after composition with an action-aware and user/global-only
@@ -435,3 +435,37 @@ than the guard evaluates path policy (`REQ-SEC-023`, `AX-121`).
    What remains open is only the exact escape-rule surface (leading `!`/`^`,
    character classes) and how it is versioned alongside the grammar
    (`G-10`).
+
+## Needs You projection (proposed, `DEC-085`)
+
+Pending `ApprovalChallenge` records project into the TUI attention queue with challenge
+identity, requester/action/resource summary, affected Run/Task, blast-radius rationale,
+expiry and stale status. The queue is not a permission store. Selecting an item
+revalidates the current challenge, authenticated principal, and policy/resource digest.
+Only an authenticated answer may mint the scoped ticket; consumption occurs at the
+existing pre-effect Guard gate, never merely by opening the item. The UI may rank by urgency and
+affected work but may not auto-resolve, extend expiry, or convert a question into an
+approval. Remote clients receive only authorized projections over the typed control
+API; AG-UI remains an untrusted edge adapter (`ARCH/15`, `ARCH/31`).
+
+## Final permission lifecycle refinements (proposed, DEC-091)
+
+Immutable ticket grant fields bind action/resource/scope/digest/expiry; remaining uses,
+revocation and consumption are separate durable lifecycle state. Consume atomically
+at the effect gate. An invalid/expired ticket never automatically authorizes a new
+request; any new challenge is explicitly reviewed against current policy.
+
+Security-policy parse/validation failure fences affected activation. A retained
+validated effective snapshot is shown stale and cannot become broader because a
+restrictive layer disappeared. Never silently omit the broken layer. Saved project-
+scoped user grants live in user-owned policy storage keyed by ProjectId, distinct
+from untrusted project configuration; they cannot override higher denies. UI offers
+only policy-supported once/session/saved scopes with exact expiry and revocation.
+Selecting a challenge performs no grant. Commands/resources may use a bounded preview,
+but the exact authorized action is inspectable and the response binds its full digest.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+Client disconnect invalidates connection-bound challenges/tickets but preserves underlying durable blocker; reconnect issues a fresh bound challenge. Detach is not task cancellation. Corrupt authority layers fence effects instead of being ignored. Always-grants are user-owned, exact-scoped and freshness rechecked before resolving another challenge; project config cannot grant. Ticket immutable claims and mutable consumption ledger are separate.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.

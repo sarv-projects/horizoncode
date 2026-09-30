@@ -24,13 +24,13 @@ Output recall and hook coverage are features described by upstream documentation
 | Technique | Compresses | Runs | Lossy | Fit for a remote-API Rust CLI |
 |---|---|---|---|---|
 | **Prompt caching** (stable prefix, explicit breakpoint) | Repeated stable-prefix processing; billing/latency only where provider documents the effect | Provider adapter | No (exact reuse) | Implement only for documented route capabilities; comparative savings are unmeasured here |
-| **Ranked repo map + just-in-time reads** | What is loaded at all | Client | No (selection) | **Adopt** — avoid loading, don't compress |
+| **Ranked repo map + just-in-time reads** | What is loaded at all | Client | Yes (omitted source spans remain retrievable) | **Adopt** — avoid loading, don't compress |
 | **Deterministic observation formatters + recall** | Tool observations | Client | Yes, recoverable | **Adopt** (eval-gated per family) |
 | **Keep-tail + structured-summary compaction + projection-only tool-result clearing** | Old turns | Client | Yes | **Adopt** as engine core, with the exact-result retention contract below |
-| **Extractive retrieved-context compression** | Retrieved docs | Client | No (selection) | Prototype |
+| **Extractive retrieved-context compression** | Retrieved docs | Client | Yes (omitted source spans remain retrievable) | Prototype |
 | **Small-encoder prompt compression** (perplexity/classifier token dropping) | Prompt tokens | Client, CPU-friendly | Yes (ungrammatical) | Prototype for **prose only** — risky on code |
 | **Code-aware span pruning** | Candidate redundant code spans | Client | Yes | Untested hypothesis; no comparative evidence here establishes it as promising or safe |
-| **Recursive/hierarchical summaries (RAPTOR-style tree)** | Corpus + long trajectories | Client (offline build) | Yes | Adopt for repo knowledge / long-horizon notes |
+| **Recursive/hierarchical summaries (RAPTOR-style tree)** | Corpus + long trajectories | Client (offline build) | Yes | Prototype only; quality, cost and freshness acceptance required |
 | **Soft-prompt / gist compression, xRAG** | Prompt → dense vectors | Server (needs model control) | Yes, extreme | **Avoid** — impossible via remote APIs |
 | **KV-cache / attention compression** | KV tensors | Server (self-host only) | Yes | **Avoid** — no API surface |
 
@@ -84,3 +84,31 @@ decision (`DEC-006`), not an upstream consensus or measured optimum.
 3. **Authoritative eval suite** — which suites are the gate for compression changes, and the approved paired-A/B budget.
 4. **Recall store lifecycle** — retention, size cap, and interaction with the audit log and session portability.
 5. **Formatter coverage scope** — the initial allowlist of command families, and the process for adding one without a code change.
+
+## Post-compaction rehydration (proposed, `DEC-086`)
+
+Keep the recent tail verbatim and the middle as the existing bounded structured
+summary. At the new epoch boundary, rebuild an `ExecutionBrief` projection from
+canonical Run/Task/approved-plan/Evidence/workspace state (`ARCH/09`). Pin its input
+sequences, source revisions, and digest to `ContextEpoch`; on mismatch, regenerate or
+surface a typed stale-state outcome before dispatch. Inject this bounded projection
+once at the epoch boundary, not the complete planning history on each turn. Context
+summaries and briefs never replace Thread events, plan/task owners, artifact truth, or
+accepted memory. Existing fit, trigger, route pinning, and retry rules remain binding.
+
+## Final compression interpretation (proposed, DEC-091)
+
+Selection and summaries are lossy prompt projections even when canonical source bytes
+remain intact. Exact recall refers to retained source, not proof that every detail
+survived the summary. RAPTOR/embedding experiments remain prototypes pending quality,
+privacy and cost evaluation; the ordinary context path requires no remote index.
+Preserve the verbatim tail, compress only admitted historical content, then generate
+and attest the bounded fresh ExecutionBrief at the new epoch. Injecting full planning
+history every turn is prohibited. Recall retention is ARCH/28 policy, not another
+archive store. All automatic paths share the eligibility gate and allowance in ARCH/09.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+Selection is lossy in supplied context even when original bytes remain retrievable. RAPTOR stays prototype-only. Warm-prefix summary requests are optional route-specific optimization, tested against output validity and context limits; compaction ownership and 50% trigger remain unchanged.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.

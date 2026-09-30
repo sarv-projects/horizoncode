@@ -89,12 +89,12 @@ ordering invariant, not iCode's particular subscriber-await implementation.
 | `session/cancel` notification | cancel turn (cooperative) | in-flight work settles as `interrupted` |
 | `session/set_mode` / `session/set_config_option` (optional) | adjust advertised mode/config | validate offered values and record accepted change; no v1 `session/set_model` method |
 | `session/request_permission` (agent → client baseline request) | guard ask → client | wait for exact reply; otherwise typed denial on error/deadline |
-| `fs/read_text_file`, `fs/write_text_file` (client → agent, optional) | governed client file access | require advertised client capabilities and guard checks |
-| `terminal/create`, `terminal/output`, `terminal/wait_for_exit`, `terminal/kill`, `terminal/release` (client → agent, optional) | governed client terminal access | require advertised client capability and resource limits |
+| `fs/read_text_file`, `fs/write_text_file` (agent → client, optional) | governed client file access | require advertised client capabilities and guard checks |
+| `terminal/create`, `terminal/output`, `terminal/wait_for_exit`, `terminal/kill`, `terminal/release` (agent → client, optional) | governed client terminal access | require advertised client capability and resource limits |
 | `session/fork` (unstable in v1), task graph, UI detach, checkpoints/rewind | HorizonCode control API | do not advertise as stable ACP; unstable fork is opt-in and negotiated separately |
 
 **Session listing result and error mapping.** The versioned internal control API
-owns the rich `SessionListResult` (`ARCH/07`), including per-entry integrity
+owns the rich `ThreadListResult` (`ARCH/07`), including per-entry integrity
 states and store-level issues. ACP `session/list` may expose only fields allowed
 by the exact pinned ACP schema. It must not add `enumeration_complete` or
 `SessionListIssue` as unnegotiated root fields. Map incomplete enumeration using
@@ -116,7 +116,7 @@ The local listing contract (separate from the ACP wire shape):
   issue that only appears on a later page is indistinguishable from a hidden failure.
 
 A local inspection surface (headless CLI, TUI session picker) uses the same
-`SessionListResult`: a store-level failure is a non-zero exit or an explicit
+`ThreadListResult`: a store-level failure is a non-zero exit or an explicit
 "list may be incomplete" row, and an unreadable session stays visible with its typed
 state. Neither surface may substitute "no sessions" for a failed scan.
 
@@ -140,7 +140,7 @@ state. Neither surface may substitute "no sessions" for a failed scan.
 | streamable HTTP | session-scoped; reconnect handler | headers carry auth refs, never values |
 | OAuth | authorize → callback → refresh | tokens stored via `CMP-secrets`; `needs-auth` on failure |
 
-A modern stateless revision is preferred where the server supports it (context carried per request); a legacy handshake is the fallback. Detection is cached per server/origin, with a force-legacy escape hatch. A server that supports neither is marked incompatible with a reason.
+Use the explicitly selected released MCP baseline in ARCH/21, with initialize and notifications/initialized. An unreviewed stateless or legacy variant is incompatible; adding a compatibility adapter requires a pinned schema, explicit negotiation, and fixtures. No automatic protocol guessing or force-legacy bypass is provided.
 
 **Headless output.** Default human-readable stream plus a machine `json`/`ndjson` mode emitting one typed event object per line. Exit codes are a small fixed contract (success, agent-failed, declined/denied, interrupted, configuration error, internal error); the exact numeric mapping is fixed in implementation and documented in `--help`.
 
@@ -251,7 +251,7 @@ grammar.
 ## Configuration
 
 - `acp.enabled`, `acp.profile`, `acp.permission_default` (reject unless negotiated).
-- `mcp.servers[]`: `{id, transport, command/args/env | url/headers, auth, timeout_seconds, enabled}`; `mcp.default_timeout_seconds`; `mcp.force_legacy`.
+- `mcp.servers[]`: `{id, transport, command/args/env | url/headers, auth, timeout_seconds, enabled}`; `mcp.default_timeout_seconds`; no `mcp.force_legacy` under the selected released profile.
 - `headless.default_format`, `headless.exit_codes`, `headless.max_output_bytes`.
 - `sdk.endpoint` (stdio) for the edge client.
 
@@ -274,8 +274,54 @@ grammar.
 ## Open questions
 
 1. **ACP client concurrency — open, release-gated.** Owner: `CMP-acp` / `CMP-control-api`. `ACC-P1-05` already forbids silent dual ownership; before multi-client service is enabled, decide whether there is one controller lease with read-only observers or multiple explicitly serialized controllers. Acceptance must prove ownership, answer-origin binding, disconnect behavior, and control-lane responsiveness. Until decided, permit only one controlling connection per Thread and reject competing mutation/control claims.
-2. **MCP protocol revision — resolved in this LLD.** Owner: `CMP-mcp`. Prefer the modern stateless revision when supported; use legacy only as a compatibility fallback or explicit `force_legacy`. Test both handshakes, detection caching, reconnect, and incompatible-server reporting before advertising support.
+2. **MCP protocol revision — resolved with ARCH/21.** Owner: CMP-mcp. Pin the selected released schema and initialized lifecycle; test negotiation, reconnect and incompatible-server refusal. Additional revisions require reviewed compatibility fixtures, not speculative automatic fallback.
 3. **Headless exit-code table — open, release-gated.** Owner: `CMP-headless`. Numeric values and whether guarded-deny shares a code must match the actual implementation and `--help`; do not invent values in this target document. `ACC-P1-08` is the acceptance gate and must capture the implemented table.
 4. **ACP client authentication — open, release-gated.** Owner: `CMP-acp` with `CMP-secrets` and `CMP-guard`. Before remote peer connections ship, decide and document peer identity/authentication, credential origin, rotation, and authorization scope. Until then, remote connections without an authenticated, authorized peer identity are unavailable; local stdio trust does not imply remote trust. Acceptance must cover wrong identity, missing/expired credentials, and refusal before session creation.
 5. **Edge SDK generation and drift — open, release-gated.** Owner: Edge SDK with `CMP-acp`. Decide generated versus hand-maintained bindings against a pinned released schema. Whichever path is chosen must have a reproducible build/schema-diff check and prove the SDK cannot introduce protocol or control-plane behavior absent from the Rust service.
 6. **MCP resource/prompt injection budget — open, release-gated.** Owner: `CMP-mcp` for acquisition bounds and `CMP-context` for admission/rendering. Specify per-resource bytes, page/count limits, aggregate token budget, provenance/framing, and behavior on overflow. Until those bounds are configured and tested, do not automatically inject discovered resources/prompts; explicit selection still remains subject to size limits. Acceptance must prove over-limit inputs are omitted atomically with a visible non-authorizing marker and cannot truncate into trusted-looking instructions.
+
+## AG-UI edge adapter (proposed, `DEC-088`)
+
+AG-UI is an optional edge protocol between a user-facing client and HorizonCode's
+`CMP-control-api`. ACP remains the coding-agent/client or peer protocol; MCP remains
+the tools/data protocol. `CMP-ag-ui` maps authorized owner events to an AG-UI version
+and converts client actions into typed ControlService requests. HorizonCode maps only
+an explicitly versioned whitelist of stable events; AG-UI `Raw`, `Custom`, draft, and
+unknown events are inert display data unless a future reviewed mapping says otherwise.
+A payload cannot directly modify a Run, Task, permission, or Evidence record. AG-UI
+shared UI state is a projection only.
+
+The adapter is disabled by default and inherits local-only exposure. Remote binding
+requires a separate authenticated/encrypted transport decision and acceptance; AG-UI
+message framing is not authentication, authorization, or transport security. Durable
+cursor loss produces `RESNAPSHOT_REQUIRED`; bounded slow-client handling follows
+`ARCH/31`. No SDK/license clearance or stable-draft event support is assumed.
+
+## Final protocol mapping (proposed, DEC-091)
+
+ACP filesystem/terminal callbacks are agent-to-client requests; client-to-agent
+session commands are a different direction. Internal conversation listing uses
+ThreadListResult; ACP retains its versioned wire Session names. Optional baseline
+methods are checked through released schema/capability fixtures, not guessed bits.
+
+MCP uses the explicitly selected released schema baseline in ARCH/21, including
+initialize and notifications/initialized. The
+[2025-11-25 lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)
+was checked 2026-09-30. No automatic speculative stateless/legacy fallback is enabled;
+compatibility adapters need reviewed versioned fixtures. tools/list discovery may
+fetch bounded schemas, while prompt materialization remains lazy; there is no invented
+schema-only server endpoint. Discovery never grants tool authority.
+
+Shutdown attempts a durable terminal receipt and bounded client output. A killed
+process or unwritable transport may prevent the output; return a nonzero/incomplete
+outcome and rely on canonical recovery rather than promise an emitted terminal frame.
+AG-UI is disabled and restricted to authenticated in-process/local IPC initially;
+loopback HTTP/SSE also needs the separate listener security decision. Unknown/custom
+payloads are rejected or shown only as bounded escaped authorized data, never raw
+objects or control authority.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+ARCH38 uses only negotiated portable MCP tools; no force_legacy option is accepted under the selected released profile. Headless current flag is -p/--print; future --prompt requires an explicit compatibility alias migration. Core listing uses ThreadListResult; external protocol Session IDs stay adapter mappings. Process/stdio exit cannot settle uncertain effects as failed; reconcile UNKNOWN.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.

@@ -1,0 +1,41 @@
+{
+  "scope": "AX-405 partial: offline skill body cost inspection",
+  "head": "42466aa410d50d5135195ba8823636a397524f95",
+  "dirty": true,
+  "source_sha256": {
+    "crates/horizoncode-config/src/skills.rs": "4cb145597175c8fc5bc2dd23c428e3d8789f4629377649f223f9fee51b074ff9",
+    "crates/horizoncode-config/src/lib.rs": "6035044e635ec933cd6f8b1a1b624a12d2a5471bea456a7dc8f9d0cad53b5cd2",
+    "crates/horizoncode-config/tests/skill_inspection.rs": "cf3711eb4132489dc1d2cd47a6412ea65b86ff2141d9f2fd88772a9caf75f8ed",
+    "crates/horizoncode-cli/src/surfaces.rs": "d1256d84bcf517d98746d04716a95d29a593dc7b5b98c11c607a21f10b7e77e1",
+    "crates/horizoncode-cli/tests/commands_cli.rs": "ad4cdf706bdc91ba0248a209546586474200e8800b7d2b7f43ec4313502b8c88"
+  },
+  "checks": [
+    {
+      "command": "cargo test -p horizoncode-config --test skill_inspection --offline",
+      "result": "4 passed"
+    },
+    {
+      "command": "cargo test -p horizoncode-cli --test commands_cli --offline",
+      "result": "10 passed"
+    },
+    {
+      "command": "cargo test --workspace --offline -- --test-threads=1",
+      "result": "passed, exit 0; isolated loopback ACP mock-provider integration tests enabled outside the network sandbox"
+    },
+    {
+      "command": "cargo test -p horizoncode-audit --offline",
+      "result": "passed, exit 0"
+    },
+    {
+      "command": "python3 /tmp/horizon-interaction-check.py",
+      "result": "passed; 45 Markdown files and 1,256 local links/fragments, zero errors"
+    },
+    {
+      "command": "git diff --check and rustfmt --check --edition 2024 on the five implementation/test source files",
+      "result": "passed"
+    }
+  ],
+  "acceptance": "ACC-UX-12 not accepted: remaining subfeatures absent",
+  "platform": "Linux; isolated temporary files; no live provider",
+  "workspace_run_note": "An earlier sandboxed workspace run failed only because ACP test fixtures could not bind local listeners. A first parallel escalated rerun had one transient existing audit integration-test failure; isolated audit suite passed and the final serial full-workspace rerun passed."
+}

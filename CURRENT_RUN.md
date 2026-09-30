@@ -1,5 +1,169 @@
 # CURRENT_RUN — HorizonCode
 
+## AX-405 first implementation slice (2026-09-30)
+
+Implemented content-free offline skill inspection through the existing config owner
+and `/skills show <name>` headless path. Body UTF-8 byte count and a labelled
+ceiling(bytes/4) heuristic estimate are shown; observed injection and activation
+counts remain unknown. No skill executes, no content is injected or printed, no
+resources are followed, and no session/provider is started. Listing remains metadata-only.
+Digest drift, missing files and symlink replacement use existing validated-read refusals.
+
+Source: config `skills.rs`/`lib.rs`, CLI `surfaces.rs`; regression suites:
+`config/tests/skill_inspection.rs` and `cli/tests/commands_cli.rs`.
+Checks: inspection 4 passed; CLI commands 10 passed. The CLI regression was observed
+failing before implementation. Source hashes and commands:
+[AX-405 evidence](research%20docs/source-audit-coverage/ax405-skill-inspection-2026-09-30.json).
+The full serial workspace suite passed: `cargo test --workspace --offline -- --test-threads=1` (exit 0). The sandboxed run failed local ACP mock-listener binding; those isolated mock tests passed with loopback permission. A prior parallel run had one audit integration failure; the isolated audit crate and final serial workspace reruns passed. `git diff --check`, targeted `rustfmt --check`, and local link/fragment validation passed (45 Markdown files, 1,256 links, zero errors).
+
+HEAD remains `42466aa410d50d5135195ba8823636a397524f95` with a local dirty diff;
+no dependency change, commit, push, publication or sibling edit. AX-405 is partially
+implemented, not accepted: bundled skills/workflows, exact tokenizer/resource costs,
+activation observations and visibility controls remain open. Existing architecture
+changes and cline-probe changes were preserved. Next action: implement the next
+ready feature slice and record its source and acceptance evidence.
+
+## Interaction, performance and litePSM expansion (2026-09-30)
+
+User-authorized documentation scope completed with fresh line-by-line read-only audits
+of all36 existing ARCH documents (15,949lines) and all26 litePSM ARCH documents
+(3,821lines); truncated ranges were reread. New ARCH37/38 were independently read
+in full after authoring. Coverage/hashes: [record](research%20docs/source-audit-coverage/interaction-review-2026-09-30.json).
+
+Added DEC092..095, REQUI034..040, REQPERF005/006, REQPROTO009, REQUPDATE008,
+SRC042..044, AX401..410 and planned ACCUX09..13/ACCPERF01/ACCEXT01/ACCINSTALL02.
+Owners now link artifact picker/skills/viewer/version feedback, exact paste/image chips,
+durable drafts, queue/recap/branches, skill costs, settings/theme/motion/streaming/
+highlighting, measured fast path, rolling pools/optional CodeMode/Ralph strategies,
+litePSM adapter and required Bash/PowerShell wrapper/onboarding contracts. Corrected
+identified active owner/status/config/cancellation/protocol/preview contradictions.
+[Review report](research%20docs/interaction-performance-litepsm-review-2026-09-30.md)
+records source ranges and remaining gates; existing final audit is historical coverage.
+
+HEAD remains42466aa410d50d5135195ba8823636a397524f95; no Rust/Cargo/install scripts
+were implemented, no commit/push/publication occurred, and unrelated cline-probe
+changes were preserved. litePSM changed externally49ac134→a3ca33ba0dc51b7e2a2411349bedd2d021be9a1f
+while its ARCH content remained identical; no sibling files edited. Actual DeepSeek
+source reviewed at639ed015397290b3745d163aafe02ffee4aa3f84, with limitations documented.
+All ten delivery tasks remain proposed. Runtime/platform/TUI/usability/performance
+acceptance and sibling schema/approval/journal/IPC fixes remain open. Documentation
+validation covers links/fences/unique IDs/coverage/source paths and diff whitespace;
+no runtime or live-provider tests ran. Next action is bounded implementation of an
+owning task after its dependencies are available; no speed or enforcement claim is
+accepted from prose alone.
+
+## Complete final architecture read-through (2026-09-30)
+
+Read all 36 current ARCH Markdown files in full: 15,183 initial lines in 89
+bounded ranges; truncated output was reread before counting it. ARCH/17 remains
+intentionally unused. Inspected the resulting additions and active replacements;
+the final architecture contains 15,949 lines. Input SHA-256 hashes/read ranges and
+final hashes/counts are in [the coverage record](research%20docs/source-audit-coverage/architecture-final-2026-09-30.json).
+This supersedes the earlier affected-owner-only coverage claim for this request.
+
+Documentation HEAD remains 42466aa410d50d5135195ba8823636a397524f95; Rust baseline
+is 80400370c7898459f7e7c24642caba9af31379d1. Existing dirty changes and cline-probe
+were preserved. No Rust/Cargo/dependency changed; no commit/push/publication occurred.
+
+Updated every architecture owner with dated proposed refinements and corrected active
+requirement/interface/protocol/integrity wording. DEC-090/091, REQ-UI-033, ACC-UX-08,
+and F-103..F-109 record the outcome-first UI, shared action/event contracts, durable
+identity/context, spent-aware reservations, exact worker launch keys, semantic progress,
+provider workspace boundaries, required-hook/policy failure, package raw-byte integrity,
+safe retention and evidence/status limits. TODO AX-396/397 and the source trail/test
+plan now include those acceptance checks. Per-file findings and remaining gates:
+[complete audit](research%20docs/architecture-final-audit-2026-09-30.md).
+
+Checks: 42 Markdown files, 1,164 local links/fragments, zero broken links; 261 unique
+requirement definitions, 90 decision definitions, 41 source definitions and 144 task
+IDs; closed fenced blocks; contiguous full original read ranges and final file hashes;
+`git diff --check` passed. Rechecked official Git COPYING, RFC 9110 Retry-After, and
+the selected MCP initialized lifecycle. These are documentation checks only. No
+product tests/builds, platform/live-provider acceptance or usability study were run.
+No task status was promoted. Finite brief/memory bounds, strategy thresholds, portable
+audit proof, production update trust, platform/remote confinement and any edge network
+listener remain explicit implementation/release gates. Next safe action: select the
+owning bounded TODO task and implement/verify its current reconciled contract.
+
+## Architecture evolution review (2026-09-30)
+
+Reconciled the proposed evolution against the existing architecture and the prior
+line-by-line audit of ARCH/00..33 (14,028 lines, recorded below in the historical
+reconciliation). This pass reread the affected owners and checked cross-document
+identifiers/status/traceability. The architecture now indexes proposed ARCH/34..36;
+adds DEC-083..089, REQ-WORK/STOP/CTX/UI/PROTO and new tasks AX-395..400; and records
+pinned, source-limited references SRC-037..041 with TODO → owning ARCH → ARCH/29 →
+immutable upstream URL navigation. All six tasks remain proposed.
+
+The UI contract keeps three pane slots while adding Pair/Mission Control/Review/Explore
+content presets, Needs You, Proof Pack and recovery views. DEC-085 supersedes only the
+fixed center content of DEC-066; chat remains the default Pair view and available as a
+center tab. The existing CMP-repo-intel and ProgressSignature/StopDecision owners were
+extended instead of duplicated. AG-UI stays disabled/local-only pending a separate
+remote authentication/encryption decision; AutoGPT Platform is pattern-only and no
+PolyForm Shield code is copied. planning-with-files Markdown remains noncanonical.
+
+No source or dependency changed, no task status was promoted, and no product tests or
+builds were run. `git diff --check` passed. A local link/fragment scan passed for all 37
+changed Markdown files; requirement, decision, TODO, and source ledgers have 260, 88,
+144, and 41 unique definitions respectively. The UI audit found and resolved the `/mode`
+command collision by reserving `/workspace` for layout presets; F3 remains the palette
+entry. These checks validate documentation structure only, not behavior or acceptance.
+
+## TODO-to-source audit (2026-09-30)
+
+Checked out documentation HEAD: `42466aa410d50d5135195ba8823636a397524f95`.
+The source baseline is `80400370c7898459f7e7c24642caba9af31379d1`; comparing
+`23d4ce8..HEAD` shows the only Rust/Cargo source delta is the AX-370 Guard/approval
+change, and comparing `8040037..HEAD` shows no Rust/Cargo delta. The previous source
+baseline notes have been corrected in TODO and the current source-traceability/design
+headers; older dated review entries remain historical snapshots.
+
+Cross-checked all 138 TODO IDs (46 `implemented`, 92 `proposed`, none `verified` or
+`accepted`) against their owning ARCH/source-trail links. All 46 implemented rows
+have a resolvable local source-trail anchor; all 186 local file links in
+`ARCH/29-SOURCE-TRACEABILITY.md` resolve after URL decoding. The AX-370 implementation
+and regression-test source are present at HEAD; its remaining run-scoped acknowledgement,
+expiry/revocation, and `ACC-P1-02` acceptance are still open. Source presence and test
+file presence do not establish passing behavior. The cited AX-370 test/clippy results
+are historical implementation-wave evidence, not rerun here. No task status was
+promoted. This is a source-presence/status audit, not a behavioral test or platform
+acceptance audit; no product tests or builds were run.
+
+Updated source-baseline statements in `TODO.md`, `ARCH/29`, `ARCH/10`, `ARCH/12`,
+`ARCH/14`, `ARCH/20`, `ARCH/21`, `ARCH/22`, `ARCH/24`, and `ARCH/33`. Clarified that
+`ARCH/22` T-12 describes proposed update-security controls, not the implementation
+status of every control in HorizonCode. The pre-existing dirty `cline-probe` submodule
+was left untouched.
+
+## Final architecture and ledger consistency pass (2026-09-30)
+
+Checked the current documentation checkout at `42466aa410d50d5135195ba8823636a397524f95`.
+The complete active architecture set is `ARCH/00`–`ARCH/33`, with `ARCH/17`
+intentionally unused; the prior three-pass line-by-line architecture review is
+recorded in the historical reconciliation below. This final pass checked the latest
+extension-market, Connector, Doctor, Extensions UI, skill/tool-discovery, and task
+ledger changes against their owning requirements, decisions, architecture sections,
+research notes, acceptance rows, TODO entries, and source-trail anchors.
+
+Fixed the missing `u-cl-provider` anchor used by AX-363 and updated TODO's stale
+architecture-finding range from F-91 to F-98. Replaced the outdated claim of a single
+immediate implementation priority with the current tracked workstreams and an explicit
+instruction to follow task dependencies; no task status or implementation claim
+changed. The cross-product `REQ-SKILL-015` mentioned here is defined in the sibling
+AgentCowork repository, not in this HorizonCode requirement registry.
+
+Checks: 87 active Markdown files and 1,194 local Markdown links/fragments, zero broken;
+all 184 GitHub repository/file links in `ARCH/` returned success (one transient timeout
+passed on retry); 138 TODO task IDs are unique, and every row has an architecture owner
+and source-trail link; 82 decision IDs, 36 source IDs, 50 acceptance IDs, and all
+locally defined requirement references resolve. `F-01..F-98` is now consistent across
+ARCH/24 and TODO. `git diff --check` passes. No product tests, builds, or live provider
+calls were run. The pre-existing dirty `cline-probe` submodule was left untouched.
+At the time of that architecture consistency pass, the reviewed source baseline was
+`23d4ce8`; the AX-370 source fix was committed later at `8040037`. See the TODO-to-source
+audit above for the current baseline. That earlier pass changed documentation only.
+
 ## Shared extension marketplace and Connector design (2026-09-30)
 
 Completed the HorizonCode-first design pass for a shared catalog later consumable by

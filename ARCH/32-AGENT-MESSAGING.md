@@ -236,3 +236,25 @@ screen-reader labels, small terminal widths, color-disabled mode, literal search
 ANSI escape payloads, notification preferences, and delivery-state recovery. External
 ACP adapter tests use a fake peer that lacks and then advertises the explicit bridge;
 no live provider is required. `research docs/tests.md` owns the exact suite plan.
+
+An agent message such as “all tests pass” is untrusted peer conversation and is not
+Evidence, a task transition, or PASS. Only the verifier can produce canonical
+revision-bound evidence. Any client attention item derived from a mailbox message must
+retain sender/provenance and route through the owning input/action contract.
+
+## Final mailbox ownership clarification
+
+The hierarchy is a relation, not a one-to-one identity chain: an Attempt may use
+multiple Threads/executions; a direct Thread may have no managed Attempt. WorkerAdapter
+owns native/peer message transport; ExecutionHost only supervises its processes.
+Operator read cursor preferences must have a durable user-owned record/event if they
+are expected to survive restart; the cache is rebuildable from that source, not from
+worker acknowledgements. Losing that preference marks unread coverage unknown rather
+than inventing a read receipt. Message post/read/status actions share the authenticated
+control registry and never mutate task evidence or wake a paused worker.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+WorkerAdapter owns protocol messaging; ExecutionHost owns process lifecycle only. Thread is conversation sequence, not agent/execution identity or a working-status node. UI thread trees are projections; message claims never settle Task/evidence truth.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.

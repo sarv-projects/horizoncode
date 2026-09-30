@@ -239,7 +239,7 @@ permission snapshot for one model step; an unselected or changed tool is refused
 typed. This reduces prompt cost without allowing the model to bypass tool
 registration or the guard (`REQ-CTX-010`).
 
-**Lifecycle/status.** `connected | disabled | failed | needs_auth | needs_client_registration`. Reconnect uses bounded exponential backoff. A server that fails at startup does not abort the session (configurable); a failed refresh preserves the previously known tool set rather than dropping it.
+**Lifecycle/status.** `connected | disabled | failed | needs_auth | needs_client_registration`. Reconnect uses bounded exponential backoff. A server that fails at startup does not abort the session (configurable); a failed refresh preserves the previously known metadata for inspection while executable availability is fenced until freshness and identity are revalidated.
 
 **Avoid.** Unauth remote servers; blind auto-install from public registries; treating a registry listing as trust.
 
@@ -304,7 +304,7 @@ the pinned upstream guide linked in **Command identity** above. No code is copie
 
 **Both roles are first-class** (`REQ-PROTO-004`, `DEC-019`): HorizonCode is driven by clients (editors) and drives peer agents as subordinates.
 
-**Current source status at `23d4ce8` / source-map commit `cbba87b`:** the ACP crate is a
+**Current source status at `80400370c7898459f7e7c24642caba9af31379d1`:** the ACP crate is a
 server-only v1 edge. It implements `initialize`, `session/new`, `session/prompt`,
 `session/cancel`, `session/close`, streamed `session/update`, and
 `session/request_permission`; it advertises only the implemented prompt capability.
@@ -369,3 +369,37 @@ never merges configs silently.
 - ACP schema v2 delta (`resume`/`close`/`additionalDirectories`) before implementation.
 - SDK maturity outside the two primary languages.
 - Skills curator lifecycle (usage-linked feedback, archive-not-delete) scope for v1.
+
+## CapabilityPack projection (proposed)
+
+CapabilityPack is a declarative profile over individually discovered tools, skills,
+and verification references. Discovery may display pack membership and compatibility;
+installation, trust review, enablement, credential setup, Guard grants, and runtime
+execution remain with each member's existing owner. A pack is not a new extension
+execution type or marketplace trust badge (`ARCH/10`, `ARCH/35`).
+
+## Final extension lifecycle clarification (proposed, DEC-091)
+
+CapabilityPack is a composite descriptor `{pack_id, revision, members[], compatibility,
+source_digest, evidence_refs[]}` within extension discovery, with tools/skills/checks
+as separately reviewed members. It is not a fifth counted source family that inflates
+DEC-082's catalog totals and not a new executor. Enablement cannot grant permissions.
+
+MCP disconnected servers retain metadata for inspection, not executable availability.
+Bounded tools/list discovery may include schemas; inject only selected schemas at a
+safe next-step boundary. Source-qualified skill names preserve collisions. Packages
+reject escaped/ambiguous members and pin exact bytes plus the closed member manifest.
+Provider adapters remain reviewed release code, not downloaded plugin code.
+
+Raw controller/provider/operator credentials never enter MCP children. A server needing
+an environment-only service credential is unavailable by default until a separately
+reviewed scoped secret-broker injection policy defines custody, isolation, egress,
+redaction and revocation. Such approval cannot reuse a controller credential or claim
+the service child cannot read its supplied value. Broker handles are preferred;
+unimplemented credential mechanisms stay explicitly unavailable.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+ARCH38 supersedes centrally built Horizon Shared Market for litePSM-managed entries: Horizon consumes its catalog and daemon behind a port. Existing native entries stay explicit/read-only until adoption. No duplicate package lifecycle, copied secret store or install authority. Workflow/bundled artifact skills use existing qualified discovery.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.

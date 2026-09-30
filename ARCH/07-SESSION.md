@@ -89,7 +89,7 @@ attempt/run ownership and reconciliation around the worker runtime.
 |---|---|---|---|
 | in | `CMP-runner` | `admit(input)` · `loadForRunner(thread, baselineSeq)` · `append(event)` · `contextEpoch.prepare/advance` · `failInterruptedTools(thread)` | The runner is the only writer of turn/step/tool/model events. |
 | in | `CMP-runner` (coordinator) | `resume(key)` · `wake(key)` · `interrupt(key)` · `active()` | One owner per thread key (see "Per-key run coordinator"). |
-| in | `CMP-context` | `compaction/stated` · `compacted` · `context/epoch` snapshot advance | Context decides; this store records and persists. |
+| in | `CMP-context` | `compaction/started` · `compacted` · `context/epoch` snapshot advance | Context decides; this store records and persists. |
 | in | `CMP-orch` | `createChild(parent, meta)` · `subagent/catalog` facts | Child Threads are ordinary Threads with `parent_thread_id`. |
 | in | `CMP-guard` | approval/question outcome events | Decisions are recorded once and never inferred (`REQ-GUARD-001`). |
 | in | `CMP-tools` | `tool/call` and `tool/result` recording before/after effects | A call is recorded durably before its side effects begin. |
@@ -502,7 +502,7 @@ reconstructed object in place of its source bytes.
 |---|---|---|
 | `seq` | int | monotonic per thread, dense from 0; replay order |
 | `time` | int (epoch ms) | UTC |
-| `type` | dotted string | see vocabulary below |
+| `type` | slash-delimited string | see vocabulary below |
 | `data` | bounded json | lossless envelope; large/binary payloads are `BlobRef`s, never inline base64 or unbounded text |
 | `previous_digest` / `event_digest` | digest | storage envelope binds canonical event bytes and preceding committed event; not an authenticity signature (the audit chain has that separate responsibility) |
 | `surfaceOp` | enum? | how a replaying surface folds the event (`append`/replacement) |
@@ -527,7 +527,7 @@ durable commit record.
 
 ### Append, rotation, and replay contract
 
-The first canonical event in a Thread is a typed `thread/configured` record containing
+The first canonical event in a new-format Thread is a typed `thread/created` record containing
 the startup model/route, tool registry, permission/configuration snapshot, workspace
 identity, and format version. Creation and replay reject a missing, malformed, or
 header-mismatched first event. No model/tool dispatch is admitted before this record
@@ -669,11 +669,11 @@ Ingest holds the per-thread writer/quota lease and streams to an exclusively cre
 Replay validates digest, byte length, schema and effective limits before any blob is supplied to the model, UI decoder, verifier, or exporter. Decoding is isolated and bounded by format-specific expansion, dimensions/pixels, recursion and time limits; a MIME label or file extension is never proof that bytes are safe. For image input, provider rendering requires a vision-capable selected route, a successful bounded decode/validation, egress authorization, and context/token budget admission; request-body encoding is ephemeral and does not rewrite the canonical artifact. Missing, corrupt, over-limit, unsupported-schema, or unsafe-media objects produce typed `ArtifactUnavailable`/`ArtifactRejected` records and visible placeholders; they must not become empty text, be silently dropped, or satisfy acceptance evidence. Renderers must not execute active content such as SVG/HTML. Export includes each referenced object and a digest manifest; import verifies all files before publishing the copied thread. Any old format with inline payloads is migrated copy-on-write into a new immutable thread generation with a parent-log digest, streaming to blobs and validating the complete replay/ref graph before an atomic generation-manifest switch. Never rewrite the original append-only log in place; retain the original generation until migration and retention checks complete (`REQ-SESS-005`).
 
 An incomplete provider response uses `assistant/attempt` with
-`{ attempt_id, logical_step_id, state: truncated | failed, finish_record,
+`{ model_attempt_id, logical_step_id, state: truncated | failed, finish_record,
 partial_ref?, usage_ref?, created_at }`; no `assistant/message` event is emitted until
 the full response is complete and validated. Replay preserves attempts for history and
 cost but excludes their partial content from the model-visible conversation. A retry
-is a new `attempt_id` under the same `logical_step_id`, and the durable recovery-depth
+is a new `model_attempt_id` under the same `logical_step_id`, and the durable recovery-depth
 record prevents a second truncation retry after restart.
 
 Representative vocabulary (additive evolution only):
@@ -776,7 +776,7 @@ the parent; facts after it are appended to the child.
 
 ### 5. `close`
 
-Append `thread/closed`; refuse further admission; release any concurrency slot; allow replay and `resume` later. Closing a parent cascades to descendants' cascade policy but never rewrites their logs.
+Append `thread/closed`; refuse further admission; release any concurrency slot; allow replay and `resume` later. Closing does not implicitly cancel or restart descendants; exact controller targets govern them and logs are never rewritten.
 
 ### 6. Input admission and promotion
 
@@ -919,3 +919,47 @@ The existing `session.*` storage-settings namespace is retained as the canonical
 5. **Injected-context admission.** The exact classification rules for `next-step` injected context versus steered user input, and whether injected context is ever persisted as a user-visible message.
 6. **Format-version policy for external agents.** Whether externally produced thread logs may be imported and migrated, or only replayed read-only.
 7. **Artifact/storage validation.** Encoded per-object/Thread defaults, decoded media ceiling, event ceilings, and orphan-GC grace are selected in `DEC-058`. The separately protected physical disk reserve and the minimum capacity/profile across supported filesystems still need implementation evidence and laptop/server workload validation. There is no unbounded fallback.
+
+At compaction boundaries, append
+`ThreadEvent::CompactionCommitted { epoch_id, summary_artifact_ref, brief_digest }`
+with references to the committed summary and the ExecutionBrief used by the new
+ContextEpoch. The reference is provenance for prompt reconstruction, not a second
+conversation history or plan owner. Run/task truth is re-read from CMP-orch and the
+canonical run stream; the recipient Thread inbox continues to store only references to
+untrusted agent messages (ARCH/32).
+
+## Final persistence/schema reconciliation (proposed, DEC-091)
+
+New-format creation uses one first `thread/created` event carrying startup snapshots;
+there is no competing mandatory `thread/configured` first event. Legacy
+`session/created` bytes and hashes remain intact under the versioned AX-379 migration.
+The vocabulary is slash-delimited; `compaction/started`, `compaction/committed`, and
+resume lifecycle events have explicit schema versions. A CompactionCommitted logical
+record maps to `compaction/committed` and binds epoch ID, summary artifact, brief digest,
+policy/route digests and canonical source heads. Publish verified artifacts before
+committing the event; activate the epoch only after its durable commit.
+
+`ContextEpoch` binds epoch ID, input/policy/route/tool snapshot digests, brief digest,
+source-head vector, packet reference, and generation. `assistant/attempt` uses
+`model_attempt_id`, distinct from the orchestration AttemptId. Domain schemas in
+ARCH/25 remain owner records; Thread usage/history links do not settle Run budgets
+or task verification.
+
+Listing may read a bounded verified log/header scan or a checked index; it never calls
+a repairing load path. Partial enumeration and permission errors remain visible.
+Read-only means no application writes/renames/truncation, no changed content, namespace,
+mtime, or commit head; OS access-time bookkeeping is a filesystem residual, not a
+promise that reads cannot affect atime.
+
+V1 forks require a committed turn boundary. Mid-turn forks are rejected until a
+versioned contract is accepted. Preserve source prefix bytes/digests as referenced
+lineage; never relabel an already-hashed source envelope as a child envelope.
+Closing drains the current binding and stops admission; explicit authorized resume
+must revalidate and record a new active binding before admission. It never implicitly
+restarts descendants. A terminal/cancelled task remains governed by ARCH/25.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+ARCH/37 draft/feedback/branch events are Thread-owned, size-bounded and crash-durable. Producer runner/tools submit events through one store append owner; they are not independent writers. Branch only at a committed cursor, never synthesize terminal closers for open effects. External binding uses generic adapter_id/kind; vendor labels stay provenance. Pending input fairness remains bounded. Canonical compaction lifecycle is committed; configuration keys follow ARCH18 canonical schema with versioned legacy migration only.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.

@@ -5,8 +5,8 @@
 ## Source status
 
 The schema and lifecycle below are the **proposed target**, not the current
-analytics database contract. At Rust baseline `23d4ce8` (source-map commit `cbba87b`,
-2026-09-28), `AnalyticsEvent` is session/turn/step oriented and records
+analytics database contract. At Rust baseline `80400370c7898459f7e7c24642caba9af31379d1`
+(2026-09-30), `AnalyticsEvent` is session/turn/step oriented and records
 USD-specific `cost_micros_usd`; run/task/attempt attribution, native source
 currency, quota provenance, and pinned pricing snapshots are not established by
 the present event type. Inspect `crates/horizoncode-analytics/src/event.rs` and
@@ -100,3 +100,25 @@ Metric definitions:
 - Exact analytics projection retention/window and coverage metadata when canonical source facts themselves expire or are exported.
 - Optional OTEL attribute set and stability guarantees.
 - Whether "commits/PRs attributed" belongs here or in the orchestration/CI layer.
+
+Managed run projections may add trigger_kind and environment_snapshot_digest to
+RunAnalyticsRecord, derived from canonical Run/Attempt records. Strategy-efficiency
+views may report attempts and observed token/cost use per independently verified task,
+with unknown and included usage preserved. Analytics is downstream only: none of these
+fields can feed a StopDecision, alter budgets, or establish completion (DEC-089).
+
+## Final analytics boundary (proposed, DEC-091)
+
+Provider/controller usage facts feed the controller's authoritative reservations;
+analytics is downstream and cannot authorize spend or task completion. Project fields
+use ProjectId, with nullable managed IDs for direct Thread/Turn usage (REQ-ANALYTICS-009).
+Run analytics includes authenticated trigger provenance and environment digest without
+secret material. Strategy efficiency counts attempts/spend per independently verified
+task and retains unknown/overlap/mixed-currency caveats. Export is bounded streaming or
+paginated with cursor and source coverage, never an unbounded rows[] allocation.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+ARCH37 timing observations separate interaction, fsync, queue, model, network, tool and repaint latency. Skill usage/cost is scoped estimated or observed; no effectiveness inference. Quota facts originate provider observations and budgets originate controller; analytics is a downstream projection.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.

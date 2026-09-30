@@ -28,7 +28,7 @@ Legend: **Build** = first-party code · **Depend** = consume a library/SDK · **
 | Sub-agent orchestration & merge | **Build** | Pattern from harnesses | pattern only |
 | Sandbox | **Depend** | Confinement crates + subprocess wrapper | each exact crate/version requires a license and notice review; a subprocess boundary alone does not resolve copyleft obligations |
 | Tree-sitter / LSP / SCIP | **Depend** | Parser, LSP client, index ingest | permissive |
-| Git / worktrees | **Depend** | git library + system git | permissive |
+| Git / worktrees | **Depend** | separately reviewed git library; optional system Git invocation | Library-specific; system Git is GPLv2, not permissive; bundling/linking needs separate clearance |
 | SQLite persistence | **Depend** | Embedded DB + driver | public domain / permissive |
 | TUI rendering | **Depend** | ratatui + crossterm | permissive |
 | CLI / config / hashing / WASM | **Depend** | clap, serde, blake3, wasmtime | permissive |
@@ -91,6 +91,11 @@ deliberately excluded.
 | `SRC-034` | Codex, Grok Build, and OpenCode compaction policies | **Pattern** | Codex Apache-2.0, Grok Build Apache-2.0, OpenCode MIT at pins in `ARCH/29`; no code copied | Compare context-window threshold and reserve semantics and regression lessons for automatic-path gating. Upstream percentages differ and are not treated as a universal default; HorizonCode's 50% remains its own decision. See `research docs/compaction-upstream-comparison.md` and `ARCH/29` `U-CTX-COMPACTION`. |
 | `SRC-035` | iCode TUI, interaction, and context-budget patterns | **Pattern** | iCode repository at pin `bb45692104bc1d26882729e90fc145e3a114e066`; behavior pattern only | Shared action entry points, inline suggestions, responsive path scan, focused task/workflow/diff/approval surfaces, extension-control interaction, and separate output/safety budget awareness inform HorizonCode. Keep HorizonCode's three-pane layout, Guard policy, task-first rows, simple Extensions default, selected 0.5 compaction threshold, and native controller/runtime. No project-file Explorer is attributed to iCode. See `research docs/icode-ui-review.md` and `ARCH/29` `U-ICODE-TUI`/`U-ICODE-COMPACTION`. |
 | `SRC-036` | Codex/Agent Plugins, Claude Code marketplaces, Grok Build extensions/connectors, MCP Registry, and Agent Skills | **Pattern** | Official docs/spec/API sources checked 2026-09-30; exact source URLs and observed limits in `research docs/extension-marketplace-review.md` and `ARCH/29` `U-EXTENSION-ECOSYSTEM` | Federated catalog sources, package-family boundaries, Git marketplace adapters, MCP registry synchronization, shared Extensions destination, user-facing Connector service identity, and progressive skill metadata/body loading. Design pattern only; no source implementation, manifest schema, registry data, or executable package copied. Compatibility must be documented per adapter; closed vendor catalogs and credentials are not reused. |
+| `SRC-037` | AutoGPT Platform installer/environment identity | **Pattern only** | AutoGPT commit `39856ae4533ce7025647dfc6e899a1c56f1324e5`; `autogpt_platform/` is PolyForm Shield 1.0.0 with a noncompete term; no code/adaptation | Installer's env-file and immutable-image digest checks are scoped to its appliance. No source from `autogpt_platform/` is copied, adapted, or used as a dependency. See `research docs/architecture-evolution-review-2026-09.md` and `ARCH/29` `U-AUTOGPT-ENV`. |
+| `SRC-038` | planning-with-files | **Pattern only** | MIT at pinned commit `51c1caa27f9fefe259e45a7cc92fa79ee8787cd7`; no code copied | Bounded durable working notes and explicit completion checks inform a rebuildable `ExecutionBrief`; project Markdown is not canonical state. Hook/file contents remain untrusted. See `research docs/architecture-evolution-review-2026-09.md` and `ARCH/29` `U-PLANNING-FILES`. |
+| `SRC-039` | LobsterAI product/runtime separation and config rendering | **Pattern only** | MIT observed at pinned commit `791a352dee3b3d8c6f64edcaf229ce474a68f6c5`; no code copied | Runtime/config translation is an adapter pattern only; no OpenClaw/Electron runtime, foreign schema, permissions, or lifecycle are adopted. See `research docs/architecture-evolution-review-2026-09.md` and `ARCH/29` `U-LOBSTERAI`. |
+| `SRC-040` | SuperAGI and toolkit bundling | **Ecosystem signal only** | MIT observed at pinned commit `c3c1982e7bd6a11cfed53c5a193ea502f924b1b6`; no code copied; current activity/compatibility not audited | Historical toolkit grouping may inform capability taxonomy; it is not an architecture or parity authority. See `research docs/architecture-evolution-review-2026-09.md` and `ARCH/29` `U-SUPERAGI`. |
+| `SRC-041` | AG-UI protocol documentation | **Protocol reference only** | Pinned repository commit `4c972f82b51988d94c8f7b7d6b56bb5338c9be7f`; SDK/code license not cleared or relied upon; no code copied | Typed event-stream patterns inform an optional edge adapter only. Verify exact protocol version, draft features, transport, and code license before implementation or SDK use. See `research docs/architecture-evolution-review-2026-09.md` and `ARCH/29` `U-AG-UI`. |
 
 ## 3. Hard no-go
 
@@ -176,3 +181,21 @@ licensed community model-cost map maintained outside its proprietary subdirector
 used solely to cross-verify curated rows; provider-published documentation is the
 authority of record. Aggregator model listings that carry no dataset license are
 runtime-only and MUST NOT be bundled.
+
+## License clarification from the final audit
+
+System Git must not be described as permissively licensed. Its official
+[COPYING](https://github.com/git/git/blob/master/COPYING), checked 2026-09-30,
+contains GPLv2 terms. Invoking a separately installed Git executable is a different
+adoption/distribution choice from copying, bundling, or linking its implementation.
+Each selected library/package and redistributed component requires its own clearance
+and notices; SRC-014 is not blanket clearance for every Git implementation.
+No upstream code, schema, tests, or assets were copied in this audit.
+
+## Interaction research additions (2026-09-30)
+
+| ID | Source | Disposition |
+|---|---|---|
+| SRC-042 | DeepSeek Harness, pin639ed015397290b3745d163aafe02ffee4aa3f84; ARCH29 U-DSH rows | Design influence from actual scheduler/PTC/compaction/workflow source; no code copied |
+| SRC-043 | OpenCode composer pin9b4882db54627f2656a6990daafa412f9f3c7c82 and official TUI/theme/keybind docs | Interaction research; no code/assets copied; exact paths in ARCH29 |
+| SRC-044 | litePSM sibling architecture snapshot in ARCH29 U-LITEPSM-ARCH | Integration design dependency, not a runtime/security/implementation endorsement |

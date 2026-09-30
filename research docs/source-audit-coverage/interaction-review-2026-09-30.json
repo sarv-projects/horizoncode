@@ -1,0 +1,890 @@
+{
+  "method": "Fresh parallel read-only full line reads; truncated ranges reread. New documents read on authoring and final review.",
+  "initial_arch": [
+    {
+      "path": "ARCH/00-INDEX.md",
+      "sha256": "3c2a11eb42f3502522da3868a94de54aee2629d2492f84d7becf186eb53454f7",
+      "lines": 101,
+      "read_ranges": [
+        [
+          1,
+          101
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/01-VISION.md",
+      "sha256": "471442cb8356f3aef6d02d2ecba170c5bde7599f5e948a5122ce65cba322d9b9",
+      "lines": 81,
+      "read_ranges": [
+        [
+          1,
+          81
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/02-REQUIREMENTS.md",
+      "sha256": "983a39b8cf3f44ee7c642f088f750a214facede7eb534993f6432c7bcd709ba2",
+      "lines": 360,
+      "read_ranges": [
+        [
+          1,
+          360
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/03-ARCHITECTURE.md",
+      "sha256": "e617abf83b0545757b62ebde9e7c0bf9074cf51da864309fb97502e9d6c8d808",
+      "lines": 284,
+      "read_ranges": [
+        [
+          1,
+          284
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/04-DECISIONS.md",
+      "sha256": "81c6de6669a70331e3dbf191644ab96d384309c0a9ee97fa591f219e709abc2f",
+      "lines": 2216,
+      "read_ranges": [
+        [
+          1,
+          2216
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/05-SOURCE-LEDGER.md",
+      "sha256": "476010fa4e93de877e2cdd366c8346202d777404f30596cf624cc3b65cd7afb1",
+      "lines": 193,
+      "read_ranges": [
+        [
+          1,
+          193
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/06-UI.md",
+      "sha256": "7590858f37cf512c615f45908a8f9e64ef9fd201f81c2b106e4407406da39e21",
+      "lines": 808,
+      "read_ranges": [
+        [
+          1,
+          808
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/07-SESSION.md",
+      "sha256": "d9c3bca9bcd8076a1748afab5867d280b9c51d6e2b59b2d089bd3c443f3d568f",
+      "lines": 959,
+      "read_ranges": [
+        [
+          1,
+          959
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/08-LOOP.md",
+      "sha256": "e2e8ae08b8160a0b44f4dda0f82736d225be4033cf43a99bd4eb4ddf45dff5bc",
+      "lines": 445,
+      "read_ranges": [
+        [
+          1,
+          445
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/09-CONTEXT.md",
+      "sha256": "b93393c67ecd224c6430500754c9e276034f3fd6239eace553868fcf6c087f52",
+      "lines": 562,
+      "read_ranges": [
+        [
+          1,
+          562
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/10-TOOLS.md",
+      "sha256": "b907661310234c0c84258f01a99af2c0e54e1cdaa8471ebec264a379c29549b5",
+      "lines": 701,
+      "read_ranges": [
+        [
+          1,
+          701
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/11-PROVIDER.md",
+      "sha256": "d3e31a24ac07c272f3040f3563ca3699f58440b6b3a6d7d33d5ed249a3946fbe",
+      "lines": 451,
+      "read_ranges": [
+        [
+          1,
+          451
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/12-GUARD.md",
+      "sha256": "8df23a4ea03efdaae6a8b3902c957fb6b114fd079a2a1969de17b82e276df4ae",
+      "lines": 465,
+      "read_ranges": [
+        [
+          1,
+          465
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/13-SANDBOX.md",
+      "sha256": "8c3463253e799b09cd8f4c65dcd686a90f89d182f39cb24b7574d6b2bd5a10d8",
+      "lines": 466,
+      "read_ranges": [
+        [
+          1,
+          466
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/14-AUDIT.md",
+      "sha256": "72002622d8860a510ed9d1dd9b51e538d6704124e786cc72050a39096ebc98c2",
+      "lines": 613,
+      "read_ranges": [
+        [
+          1,
+          613
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/15-PROTOCOLS.md",
+      "sha256": "8b8c9f9a40df23f2dc541cad0fba5277e3cc6e6a43d73a27d4c64954a5950a4a",
+      "lines": 321,
+      "read_ranges": [
+        [
+          1,
+          321
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/16-ORCH.md",
+      "sha256": "df3bcc78bfa0f8fb192384ee9b7d92373e72100320d11c43645bd8559aee4f21",
+      "lines": 327,
+      "read_ranges": [
+        [
+          1,
+          327
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/18-CONFIG.md",
+      "sha256": "6e6962b374f895e713b51102f223bc515af1b8ebb0d8c8b0be836378e0839308",
+      "lines": 334,
+      "read_ranges": [
+        [
+          1,
+          334
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/19-COMPRESSION.md",
+      "sha256": "55e41d68ae5efb0327aa819b8e73d5706759656d3b9b887b1cd0b8432b191118",
+      "lines": 108,
+      "read_ranges": [
+        [
+          1,
+          108
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/20-ANALYTICS.md",
+      "sha256": "5ab99082e28a72fbb194368b091fe1ee5dd974044c55cabddc0b71b01eb1f095",
+      "lines": 118,
+      "read_ranges": [
+        [
+          1,
+          118
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/21-DISCOVERY.md",
+      "sha256": "f53ed3b89c2749d5d8844fde455a8edb550be4cfd3a4d6c2e61c3cda010719f5",
+      "lines": 399,
+      "read_ranges": [
+        [
+          1,
+          399
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/22-SECURITY.md",
+      "sha256": "2494601ef6a60629a0180fa0877a5bf11ee84938e6c371b4294896490c9409ff",
+      "lines": 724,
+      "read_ranges": [
+        [
+          1,
+          724
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/23-VERIFICATION.md",
+      "sha256": "42c3a70826ea78aed9739b86bb1679a89091ca8acf457686e57a9e7dab39dcb0",
+      "lines": 685,
+      "read_ranges": [
+        [
+          1,
+          685
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/24-ARCHITECTURE-REVIEW.md",
+      "sha256": "9968d52f652f13180ac3c4cc4bec38749daaf354f5221de2a0a62a6c1bc86c81",
+      "lines": 243,
+      "read_ranges": [
+        [
+          1,
+          243
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/25-LONG-HORIZON-CONTROL.md",
+      "sha256": "2fd09dbb3b3aa72819278a9d2e176d863b19f8b3e0b365d70eb0604b44fc6bfe",
+      "lines": 985,
+      "read_ranges": [
+        [
+          1,
+          985
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/26-CORE-AGENT-CROSSWALK.md",
+      "sha256": "4d943fc4fc056936861a62d20e9b53abb319870d0ddec7d81f7ac5e440645e10",
+      "lines": 151,
+      "read_ranges": [
+        [
+          1,
+          151
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/27-COMMANDS-AGENTS-SETTINGS.md",
+      "sha256": "23213c87d2eefa2e1a66f3cac9b95dd9b365efc25846b88f06a6afb89e514ab6",
+      "lines": 787,
+      "read_ranges": [
+        [
+          1,
+          787
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/28-ARTIFACT-STORE.md",
+      "sha256": "e67a03362139600f5a26d9ed4976ffb38931c2413518865c7529660ef3396542",
+      "lines": 256,
+      "read_ranges": [
+        [
+          1,
+          256
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/29-SOURCE-TRACEABILITY.md",
+      "sha256": "c0b4bff4967cb0f48897d3c13b8e38208d816b00452c9511e6024657fa9712dc",
+      "lines": 261,
+      "read_ranges": [
+        [
+          1,
+          261
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/30-DISTRIBUTION-UPDATES.md",
+      "sha256": "222d28e85b6bb527bb37b31a3a45c0ff10d8e1674332422361c21ec0d9d474d0",
+      "lines": 419,
+      "read_ranges": [
+        [
+          1,
+          419
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/31-CONTROL-API-APP-SERVER.md",
+      "sha256": "516d2c14e375e82e7bb0949b8e7f8956333f8d0db8095862bae1c8599d044ab4",
+      "lines": 307,
+      "read_ranges": [
+        [
+          1,
+          307
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/32-AGENT-MESSAGING.md",
+      "sha256": "9ff530c4e97be49ef1f5829811a3f2b2524747685784da6a8659c54d0513343a",
+      "lines": 254,
+      "read_ranges": [
+        [
+          1,
+          254
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/33-MEMORY.md",
+      "sha256": "5d152e031b9761665884c933e551d735f1ee8ebc6ec2f8b104c137cdd5f4bbbc",
+      "lines": 342,
+      "read_ranges": [
+        [
+          1,
+          342
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/34-MODULARITY-AND-BOUNDARIES.md",
+      "sha256": "c320c01ed62b6752d48447c2ee1bf281419b31d3c28b8dce8b6cdb3291d482d9",
+      "lines": 93,
+      "read_ranges": [
+        [
+          1,
+          93
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/35-CAPABILITY-PARITY-AND-EVOLUTION.md",
+      "sha256": "b7f51273e637fb9a760baf9d2195f8ac84dd0d44f807399059032286c0079dfd",
+      "lines": 64,
+      "read_ranges": [
+        [
+          1,
+          64
+        ]
+      ]
+    },
+    {
+      "path": "ARCH/36-CODE-INTELLIGENCE.md",
+      "sha256": "6a5b2cc8628c993199cd7064de09f3d9ca3687c1c0064d173485efc39e6212ad",
+      "lines": 66,
+      "read_ranges": [
+        [
+          1,
+          66
+        ]
+      ]
+    }
+  ],
+  "litepsm": [
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/00-INDEX.md",
+      "lines": 77,
+      "sha256": "ae58523215837b6621c0e8621d9ad565c719ecef41f96701c25779d0ed6c7f49",
+      "read_ranges": [
+        [
+          1,
+          77
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/01-PRODUCT.md",
+      "lines": 122,
+      "sha256": "ad26da28463ccf00dcfa99ece9dc60c0f5f5bd0c73de7d2439965d1244d44497",
+      "read_ranges": [
+        [
+          1,
+          122
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/02-HLD.md",
+      "lines": 241,
+      "sha256": "de56df0b222acc84ba66e87c7296169ef0d4ffc68bb8fa8a2aabd012a9255799",
+      "read_ranges": [
+        [
+          1,
+          241
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/03-CATALOG-SOURCES.md",
+      "lines": 92,
+      "sha256": "4d75214b74e853fce083ca75a57c455a8fef5497df813c7d55fdf082076df9a6",
+      "read_ranges": [
+        [
+          1,
+          92
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/04-CLIENT-INSTALL.md",
+      "lines": 170,
+      "sha256": "4ea3064e9acd61906b05928b7d1f625720ad2b74f3860b3a60f1f49c0dcacede",
+      "read_ranges": [
+        [
+          1,
+          170
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/05-SECURITY.md",
+      "lines": 141,
+      "sha256": "ca01771797b9594cd5e6a13f01eefd3c97b1f281b0eea9db45543b1c9616b69c",
+      "read_ranges": [
+        [
+          1,
+          141
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/06-API-CONTRACTS.md",
+      "lines": 194,
+      "sha256": "5e10752e577a49e159c543dc020ad5c31c591dd04a94647afa07e063852c852f",
+      "read_ranges": [
+        [
+          1,
+          194
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/07-DECISIONS.md",
+      "lines": 89,
+      "sha256": "8cc195b28282dbb01cc0fbef46fb4cf4976d1490cc0392e73a2e56575d7f2103",
+      "read_ranges": [
+        [
+          1,
+          89
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/08-DELIVERY.md",
+      "lines": 110,
+      "sha256": "8cc08c65408bb20b00d509e281de961cd69e7357d094394b056036a9d4590372",
+      "read_ranges": [
+        [
+          1,
+          110
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/09-RESEARCH.md",
+      "lines": 79,
+      "sha256": "187b30e3398f708f3b7b98d69f93167f9e3926f05fb3c9e92c6b6f8b6a486572",
+      "read_ranges": [
+        [
+          1,
+          79
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/10-DOMAIN-MODEL.md",
+      "lines": 221,
+      "sha256": "533e173860eab7d9bf4987de0118ca2169297421a977acf239a6bb13814b674f",
+      "read_ranges": [
+        [
+          1,
+          221
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/11-LOCAL-RUNTIME-IPC.md",
+      "lines": 105,
+      "sha256": "81d06a98b263a9945659b358d3e060ce628e41b5d9246ca05238a1aab6c4823a",
+      "read_ranges": [
+        [
+          1,
+          105
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/12-STORAGE-TRANSACTIONS-RECOVERY.md",
+      "lines": 344,
+      "sha256": "394ff20e0c28a0437d93124ee472e6ba771bc94eec6b61205a81c228a154a0fd",
+      "read_ranges": [
+        [
+          1,
+          344
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/13-RESOLVER-INSTALL-ENGINE.md",
+      "lines": 208,
+      "sha256": "c59845956defb7cea3414be14f6969f6e224e4123d33fcd1566db3ff4fdbca4a",
+      "read_ranges": [
+        [
+          1,
+          208
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/14-BRIDGE-PROVIDER-MCP.md",
+      "lines": 119,
+      "sha256": "0c372db8cdeebdf63f5f70506c3c6a5f1a7cb5cba3a29b640271b733e27114bd",
+      "read_ranges": [
+        [
+          1,
+          119
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/15-POLICY-APPROVALS.md",
+      "lines": 136,
+      "sha256": "ca268bc2811da096955cc58f41c1d2557c003e77f85cf11d9c28a9af06e7efd3",
+      "read_ranges": [
+        [
+          1,
+          136
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/16-HOST-ADAPTERS.md",
+      "lines": 179,
+      "sha256": "41c4d0b5c1a72146e6b44ac7c3f162368ff82e1054d66a197af9ad0f6c4fff8a",
+      "read_ranges": [
+        [
+          1,
+          179
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/17-SOURCE-ARTIFACT-RUNTIME-ADAPTERS.md",
+      "lines": 92,
+      "sha256": "68c0a68eb1630ec623635a17a89c1dbd4f8943c1dacc0ee56a0b503318250d30",
+      "read_ranges": [
+        [
+          1,
+          92
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/18-CATALOG-BUILDER-RELEASE-SEARCH.md",
+      "lines": 160,
+      "sha256": "662979da597b9ae5812fec31be7b7343a6dd4fb78ed8b6c35c7d06fb1dd7a52f",
+      "read_ranges": [
+        [
+          1,
+          160
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/19-SECRETS-OAUTH.md",
+      "lines": 76,
+      "sha256": "cf65bd508af82c0f3921ecdc159ca34054c1d29f9d24a4afcb196236e9331372",
+      "read_ranges": [
+        [
+          1,
+          76
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/20-ERRORS-AUDIT-DOCTOR.md",
+      "lines": 87,
+      "sha256": "ae8671c8b5b0920697f4c82b3c158978ac030850e2e98ca0cc1b07e7d0557410",
+      "read_ranges": [
+        [
+          1,
+          87
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/21-TESTING-CONFORMANCE.md",
+      "lines": 79,
+      "sha256": "4243c2db2a239073f52f436373c4492f11643030e639c5107863fb9b8ba16148",
+      "read_ranges": [
+        [
+          1,
+          79
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/22-PLATFORM-RELEASE-MIGRATIONS.md",
+      "lines": 65,
+      "sha256": "2107e9657ce2cc6630e10ae8310c5ef31915818bb50e07746e52da918c33df5d",
+      "read_ranges": [
+        [
+          1,
+          65
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/23-SCHEMAS-EXAMPLES.md",
+      "lines": 158,
+      "sha256": "8fd9ef3c1c861f8e9305a78f10b8ec0ff946f625176bc4676da5dbcf0a932a17",
+      "read_ranges": [
+        [
+          1,
+          158
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/24-FUNCTION-INVENTORY.md",
+      "lines": 383,
+      "sha256": "6e4837e821f0f1cbc34af460226603e2587d1f900fa45aeafca13b4d5745ecf7",
+      "read_ranges": [
+        [
+          1,
+          383
+        ]
+      ]
+    },
+    {
+      "path": "/home/sarvesh/business_Dev/litePSM/ARCH/25-WEB-FRONTEND-UI.md",
+      "lines": 94,
+      "sha256": "0cace64eec7c0bb562786ecd13d13ffc6b6e665a64b4f6173da8247ba8e309e6",
+      "read_ranges": [
+        [
+          1,
+          94
+        ]
+      ]
+    }
+  ],
+  "initial_arch_lines": 15949,
+  "final_arch": [
+    {
+      "path": "ARCH/00-INDEX.md",
+      "lines": 110,
+      "sha256": "99a285237c2a217e57c8fdfb1bcef72a51b7cdb08c1b3b4e1a16dd9601dd4602"
+    },
+    {
+      "path": "ARCH/01-VISION.md",
+      "lines": 87,
+      "sha256": "409aae1726aa2d54fce6b6c877176db2dbc04f87736e3cec0e1eff4732b7d09e"
+    },
+    {
+      "path": "ARCH/02-REQUIREMENTS.md",
+      "lines": 374,
+      "sha256": "2e03f0d1adfbb56cebb6660aadbee2763f14efbe25f31b28ff993597e955872f"
+    },
+    {
+      "path": "ARCH/03-ARCHITECTURE.md",
+      "lines": 290,
+      "sha256": "7f4e6bf6af30dda8e451ca731988b1e051f4fa30056e70627175b88a3fe0b791"
+    },
+    {
+      "path": "ARCH/04-DECISIONS.md",
+      "lines": 2257,
+      "sha256": "eacc7ce169fee6a8d71e33235461a29dc396b07920c0f642fae1678a0ddf8432"
+    },
+    {
+      "path": "ARCH/05-SOURCE-LEDGER.md",
+      "lines": 201,
+      "sha256": "66a62f89fc4ea2350abb36e47056475771e8d039e86558ae0d3c95cea4122f79"
+    },
+    {
+      "path": "ARCH/06-UI.md",
+      "lines": 814,
+      "sha256": "4ab4c9e3fa1620d420b724a5c67ca26735549e3942a6323698fb5230d97718b1"
+    },
+    {
+      "path": "ARCH/07-SESSION.md",
+      "lines": 965,
+      "sha256": "6735b566241a4910634f16e1c0d15f0102d768a6767800f062ed8bd25834ba6a"
+    },
+    {
+      "path": "ARCH/08-LOOP.md",
+      "lines": 451,
+      "sha256": "e1bf6f50c10e6050c3f0fd791115e8908e94768cf52e5fed0297bdb3b1dd2cf6"
+    },
+    {
+      "path": "ARCH/09-CONTEXT.md",
+      "lines": 566,
+      "sha256": "14a15309144379d7016ff6d2be43ef847bf5c54f8231dd014f443aea4cbf1ad6"
+    },
+    {
+      "path": "ARCH/10-TOOLS.md",
+      "lines": 707,
+      "sha256": "4ab88730ab384baee0498f39a223e891b92623995cec692b866ba5e90dacbb2b"
+    },
+    {
+      "path": "ARCH/11-PROVIDER.md",
+      "lines": 457,
+      "sha256": "2de2f12a91d5398aa51a2864232282931846e41ea17375dccf0e59592681c279"
+    },
+    {
+      "path": "ARCH/12-GUARD.md",
+      "lines": 471,
+      "sha256": "f736326c0ae5fd0225164a8698d41a1e9723a7c948f180588de58a33e1944f6e"
+    },
+    {
+      "path": "ARCH/13-SANDBOX.md",
+      "lines": 472,
+      "sha256": "f28e3984a21726d22203b2e3cbc1bd43662feba6da186b351bcf206954512e11"
+    },
+    {
+      "path": "ARCH/14-AUDIT.md",
+      "lines": 619,
+      "sha256": "ca5c1438d1c1ad1811781ea0ef5c0122a7ec17a824831400e9d2b7cd04d35fcb"
+    },
+    {
+      "path": "ARCH/15-PROTOCOLS.md",
+      "lines": 327,
+      "sha256": "91d16447907c0821acdbbfd199e1c835a011c99ccd2f2d3079c529bb68ff50bb"
+    },
+    {
+      "path": "ARCH/16-ORCH.md",
+      "lines": 333,
+      "sha256": "ddc4c5c2eb98dec882121496c0aa040f1768fdff8ac54de74106121e93ccc53d"
+    },
+    {
+      "path": "ARCH/18-CONFIG.md",
+      "lines": 340,
+      "sha256": "b1d4149e9866bae0bf94848be7abc1fa5774d1547fa63ed089d061b22a865a85"
+    },
+    {
+      "path": "ARCH/19-COMPRESSION.md",
+      "lines": 114,
+      "sha256": "8c84c23f6a03b170f9440f4929efffb50f97cfa53edbdb6d6cd39aa8a7849b83"
+    },
+    {
+      "path": "ARCH/20-ANALYTICS.md",
+      "lines": 124,
+      "sha256": "e3210611426509d7bc22bab81fa8c29337fbb784db5fb5861e025b84e150e4e2"
+    },
+    {
+      "path": "ARCH/21-DISCOVERY.md",
+      "lines": 405,
+      "sha256": "b9ac4777c035d7a791d990432a708b7f080d08ae3fef8acd904f3feb0e2ffa94"
+    },
+    {
+      "path": "ARCH/22-SECURITY.md",
+      "lines": 730,
+      "sha256": "ba6180f9d669bea982ab789a1f1061b2731af0af78b155e5451fe6d040cd6359"
+    },
+    {
+      "path": "ARCH/23-VERIFICATION.md",
+      "lines": 705,
+      "sha256": "9dceaa137f8d20035c4ddd9fc4d04748405128ead06a53665ca591a4e6844fad"
+    },
+    {
+      "path": "ARCH/24-ARCHITECTURE-REVIEW.md",
+      "lines": 249,
+      "sha256": "01bce360053d86ebd3c512e08a53ce4441fe82f34bd8c317798469228702c2a3"
+    },
+    {
+      "path": "ARCH/25-LONG-HORIZON-CONTROL.md",
+      "lines": 1003,
+      "sha256": "54d79b490fbeacecce606e6dd6a16b5c7c7352934a706b6ae478111715fabddf"
+    },
+    {
+      "path": "ARCH/26-CORE-AGENT-CROSSWALK.md",
+      "lines": 157,
+      "sha256": "213b4c5a67cab40d261edb8a07f9d12e575d1d819a7c68fe30ef2adfd2902449"
+    },
+    {
+      "path": "ARCH/27-COMMANDS-AGENTS-SETTINGS.md",
+      "lines": 817,
+      "sha256": "1109e585366a7219a52a4723a79c04434c202cbf5e13f24c42190958e03a6e87"
+    },
+    {
+      "path": "ARCH/28-ARTIFACT-STORE.md",
+      "lines": 263,
+      "sha256": "61724d40d75ad2c28fddad3e2f111e42554c6e240c5a3827185dd92d19324ac2"
+    },
+    {
+      "path": "ARCH/29-SOURCE-TRACEABILITY.md",
+      "lines": 290,
+      "sha256": "5b853d5637cb4e7449e567afa3a96feea330307adeae934f588df5bda2bf13bb"
+    },
+    {
+      "path": "ARCH/30-DISTRIBUTION-UPDATES.md",
+      "lines": 444,
+      "sha256": "ce2583a153ee31937c29b33a5f7747a39c76aadb3152d7e8f3fafa7888d4a188"
+    },
+    {
+      "path": "ARCH/31-CONTROL-API-APP-SERVER.md",
+      "lines": 332,
+      "sha256": "f1cbfcb6a6f402bae8f3d9a9de9c2b9dc8a1abd4ebd6469883e1b736e94438d8"
+    },
+    {
+      "path": "ARCH/32-AGENT-MESSAGING.md",
+      "lines": 260,
+      "sha256": "208d8954fd98640f103b4414e6f6beb67007e89b5878620a69d7cfbb5e168acf"
+    },
+    {
+      "path": "ARCH/33-MEMORY.md",
+      "lines": 348,
+      "sha256": "a6162e2feca5cf4572e5828c9faccc350561428d2a8d624ee35b88f3ce23f245"
+    },
+    {
+      "path": "ARCH/34-MODULARITY-AND-BOUNDARIES.md",
+      "lines": 99,
+      "sha256": "de82d5510bdf45a063c111b77bb3dd5a8691c1fb584ce028c930ab002b543275"
+    },
+    {
+      "path": "ARCH/35-CAPABILITY-PARITY-AND-EVOLUTION.md",
+      "lines": 70,
+      "sha256": "10a0de33b904f155b59ddbe63194b92587bb1eb9b932c67767a05be01a578a71"
+    },
+    {
+      "path": "ARCH/36-CODE-INTELLIGENCE.md",
+      "lines": 72,
+      "sha256": "00058d57f3c9b61103a9499b639a77dfc8f101332d10c50caee8e7cc7b13ac79"
+    },
+    {
+      "path": "ARCH/37-INTERACTION-AND-FAST-PATH.md",
+      "lines": 310,
+      "sha256": "cf3b6dc069d03f4c6db095ca4b3234f9a33a38678162849f766043cd35ad520b"
+    },
+    {
+      "path": "ARCH/38-LITEPSM-INTEGRATION.md",
+      "lines": 162,
+      "sha256": "b54ebfe73114129520b773d4b9a8d84db5c587b4dbce31ba82036a4e653d0faa"
+    }
+  ],
+  "litepsm_arch_lines": 3821,
+  "new_documents_review": {
+    "paths": [
+      "ARCH/37-INTERACTION-AND-FAST-PATH.md",
+      "ARCH/38-LITEPSM-INTEGRATION.md"
+    ],
+    "method": "Independent full read by arch_later; two findings corrected and inspected by root"
+  }
+}

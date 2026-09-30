@@ -137,7 +137,7 @@ until reconciliation proves its outcome. A class with one entry is insufficient.
 determinism; checkpoint/rewind round-trip; deterministic merge arbitration given
 identical inputs; routing eval-gate evidence (`ARCH/11` §5). `P3`: worktree lease and
 merge under concurrency; task-graph durability across compaction/restart; peer-pool
-supervision; WASM skill/plugin confinement. Each is declared here so the evidence path
+supervision; declarative skill handling and separately gated executable-plugin confinement. Each is declared here so the evidence path
 is agreed before the feature exists, not after.
 
 **Route-specific provider acceptance record.** `ACC-PROV-OC-GO` — live acceptance of
@@ -173,7 +173,7 @@ real world for any of these:
 - **Loopback servers only.** Any test that needs a socket binds `127.0.0.1`/`::1` on
   an ephemeral port. A helper wraps the HTTP client so an attempted connection to a
   non-loopback destination **fails the test loudly** rather than reaching the internet.
-- **No live model, ever.** No test may require an API key, a network route, or a real
+- **No live model in default CI; separately authorized isolated live acceptance only.** No test may require an API key, a network route, or a real
   provider account. Provider-specific behavior is asserted through adapter conformance
   fixtures recorded from the wire format, marked with the date they were captured.
 
@@ -243,7 +243,7 @@ the budget is agreed now, not so a number can be quoted as fact.
 ### Release gates
 
 A release is blocked unless **all** of these pass and their records are retained.
-Gate IDs are `G-1..G-16` (no leading zero). `ARCH/22`'s threat table also uses a `G-`
+Gate IDs are `G-1..G-17` (no leading zero). `ARCH/22`'s threat table also uses a `G-`
 prefix with zero padding (`G-01..G-10`); cite those rows as `ARCH/22` `G-0N`.
 
 | Gate | Requirement |
@@ -264,6 +264,7 @@ prefix with zero padding (`G-01..G-10`); cite those rows as `ARCH/22` `G-0N`.
 | `G-14` | Every shipped worker/control surface satisfies `REQ-SEC-026` with process-level evidence for its declared backend: a worker cannot invoke control operations, read/write canonical state, mint an operator receipt, or supply caller-authored actor/scope to controller methods; raw ACP identity is not trusted. A backend or adapter without such evidence refuses that execution profile. |
 | `G-15` | Session artifacts pass `ACC-P1-09`, segmented event logs pass `ACC-P1-11`, and integrated durability passes `ACC-P1-13` on every supported persistence backend before the product claims durable sessions/runs; `ACC-P1-13A` is the independently runnable primitive gate and is not blocked on `ACC-P1-11`/`13`. `ACC-P1-12` proves read-only inspection cannot mutate or hide canonical history failures. Output truncation passes `ACC-P1-10` for every route that advertises automatic remaining-context recovery. Unknown route semantics remain non-retrying and are not counted as supported recovery. |
 | `G-16` | The session-search feature cannot be called shipped/available until `ACC-P1-14` passes at the exact integrated revision; if FTS5 or complete index coverage is unavailable, the UI/CLI reports a typed unavailable/partial result and never claims complete search. |
+| `G-17` | The checked Cargo dependency graph is acyclic and inward-pointing; forbidden core→adapter/UI/concrete-workspace dependencies fail an architecture fixture, and shipped ports have contract tests for failure receipts and owner semantics (`ARCH/34`, AX-399). This static gate does not prove runtime authorization or OS confinement. |
 
 ### Long-horizon acceptance matrix (required before a multi-hour-autonomy claim)
 
@@ -295,7 +296,7 @@ test artifacts and report unsupported combinations explicitly.
 | `ACC-UX-03` | Direct-turn Escape/Ctrl-C cancellation fences late results and terminates supervised child process trees within the platform's declared grace/force policy; ordinary turns have visible bounded resource ceilings and can be explicitly continued. Quick checks are relevant and bounded. | Provider stream/tool/process race traces; descendant-process census on supported OSes; ceiling/continue outcomes including unknown provider usage; no orphan process after terminal cancellation; checks prove failures are fed back and retries stop at the configured cap. |
 | `ACC-UX-04` | Direct-thread compaction preserves active intent, user corrections, decisions, evidence and unresolved questions while retaining the configured verbatim tail; it does not resurrect superseded requests or require managed-Run checkpoint headings. | Adversarial long-chat corpus, blinded intent/correction recall rubric, before/after prompt projection, source-event links, and failure cases where missing/ambiguous facts remain explicit. |
 | `ACC-UX-05` | Shell profiles run through the same guard, sandbox and audit path on each advertised platform; noninteractive commands use bounded pipes by default and PTY use is explicit. Hook definitions are reviewed/trusted by digest, environment is scrubbed, and timeout/crash/malformed output cannot grant effects. | Bash, PowerShell, cmd, zsh and fish coverage where advertised; PTY/non-PTY and process/FD/handle pressure cases; hook source-change, trust, malformed JSON, timeout, output-limit, environment and deny traces. |
-| `ACC-UX-06` | One user intent invoked through each available button, palette entry, slash command, and shortcut reaches the same typed action/controller result and permission path. Composer suggestions preserve draft/focus until explicit commit; `@file:` insertion does not open a file and Explorer selection does. The default Tasks list represents requested tasks as primary rows, while IDs/attempts/Threads/executions/evidence remain inspectable in detail; background completion causes no navigation/focus theft. Session browsing supports search/pagination and explicit resume/delete actions with confirmation; diff navigation returns to chat, and rollback previews affected files without claiming external-effect reversal. Extensions' `/extensions`, `/connectors`/`/apps`, `/mcp`, `/skill`, `/plugin`, `/hooks`, `/workflows`, and `/marketplace` entries all route to one surface/category-aware action and preserve composer/layout state. The default Installed view presents item/type/state/primary action and reveals detailed provenance/configuration in detail or staged review. The full layout remains Explorer/chat/Tasks and narrow mode restores its previous geometry. | Scripted TUI interaction matrix for each action entry, action/effect/Guard receipt comparison, draft and focus snapshots, file-reference vs file-open traces, task row/detail model checks, background completion and reconnect races, session coverage/resume/delete-confirmation traces, diff-to-chat return, rollback preview/cancel/confirm, each shared Extensions route/category, extension default/detail states, resize/focus/layout restore, keyboard/pointer/accessibility captures, and stale suggestion/scanner cancellation traces. |
+| `ACC-UX-06` | One user intent invoked through each available button, palette entry, slash command, and shortcut reaches the same typed action/controller result and permission path. Composer suggestions preserve draft/focus until explicit commit; `@file:` insertion does not open a file and Explorer selection does. The default Tasks list represents requested tasks as primary rows, while IDs/attempts/Threads/executions/evidence remain inspectable in detail; background completion causes no navigation/focus theft. Session browsing supports search/pagination and explicit resume/delete actions with confirmation; diff navigation returns to chat, and rollback previews affected files without claiming external-effect reversal. Extensions' `/extensions`, `/connectors`/`/apps`, `/mcp`, `/skill`, `/plugin`, `/hooks`, `/workflows`, and `/marketplace` entries all route to one surface/category-aware action and preserve composer/layout state. The default Installed view presents item/type/state/primary action and reveals detailed provenance/configuration in detail or staged review. Pair geometry preserves Explorer/chat/Tasks; other workspace presets preserve their own three-pane content and narrow mode restores the selected preset geometry. | Scripted TUI interaction matrix for each action entry, action/effect/Guard receipt comparison, draft and focus snapshots, file-reference vs file-open traces, task row/detail model checks, background completion and reconnect races, session coverage/resume/delete-confirmation traces, diff-to-chat return, rollback preview/cancel/confirm, each shared Extensions route/category, extension default/detail states, resize/focus/layout restore, keyboard/pointer/accessibility captures, and stale suggestion/scanner cancellation traces. |
 | `ACC-REPO-01` | Lexical, syntax-graph and optional local semantic retrieval return useful, revision-correct results; semantic indexing is off by default and any remote embedding route clearly discloses data egress before use. | Natural-language retrieval benchmark including “where is X validated?” queries, exact-symbol/error/path queries, stale-index fallback, local/remote provider route disclosure, opt-in/off behavior and relevance/regression statistics. |
 | `ACC-PROV-SYNC-01` | Full parity passes only when every connector/auth path in the pinned OpenCode/Cline matrices has a HorizonCode-owned, authorized route and passes conformance; any blocker makes full parity fail and stays visible. Upstream changes produce a reviewable candidate with provenance/license checks and cannot alter installed code or active routes until a reviewed signed release is installed. | Complete pinned connector/auth matrix, source drift report, per-file license/notice review, candidate diff/fixtures, route conformance for every connector, release signature/install evidence, and proof runtime performs no remote code loading. |
 | `ACC-ANALYTICS-01` | Ordinary direct-turn usage is attributed to Thread/Turn without fabricated Run/Task/Attempt IDs; cache read and cache write/creation remain distinct or explicitly unknown. | Ledger rows and rebuild proof across direct/managed turns, nullable-ID schema checks, duplicate/replay behavior, and provider-reported versus estimated/unknown usage cases. |
@@ -309,8 +310,9 @@ test artifacts and report unsupported combinations explicitly.
 ### Definition of done
 
 A capability is done when **all** of the following hold. A capability that fails any
-line is **implemented but unverified** and MUST be labeled as such wherever it
-appears.
+line remains **proposed** if code is absent, **implemented** only where code exists,
+and **verified/accepted** only where the corresponding evidence exists. State the
+missing gate rather than promoting an absent implementation.
 
 1. The design document for the owning `CMP-*` exists and cites the `REQ-*` ids.
 2. The implementation exists on the single governed path (no second engine, registry,
@@ -418,7 +420,7 @@ Status          = proposed | implemented | verified | accepted | blocked
 ```
 
 `verdict = unmeasured` is a first-class value. It is never rendered as `pass`, and a
-requirement whose only evidence is `unmeasured` is `implemented`, never `accepted`.
+requirement whose only evidence is `unmeasured` receives no status promotion; source presence is separately required for implemented, and an acceptance record for accepted.
 
 ## Flows
 
@@ -482,7 +484,7 @@ Otherwise the surface shows the weaker, true word.
 | A benchmark runs on a loaded machine and is recorded as a baseline | The baseline is invalid; baselines record machine state and are re-taken on a quiet machine |
 | Evidence is attached to the wrong build id | The record names its own build id and cannot be cited elsewhere |
 | A unit test is cited as acceptance evidence | A traceability-status finding; the requirement drops to `implemented` |
-| A quarantine exists at release time | Release blocked if any quarantined test is security-relevant; otherwise the quarantine list ships with the release notes |
+| A quarantine exists at release time | Release blocked if any quarantine remains under G-3; changing the gate requires a separately accepted waiver |
 | The configured anchor sink is unreachable | The gate fails; it never degrades to a local-only run presented as anchored (`DEC-022`) |
 | The record names a network level stronger than the tier proves | The row fails; the level, its mechanism, and the residual are rewritten to what was observed, or the tier is refused the profile it cannot confine (`DEC-026`) |
 | `verify` renders `local-sink` as `off-box`, or omits the claim boundary | `ACC-P1-04` fails; the rendered evidence is the artifact under test, so a weaker level presented as stronger is a failure, not a wording nit (`REQ-AUDIT-007`) |
@@ -505,7 +507,7 @@ skip an acceptance row). This group is not yet in `ARCH/18`; see Open questions.
 | `verification.golden_dir` | committed golden corpus location | repo-relative |
 | `verification.evidence_dir` | local evidence root | `<state-dir>/evidence` |
 | `verification.perf.baseline` | recorded machine baseline descriptor | required for a budget to be `measured` |
-| `verification.quarantine` | per-test quarantine entries with owner + expiry | none permitted for security-relevant tests |
+| `verification.quarantine` | per-test quarantine entries with owner + expiry | none permitted at release under G-3 |
 | `verification.fuzz.corpora` | committed corpora roots | repo-relative |
 | `verification.anchor_required` | fail the gate when the configured audit anchor is unreachable | `true` |
 
@@ -533,7 +535,7 @@ rules**; `REQ-VER-004/016` by the **repeat/quarantine policy and fuzz coverage**
 | `REQ-VER-010` | `ACC-P1-07` |
 | `REQ-VER-011` | `ACC-P1-08` |
 | `REQ-VER-012` | §Performance budgets — measurement discipline (`unmeasured` is a verdict) |
-| `REQ-VER-013` | §Release gates `G-1..G-16` |
+| `REQ-VER-013` | §Release gates `G-1..G-17` |
 | `REQ-VER-014` | §Where evidence is produced and retained — build id, platform, tier binding |
 | `REQ-VER-015` | §Anti-claims + §Claim hygiene |
 | `REQ-VER-016` | §Adversarial-input coverage |
@@ -640,3 +642,64 @@ rules**; `REQ-VER-004/016` by the **repeat/quarantine policy and fuzz coverage**
     tests (shared caches, global registries, a shared temp root) undermines every
     claim above. Whether an explicit per-test isolation assertion (fresh state dir, no
     inherited handles) is required at L1 is undecided.
+
+## Additional proposed acceptance records (2026-09-30)
+
+| ID | Acceptance contract | Required evidence |
+|---|---|---|
+| `ACC-H1-11` | Run identical controller/task flows through Git and a deterministic fake `WorkspaceProvider`. Inject provider failure, stale snapshot/fence, integration overlap, and environment drift. No stale mutation is admitted; a changed environment is revalidated or starts a new Attempt; integrated output is independently reverified. | Exact spec/source/platform/provider contract versions, workspace and fence receipts, injected failure traces, environment snapshot diff, recovery decision, and PASS/FAIL/INSUFFICIENT_EVIDENCE bound to the integrated revision. This does not substitute for later real container/remote platform acceptance. |
+| `ACC-H1-12` | Repeat an unchanged `ProgressSignature` across restart, compaction, and model/worker change. At the configured finite threshold the existing controller selects a bounded new evidence-backed strategy or pauses; budgets/attempt history persist and no task passes from signature/worker prose. ExecutionBrief rebuild is deterministic and stale canonical inputs block dispatch. | Canonical event sequence and signatures/counter, controller `StopDecision`, strategy/resource reservations, context epoch and brief digest/source heads, crash/restart trace, and final state/evidence revision. |
+| `ACC-UX-07` | Pair/Mission Control/Review/Explore presets preserve exactly three primary panes, the anchored center slot and one-action chat tab, draft and layout state. Needs You items are durable owner projections, revalidate when selected, and cannot resolve a blocker or permission by dismissal/sorting. Proof/recovery views show canonical revision, artifacts, unknown effects and limitations. | Scripted keyboard/pointer/screen-reader interaction on small/short terminals, focus order and visible-focus captures, event replay/gap case, stale challenge/answer cases, mode switch/resize snapshots, owner receipts, artifact digests, and proof that no view mutation changes task or permission state. |
+| `ACC-PROTO-05` | A local-only optional AG-UI edge adapter maps only authorized typed events and requests through `CMP-control-api`. Malformed, replayed, over-scoped, draft/unknown-version, and cursor-gap cases cannot corrupt state, mint approval/evidence, or bypass `RESNAPSHOT_REQUIRED`. | Pinned protocol/schema and license review, authenticated local connection identity/scopes, event/request transcript, owner-state hashes before/after negative cases, rate/queue bounds, cursor replay/resnapshot trace, and proof no remote listener is exposed. Remote mode needs a separate accepted decision and is outside this record. |
+
+These proposed records extend the acceptance inventory but do not promote any task or
+capability. The records must be executed and tied to an exact integrated source/spec
+revision before the relevant status can advance.
+
+## Final acceptance and status rules (proposed, DEC-090/091)
+
+Deterministic unit/integration CI uses isolated fixtures without live providers.
+OS confinement and real filesystem L3/L5 acceptance require declared platform fixtures;
+explicitly authorized isolated live-route checks are separately tracked, never default
+CI. Mock framing tests cannot prove remote behavior, billing or production trust.
+Missing source remains proposed; failed checks do not promote absent code to implemented.
+Implemented requires source presence; verified and accepted still require exact evidence.
+An unmeasured benchmark has no promotion effect.
+
+Read-only recovery checks compare content, namespace, mtime and committed heads;
+filesystem atime bookkeeping is excluded and disclosed. The release quarantine gate
+requires zero quarantined tests unless an explicit future accepted waiver changes it.
+Conditional release gates include ACC-H1-11/12 and ACC-UX-07/08 when those features ship.
+The output-bounding latency target measures the bounded decision after capture, not
+an entire arbitrarily large subprocess capture; streaming I/O has separate budgets.
+Markdown skills are not WASM executable plugins. Layout acceptance applies the three
+slots to Pair and mode-specific content to other presets, preserving resize/swap/
+collapse, attention visibility, and accessible control reachability.
+
+| Acceptance | Required evidence |
+|---|---|
+| ACC-UX-08 | For REQ-UI-033, inspect every ActionDescriptor across button/palette/slash/key paths; assert exact target/owner, unavailable reason, confirmation and durable receipt. Exercise draft/focus preservation, first use, empty/incomplete search, offline/stale/error/recovery and all terminal outcomes. At narrow/monochrome/screen-reader widths, material risks and next actions remain visible while diagnostics expand on request. Usability observations bind the actual build, scenarios and participants; prose is not user-preference evidence. |
+
+Extend fault fixtures for spent-plus-held budget admission, durable reservation replay,
+multiple worker incarnations per attempt, timestamp/strategy churn without progress,
+required-hook failure, exact-byte package pin drift, policy parse errors, post-effect
+receipt failure, and AG-UI listener refusal. These are planned checks, not executed tests.
+
+## Interaction, fast path and external manager acceptance (plan only)
+
+| ID | Observable acceptance |
+|---|---|
+| ACC-UX-09 | Artifact filters/paging scope, exact version/feedback binding, picker action parity, bounded renderer fallback, malicious MIME/HTML/SVG/path and decoder exhaustion; no preview creates PASS or external publish. |
+| ACC-UX-10 | Exact paste bytes/whitespace/CRLF/Unicode, identical chip labels, multiline slash/shell paste, IME, clipboard absence, image model mismatch/caps, removal during staging, concurrent typing/send, duplicate/conflicting delivery, disk-full and crash-before/after draft commit, GC owner retention. |
+| ACC-UX-11 | Queue claim/edit/cancel races, durable idempotent receipts, recap sources/no compaction, branch parent cursor/export/scope, shared workspace write conflicts, no copied approval/queued input/Run authority. |
+| ACC-UX-12 | Bundled skill collision/digest/visibility, measured versus estimated costs, unsupported renderer/tool/route, workflow budgets/cancel/exact served revision and verifier-only PASS. |
+| ACC-UX-13 | Side-thread isolation/attach, required context cannot be excluded, read-only authority, stale patch Apply refusal, finding resolution != PASS, notebook metadata/output limits, hostile import and redacted diagnostic bundle preview/no automatic upload. |
+| ACC-PERF-01 | Named cold/warm/stub and inclusive durable timings against ARCH37 targets; 100k-message paging/10k-line paste/output/resize stress, dirty-region parsing, coalescing without event loss, input/cancel fairness, stable schema epochs, rolling pool/barriers/order, revocation, reduced-motion/idle/replay/ANSI fallback and measured CPU/RSS. |
+| ACC-EXT-01 | Versioned fake litePSM12-tool bridge; schema/plan/grant drift, scope/ID/digest preservation, no model approval, authenticated channel or CLI fallback, external deny, daemon offline/crash/timeout, lost non-idempotent response UNKNOWN, cancellation uncertainty, external reach disclosure, no duplicate managed process/secret/state owner. |
+| ACC-INSTALL-02 | Isolated Bash/PowerShell OS/architecture fixtures, signed bootstrap, existing manager install, path spaces/Unicode, symlink/wrong target/corrupt/offline/expired/full disk/concurrent/cancel/rollback, optional PATH consent, onboarding Skip/Back/restart/offline/secret protection and project init preview. |
+
+Default CI uses local fake transports/models. Explicitly authorized isolated live
+provider acceptance remains optional and separately scoped; never interpret transport
+fixture success as real provider/platform acceptance. Pair layout acceptance does not
+force Pair content on Mission/Review/Explore. New applicable H1 and these feature gates
+join G-13/G-1 when a release claims their capabilities; absence retains proposed status.

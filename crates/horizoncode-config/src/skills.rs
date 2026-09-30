@@ -92,6 +92,34 @@ pub struct SkillBody {
     pub content: String,
 }
 
+/// Content-free cost inspection of a digest-validated skill body.
+///
+/// Estimates exclude frontmatter, linked resources, wrappers and catalog metadata.
+/// This byte heuristic is neither a tokenizer measurement nor a token ceiling.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SkillInspection {
+    /// UTF-8 byte length of the parsed body.
+    pub body_bytes: usize,
+    /// Approximate body tokens, rounded up at four bytes per token.
+    pub estimated_body_tokens: usize,
+}
+
+/// Inspects the selected skill without injecting or executing its body.
+///
+/// Uses the same validated read as activation, but returns no content. Resources
+/// are not traversed and no activation or usage observation is created.
+///
+/// # Errors
+/// Returns the same unreadable, changed and invalid errors as [`activate`].
+pub fn inspect_skill(summary: &SkillSummary) -> Result<SkillInspection, SkillError> {
+    let body = activate(summary)?;
+    let body_bytes = body.content.len();
+    Ok(SkillInspection {
+        body_bytes,
+        estimated_body_tokens: body_bytes.div_ceil(4),
+    })
+}
+
 /// A file that could not become a skill.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SkillDiagnostic {

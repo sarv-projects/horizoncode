@@ -325,7 +325,7 @@ moved Thread remains reconstructable and its decisions reproducible
   repair flow may produce a separately preserved recovery artifact. No ordinary
   surface repairs evidence as a side effect.
 
-**Source status at Rust baseline `23d4ce8` (source-map commit `cbba87b`, 2026-09-28).** The
+**Source status at Rust baseline `80400370c7898459f7e7c24642caba9af31379d1` (2026-09-30).** The
 read-only inspection defects recorded on 2026-09-27 were addressed by the AX-346
 integrity slice: `AuditLog::open_read_only` does not repair; writable open refuses a
 torn tail; malformed/unreadable heads and segment-enumeration errors are typed; and
@@ -586,3 +586,34 @@ sizes remain open until benchmarked against long-run workload and disk-failure t
    checkpoint versus full-chain recomputation for very long sessions.
 5. **Audit of audit** — whether `verify`/`replay`/export operations themselves append
    entries (proposed: yes for export, to record access).
+
+Every managed EffectIntent correlates its stable EffectId to TaskId, AttemptId, and
+WorkerExecutionId when applicable. Before invoking a network adapter for an external
+side effect (for example PR creation/comment), append the durable PREPARED audit
+record and acquire the effect's authorization/idempotency bindings. Missing durable
+prepare or unavailable audit capacity blocks invocation. Recovery reconciles the
+same identifier and never repeats an unknown external effect based only on a missing
+local response (ARCH/25).
+
+## Final audit reconciliation and export rules (proposed, DEC-091)
+
+Managed effect entries link EffectId, Task AttemptId and WorkerExecutionId; direct-turn
+entries instead bind ThreadId/TurnId with managed IDs absent. Audit prepare must be
+durable before execution. If terminal append fails after execution, fence new work,
+preserve available capture/receipts, and mark UNKNOWN pending reconciliation; the
+system cannot claim the effect was denied or undone retroactively.
+
+A filtered Thread export cannot claim to verify an uninterrupted global audit chain.
+Portable exports require an authorized manifest with verifiable membership/range proof
+or complete authorized sealed ranges; absent proof is explicitly unsupported. Do not
+include unrelated private history to manufacture chain continuity. Current MAC proof
+is local only; public signing remains AX-372. Audit-access events use the separate
+access stream already defined here; neither a recursive audit-of-audit nor a model
+verdict establishes integrity. Sequence/segment identifiers refuse overflow rather
+than wrap. Analytics receives canonical facts and never settles budgets itself.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+Actual effect settlement is logged as it happens; ordered model observations cannot delay audit receipts. Audit verification accesses use the separate bounded access stream, resolving the old audit-of-audit open question. External litePSM invocation receipts are correlated under ARCH38, never accepted as task-verification authority.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.

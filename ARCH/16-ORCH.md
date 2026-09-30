@@ -160,7 +160,7 @@ changes scheduler behavior.
    Before spawning, estimate prompt/context replay, expected wall-time, verification and merge cost. If the task is not independent or its projected overhead exceeds its budget/value, run sequentially or decline delegation (`REQ-ORCH-006`).
 2. **Run.** The child runs an ordinary turn loop with its own context and tools. A background child emits typed progress; it does not steal parent focus.
 3. **Completion.** Two modes: a bounded foreground wait (park the parent on the child) or a queue-only wake at a turn boundary. Wake is suppressed unless the parent is live and the child was not cancelled. A bounded wait that overruns its budget auto-backgrounds rather than freezing the parent.
-4. **Cancellation.** Parent cancel cascades to descendants; session teardown cancels without rebuffering; a cancelled child never wakes the parent.
+4. **Cancellation.** Explicit native ephemeral parent-execution cancel may cancel its owned children; managed Run/task cancellation follows target-scoped ARCH/25 rules. Client detach/view close does not cancel execution. A cancelled child never wakes the parent.
 5. **Receipt intake.** Validate the receipt against schema; allow at most one bounded correction retry, then a raw-text fallback with a typed note. Roll usage up to the parent.
 6. **Worktree flow.** Create an isolated checkout at the base ref → grant a write lease → run → compute a diff → merge.
 7. **Merge arbitration.** Order candidates by a stable topological order then task ID from pinned base revisions; completion timing is not an input. Apply clean patches; on conflict, stop that branch and record evidence. Reverify the combined integration revision.
@@ -178,7 +178,7 @@ changes scheduler behavior.
   either limit queues or rejects admission according to the configured policy.
 - Admission is queue-on-limit by default with an explicit fail-fast opt-in.
 - The parent does non-overlapping work while children run; it never blocks on a background child.
-- Cancellation is cooperative and token-based and cascades to descendants; a cancelled child is terminal and never wakes the parent.
+- Cancellation is cooperative and target-scoped; Run cancellation fences owned dispatch, task cancellation leaves dependents blocked without cascading. Native ephemeral children may share their parent execution token. Terminal cancellation follows effect reconciliation, and a cancelled child never wakes the parent.
 
 ### Application replacement fence
 
@@ -274,9 +274,60 @@ and enter typed recovery; do not allow a new run to race a possibly partial swap
 
 ## Open questions
 
-1. **`fork` default per role.** The default context fork policy (none/bounded/full) for coder, researcher, and reviewer roles is unresolved.
+1. **`fork` default — resolved.** none is the default; a bounded/full fork requires an explicit profile/task policy and visible source references.
 2. **Review queue.** Whether a human review queue for child receipts ships in v1 or is deferred.
 3. **Worktree storage ceiling.** The cap on concurrent worktrees and the disk-pressure reaping policy.
 4. **Cross-host team runs.** Whether "self-hosted team" is single-machine only in v1 or includes remote sandboxes behind one interface.
 5. **Receipt trust scanning.** The exact instruction-shaped-pattern detector and whether flagged findings are dropped or only annotated.
-6. **Graph visualization.** Which projection (TUI panel versus headless NDJSON) is authoritative for the task graph.
+6. **Graph authority — resolved.** RunController canonical events own task truth; TUI and headless are projections.
+
+## Worker fabric and WorkspaceProvider boundary (proposed, `DEC-083/084`)
+
+The controller speaks HorizonCode-owned ports. A `WorkerAdapter` provides
+`probe/start/send/observe/interrupt/cancel/resume/reconcile`; negotiated capabilities
+and adapter build digest are pinned to `WorkerExecution`. A Worker is a role/profile,
+the `CMP-runner` is HorizonCode's native bounded turn loop, a WorkerExecution is one
+incarnation, and `CMP-execution-host` owns where/how its process is created and
+observed. A `WorkerConfigRenderer` may write disposable foreign config from approved
+HorizonCode policy and capability snapshots. Rendered config is untrusted adapter
+input, never the policy source or canonical state.
+
+`WorkspaceProvider` owns `create/snapshot/diff/changed_paths/integrate/restore/dispose`.
+The Git worktree adapter remains the only currently specified provider and retains
+leases, fencing, deterministic arbitration, explicit conflict review, and verification
+after integration. Provider/workspace identity and exact base/current snapshot attach
+to each task/attempt/evidence record. A new provider cannot opt out of Guard,
+`CMP-sandbox`, audit, workspace leases, or post-integration verification.
+
+One Integration Coordinator orders candidates deterministically, detects overlapping
+paths, records base/proposed/integrated revisions, and opens conflicts for review.
+Any combined revision is a new verification subject. No provider-reported merge or
+worker completion can mark tasks PASS. Container and remote providers remain proposed
+and require separate host/confinement and durability acceptance.
+
+## Final orchestration seam reconciliation (proposed, DEC-091)
+
+The main lifecycle is provider-qualified: obtain a WorkspaceBinding/snapshot from
+WorkspaceProvider, claim its fence, dispatch via WorkerFabric, collect receipts,
+integrate through IntegrationCoordinator, and reverify the combined revision. Git
+branches/worktrees/merge commands are Git adapter mechanics, not kernel prerequisites.
+A fake provider contract proves abstraction only; real container/remote support needs
+its own isolation/durability acceptance.
+
+CMP-agent-directory owns profiles; WorkerFabric owns adapter execution/config rendering;
+CMP-orch owns scheduling, durable state and budgets. WorkerConfigRenderer stages a
+bounded digest-pinned configuration projection, rejects unsupported policy mapping,
+scrubs secrets, and activates only before an eligible launch; config translation
+cannot claim confinement or peer capabilities. Messaging transport uses WorkerAdapter;
+ExecutionHost manages processes, not peer protocol semantics.
+
+Lease fencing uses owner epoch and a clock identity. Persist wall deadline plus boot/
+clock identity and bounded duration; a monotonic timestamp alone cannot survive reboot.
+After restart, unknown/expired leases require reconciliation. Waiting releases eligible
+worker slots after settlement but retains controller Run ownership and fence authority.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+Closing a client/conversation view or detaching does not cancel a managed Run. Explicit cancellation targets owner scope; cascading cancellation of ephemeral native children is distinguished from durable tasks. Context fork default is none; the old unresolved-default/graph-authority questions are resolved by RunController truth and derived client views. Ralph-style rounds are optional bounded strategies under ARCH25, not a new controller.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.

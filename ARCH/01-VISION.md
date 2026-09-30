@@ -56,3 +56,32 @@ These are product hypotheses, not current benchmark results. Fast interactive co
 3. **Fail closed.** Unknown permission, unknown license, unknown capability ⇒ deny or refuse, never allow by default.
 4. **Prove it.** A capability is not complete without executable evidence.
 5. **Smallest justified change.** Prefer the existing owner and interface over a new abstraction.
+## Evolution note (proposed)
+
+HorizonCode serves two operating tempos: fast interactive pair coding in ordinary
+Threads, and managed Runs that may span hours or days. Terminal-first describes the
+delivery surface, not a chat-only layout: the same three-pane workspace may adapt its
+content to Pair, Mission Control, Review, or Explore. A verified Run should expose a
+task graph and an inspectable Proof Pack, not require the user to reconstruct status
+from terminal scrollback. Models, providers, workers, protocols, workspaces, and
+execution environments are replaceable behind HorizonCode-owned contracts; the user's
+software job and its approved intent remain canonical. These are proposed target
+capabilities, not current product claims (`DEC-083..089`, `ARCH/06`, `ARCH/25`).
+
+## Product clarity contract (proposed, DEC-090)
+
+The first screen offers a useful composer, selected workspace, and one next action.
+Ordinary requests use the direct coding path; managed goals, workflow builders,
+dependency graphs, and proof inspectors are discoverable optional depth. Default
+surfaces explain the requested outcome, changed files, checks, blockers, and next
+step in plain language. IDs, hashes, transport mechanics, storage counters, and full
+tracebacks belong in detail inspectors. Material permissions, cost uncertainty,
+verification failures, and unsafe recovery must remain visible. These defaults are
+product hypotheses to validate with the usability acceptance plan, not measured
+claims about what all users prefer.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+Ordinary coding remains prompt-led: exact paste/images and inspectable artifacts improve daily interaction. Attractive themes and restrained feedback serve legibility; measured speed is a product requirement, not an unverified superiority claim.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.

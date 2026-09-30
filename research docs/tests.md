@@ -1282,3 +1282,67 @@ Prompt-cache fixtures cover byte-stable request prefixes, explicitly supported c
 
 
 Search query fixtures for AX-369 must include literal SQL/FTS wildcard characters (`%`, `_`, quotes), case-folding and Unicode normalization, alongside exact phrases; user text is literal unless wildcard syntax is explicitly designed and rendered in the UI. These cases prevent SQL `LIKE` implementation details from changing user intent.
+
+## Final architecture reconciliation acceptance additions (2026-09-30)
+
+Plan only; no product tests or builds were run in this documentation audit. Follow
+DEC-090/091 and ARCH/23 ACC-UX-08. Inspect every action entry (button, key, palette,
+slash) for one owner, exact target, availability reason, confirmation and durable
+receipt; test narrow/monochrome/screen-reader layouts, focus/draft retention, required
+attention without focus theft, offline/partial search, stale/duplicate responses,
+reconnect, and distinct failed/cancelled/stopped/unknown/unverified/verified outcomes.
+Usability testing must record actual participant/scenario/build observations before
+claiming these defaults improve appeal or reduce effort.
+
+Controller fault tests include spent+held+unknown+protected budget admission, every
+reservation-event/head/projection commit crash boundary, cross-process contention,
+multiple execution incarnations per attempt with stable redelivery keys, restart-safe
+lease clocks, pause/resume/stop typed scope and priority, and metadata-only progress
+churn. Compaction tests assert a single shared recovery allowance, auto=false on all
+paths, bounded brief reconstruction, epoch source attestation, and no task/model attempt
+ID collision. Test exact-byte/closed-manifest package drift, required-hook failure,
+policy parse failures, audit terminal-append failure after effects, filtered export
+proof limitations, MCP initialized lifecycle/direction, and refusal of any AG-UI network
+listener until its separate decision. Test generic provider workspace lifecycle and
+full dirty-files/buffer revision freshness. Deterministic fixtures do not replace real
+OS confinement, filesystem durability, production signing, or authorized route evidence.
+
+## Artifact/composer/performance/litePSM/installer expansion (2026-09-30)
+
+Plan only; no runtime suite was executed. [ARCH37](../ARCH/37-INTERACTION-AND-FAST-PATH.md)
+and [ARCH38](../ARCH/38-LITEPSM-INTEGRATION.md) define contracts; [ARCH23](../ARCH/23-VERIFICATION.md)
+defines ACC-UX-09..13, ACC-PERF-01, ACC-EXT-01 and ACC-INSTALL-02.
+
+Use property fixtures over UTF-8 parts/byte preservation, duplicate display chips,
+grapheme editing and CAS races; crash injection around artifact/draft/owner commits;
+fake clipboard/renderer/route/capability matrices; adversarial decoder resources and
+control sequences. Check every button/palette/command/key path produces the same
+normalized receipt/event trace and preserves focus/draft on failure. Test reduced/off
+motion, dark/light/high-contrast, ANSI/truecolor/monochrome, narrow terminals, remote
+TTY, selection/scroll during streaming and partial Markdown highlighting.
+
+Scheduler fixtures use delayed calls with known barriers, out-of-order completion,
+live revocation and uncertain effects; verify settlement occurs promptly but model
+observations are ordered. Code Mode fake tools verify nested ceilings and no ambient
+I/O, approval bypass or replay. Compare ordinary versus program composition on matched
+tasks with correctness/effect equivalence and inclusive latency; cache is observed,
+not inferred from prompt digest. Warm/cold measurements publish hardware, terminal,
+code/config/model/stub revisions, fsync mode, raw distributions and percentiles.
+
+litePSM fixtures must fix the sibling schema/approval/journal/IPC compatibility gates
+before real mutation acceptance. Fake lost-response/write/cancel tests require UNKNOWN
+and safe reconciliation. Installer tests run only in disposable supported-platform
+fixtures, never change this host's PATH/profile/permissions or publish artifacts.
+Session import/branch, notebooks, side questions and feedback canaries must retain scope,
+preserve original content and prevent unintended writes/approval inheritance.
+
+## AX-405 offline skill inspection evidence (2026-09-30)
+
+Implemented slice only; full ACC-UX-12 remains open. `cargo test -p horizoncode-config --test skill_inspection --offline`: 4 passed
+(empty/Unicode/CRLF, rounding, content-free result, changed digest, missing file,
+Unix symlink replacement).
+`cargo test -p horizoncode-cli --test commands_cli --offline`: 10 passed (including
+provider-free inspection, body secrecy, no session creation, existing listing/help
+and refusal regressions). The CLI feature test failed before implementation.
+Source hashes and environment: [record](source-audit-coverage/ax405-skill-inspection-2026-09-30.json).
+The serial full workspace regression suite passed: `cargo test --workspace --offline -- --test-threads=1` (exit 0); ACP local mock tests required loopback permission outside the network sandbox. An earlier parallel run had one transient audit test failure; isolated audit and final serial workspace reruns passed. Heuristic tokens are not tokenizer measurements, performance evidence, resource totals or activation statistics.

@@ -145,3 +145,23 @@ fn an_unknown_skill_is_a_typed_refusal() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("unknown skill `nope`"), "{stderr}");
 }
+
+#[test]
+fn skills_show_reports_estimated_body_cost_without_disclosing_content() {
+    let home = tempfile::tempdir().unwrap();
+    let workspace = skill_workspace();
+    let output = run_with("/skills show review", home.path(), Some(workspace.path()));
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("body bytes:  17"), "{stdout}");
+    assert!(
+        stdout.contains("body tokens: ~5 (UTF-8 bytes / 4 heuristic; not tokenizer-measured)"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("observed injection: unknown"), "{stdout}");
+    assert!(!stdout.contains("SECRET BODY TEXT"), "{stdout}");
+    assert!(
+        !home.path().join("sessions").exists(),
+        "inspection must not start a session"
+    );
+}

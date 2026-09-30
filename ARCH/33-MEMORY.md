@@ -1,8 +1,8 @@
 # 33 — Memory (`CMP-memory`)
 
 Status: **proposed target design; not implemented at source baseline
-`23d4ce8` (source-map commit `cbba87b`, 2026-09-28; unchanged through the
-checked-out revision recorded in `CURRENT_RUN.md`).** `CMP-config` owns
+`80400370c7898459f7e7c24642caba9af31379d1` (2026-09-30; unchanged through the
+documentation HEAD recorded in `CURRENT_RUN.md`).** `CMP-config` owns
 settings only. `CMP-session` owns conversation history. `CMP-context` selects and
 renders memory for a request. `CMP-memory` owns records, provenance, lifecycle,
 conflict handling, and retrieval. Memory is neither policy nor proof of task
@@ -60,7 +60,7 @@ MemoryRecord {
   state: candidate | accepted | rejected | superseded | expired | deleted,
   content: bounded UTF-8 text,
   content_digest: blake3,
-  source_kind: explicit_user | approved_run | imported,
+  source_kind: explicit_user | approved_run | imported | model_extracted,
   writer_profile_id?: AgentProfileId,
   source_ref?: {store, aggregate_type, aggregate_id, aggregate_seq, event_id,
                 source_revision?, repository_identity?, workspace_id?,
@@ -321,3 +321,28 @@ research reference, not a copied implementation; see `research docs/codex-memory
 ## Requirements mapping
 
 `REQ-MEM-001..007`; `REQ-CTX-007`; `REQ-SEC-002`.
+
+CMP-memory is long-term user/project information with the consent, provenance, and
+freshness lifecycle above. ExecutionBrief is short-term Run-scoped working context,
+rebuilt by CMP-context from canonical Run/Task/plan/Evidence owners at context epoch
+boundaries. A brief is not memory, does not persist user preferences, and must not be
+retrieved across Runs (DEC-086).
+
+## Final memory product-flow clarification
+
+`/memory remember <text>` and an explicit natural-language save request create a
+reviewable candidate; they never auto-accept. Review/approve binds exact candidate
+revision, scope, source and retention. A candidate's source_kind distinguishes
+explicit_user, approved_run, imported and model_extracted; approved_run denotes
+provenance, not user approval of the memory. Schema upgrades preserve existing source
+meaning. Show the candidate wording and consequence first; IDs/outbox sequence/digests
+expand in details, while stale source or audit-pending uncertainty stays visible.
+Unavailability never creates an empty replacement store or a fabricated fresh brief.
+Memory's canonical SQLite event store is explicitly separate from rebuildable Run/
+Thread projections; backup deletion/tombstone recovery must satisfy ARCH/33 acceptance.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+model_extracted identifies candidate provenance only; user consent remains mandatory. Recap/drafts/briefs are Run/Thread working projections and never automatically accepted semantic memory.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.

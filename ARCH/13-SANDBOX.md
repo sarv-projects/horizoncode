@@ -424,3 +424,49 @@ the platform acceptance rows. See `ARCH/24` F-01..F-05 and `TODO.md` AX-101..AX-
    inheritance, IPC, and helper-process reach must be tested on macOS before deciding
    which guarantee level to advertise. A caller that requires a stronger level is
    refused. See `ARCH/23` ACC-P1-01 and TODO AX-114.
+
+## Execution environment identity (proposed, `DEC-089`)
+
+The execution host records an `ExecutionEnvironmentSnapshot` separately from the
+`ConfinementProfile`:
+
+```text
+ExecutionEnvironmentSnapshot {
+  spec_digest, host_type, os_family, architecture,
+  runtime_versions, toolchain_digests, environment_digest,
+  observed_at, unknown_fields[]
+}
+```
+
+The normalized spec digest and available tool/runtime facts are pinned to the Attempt;
+unmeasured facts remain explicitly unknown. Never persist or publish raw environment
+values, credentials, or secret-bearing command arguments in this record; only approved
+non-secret identity fields and their bounded digests may be included. On crash resume or a long delay, re-probe
+and compare. Material drift blocks continuation until the controller records an
+approved revalidation or starts a new Attempt. An environment digest describes
+observed identity only; it does not establish reproducibility, workspace validity, or
+an OS confinement guarantee. `CMP-execution-host` provisions/lifecycles processes;
+`CMP-sandbox` applies and reports the actual enforcement tier.
+
+## Final host/confinement and environment refinements (proposed, DEC-091)
+
+ExecutionHost owns provisioning, spawn, observation and reap. Sandbox supplies the
+resolved confinement plan and mechanisms to that single launch seam; it does not
+create a competing process lifecycle. ExecutionEnvironmentSnapshot includes
+`snapshot_id`, spec/environment digests, host identity/type, OS/architecture, runtime,
+toolchain digests, probe version/time and actual enforcement profile. Identity hashes
+exclude secret values and do not establish reproducibility by themselves.
+
+A confinement profile lists workspace write roots and explicit read-only runtime roots
+needed for executables/libraries. Arbitrary outside-root paths remain denied; runtime
+roots are not an implicit host-wide mount. Re-probe required capabilities at admission
+and on drift; no silent unconfined fallback. A full-access exception is explicitly
+scoped, bounded and audited, never inherited by children. Process capture belongs to
+the tool/host output path and immutable artifact service, not a parallel runner store.
+Local lease proof does not establish distributed host identity or remote confinement.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+ExecutionHost owns spawn/process tree/reap; Sandbox owns prepare/validate confinement and enforced reach. Earlier run/spawn sketches mean host execution under SandboxPlan, not a second process supervisor. ARCH38 external daemon reach is separate and explicitly observed; no inherited sandbox guarantee. Output custody stays with tool/host/artifact owners.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.

@@ -53,7 +53,7 @@ contract.
 | Agent task scheduling, parent/child budgets, stop/recovery | `CMP-orch` / `CMP-runner` | UI session lifecycle, provider-specific wire details |
 | Run-scoped agent messages and delivery receipts | `CMP-orch` (canonical Run events), `CMP-session` (recipient inbox) | A separate mailbox database, task graph, permission engine, or implicit agent wake-up |
 | Provider/model capability and observed usage | `CMP-provider` | Claiming usage hidden inside an opaque peer |
-| Quota aggregation, warning evaluation, resource reservation | `CMP-analytics` (facts) + `CMP-orch` (dispatch control) | Fabricating unreported remote usage |
+| Quota aggregation, warning evaluation, resource reservation | `CMP-provider` (quota observations) + `CMP-analytics` (projection) + `CMP-orch` (budget/dispatch control) | Fabricating unreported remote usage |
 | Settings storage and preference merge | `CMP-config` | Widening guard authority or directly mutating active tasks |
 | Theme, command palette, Agents panel, notification rendering | `CMP-tui` | Canonical settings, run/task truth, permission authority |
 | Approval posture and effect checks | `CMP-guard` | Theme/notification preferences or agent catalog reputation |
@@ -98,9 +98,7 @@ The ACP ingress parses that exact grammar in the deterministic control lane befo
 any model dispatch, binds it to the pending review and client/session, and rejects
 extra text, stale/reused IDs, changed digests, and unrecognized variants. Any other
 prompt while awaiting activation invalidates the preview and returns the run to
-draft/clarification; it is not passed to a worker as hidden approval. On disconnect,
-cancel, decline, timeout, or malformed response, no activation occurs; reconnect
-requires a fresh review and approval bound to the new connection. This fallback uses
+draft/clarification; it is not passed to a worker as hidden approval. Before durable acceptance, disconnect, cancel, decline, timeout, or malformed response prevents activation; reconnect requires a fresh connection-bound review. After durable acceptance, reconcile the original start intent; disconnect alone does not revoke committed authorization (ARCH/25). This fallback uses
 standard ACP messages and introduces no custom ACP method. ACP `elicitation/create`
 is an agent-to-client request; the client advertises the matching form capability
 during initialization. These protocol properties do not establish operator identity
@@ -739,3 +737,90 @@ through ACP. See the [ACP protocol repository](https://github.com/agentclientpro
 [`research docs/opencode.md`](../research%20docs/opencode.md). Registry contents,
 protocol releases, and agent capabilities are volatile and must be rechecked when
 implementation begins (`REQ-RESEARCH-001`).
+
+The action catalog adds /workspace [pair|mission|review|explore] as a projection-setting
+action and /proof <task-id> as a read-only Proof Pack inspector, both backed by
+CMP-control-api. `/mode [chat|explore|plan|code]` retains its direct-turn meaning; workspace
+presets do not reuse that command. F3 opens the command palette; palette and slash invocation share
+the same descriptors/action IDs. /proof shows available current evidence and
+INSUFFICIENT_EVIDENCE distinctly; absent evidence produces a typed explanation; it cannot create/upgrade a PASS. Composer
+@proof:<task-id> may attach a bounded verified evidence summary only after resolving
+the canonical task/evidence revision. These are proposed additions; no command or
+shortcut is implemented by this document.
+
+## Final shared action schema (proposed, DEC-090/091)
+
+```text
+ActionDescriptor {
+  action_id, owner, label, help, input_schema, target_kind,
+  allowed_surfaces, availability, unavailable_reason,
+  button_locations, command_ids, key_binding_ids,
+  effect_class, confirmation_policy, apply_boundary,
+  request_method, receipt_schema, event_classes, result_view
+}
+```
+
+CommandDescriptor is the strict command grammar linked to action_id; it is not a
+second business dispatcher. Each button/key/palette entry uses that same action.
+Unbound or colliding shortcuts retain a help/palette route; editor/composer focus and
+IME/paste cannot trigger destructive bindings accidentally. Escape dismisses navigation
+or interrupts only under its documented focus/active-operation rule, never implicit
+approval. Duplicate mutation clicks query their stable delivery receipt. Read-only
+buttons do not consume mutation nonces or spend.
+
+Register `/workspace [pair|mission|review|explore]`, `/proof <task-id>` and
+`@proof:<task-id>` in the respective command/reference catalogs only when their owners
+exist. Layout changes persist projection preferences through config; /proof may show
+available failed/incomplete evidence with its verdict and freshness, but must not label
+it a verified Proof Pack or manufacture PASS. `/memory remember <text>` creates a
+candidate and is explicitly distinct from approve. Unknown commands still never fall
+through to a model. `/explore` uses the selected isolated WorkspaceProvider; Git is
+the first adapter. WorkerBindingSnapshot carries a provider-qualified base revision,
+not a core mandatory Git commit. Directory profiles are definitions, not live workers.
+
+The Agents default view shows task/role/status and actionable blockers; technical
+profile/build/path/digest/usage provenance is expanded detail. Always-visible Tasks
+means the Pair preset's available task projection, not a forced right pane in Review/
+Explore. Displaying STOPPED/CANCELLED/UNKNOWN never uses a generic success row.
+Goal-start disconnect before acceptance invalidates the challenge; disconnect after
+accepted durable authorization reconciles the existing intent (ARCH/25), never silently
+revokes/restarts it. The CLI review contract does not accept digest flags as approval.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+ARCH37 adds commands/actions to this single catalog; no separate dispatcher. Quota observations are provider-owned; budget authority is controller-owned. WorkerBindingSnapshot uses provider-qualified workspace_revision and dirty manifest, not mandatory base_commit. A --spec-digest selector never approves a Run. Settings and context selections use versioned CAS; user-facing labels hide internal IDs until Details.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.
+
+## Added action catalog routes (DEC-092/093/094)
+
+| Command/action | Owner and behavior | Effect boundary |
+|---|---|---|
+| `/artifacts [list|show <ref>|search <query>]` | Artifact metadata service through ControlService; scoped picker | Preview read; Attach draft mutation; Open/Export explicit effects |
+| `/artifact-capabilities` | Bundled registered skill, current bounded capability reference | No installation/grant |
+| `/artifact-diagramming` | Bundled registered diagram authoring skill | Tool use separately governed |
+| `/queue [list|show|edit|cancel]` | Existing input controller, revision CAS | Claimed input cannot be edited |
+| `/recap` | Visible committed source report | Optional model rewrite explicitly priced |
+| `/branch [title]`, `/fork [title]` | Thread creation with parent cursor and workspace choice | Creates Thread; no inherited approvals or implicit execution |
+| `/litepsm` | Existing Extensions overlay, explicit selected manager | Navigation only |
+| `/btw <question>` | Bounded side Thread | Read-only side budget, explicit Attach answer |
+
+All visible buttons listed in ARCH37/38 require ActionDescriptor entries with typed
+target, expected revision, availability reason, method, receipt/event/result view,
+confirmation and keybinding. F3 exposes them; Enter activates focused enabled control;
+Escape returns focus without cancelling unrelated work. No effect gets an implicit
+single-letter global binding. Headless equivalents return structured data.
+
+Proposed CLI adds `hzcode sessions list [--json]`, `hzcode sessions show <id> [--json]`,
+and `hzcode sessions open <id>` (interactive only, opens transcript without model work).
+Resume is a separate explicit prompt/action. The current implemented binary remains
+horizoncode with --session/--continue plus -p/--print; new browsing commands are absent.
+
+### AX-405 headless cost inspection slice (2026-09-30)
+
+The existing `horizoncode -p "/skills show <name>"` path now includes content-free
+body bytes, a labelled approximate token heuristic, estimate scope and explicit
+unknown observed injection/activation counts. No provider configuration is needed.
+Errors from digest-bound inspection are configuration refusals before any report
+is printed; they never fall through to a model prompt. This is not the interactive
+Skills panel or full ACC-UX-12 acceptance.

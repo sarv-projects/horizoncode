@@ -2063,3 +2063,195 @@ expands `AX-378` to include its UI entry points. Acceptance is `ACC-MARKET-01` a
 `ACC-CONNECTION-01`. Source
 observations are in `SRC-036`, `ARCH/29` (`U-EXTENSION-ECOSYSTEM`), and
 `research docs/extension-marketplace-review.md`. No upstream code or schema is copied.
+
+## DEC-083 — WorkspaceProvider separates workspaces from Git worktrees
+
+**Status:** proposed target architecture; Git worktrees remain the only specified
+workspace adapter and current leases/merge rules remain binding.
+
+**Decision (2026-09-30).** `CMP-orch` addresses mutable source through a typed
+`WorkspaceProvider` contract. Git worktrees are an adapter, not the orchestration
+identity. Every managed workspace and verification binds provider/workspace identity,
+base revision, current snapshot/digest, and fence. A container or remote workspace is
+unavailable until its lifecycle, durability, isolation, and failure semantics are
+specified and accepted.
+
+**Consequences.** `REQ-WORK-001/002`, `ARCH/13`, `ARCH/16`, `ARCH/25`, `ARCH/34`,
+and proposed task AX-395. Does not itself authorize remote execution or weaken
+`REQ-SEC-026`.
+
+## DEC-084 — Worker profiles, executions, runners, and hosts are separate
+
+**Status:** proposed target clarification; existing `CMP-execution-host` lifecycle
+and controller ownership remain authoritative.
+
+**Decision (2026-09-30).** A Worker is a registered role/profile; `WorkerAdapter` is
+the HorizonCode port; `WorkerExecution` is one live incarnation; `CMP-runner` is the
+native bounded model/tool loop; `ExecutionHost` owns process placement/lifecycle;
+`CMP-sandbox` owns enforced reach boundaries. External config files are rendered from
+HorizonCode authority as disposable projections and foreign schemas do not enter core.
+Dispatch is capability/policy-based, not display-name based.
+
+**Consequences.** `REQ-ORCH-012`, `ARCH/03`, `ARCH/16`, `ARCH/27`, `ARCH/34`,
+and proposed task AX-395. No vendor adapter or host is thereby implemented.
+
+## DEC-085 — Task-adaptive three-pane workspaces and Needs You queue
+
+**Status:** proposed amendment to accepted pane roles in DEC-066; no interactive TUI
+is implemented.
+
+**Decision (2026-09-30).** Keep exactly three primary slots and the anchored center
+slot from DEC-066. Pair keeps chat as the default center view. Mission Control, Review,
+and Explore may display their selected graph/diff/inspector in an existing slot, with
+chat one action away as a center tab; no conversation or draft is
+destroyed or moved to another persistent pane. This supersedes DEC-066 only on the
+center slot fixed content, not its geometry, default, side-slot swap, or three-pane
+cap. The Needs You queue is a persistent, prioritized task or center overlay sourced
+from canonical owner projections. Activity timeline is a
+temporary tab/overlay, never a fourth permanent pane. Proof Pack and crash-recovery
+inspectors are views over verifier/artifact/recovery owners. Mode changes and views
+cannot create domain state, resolve a blocker, authorize an effect, or mark PASS.
+
+**Consequences.** Adds `REQ-UI-031/032`; clarifies `ARCH/06`, `ARCH/23`, `ARCH/25`,
+and `ARCH/27`; proposed task AX-396. DEC-066's three-slot geometry, keyboard-first
+and narrow-terminal guarantees stay in force.
+
+## DEC-086 — ExecutionBrief is a bounded context projection
+
+**Status:** proposed; existing canonical plan/task projection remains the sole durable
+plan truth.
+
+**Decision (2026-09-30).** At lifecycle/compaction boundaries, `CMP-context` may render
+a bounded ExecutionBrief from current canonical Run, Task, approved plan, decision,
+blocker, workspace, and Evidence owners. It carries source revisions and digest and is
+rebuilt when those inputs change. It is not another event store, Markdown plan,
+memory namespace, or authority. Do not inject the full planning history on each turn.
+
+**Consequences.** Adds `REQ-CTX-015`; extends `ARCH/07`, `ARCH/09`, `ARCH/19`,
+`ARCH/25`; proposed task AX-397. Existing compaction threshold and hard-fit rules
+remain unchanged.
+
+## DEC-087 — ProgressSignature uses the existing stop controller
+
+**Status:** proposed clarification; ARCH/25 already defines a durable no-progress
+signature and bounded strategy/replan behavior.
+
+**Decision (2026-09-30).** Keep one controller-owned ProgressSignature and StopDecision
+path. No separate anti-loop engine is introduced. Bind repeat counts to durable
+task/workspace/evidence/strategy state; repeated unchanged progress enters the existing
+finite change-strategy/replan/pause logic. Signatures never establish completion or
+reset attempt/resource budgets.
+
+**Consequences.** Adds `REQ-STOP-001` as the explicit requirement trace for the
+existing `ARCH/25` design; included in AX-397. No new scheduler or retry owner.
+
+## DEC-088 — AG-UI is an optional edge adapter, never control authority
+
+**Status:** proposed; no AG-UI endpoint or remote gateway is implemented.
+
+**Decision (2026-09-30).** AG-UI may translate between an external user client and
+HorizonCode's typed `CMP-control-api`; the API and canonical domain owners remain the
+only control path. Events are projections; inbound UI intents are untrusted typed
+requests checked against authenticated connection scope and owner state. The adapter
+is disabled by default and loopback-only unless a separately approved authenticated,
+encrypted remote transport and acceptance gate are added. Cursor gaps require
+`RESNAPSHOT_REQUIRED`. No protocol event can mint approval or task evidence.
+
+**Consequences.** Adds `REQ-PROTO-008`, `ARCH/15`, `ARCH/31`, and proposed task
+AX-398. ACP, MCP, local IPC, and the controller keep their existing distinct roles.
+
+## DEC-089 — Bind managed Attempts to environment snapshots
+
+**Status:** proposed target architecture; exact inventory and drift policy require
+platform acceptance.
+
+**Decision (2026-09-30).** Persist a normalized environment-spec digest and observed
+host/platform/runtime/toolchain identity with each managed Attempt where available.
+Unknown fields remain unknown. Resume compares the observed snapshot; material drift
+blocks continuation until a controller records explicit revalidation or creates a new
+Attempt under the current approved specification. This snapshot describes runtime
+identity; it does not prove sandbox enforcement or reproducibility.
+
+**Consequences.** Adds `REQ-WORK-002`, updates `ARCH/13`, `ARCH/20`, `ARCH/25`, and
+`ARCH/30`, and joins AX-395. AutoGPT installer hash binding is a pattern-only source
+with different scope; it is not evidence for this contract (`SRC-037`).
+
+## DEC-090 — Outcome-first UI and complete action flows
+
+**Status:** proposed. **Date:** 2026-09-30.
+
+Default views show task intent, progress, changed files, checks, blockers, and next
+action. Technical identities and storage/transport details use progressive disclosure;
+material risk and uncertainty stay visible. Mission Control defaults to a task list,
+with an optional dependency graph. Every control has one stable action identity,
+owner, availability reason, typed target, confirmation rule, receipt, and replay path.
+Draft/focus preservation and narrow-terminal accessibility are acceptance requirements.
+Owners: ARCH/06, ARCH/27; REQ-UI-033; ACC-UX-08. This refines DEC-066/085 without
+replacing their pane guarantees or direct-turn semantics.
+
+## DEC-091 — Reconciled identity, durability, and authority contracts
+
+**Status:** proposed. **Date:** 2026-09-30.
+
+Versioned owner contracts separate model attempts, task attempts, worker executions,
+workspace/provider revisions, and authenticated control operations. Budget checks
+include spent, held, unknown exposure, and protected reserves; all counters are
+reconciled before dispatch. Run-owned reservation-set events remain canonical and
+SQLite Run projections are rebuildable. Memory's separately declared canonical
+SQLite event store in ARCH/33 is an explicit exception, not a Run-budget store.
+Historical schemas require migrations rather than in-place reinterpretation.
+
+Thread creation uses `thread/created` in the new format; legacy session records stay
+byte-preserved. Context recovery shares one eligibility gate and allowance. Required
+hooks fail closed; package pins hash exact bytes; post-effect persistence failure
+requires reconciliation. AG-UI initially uses authenticated in-process/local IPC
+only, disabled by default; even a loopback HTTP/SSE listener needs a separate
+origin/authentication/security decision. This clarifies DEC-088's local-only wording.
+Owners: ARCH/07–16, ARCH/18, ARCH/22–25, ARCH/31, ARCH/34–36.
+
+**Historical read-through notes:** DEC-011's naming restriction is superseded in scope
+by DEC-030's external adapter support; vendor types still stay outside core.
+DEC-073's eligible-class Guard slice is present at source baseline 8040037, while
+Run acknowledgement/expiry/revocation acceptance is still open. DEC-058 publishes
+finite proposed ceilings; their sufficiency for multi-hour workloads is unmeasured.
+
+## DEC-092 — Artifact, exact composer and conversation interaction contracts
+
+Status: proposed; user-approved design scope, 2026-09-30. Adopt ARCH/37's local artifact
+picker, two bundled authoring/reference skills, conditional bounded rich previews,
+immutable version feedback, exact-byte folded paste, image chips and durable drafts.
+Queue edit uses controller CAS; recap does not compact; user branching is distinct
+from worker context forks. Every action uses the existing catalog/ControlService.
+This supersedes metadata-only preview as a universal future limitation, retaining
+metadata fallback whenever a renderer is unavailable. REQ-UI-034..038; AX-401..405.
+
+## DEC-093 — Responsive interaction and measured fast execution
+
+Status: proposed, 2026-09-30. Adopt bounded dirty-region streaming/highlighting,
+event-driven motion with reduced/off modes, background optional discovery, persistent
+services, conservative rolling tool pools and stable provider-specific context epochs.
+Mandatory policy, durable receipts, whole-batch admission and effect reconciliation
+remain on the correctness path. Code Mode remains isolated and evaluation-gated.
+Provider-specific cache updates are optional capability adapters. ARCH/37 owns
+unverified latency targets; REQ-PERF-005/006, REQ-UI-039; AX-406/408.
+
+## DEC-094 — Separate litePSM lifecycle owner behind a Horizon port
+
+Status: proposed, 2026-09-30. ARCH/38 defines optional explicit litePSM management of
+MCP/skill/plugin packages through the portable bridge, with one installation owner.
+Horizon retains Run/Guard/effect/evidence authority and native configured capabilities.
+No shared database, copied secret store or duplicate managed provider supervisor.
+Both local and external policy must permit delegated effects. Unsupported approval,
+reconciliation, confinement or protocol guarantees block the affected capability.
+This refines DEC-082/ARCH21's Shared Market: litePSM supplies the external catalog and
+managed lifecycle; Horizon is a consumer rather than a second catalog build service.
+REQ-PROTO-009; AX-407. Sibling corrections require its own contributor workflow.
+
+## DEC-095 — Required installer wrappers and optional onboarding
+
+Status: proposed, 2026-09-30. Require Bash and PowerShell platform wrappers around
+the same authenticated signed installation path, plus safe first-run onboarding.
+Wrappers are release deliverables pending trust/bootstrap/platform acceptance; no
+unverified executable installer is created by this documentation task. ARCH/30 owns
+validation, atomic installation, PATH choices, rollback and onboarding. AX-410.
+Historical ADRs stay historical; later contracts amend their affected scopes explicitly.

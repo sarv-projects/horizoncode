@@ -77,6 +77,8 @@ target component and is not implemented at the source snapshot above.
 | `CMP-runner` | Runner / Loop | Control | One admitted turn's provider/tool step loop, continuation, cancellation and terminal receipt; `CMP-orch` grants system-wide run/work admission before dispatch |
 | `CMP-verifier` | Independent runtime verifier | Control plane | Evaluates an exact workspace revision against the approved specification and scenarios and returns typed `PASS \| FAIL \| INSUFFICIENT_EVIDENCE` under a one-use `VerificationPermit` issued by `CMP-orch`; cannot grant tool authority, change run/task state, or write canonical truth (`ARCH/23`, `ARCH/25`) |
 | `CMP-execution-host` | Worker execution host | Runtime boundary | Idempotent local process launch, process/adapter handle ownership, heartbeat and exit observation, termination, and restart observations for `WorkerExecution`; no durable task-state, permission, or verification authority |
+| `CMP-worker` | Worker fabric | Runtime boundary | Registry and capability-based dispatch of HorizonCode-owned `WorkerAdapter` contracts; workers are profiles/roles, while `WorkerExecution` is one live incarnation (`ARCH/16`, `ARCH/34`) |
+| `CMP-workspace` | Workspace manager | Runtime boundary | Fenced mutable workspace creation, snapshot, diff, changed-path enumeration, integration, restore, and disposal through `WorkspaceProvider`; Git worktrees are one adapter, not orchestration identity (`ARCH/16`, `ARCH/25`, `ARCH/34`) |
 | `CMP-session` | Thread store | Persistence | Durable HorizonCode Threads (legacy component/crate name), segmented event log, committed head, bounded replay, read-only listing, explicit recovery, checkpoints, canonical Thread artifact references, user-local ProjectIdentity/workspace registry, and rebuildable message/title search projection plus verified navigation (`ARCH/07`) |
 | `CMP-artifact` | Artifact store | Persistence | Scoped immutable payload bytes, digest verification, bounded reads, physical emergency-space reservation, owner pins, import/export staging and safe garbage collection (`ARCH/28`) |
 | `CMP-context` | Context engine | Capability | Assembly, budget, task-specific repo context, selection, compaction, pins/excludes; consumes revision/freshness evidence from `CMP-repo-intel` |
@@ -92,7 +94,8 @@ target component and is not implemented at the source snapshot above.
 | `CMP-acp` | ACP edge | Surface | ACP server (stdio) and client modes; protocol mapping |
 | `CMP-mcp` | MCP edge | Capability | MCP host: server lifecycle, tool/resource/prompt mirroring, dedupe |
 | `CMP-extension-catalog` | Extension catalog | Capability | Federated listing metadata, source adapters, identity/deduplication, bounded search, and compatibility evidence; no package execution, credentials, authorization, or runtime capability state (`ARCH/21`) |
-| `CMP-tui` | TUI | Surface | Explorer/editor left dock, central chat, verified Tasks right pane, composer, palette, settings, permissions, telemetry; virtualized and bounded (`ARCH/06`) |
+| `CMP-tui` | TUI | Surface | Three-pane workspace with task-adaptive content, composer, palette, settings, attention queue and evidence viewers; projections only, virtualized and bounded (`ARCH/06`) |
+| `CMP-ag-ui` | AG-UI edge adapter | Surface adapter | Optional translation between authenticated user clients and the typed control API; read-only event projection plus typed request submission; no canonical state, authorization, or permission authority (`ARCH/15`, `ARCH/31`) |
 | `CMP-headless` | Headless | Surface | Non-interactive run, structured output, CI use |
 | `CMP-config` | Configuration | Capability | Discovery precedence, validation, instructions, skill/plugin/hook configuration, typed memory settings; no memory domain behavior |
 | `CMP-memory` | Memory service | Capability | Provenance-bearing candidate records, user review/consent, dedupe/conflict/supersession, retrieval, bounded consolidation and deletion (`ARCH/33`); no policy or verification authority |
@@ -182,7 +185,7 @@ ordinary turns into mandatory Run workflows (`DEC-075`).
 | Indexing | SCIP ingest | Precise cross-repo symbol data where available |
 | Sandbox | bubblewrap subprocess; Seatbelt source; future Landlock/seccomp and native AppContainer implementation | Tiered confinement only after per-tier acceptance; do not infer linked or enforced from a dependency name |
 | Hashing | `blake3` | Audit chain and content hashing |
-| Plugins/skills | WASM (`wasmtime`) | Sandboxed extensibility |
+| Skills / optional executable plugins | Declarative Markdown skills / separately gated WASM plugins | Skills do not execute WASM; plugin execution requires its own reviewed boundary |
 | ACP/MCP | Protocol SDKs (permissive) | Avoid re-implementing wire protocol |
 | CLI | `clap` | Argument parsing |
 
@@ -256,3 +259,32 @@ capability as unverified or unavailable.
   `ARCH/30`).
 - The installer reports toolchain prerequisites when a source build is required (`REQ-VISION-002`).
 - Config discovery walks from global to project scope; nearest wins; JSONC accepted.
+
+## Proposed adapter boundary
+
+The core depends on HorizonCode-owned ports. Vendor SDKs, foreign worker configuration
+schemas, concrete workspace engines, UI frameworks, and transport event schemas remain
+at the repository edge. CMP-worker, CMP-workspace, CMP-execution-host, CMP-sandbox,
+and CMP-repo-intel are distinct named responsibilities; a future crate split is not
+implied by the component names. See ARCH/34 for forbidden dependency rules.
+
+## Final ownership refinements (proposed, DEC-091)
+
+CMP-agent-directory owns registered profiles and trust revisions; CMP-worker consumes
+those profiles, negotiates capabilities, and executes adapter routing requested by
+CMP-orch. Only CMP-orch schedules and commits canonical Run/Task/Attempt transitions.
+CMP-runner proposes tool/task observations, never owns the task graph. CMP-execution-host
+spawns/reaps; CMP-sandbox prepares/enforces reach; CMP-workspace owns mutable source
+bindings; CMP-repo-intel owns indexing; CMP-context assembles bounded requests.
+
+Markdown skills are declarative instructions. Optional WASM executable plugins are a
+separate lifecycle. Provider retries execute mechanically under controller-owned
+ceilings/counters. Platform backend presence is not platform acceptance: Windows
+confinement remains absent at the recorded source baseline; macOS/Linux mechanisms
+require exact platform evidence before any enforcement claim.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+ARCH/37 adds interaction/background/turn-path contracts through existing owners. ARCH/38 adds a peripheral ExtensionManager port/LitePsmAdapter; no extra scheduler, verifier or package-state authority. Context consumes repo intelligence, Sandbox prepares confinement, ExecutionHost owns launch/reap.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.

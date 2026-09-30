@@ -126,3 +126,32 @@ must not be mislabeled as absent merely because implementation remains incomplet
 - `F-29`: local models were capability-probed for transport/tool calls but
   had no explicit edit-parser and diagnostics contract. `REQ-PROV-007`
   defines a measured optional route.
+
+## Additional focused ecosystem crosswalk (2026-09-30)
+
+| Source | Observed scope | HorizonCode disposition |
+|---|---|---|
+| AutoGPT Platform | Installer-bound environment/image digest; workflow/runtime concepts | Pattern only at U-AUTOGPT-ENV; PolyForm subtree excluded from copying/adaptation. |
+| planning-with-files | Filesystem-backed working notes and explicit completion prompts | Bounded ExecutionBrief projection only; owner stores remain canonical; no copied hooks/files. |
+| LobsterAI | Desktop product/runtime separation and config translation | WorkerConfigRenderer pattern only; no OpenClaw runtime/foreign schema in core. |
+| SuperAGI | Historical toolkit/capability grouping signal | Low-confidence ecosystem input; not a parity or architecture authority. |
+| AG-UI | Bidirectional event transport between an agent backend and user frontend | Optional edge client adapter only; internal ControlService remains canonical. |
+
+Pins, license posture, and source coverage are in SRC-037..041 and
+research docs/architecture-evolution-review-2026-09.md. These rows do not grant a
+license to copy or claim feature parity.
+
+## Final crosswalk scope refinement
+
+Code structure and documented UI behavior are research observations, not launched
+usability or full peer conformance. Aider/repository-map indexing belongs to
+CMP-repo-intel (ARCH/36); CMP-context consumes its bounded results. External worker
+execution uses WorkerFabric without adopting peer task truth. Historical ACC-H1-01..10
+references retain their original scope; new feature delivery also needs the applicable
+ACC-H1-11/12 and UX acceptance. No peer comparison grants code/license clearance.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+DeepSeek scheduler/PTC/prefix/compaction/Ralph observations are pinned in ARCH29 and the new research report. Adapt conservative rolling pools and optional bounded strategy recipes; reject hot capability widening and worker-complete as PASS. Antigravity performance anecdotes are research motivation, not measured Horizon benchmarks.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.

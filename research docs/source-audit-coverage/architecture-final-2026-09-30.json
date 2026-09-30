@@ -1,0 +1,690 @@
+{
+  "date": "2026-09-30",
+  "head": "42466aa410d50d5135195ba8823636a397524f95",
+  "scope": "Architecture documentation only; no product tests/builds or usability run",
+  "initial_file_count": 36,
+  "initial_line_count": 15183,
+  "final_line_count": 15949,
+  "files": {
+    "ARCH/00-INDEX.md": {
+      "initial_sha256": "a1bea9994e8c21217e7d81b61b70d90d7a84040abe1e0d345c2e645599ebf98c",
+      "read_ranges": [
+        [
+          1,
+          91
+        ]
+      ],
+      "initial_lines": 91,
+      "final_sha256": "3c2a11eb42f3502522da3868a94de54aee2629d2492f84d7becf186eb53454f7",
+      "final_lines": 101,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/01-VISION.md": {
+      "initial_sha256": "6e4702a4e7dee324c089144ee3c39e7b6ff53461e1b084a8d0eb33036dee3a2d",
+      "read_ranges": [
+        [
+          1,
+          69
+        ]
+      ],
+      "initial_lines": 69,
+      "final_sha256": "471442cb8356f3aef6d02d2ecba170c5bde7599f5e948a5122ce65cba322d9b9",
+      "final_lines": 81,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/02-REQUIREMENTS.md": {
+      "initial_sha256": "682c85351a8bda3039679905b083711be2d21c86d192cfc69a2938144ab6c078",
+      "read_ranges": [
+        [
+          1,
+          74
+        ],
+        [
+          75,
+          132
+        ],
+        [
+          133,
+          199
+        ],
+        [
+          200,
+          270
+        ],
+        [
+          271,
+          313
+        ],
+        [
+          314,
+          341
+        ]
+      ],
+      "initial_lines": 341,
+      "final_sha256": "983a39b8cf3f44ee7c642f088f750a214facede7eb534993f6432c7bcd709ba2",
+      "final_lines": 360,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/03-ARCHITECTURE.md": {
+      "initial_sha256": "4b0902ba8ba84bbe2658948e78cd276c7eadd223d219de83c0a3ad104b2b68df",
+      "read_ranges": [
+        [
+          1,
+          241
+        ],
+        [
+          242,
+          269
+        ]
+      ],
+      "initial_lines": 269,
+      "final_sha256": "e617abf83b0545757b62ebde9e7c0bf9074cf51da864309fb97502e9d6c8d808",
+      "final_lines": 284,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/04-DECISIONS.md": {
+      "initial_sha256": "dacfc2553262fa49e55d5c5e046ce4a6280b2bc3eb5e7fcb538e5db15e9d45b9",
+      "read_ranges": [
+        [
+          1,
+          273
+        ],
+        [
+          274,
+          582
+        ],
+        [
+          583,
+          949
+        ],
+        [
+          950,
+          1278
+        ],
+        [
+          1279,
+          1635
+        ],
+        [
+          1636,
+          1961
+        ],
+        [
+          1962,
+          2177
+        ]
+      ],
+      "initial_lines": 2177,
+      "final_sha256": "81c6de6669a70331e3dbf191644ab96d384309c0a9ee97fa591f219e709abc2f",
+      "final_lines": 2216,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/05-SOURCE-LEDGER.md": {
+      "initial_sha256": "0818cf5e78458e8eb6c7e2cd42bd8ce19f42e52c83f36acac8b30a8a1561cd84",
+      "read_ranges": [
+        [
+          1,
+          156
+        ],
+        [
+          157,
+          183
+        ]
+      ],
+      "initial_lines": 183,
+      "final_sha256": "476010fa4e93de877e2cdd366c8346202d777404f30596cf624cc3b65cd7afb1",
+      "final_lines": 193,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/06-UI.md": {
+      "initial_sha256": "04a7b30ebf26b7d58ecdf3ace94bcc6168e39b0a9e165f39710ce1a5e4924d7b",
+      "read_ranges": [
+        [
+          1,
+          237
+        ],
+        [
+          238,
+          589
+        ],
+        [
+          590,
+          752
+        ]
+      ],
+      "initial_lines": 752,
+      "final_sha256": "7590858f37cf512c615f45908a8f9e64ef9fd201f81c2b106e4407406da39e21",
+      "final_lines": 808,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/07-SESSION.md": {
+      "initial_sha256": "d58e20499da9af2c094b51223aaae8222a5ec74ee2360ce759a5f2659f64294b",
+      "read_ranges": [
+        [
+          1,
+          377
+        ],
+        [
+          378,
+          683
+        ],
+        [
+          684,
+          919
+        ],
+        [
+          920,
+          929
+        ]
+      ],
+      "initial_lines": 929,
+      "final_sha256": "d9c3bca9bcd8076a1748afab5867d280b9c51d6e2b59b2d089bd3c443f3d568f",
+      "final_lines": 959,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/08-LOOP.md": {
+      "initial_sha256": "0ff3e0fb3cb6ee19714d2de45368ca04bc329c05a5b4f3acaea0e582f9ce1d5b",
+      "read_ranges": [
+        [
+          1,
+          317
+        ],
+        [
+          318,
+          422
+        ]
+      ],
+      "initial_lines": 422,
+      "final_sha256": "e2e8ae08b8160a0b44f4dda0f82736d225be4033cf43a99bd4eb4ddf45dff5bc",
+      "final_lines": 445,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/09-CONTEXT.md": {
+      "initial_sha256": "34230645dcf183f2230945499b81f5a374c8d3f29c4587507bd63bcfe5b1dae2",
+      "read_ranges": [
+        [
+          1,
+          407
+        ],
+        [
+          408,
+          538
+        ]
+      ],
+      "initial_lines": 538,
+      "final_sha256": "b93393c67ecd224c6430500754c9e276034f3fd6239eace553868fcf6c087f52",
+      "final_lines": 562,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/10-TOOLS.md": {
+      "initial_sha256": "b8ceba8e7e678ea12e655e3aac24648c9e527f4bcd2516d2fcdc1a969a0302ce",
+      "read_ranges": [
+        [
+          1,
+          360
+        ],
+        [
+          361,
+          673
+        ]
+      ],
+      "initial_lines": 673,
+      "final_sha256": "b907661310234c0c84258f01a99af2c0e54e1cdaa8471ebec264a379c29549b5",
+      "final_lines": 701,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/11-PROVIDER.md": {
+      "initial_sha256": "2116b3359dd0a9be0a623cdee1180aaa2bb6fabeee4b8b8b8516457274349bfd",
+      "read_ranges": [
+        [
+          1,
+          303
+        ],
+        [
+          304,
+          434
+        ]
+      ],
+      "initial_lines": 434,
+      "final_sha256": "d3e31a24ac07c272f3040f3563ca3699f58440b6b3a6d7d33d5ed249a3946fbe",
+      "final_lines": 451,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/12-GUARD.md": {
+      "initial_sha256": "a5229514457b036ef05c101d3242d924ad9b87fb6d9c32acc2ebd5a4ee1e1114",
+      "read_ranges": [
+        [
+          1,
+          379
+        ],
+        [
+          380,
+          448
+        ]
+      ],
+      "initial_lines": 448,
+      "final_sha256": "8df23a4ea03efdaae6a8b3902c957fb6b114fd079a2a1969de17b82e276df4ae",
+      "final_lines": 465,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/13-SANDBOX.md": {
+      "initial_sha256": "cf407b13211d4c56ec2af4a26a7471a29255add0f634f3d174cc2c06066f88c7",
+      "read_ranges": [
+        [
+          1,
+          364
+        ],
+        [
+          365,
+          449
+        ]
+      ],
+      "initial_lines": 449,
+      "final_sha256": "8c3463253e799b09cd8f4c65dcd686a90f89d182f39cb24b7574d6b2bd5a10d8",
+      "final_lines": 466,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/14-AUDIT.md": {
+      "initial_sha256": "966be3c84ee6cc63b48b78e6c73cde98997fb516edd9eede1d1dc4df50424ec9",
+      "read_ranges": [
+        [
+          1,
+          389
+        ],
+        [
+          390,
+          596
+        ]
+      ],
+      "initial_lines": 596,
+      "final_sha256": "72002622d8860a510ed9d1dd9b51e538d6704124e786cc72050a39096ebc98c2",
+      "final_lines": 613,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/15-PROTOCOLS.md": {
+      "initial_sha256": "de81d31abc7726f9315e6d618d670ff5ea5b205e4bf9d5052f22c21cc520cfb1",
+      "read_ranges": [
+        [
+          1,
+          245
+        ],
+        [
+          246,
+          298
+        ]
+      ],
+      "initial_lines": 298,
+      "final_sha256": "8b8c9f9a40df23f2dc541cad0fba5277e3cc6e6a43d73a27d4c64954a5950a4a",
+      "final_lines": 321,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/16-ORCH.md": {
+      "initial_sha256": "2521f4400a9b9e5ad23cac8dcdedbf5531156a3c2b04ca8ab05d687d8b20edb4",
+      "read_ranges": [
+        [
+          1,
+          244
+        ],
+        [
+          245,
+          306
+        ]
+      ],
+      "initial_lines": 306,
+      "final_sha256": "df3bcc78bfa0f8fb192384ee9b7d92373e72100320d11c43645bd8559aee4f21",
+      "final_lines": 327,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/18-CONFIG.md": {
+      "initial_sha256": "ba1f14270599e8115f40f745084d34ba0c012620af5877b90135a231e071e73e",
+      "read_ranges": [
+        [
+          1,
+          256
+        ],
+        [
+          257,
+          312
+        ]
+      ],
+      "initial_lines": 312,
+      "final_sha256": "6e6962b374f895e713b51102f223bc515af1b8ebb0d8c8b0be836378e0839308",
+      "final_lines": 334,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/19-COMPRESSION.md": {
+      "initial_sha256": "13d7d84b54123739a3d893bcf0dafb7bd91a35406f6780cbdbab16c5efb208da",
+      "read_ranges": [
+        [
+          1,
+          97
+        ]
+      ],
+      "initial_lines": 97,
+      "final_sha256": "55e41d68ae5efb0327aa819b8e73d5706759656d3b9b887b1cd0b8432b191118",
+      "final_lines": 108,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/20-ANALYTICS.md": {
+      "initial_sha256": "05b5731627f0d906a8046c72c54a15a4ec7328b67b3e067b3a9163a538e0787d",
+      "read_ranges": [
+        [
+          1,
+          108
+        ]
+      ],
+      "initial_lines": 108,
+      "final_sha256": "5ab99082e28a72fbb194368b091fe1ee5dd974044c55cabddc0b71b01eb1f095",
+      "final_lines": 118,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/21-DISCOVERY.md": {
+      "initial_sha256": "b802e434027796ca62e7c039130b5c478e9ce2da1826842c93dd2608bdb14841",
+      "read_ranges": [
+        [
+          1,
+          281
+        ],
+        [
+          282,
+          379
+        ]
+      ],
+      "initial_lines": 379,
+      "final_sha256": "f53ed3b89c2749d5d8844fde455a8edb550be4cfd3a4d6c2e61c3cda010719f5",
+      "final_lines": 399,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/22-SECURITY.md": {
+      "initial_sha256": "84eb3392b06d74c672cc86b6c76267a00d1b5fc3bdcbbc3202a278bc1a10f2f8",
+      "read_ranges": [
+        [
+          1,
+          223
+        ],
+        [
+          224,
+          296
+        ],
+        [
+          297,
+          482
+        ],
+        [
+          483,
+          687
+        ]
+      ],
+      "initial_lines": 687,
+      "final_sha256": "2494601ef6a60629a0180fa0877a5bf11ee84938e6c371b4294896490c9409ff",
+      "final_lines": 724,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/23-VERIFICATION.md": {
+      "initial_sha256": "64e71e7480c7d37446edc1bca825734a3bbb55cf0335d119669edd83c8588748",
+      "read_ranges": [
+        [
+          1,
+          116
+        ],
+        [
+          117,
+          235
+        ],
+        [
+          236,
+          305
+        ],
+        [
+          306,
+          585
+        ],
+        [
+          586,
+          656
+        ]
+      ],
+      "initial_lines": 656,
+      "final_sha256": "42c3a70826ea78aed9739b86bb1679a89091ca8acf457686e57a9e7dab39dcb0",
+      "final_lines": 685,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/24-ARCHITECTURE-REVIEW.md": {
+      "initial_sha256": "8c4aa0b891e62fba58dea66aeebfc3d1673478217e10ee8251cc32167511f19d",
+      "read_ranges": [
+        [
+          1,
+          67
+        ],
+        [
+          68,
+          87
+        ],
+        [
+          88,
+          111
+        ],
+        [
+          112,
+          222
+        ],
+        [
+          223,
+          225
+        ]
+      ],
+      "initial_lines": 225,
+      "final_sha256": "9968d52f652f13180ac3c4cc4bec38749daaf354f5221de2a0a62a6c1bc86c81",
+      "final_lines": 243,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/25-LONG-HORIZON-CONTROL.md": {
+      "initial_sha256": "6da87aae7dd81e4541c231ff9e7009a9b52247334a5b6afb201e7569ac9558e0",
+      "read_ranges": [
+        [
+          1,
+          122
+        ],
+        [
+          123,
+          326
+        ],
+        [
+          327,
+          611
+        ],
+        [
+          612,
+          825
+        ],
+        [
+          826,
+          907
+        ]
+      ],
+      "initial_lines": 907,
+      "final_sha256": "2fd09dbb3b3aa72819278a9d2e176d863b19f8b3e0b365d70eb0604b44fc6bfe",
+      "final_lines": 985,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/26-CORE-AGENT-CROSSWALK.md": {
+      "initial_sha256": "43d2e4cd5a4e70994e6bdd1c7709c7690e36dacc06d808341cd79b099eb0f7a9",
+      "read_ranges": [
+        [
+          1,
+          98
+        ],
+        [
+          99,
+          142
+        ]
+      ],
+      "initial_lines": 142,
+      "final_sha256": "4d943fc4fc056936861a62d20e9b53abb319870d0ddec7d81f7ac5e440645e10",
+      "final_lines": 151,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/27-COMMANDS-AGENTS-SETTINGS.md": {
+      "initial_sha256": "e4f80ed6ac69901bffac83485210ebdace97cd54ae5b67f54cb3b80e7d4c2184",
+      "read_ranges": [
+        [
+          1,
+          280
+        ],
+        [
+          281,
+          430
+        ],
+        [
+          431,
+          728
+        ],
+        [
+          729,
+          751
+        ]
+      ],
+      "initial_lines": 751,
+      "final_sha256": "23213c87d2eefa2e1a66f3cac9b95dd9b365efc25846b88f06a6afb89e514ab6",
+      "final_lines": 787,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/28-ARTIFACT-STORE.md": {
+      "initial_sha256": "5d6e8756a239693106bb4bf78bcba9073c0890de4346f1f8f7a36f84a70cf492",
+      "read_ranges": [
+        [
+          1,
+          246
+        ]
+      ],
+      "initial_lines": 246,
+      "final_sha256": "e67a03362139600f5a26d9ed4976ffb38931c2413518865c7529660ef3396542",
+      "final_lines": 256,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/29-SOURCE-TRACEABILITY.md": {
+      "initial_sha256": "dff8223a15ac4fb2c1749788d31c9d4d44a470093d4ff587ab1d0a58fb0a9cd4",
+      "read_ranges": [
+        [
+          1,
+          67
+        ],
+        [
+          68,
+          138
+        ],
+        [
+          139,
+          196
+        ],
+        [
+          197,
+          237
+        ],
+        [
+          238,
+          249
+        ]
+      ],
+      "initial_lines": 249,
+      "final_sha256": "c0b4bff4967cb0f48897d3c13b8e38208d816b00452c9511e6024657fa9712dc",
+      "final_lines": 261,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/30-DISTRIBUTION-UPDATES.md": {
+      "initial_sha256": "240274493a19fbc2db3b8638b58481411bacc0e3138e091bcd40581bd93f6d19",
+      "read_ranges": [
+        [
+          1,
+          369
+        ],
+        [
+          370,
+          407
+        ]
+      ],
+      "initial_lines": 407,
+      "final_sha256": "222d28e85b6bb527bb37b31a3a45c0ff10d8e1674332422361c21ec0d9d474d0",
+      "final_lines": 419,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/31-CONTROL-API-APP-SERVER.md": {
+      "initial_sha256": "799cd65a6828c08d66ded267bb2a7cc802f0dc99ff04c813aa62f01223ed387e",
+      "read_ranges": [
+        [
+          1,
+          288
+        ]
+      ],
+      "initial_lines": 288,
+      "final_sha256": "516d2c14e375e82e7bb0949b8e7f8956333f8d0db8095862bae1c8599d044ab4",
+      "final_lines": 307,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/32-AGENT-MESSAGING.md": {
+      "initial_sha256": "5b99dc8760123bb98f555f53988e5fbc875bbc2dfb4230662abc8a01f331909a",
+      "read_ranges": [
+        [
+          1,
+          243
+        ]
+      ],
+      "initial_lines": 243,
+      "final_sha256": "9ff530c4e97be49ef1f5829811a3f2b2524747685784da6a8659c54d0513343a",
+      "final_lines": 254,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/33-MEMORY.md": {
+      "initial_sha256": "a9b1a3bcf7cfee631016df3a98e93b30bd64449d4a76b30a25c60a30182c6de0",
+      "read_ranges": [
+        [
+          1,
+          329
+        ]
+      ],
+      "initial_lines": 329,
+      "final_sha256": "5d152e031b9761665884c933e551d735f1ee8ebc6ec2f8b104c137cdd5f4bbbc",
+      "final_lines": 342,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/34-MODULARITY-AND-BOUNDARIES.md": {
+      "initial_sha256": "8dfb8f9e147e6d7170262a17eefe4f7e561f6227573ada4885d177ebfd93b5be",
+      "read_ranges": [
+        [
+          1,
+          82
+        ]
+      ],
+      "initial_lines": 82,
+      "final_sha256": "c320c01ed62b6752d48447c2ee1bf281419b31d3c28b8dce8b6cdb3291d482d9",
+      "final_lines": 93,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/35-CAPABILITY-PARITY-AND-EVOLUTION.md": {
+      "initial_sha256": "0502e54a6589b602fd40c6ab6d1b3e0fdbfb7c8eaf598a0027719b73122e94a2",
+      "read_ranges": [
+        [
+          1,
+          52
+        ]
+      ],
+      "initial_lines": 52,
+      "final_sha256": "b7f51273e637fb9a760baf9d2195f8ac84dd0d44f807399059032286c0079dfd",
+      "final_lines": 64,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    },
+    "ARCH/36-CODE-INTELLIGENCE.md": {
+      "initial_sha256": "3ca998f87926567ee0b6fdd712424a091f70759fecdc6a90769ef1d62ef4d50b",
+      "read_ranges": [
+        [
+          1,
+          48
+        ]
+      ],
+      "initial_lines": 48,
+      "final_sha256": "6a5b2cc8628c993199cd7064de09f3d9ca3687c1c0064d173485efc39e6212ad",
+      "final_lines": 66,
+      "review": "Initial ranges read in full; resulting additions and replacements inspected in final diff review."
+    }
+  }
+}

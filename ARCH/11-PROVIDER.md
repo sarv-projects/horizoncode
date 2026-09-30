@@ -264,10 +264,11 @@ fields:
 
 ```text
 catalog_status: listed | absent | retired | unknown
-auth_status: api_key | bearer_token | oauth_pkce | oauth_device_code |
+auth_methods[]: api_key | bearer_token | oauth_pkce | oauth_device_code |
              customer_owned_oauth | cloud_cli_identity | cloud_identity_chain |
              service_account | local_no_auth_documented | custom_endpoint |
              unknown | policy_unavailable
+credential_status: MISSING | CONFIGURED | EXPIRED | DENIED | UNKNOWN
 protocol_status: supported(protocol_id) | adapter_required | unsupported | unknown
 capability_status: declared | conformance_tested | failed | not_tested | stale
 availability: usable | needs_configuration | needs_registration | unavailable |
@@ -361,7 +362,7 @@ QuotaObservation {
 
 1. **Catalog load.** On boot, load the curated primary and validated caches, then schedule due OpenCode metadata refresh in the background; generic enrichment refresh runs only when opted in. Resolve records lazily. Projection merges provider and model fields (`provider.api` defaults overlaid by model overrides). Each view shows source, retrieval time, expiry, and stale/error state.
 2. **Model step.** `Router.resolve` picks a route → `Executor.prepare` applies auth, lowers tool schemas, and builds the protocol body → transport sends → framing decodes bytes → protocol translates frames into the common typed stream (`step-start · text/reasoning/tool-input deltas · tool-call · tool-result · step-finish · FinishRecord · usage · provider-error`) → usage is recorded against immutable `model_attempt_id` and `logical_step_id`, including partial attempts. These IDs are distinct from orchestration's task-attempt ID. Consumers branch on normalized capability/evidence, never raw provider id/reason text.
-3. **Retry ownership (single-owner rule).** Transport retries only for request-start failures and other explicitly classified safe cases, bounded by controller-owned attempt count, total elapsed deadline, maximum backoff multiplier, and maximum absolute delay, with bounded jitter. Parse `Retry-After` in seconds, milliseconds, or HTTP-date, sample wall time before converting to a monotonic deadline, and clamp it to the remaining controller ceiling; peer values cannot extend that ceiling. A request body that may be replayed or incur provider-side work/billing is retryable only when acceptance is known not to have occurred or a provider-documented idempotency mechanism is used with the same stable request/effect key. No key and uncertain acceptance means no replay. On exhaustion, retain the actual terminal typed error, request ID, and attempt identity; do not replace it with a synthetic status. Pre-content stream interruptions retry via buffer-until-proven and reconcile usage across discarded attempts. Post-content transport failures are handed to `CMP-runner`'s turn-level recovery. A user abort anywhere vetoes retry. Context overflow is **terminal** here: the adapter surfaces typed `context_overflow` and does not re-request; `CMP-context` owns the existing single compact-and-retry. Output truncation is classified in the `FinishRecord`; only `CMP-runner`/the durable controller may request the separate bounded remaining-context recovery in `ARCH/08`/`DEC-054`.
+3. **Retry ownership (single-owner rule).** Transport retries only for request-start failures and other explicitly classified safe cases, bounded by controller-owned attempt count, total elapsed deadline, maximum backoff multiplier, and maximum absolute delay, with bounded jitter. Parse standard `Retry-After` as integer seconds or HTTP-date; milliseconds belong only to an explicitly documented vendor header. Convert a sampled date to a monotonic wait. Honor the server minimum if it fits the controller deadline; otherwise stop/defer rather than shorten the wait or extend the ceiling. See [RFC 9110 §10.2.3](https://www.rfc-editor.org/rfc/rfc9110.html#section-10.2.3). A request body that may be replayed or incur provider-side work/billing is retryable only when acceptance is known not to have occurred or a provider-documented idempotency mechanism is used with the same stable request/effect key. No key and uncertain acceptance means no replay. On exhaustion, retain the actual terminal typed error, request ID, and attempt identity; do not replace it with a synthetic status. Pre-content stream interruptions retry via buffer-until-proven and reconcile usage across discarded attempts. Post-content transport failures are handed to `CMP-runner`'s turn-level recovery. A user abort anywhere vetoes retry. Context overflow is **terminal** here: the adapter surfaces typed `context_overflow` and does not re-request; `CMP-context` owns the existing single compact-and-retry. Output truncation is classified in the `FinishRecord`; only `CMP-runner`/the durable controller may request the separate bounded remaining-context recovery in `ARCH/08`/`DEC-054`.
 4. **Routing.** Filter (policy-allowed, healthy, not cooling down, meets task requirements: context size, vision, tool-calling, reasoning) → rank by configured strategy → pick → persist the selected route and ordered permitted fallback chain at managed-attempt admission → record an observable decision. A catalog refresh cannot change an admitted chain. Cross-provider fallback follows `DEC-070`/`REQ-PROV-012`: it is allowed only for a typed transient failure before any provider content or tool-call delta is exposed, and only to a pre-pinned compatible, authorized route with a successful budget reservation. Auth, authorization, quota, policy/egress, protocol/schema, capability, cancellation, and post-exposure failures never silently switch providers. Each actual dispatch has its own immutable route snapshot and usage record; cooldown is applied to the failed deployment.
 5. **Eval gating.** When enabled, selection is bounded by published per-model suite scores and a configured threshold; the gate is deterministic and the score set is versioned.
 6. **Budget gates.** Token/cost ceilings are evaluated before sending; an exhausted budget fails closed with a typed reason and no silent downgrade.
@@ -428,7 +429,29 @@ QuotaObservation {
 
 1. **Wire-shape naming.** Adapters are named by framing grammar to preserve `DEC-011`; confirm this is acceptable in code identifiers versus assigning neutral protocol ids in the schema. The upstream identity mapping stays in `ARCH/05-SOURCE-LEDGER.md`.
 2. **OAuth registrations.** Each sign-in provider needs its own current documentation, terms, client registration, scope review, and callback/device-flow evidence. Providers needing another application's client identity remain unavailable until a lawful HorizonCode client integration is approved.
-3. **Cross-provider failover invalidation.** Semantics for failing over mid-stream with prompt-cache breakpoints, signed/opaque reasoning blocks, and in-flight tool-call ids are unresolved.
+3. **Cross-provider failover invalidation.** Resolved by DEC-070: no silent cross-provider failover after exposed content/tool deltas; only the pinned compatible pre-exposure route policy applies. Future mid-stream support needs a separate decision and acceptance.
 4. **Tokenizer strategy.** Per-provider exact tokenizers versus one conservative estimate shared with `CMP-context`.
 5. **Reasoning partial support.** Whether a model that supports *some* normalized effort levels ignores, maps, or errors on the rest.
 6. **Eval suite ownership.** Which suite, who publishes scores, and how the score artifact is signed/versioned is not yet fixed.
+
+## Final provider port and retry clarification (proposed, DEC-091)
+
+The Horizon-owned ModelProvider port exposes models, probe, stream and optional quota
+observations; it consumes common route/context value contracts, never context-engine
+internals. Vendor SDK payload/framing lives in model adapters, with one authoritative
+catalog. Authentication method and credential status are separate fields:
+`auth_methods[]` describes supported mechanisms; `credential_status` is
+MISSING/CONFIGURED/EXPIRED/DENIED/UNKNOWN with secret references only.
+
+Controller policy owns retry count, elapsed/spend reservation and stop decisions;
+the provider executes bounded safe transport retries. Post-exposure failures do not
+silently switch provider or replay: DEC-070 resolves that earlier open question.
+Usage remains per actual dispatch, including failed/partial attempts. A provider
+quota observation cannot increase local ceilings. Standard Retry-After units are
+seconds/date; documented vendor millisecond headers are adapter-specific.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+Provider receives common value contracts RouteCapabilities and request budgets, without importing context internals. Auth method vocabulary uses one schema generation (including provider_customer_registered_oauth and supported oauth_authorization_code); legacy spellings require migration. Cache hit and latency remain provider observations, not inferred guarantees. ARCH37 capability-specific prefix/continuation handling applies.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.

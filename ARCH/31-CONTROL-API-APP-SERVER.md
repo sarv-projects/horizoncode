@@ -274,3 +274,59 @@ unsupported platforms. See `research docs/tests.md`, `ARCH/23`, and TODO `AX-367
 
 No server, IPC transport, detached controller, or external SDK is implemented by this
 document. Current code entry points and absence are recorded in `ARCH/29`.
+
+## Optional external UI gateway (proposed, `DEC-088`)
+
+If an AG-UI adapter is later implemented, it is an authenticated client of the same
+`ControlService`, not a second dispatcher or Run owner. The current app server is
+same-host authenticated IPC; `REQ-HORIZON-030` still excludes unauthenticated or
+remote listeners. A separate decision must define remote identity, encryption,
+credential custody, authorization scopes, revocation, rate limits, origin handling,
+and exposure defaults before any network bind. The gateway applies the same method
+scopes and idempotency rules as local clients. Event projections preserve per-aggregate
+cursors; a gap, expired cursor, or unknown schema returns `RESNAPSHOT_REQUIRED` before
+enabling mutations. UI event fields cannot mint operator scopes or approvals.
+
+## Final method and action registry requirements (proposed, DEC-091)
+
+| Method | Owner / context | Receipt/event boundary |
+|---|---|---|
+| run.pause | CMP-orch; authenticated run:pause MutationContext | Persist fence/intent before acknowledgement; reconcile before PAUSED |
+| run.resume | CMP-orch; authenticated run:resume MutationContext | Revalidate budget/state/effects and strategy; no counter reset |
+| run.stop_now | CMP-orch; authenticated run:stop MutationContext | Persist fence; bounded supported-host termination; UNKNOWN remains explicit |
+| goal.start_status / agent.message.list / agent.message.status | CMP-orch; authenticated ReadContext | Bounded authorized read with owner cursor; no mutation nonce or spend |
+| workspace.select_view | CMP-config projection preference via ControlService | Layout-only change; no Run/task/permission transition |
+| proof.inspect | CMP-verifier projection via ControlService; authorized read | Exact task/revision/verdict and artifact refs; no PASS mutation |
+
+All other advertised UI actions register a versioned method descriptor before they
+become available. ARCH/27's action catalog references these descriptors, not internal
+stores. Connection authentication and per-method scopes apply to in-process and IPC
+paths equally. A client timeout queries the original delivery ID; a permanently lost
+terminal frame cannot substitute for canonical status. Initially AG-UI creates no
+TCP/HTTP/SSE listener, including loopback. A future listener requires the separate
+origin/authentication/encryption policy even if a local browser is its only client.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+ARCH37 artifact/draft/queue/branch/settings actions pass this single dispatcher with authenticated scope, operation IDs, CAS, bounded pages and replay cursors. ARCH38 is an outgoing local adapter, not a new unauthenticated listener. Unknown external schemas/methods refuse typed.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.
+
+## Interaction service method contracts (proposed, ARCH/37/38)
+
+| Service methods | Required request/result semantics |
+|---|---|
+| artifacts.list/search/stat/read_preview | Authenticated owner scope, bounded page/cursor and exact ArtifactRef; return coverage/availability and verified decoder output |
+| artifacts.attach/copy/export/open | Exact ref + operation ID; attach CAS draft, copy local capability, export/open Guard effect receipts |
+| artifacts.add_feedback/resolve_feedback | Exact version and anchor, expected owner revision, durable owner event; resolution cannot approve edits |
+| drafts.get/save/stage_part/remove_part/commit | Thread scope + draft revision/part ID/operation ID; exact-byte staging, CAS and durable input admission |
+| inputs.list/replace/cancel | Controller-owned delivery ID and expected queue revision; claimed conflict, supersession and cancellation receipt |
+| threads.recap/branch/fork/open | Committed visible cursor/scope, explicit workspace binding, create/open receipt; no permission/effect inheritance |
+| settings.preview/apply/reset | Expected config revision, scope, effective policy; atomic persistence and apply-boundary reporting |
+| skills.inspect_cost/set_visibility | Qualified source/digest, tokenizer/measurement scope; future generation only |
+| extensions.probe/search/prepare/execute/observe/cancel | ARCH38 normalized refs, externally bound plan/channel and horizon operation/effect IDs |
+
+Names are proposed typed in-process methods; JSON-RPC wire names require versioned
+schema publication and golden fixtures before exposure. One finite action descriptor
+maps each button/command to these services; no UI-owned alternate persistence. Every
+method carries cancellation/deadline, max bytes/items, stable error code and certainty.

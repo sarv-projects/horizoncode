@@ -56,7 +56,8 @@ ArtifactRef = {
 
 ArtifactOwner = {
   owner_kind: THREAD_EVENT | CHECKPOINT | RUN_EVENT | EVIDENCE |
-               ORIGINAL_REQUEST | EXPORT_JOB | MAINTENANCE | RECOVERY_QUARANTINE,
+               ORIGINAL_REQUEST | EXPORT_JOB | MAINTENANCE | RECOVERY_QUARANTINE |
+               DRAFT | ARTIFACT_FEEDBACK,
   owner_id,
   owner_revision_or_event_seq,
   artifact_ref
@@ -148,7 +149,7 @@ streamed/line-bounded so a corrupt huge record cannot force whole-log allocation
    bounded decode, egress permission, request/context budget and a read lease. API
    body encoding is ephemeral; analytics retain only byte/count/usage metadata, not
    media bytes. Provider-reported media token usage is distinct from estimates.
-4. UI v1 displays metadata and typed availability only. Future previews must use the
+4. UI displays metadata/typed availability when a bounded renderer is unavailable; the ARCH/37 rich preview target uses the
    same integrity-checked bounded decoder. Export writes all referenced bytes to a
    temporary bundle with a digest manifest and publishes the bundle only after full
    validation. Import validates every path/ref/byte before atomically publishing a
@@ -233,3 +234,30 @@ reference leases and the owner graph, GC mark/delete (including the
 incomplete-enumeration abort), decoders for `max_decoded_bytes`/pixels/expansion,
 export/import, the physical control reserve, and the Thread/Run integration that
 appends the reference only after the bytes are durable.
+
+## Developer artifact views (proposed)
+
+The immutable artifact store may hold typed developer outputs including Diff,
+TestReport, CoverageReport, BenchmarkReport, Screenshot, BrowserTrace,
+ArchitectureDiagram, Flamegraph, BuildLog, StaticAnalysisReport, and ProofPackManifest.
+Each artifact retains bytes, digest, provenance, tested revision/environment where
+applicable, and an explicit viewer/MIME hint. A viewer hint selects a bounded renderer;
+it never decodes untrusted content without limits or changes evidence verdict. Proof
+Pack manifests reference existing immutable evidence and do not become a second
+verification authority.
+
+## Final artifact proof and preview clarification
+
+Viewer/MIME hints are advisory metadata; active HTML/SVG/script execution is disabled.
+V1 metadata-only behavior remains explicit when no bounded decoder exists. Full output
+means exact retained captured bytes, with a capture-limit marker if the process stream
+exceeded its cap. Storage and proof metadata expand in the inspector; missing/corrupt
+media still shows a plain reason and recovery action. Artifact digest proves byte
+identity, not factual correctness, test coverage, or Task PASS. Physical reserve and
+reference-safe GC remain proposed until their named acceptance exists.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+ARCH37 bounded rich viewers extend metadata-only fallback. Add DRAFT and ARTIFACT_FEEDBACK owner references to the canonical owner graph before enabling draft recovery; GC enumerates these owners. Immutable versions/feedback belong to Thread/Run events. Renderer capability and MIME never grant active content authority.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.

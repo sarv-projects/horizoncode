@@ -109,6 +109,8 @@ pub fn run_skills(workspace: &std::path::Path, show: Option<&str>) -> Result<u8,
                     "unknown skill `{name}`; run `/skills` to list the catalog"
                 )));
             };
+            let inspection = horizoncode_config::inspect_skill(skill)
+                .map_err(|error| CliError::Config(error.to_string()))?;
             println!("{}", skill.name);
             println!("  scope:       {}", skill.scope.as_str());
             println!("  description: {}", skill.description);
@@ -117,7 +119,17 @@ pub fn run_skills(workspace: &std::path::Path, show: Option<&str>) -> Result<u8,
             }
             println!("  location:    {}", skill.location.display());
             println!("  digest:      {}", skill.digest);
-            println!("  body:        loaded only on activation");
+            println!("  body:        context loaded only on activation; inspection never injects");
+            println!("  body bytes:  {}", inspection.body_bytes);
+            println!(
+                "  body tokens: ~{} (UTF-8 bytes / 4 heuristic; not tokenizer-measured)",
+                inspection.estimated_body_tokens
+            );
+            println!(
+                "  estimate scope: body only; excludes catalog, resources and prompt wrappers"
+            );
+            println!("  observed injection: unknown");
+            println!("  activation count: unknown");
             Ok(EXIT_SUCCESS)
         }
     }

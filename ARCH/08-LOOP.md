@@ -73,12 +73,12 @@ controller can derive those states (`DEC-029`).
 |---|---|---|
 | INPUT | prompts, queued input, steers | admitted input rows |
 | ADMISSION | guard decision, budget, step limit | admitted/denied step; promotion |
-| PLAN | task graph, todo, goal | plan/task-graph update |
+| PLAN | task graph, todo, goal | proposal to RunController; attempt progress only |
 | MODEL STEP | route, context, tools | streamed display events + complete bounded response |
 | SCHEDULER | admitted complete tool batch | parallel groups + barriers |
 | EXECUTE | grouped calls | governed effects |
 | OBSERVE | settlements | model-content + UI-detail results |
-| UPDATE | results, usage | log events, task graph, cost |
+| UPDATE | results, usage | log events/cost and controller task-state proposals |
 | CONTINUATION | controller disposition, budget | continue · compact · yield · terminate turn |
 
 ### Completion contract
@@ -240,11 +240,11 @@ generation stream ends with typed `FinishRecord.finish = remaining_context_cap`
 (`ARCH/11`, `DEC-054`), never to a transport interruption or generic `length` reason.
 The provider adapter records cause evidence; it does not retry.
 
-1. Append an incomplete `assistant/attempt` with its `attempt_id`, `logical_step_id`,
+1. Append an incomplete `assistant/attempt` with its `model_attempt_id`, `logical_step_id`,
    `FinishRecord`, usage, and bounded `partial_ref` when partial output exists. Keep
    this visible and bill/account for it, but exclude it as a completed assistant turn
    from the next model context. The log is append-only.
-2. Admit exactly one recovery attempt for that `logical_step_id` only if no tool call
+2. Admit exactly one recovery attempt within the shared recovery allowance for that `logical_step_id` only if compaction.auto=true and no tool call
    was dispatched, the route had no provider-executed tools or other hidden side
    effects enabled, no new user/control/cancel input arrived, the task/spec/policy and
    workspace revisions still match, and the controller can reserve compaction, the
@@ -368,7 +368,7 @@ Configuration is layered (`defaults → user → workspace → agent profile →
 
 All automatic retry/reconnect branches have a finite controller-owned attempt and
 elapsed-time ceiling, exponential backoff with jitter where retryable, and a durable
-failure signature. Server `Retry-After` can shorten/defer within the cap but never
+failure signature. Server `Retry-After` is a minimum delay; if it exceeds the cap, wait/pause rather than retry early. It never
 raise it. No feature flag, environment variable, build profile, provider response,
 peer, or user/workspace setting may turn any retry loop unbounded (`REQ-SEC-013`).
 No-progress counters are updated only from controller-validated state/evidence
@@ -413,3 +413,39 @@ HorizonCode option (`research docs/codex.md`).
 4. **Barrier declaration surface.** Whether ordering barriers are declared by the tool author, the model, or the runtime from write-scope analysis; the reference sources imply but do not settle this.
 5. **Partial-marker semantics.** Whether a `partial` step auto-resumes on the next user input or requires explicit confirmation, and how it interacts with budgets.
 6. **Pre-step compaction vs post-overflow.** Whether a single compaction policy can serve both the proactive budget check and the reactive overflow path without double-summarizing.
+
+The native Runner remains one bounded HorizonCode model/tool step loop. External worker
+adapters own their own loop; CMP-orch schedules and observes those WorkerExecutions
+through WorkerAdapter and CMP-execution-host rather than nesting another native loop
+around them. Context-pressure notification happens before dispatch; the context owner
+reserves handoff capacity before tool admission. Worker done/exit remains a candidate
+receipt, not task completion (DEC-084, ARCH/16, ARCH/25).
+
+## Final loop authority and recovery refinements (proposed, DEC-091)
+
+CMP-session owns input admission/promotion. The runner requests it and consumes its
+receipt, rather than maintaining another inbox. PLAN/UPDATE are controller proposals;
+only RunController commits task truth. Model-attempt and logical-step IDs remain
+separate from task AttemptId, including direct turns with no Run/Task.
+
+All automatic hard-fit, provider-overflow and remaining-context recovery paths consult
+ARCH/09's shared auto-enabled/capability/freshness/effect gate and one recovery budget.
+Reserve handoff/output tokens before dispatch. With auto=false no automatic summary
+call or retry occurs; manual compaction remains explicit. Interruption reconciles
+possibly completed effects before any fresh step; restarting context is not permission
+to repeat a tool call. Server Retry-After cannot be shortened below its minimum to
+fit a local deadline: stop/defer if it does not fit.
+
+Cancellation uses exact targets from DEC-052/ARCH/25. A policy denial returns the
+defined typed call result; an explicit user rejection settles the requesting turn's
+pending work according to its policy without broad descendant cancellation. Remaining
+sibling effects must reconcile before terminal status. The canonical native loop
+step ceiling is `loop.maxSteps`; alternate historical names need documented migration.
+ProgressSignature and verifier authority questions are resolved by ARCH/25; only
+threshold tuning and explicitly scoped adapter support remain open.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+PLAN/UPDATE submit proposals to RunController; runner never commits task graph truth. ARCH/37 specifies rolling groups/barriers and cancellation. Overflow compacts only if auto=true and within the shared recovery allowance; otherwise pause/refuse typed. Retry-After is a minimum never shortened. Every possibly dispatched effect reconciles before retry, and worker/model attestation never grants task PASS.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.

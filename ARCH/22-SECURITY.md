@@ -52,7 +52,7 @@ security frame):
 
 | ID | Asset | Why it matters | Primary owner |
 |---|---|---|---|
-| `AS-1` | **User source and workspace data** | The user's code; irreplaceable | `CMP-session`, `CMP-sandbox` |
+| `AS-1` | **User source and workspace data** | The user's code; irreplaceable | `CMP-workspace`, `CMP-guard`, `CMP-sandbox` |
 | `AS-2` | **Credentials and tokens** (model providers, OAuth, registry tokens, SSH/VCS keys) | Compromise is silent, lateral, and unrecoverable | `CMP-secrets` |
 | `AS-3` | **Policy and configuration** (guard rules, sandbox profiles, config layers) | Rewriting policy converts every allowlist into an allow-all | `CMP-guard`, `CMP-config` |
 | `AS-4` | **Execution authority** (the process's own OS privileges, confinement profile) | The thing every other control is scoped by | `CMP-sandbox` |
@@ -210,7 +210,7 @@ document (for example `ARCH/22` `F-02`, `ARCH/22` `G-05`, `ARCH/23` gate `G-5`).
 
 | ID | Asset | Attack | Designed control (current source status noted where applicable) | Residual risk | Mitigation to implement |
 |---|---|---|---|---|---|
-| `E-01` | `AS-4` | Command/argument injection by string-concatenating model- or file-supplied text into a shell | Argv-based spawn; policy evaluated on a command token prefix | Any future convenience wrapper that builds a shell string reintroduces `FO-4` | Static gate: no shell-string construction on the tool path; a lint/CI check plus a test that a crafted argument containing shell metacharacters is passed through inertly; reject NUL/newline in an argument |
+| `E-01` | `AS-4` | Command/argument injection by string-concatenating model- or file-supplied text into a shell | Argv-based spawn; policy evaluated on a command token prefix | Any future convenience wrapper that builds a shell string reintroduces `FO-4` | Static gate: no shell-string construction on the tool path; a lint/CI check plus a test that a crafted argument containing shell metacharacters is passed through inertly; reject NUL and unsafe shell concatenation; multiline content is allowed only as explicit reviewed script data through the governed shell profile |
 | `E-02` | `AS-2` | Environment injection: an attacker-supplied env value overrides a required one, or the host env leaks ambient credentials | Child env is constructed by value from a per-tool allowlist; secret fields are references only; header/query/body redaction | Host environment may already contain tokens (VCS/net helpers) that a child would inherit; retaining a shared mutable environment map or passing `process.env` by reference can leak later mutations | Explicit child-env allowlist; never forward HorizonCode-resolved credential material; create a fresh immutable/copy-on-spawn map; record the child's env **shape** (names) in audit, never values; test mutation isolation between parent and child |
 | `E-03` | `AS-1` | A child re-parses an argument as a shell command (interpreter shim, `sh -c`, a wrapper script) and reaches a denied path | Target control: backend-scoped child mount/filesystem view, with a single guard reach authority at spawn (`DEC-024`, `REQ-SEC-025`); Linux source builds a bubblewrap mount namespace, but per-tier adversarial acceptance is absent | `exec.run` pattern rules are prefix-shaped; they are not a semantic guarantee about what a wrapper will do. A lexical argument scan **cannot** close this — a shell re-parses, so the scan is an extraction/escalation signal only | State explicitly that `exec.run` patterns match argv tokens, not interpreted semantics, and that `exec.run` carries no path-shaped resources; keep the catastrophic gate evaluated on the **resolved** argv; test a shim path that re-executes a denied target |
 | `E-04` | `AS-4` | Escape via process inspection, VM sockets, `io_uring`, or an unfiltered syscall on a newer kernel | Current Linux source relies on bubblewrap namespaces; Landlock/seccomp are not installed in this slice. macOS emits Seatbelt policy; Windows confined backend is unavailable (`DEC-037`) | Namespace and Seatbelt boundaries may not cover every host bridge or descendant; newer kernels add behavior | Add and separately verify optional filters only after threat analysis; probe bridges/descendants per platform; refuse any required boundary the backend cannot prove |
@@ -302,7 +302,7 @@ document (for example `ARCH/22` `F-02`, `ARCH/22` `G-05`, `ARCH/23` gate `G-5`).
 | ID | Asset | Attack | Designed control (current source status noted where applicable) | Residual risk | Mitigation to implement |
 |---|---|---|---|---|---|
 | `X-01` | `AS-10`,`AS-1` | A malicious skill's instructions subvert the run | Deny-by-default enable; pin by version/hash; quarantine scan; instructions are untrusted data | Content is judged at review time only | Injection corpus per skill batch; provenance shown before enable; a pin mismatch refuses to load until re-pinned |
-| `X-02` | `AS-10` | Pin bypass through digest normalization (line endings, Unicode normalization, case, path spelling, file-set omission) | Pin is a version + content hash | A naive digest over raw bytes or names can be made to collide across equivalent encodings | Digest over a **normalized** canonical file-set manifest (relative path, normalized bytes, mode) rather than names; a mismatch refuses; add normalization fixtures to the test corpus |
+| `X-02` | `AS-10` | Pin bypass through digest normalization (line endings, Unicode normalization, case, path spelling, file-set omission) | Pin is a version + content hash | Lossy content normalization can conceal byte changes; path aliases and omitted files can conceal package changes | Digest a closed-world, canonically ordered manifest of validated relative paths, exact raw-byte digests, lengths, and modes; reject ambiguous case/Unicode path aliases. Never normalize file content before hashing. Any changed/added/removed member invalidates the pin; test line endings, Unicode, executable mode, and omitted files |
 | `X-03` | `AS-10`,`AS-8` | A hostile package escapes its root at install (`..` members, absolute members, symlink members, decompression bomb) | Install **copies** into a cache rather than linking; symlinks resolved and verified; bounded extraction | Extraction budgets (file count, total bytes) are not yet fixed | Extraction confined to the cache root with declared file-count/byte budgets; absolute and `..` members rejected typed; no symlink members; nothing lands outside the package |
 | `X-04` | `AS-3`,`AS-10` | A plugin claims a surface it does not own (core patching, raw hooks, arbitrary renderers) | Closed surface set in the manifest; review gate | A future surface addition widens the set | Manifest schema rejects unknown surfaces; a contract-compat window rejects version skew; no surface may patch core behavior |
 | `X-05` | `AS-3`,`AS-4` | A hook becomes a policy-loosening or arbitrary-execution vector | Hooks tighten/block only; every invocation and outcome logged; failure isolated | A command hook is still arbitrary code execution at hook time | Hook commands run confined with network denied at the tier's declared level and workspace-scoped writes; hook exit status is interpreted only as tighten/block/observe; a hook that tries to loosen is rejected and audited |
@@ -324,7 +324,7 @@ document (for example `ARCH/22` `F-02`, `ARCH/22` `G-05`, `ARCH/23` gate `G-5`).
 | `C-04` | `AS-4` | Fork bomb / process explosion from one command | Confinement limits; tree reaping; per-effect process cap | — | Keep; test with a bounded explosion and assert the cap + reap |
 | `C-05` | `AS-7` | Discovery/pagination loop | Visited-cursor set + hard page cap → typed error | — | Test the duplicate-cursor and cap-overrun cases explicitly |
 | `C-06` | `AS-7` | Retry storm / rate-limit amplification against a third party | Bounded retries with jitter, `Retry-After` handling, cooldown | Retry accounting across failover chains | Bound total attempts and elapsed time per logical request across the fallback chain; record a storm as an anomaly |
-| `C-07` | `AS-7` | Disk exhaustion from managed output, audit segments, session logs, analytics ledger | Retention/rotation; bounded archives | Rotation failure is itself a failure mode | Space pre-flight; prune-before-write; deny rather than commit unrecorded; surface disk pressure in the health vocabulary |
+| `C-07` | `AS-7` | Disk exhaustion from managed output, audit segments, session logs, analytics ledger | Retention/rotation; bounded archives | Rotation failure is itself a failure mode | Reserve bounded event/terminal capacity before dispatch; never prune active canonical logs or audit chains. GC only proven unreferenced eligible objects after a complete mark; archive sealed audit ranges with verified references. If capacity is unavailable, fence new effects and show storage pressure; reconcile any already-executed effect |
 | `C-08` | `AS-7` | Sub-agent fan-out multiplying cost and concurrency | Depth/count/parallel bounds; per-node budgets; tree totals | A narrow ceiling per node can still multiply | For managed work, tree-wide totals are atomically reserved against and capped by the Run ceiling; for direct work they are capped by the configured Thread ceiling. Fan-out cost is visible before dispatch |
 
 ### T-11 — Local state, portability, and the local attacker (`CMP-session`, `CMP-audit`, `CMP-analytics`, `CMP-config`)
@@ -341,16 +341,19 @@ document (for example `ARCH/22` `F-02`, `ARCH/22` `G-05`, `ARCH/23` gate `G-5`).
 
 ### T-12 — Application updates and release supply chain (`CMP-update`, platform package managers, release signing)
 
-Every control in this table is **proposed** at source baseline `23d4ce8` / source-map
-commit `cbba87b`; `ARCH/29` records that no TUF client/updater implementation exists.
-“Designed control” means target behavior, not an existing safeguard.
+The controls in this table describe a **proposed target**; the table is not evidence
+that every security control elsewhere in HorizonCode is absent. At the current source
+baseline `80400370c7898459f7e7c24642caba9af31379d1`, `ARCH/29` records that no TUF
+client/updater implementation exists. “Designed control” means target behavior, not
+an existing safeguard. Partial implemented controls are tracked individually in
+`TODO.md` and their source trails.
 
 | ID | Asset | Attack | Designed control | Residual risk | Mitigation to implement |
 |---|---|---|---|---|---|
 | `U-01` | `AS-11`,`AS-1` | Compromised mirror or release account serves a substituted executable with a matching checksum | TUF threshold-signed metadata binds target path, length, digest, versions, channel, and platform; TLS is supplemental | Signing threshold compromise or trusted installer compromise can authorize malicious code | Keep root/delegated keys offline and separated; rotate/revoke; exercise threshold loss/compromise recovery; initial installer root must arrive over independently authenticated platform/package trust |
 | `U-02` | `AS-11` | Replay old metadata or freeze the client on a vulnerable version | Monotonic metadata versions, expiry, rollback and freeze checks | A user who never connects cannot learn a newer release | Expired cache is shown as stale/unavailable, never “current”; manual check and managed mirror remain available |
 | `U-03` | `AS-11`,`AS-8` | Archive traversal, link escape, decompression bomb, wrong-platform target, or oversized artifact writes outside staging | Per-target length/digest and platform binding; private staging | Extraction libraries or filesystem race defects | Validate archive members and expansion caps before write; no symlink/junction escape; ownership/no-follow checks; fuzz parsers and test on each platform |
-| `U-04` | `AS-12`,`AS-11` | Update kills or replaces a controller/worker while an effect or durable run is active | `CMP-orch` owns active-run/worker state; updater stages without interruption | Incorrect active-state projection could report idle too early | Gate apply on authoritative terminal or durable pause/reconciliation, recheck under a maintenance fence immediately before activation, and preserve run route/spec/policy snapshots |
+| `U-04` | `AS-12`,`AS-11` | Update kills or replaces a controller/worker while an effect or durable run is active | `CMP-orch` owns active-run/worker state; updater stages without interruption | Incorrect active-state projection could report idle too early | Gate apply on authoritative terminal Run state with settled/reconciled effects; a durable pause alone is insufficient, recheck under a maintenance fence immediately before activation, and preserve run route/spec/policy snapshots |
 | `U-05` | `AS-6`,`AS-12`,`AS-11` | New binary migration prevents rollback or corrupts session/run state | State schema range is checked before apply; backup/recovery generation retained | Forward-only migration may make old binary unusable | Require dual-version compatibility or a verified restore path before publish; refuse install when proof is absent; kill tests around each migration/activation point |
 | `U-06` | `AS-11`,`AS-2` | Fake startup notice tricks a user into installing or grants updater credential access | TUI notice only references verified metadata; installation uses trusted operator control session | Social engineering via release notes or links | Render release notes as untrusted text; never prompt for provider credentials in the updater; confirmation binds the exact target digest and install identity |
 | `U-07` | `AS-11` | A script fetched from the release host bootstraps a forged trust root, or bypasses target verification | No `curl | sh` / `irm | iex`; bootstrap channels must establish a separate trusted root | First-install trust is inherently weak if installer and key arrive from the same unauthenticated origin | Establish package/OS-signature trust per supported platform before enabling installation; wrapper scripts only launch a verified installer and cannot implement/disable cryptographic checks |
@@ -668,3 +671,60 @@ are added by it.
 12. **Threat-row ownership and review cadence.** Each row's `status` needs an owner and
     a review date; the mechanism (a tracker column, a review checklist in the release
     gate, or both) is not yet decided.
+
+## Proposed evolution threats and assets (2026-09-30)
+
+Add AS-13, License Integrity and IP Provenance, owned jointly by the source-ledger
+process and release gate. Add FO-18: externally sourced code or assets with unreviewed,
+restricted, incompatible, or absent license provenance are copied, adapted, or shipped.
+Add T-13, Remote Edge/UI Protocol Attacks: malformed or replayed AG-UI/IPC messages,
+spoofed approvals, leaked credentials, cursor gaps, and over-scoped clients. Controls
+are pinned source/license review, deny-by-default edge exposure, authenticated
+connection scopes, typed owner dispatch, idempotency, cursor resnapshot, bounded
+queues, secret-broker isolation, and negative acceptance cases. Residual: AG-UI is not
+authentication/encryption, and a local operator or compromised trusted client remains
+inside the relevant threat boundary. This proposed threat row does not change the
+existing local-only listener prohibition.
+
+## Final threat-model refinements (proposed, DEC-091)
+
+Package pins hash exact raw content and a validated closed-world path/mode manifest;
+content normalization is never an integrity substitute. Explicit approved shell
+scripts are supported under DEC-031; unsafe concatenation of file/data arguments is
+forbidden. NUL is invalid, while a reviewed multiline script is not globally banned
+because it contains a newline. Runtime roots are explicit sandbox capabilities.
+
+Storage failure before dispatch denies; failure after an effect fences/reconciles
+UNKNOWN and never claims the effect did not happen. Only proven unreferenced expired
+objects may be GC'd; active canonical/audit history is not a prune-before-write cache.
+Updates wait for terminal Runs and settled work/effects (ARCH/30); a paused Run is
+not automatically safe to migrate. User approval resolves asks, never hard denies.
+Remote infrastructure is proposed optional scope requiring independent host/auth/
+encryption/fencing evidence; it is not proved by a self-contained local binary.
+
+### Integrated evolution register
+
+| Record | Asset/outcome and boundary | Required controls/evidence |
+|---|---|---|
+| AS-13 | License integrity and attributable adoption | Exact source/package/license/notice review through ARCH/05 before any copied implementation |
+| FO-18 | Uncleared/forbidden external code adoption | Pattern-only dispositions cannot authorize copying; license integrity checks precede release |
+
+### T-13 — Edge UI and remote host trust
+
+| Threat | Failure | Control and residual | Acceptance |
+|---|---|---|---|
+| EDGE-01 | Forged approval/steering over an edge event | Authenticated ingress and exact scope/challenge binding; event fields never assign principal | ACC-PROTO-05, REQ-SEC-026 |
+| EDGE-02 | Replay, gaps, stale shared UI state | Stable delivery IDs, owner cursor, resnapshot before mutations; UI state is derived | ACC-PROTO-05, REQ-HORIZON-013 |
+| EDGE-03 | Credential leaks or unreviewed loopback/remote bind | Initially disabled/in-process/local IPC only; separate origin/auth/encryption decision for any listener | REQ-PROTO-008, ARCH/31 |
+| EDGE-04 | Remote process/workspace mistaken for local confinement | Independent host identity, reach, fencing and recovery proof; unsupported tier refuses | ACC-H1-11, ARCH/13/16 |
+
+Residual-risk treatment describes disclosure and controls, not formal accepted status.
+Only an acceptance record may close a claim. Trusted controllers may commit validated
+recovery observations; FO-16 forbids direct adapter writes/forged authority, not
+legitimate owner transitions. Existing historical matrices remain review evidence.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+ARCH37 protects chip payload identity, draft retention, bounded renderers, streamed control-sequence handling and Code Mode nesting. ARCH38 names external daemon reach, forged approval, schema drift and unknown effect replay threats. Local previews/side questions never mint grants. New acceptance must preserve all earlier forbidden outcomes.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.

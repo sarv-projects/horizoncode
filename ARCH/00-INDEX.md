@@ -7,13 +7,22 @@
 3. **`ARCH/03-ARCHITECTURE.md`** — the architectural "how".
 4. **`ARCH/04-DECISIONS.md`** — `DEC-*` records that constrain the architecture.
 5. **`ARCH/05-SOURCE-LEDGER.md`** — `SRC-*` provenance and licensing dispositions.
-6. Module-level documents (`ARCH/06`–`ARCH/33`, with `17` intentionally unused) — the "LLD" and source-trail layer:
-   - `06-UI.md` · `07-SESSION.md` · `08-LOOP.md` · `09-CONTEXT.md` · `10-TOOLS.md` · `11-PROVIDER.md` · `12-GUARD.md` · `13-SANDBOX.md` · `14-AUDIT.md` · `15-PROTOCOLS.md` · `16-ORCH.md` · `18-CONFIG.md` · `19-COMPRESSION.md` · `20-ANALYTICS.md` · `21-DISCOVERY.md` · `22-SECURITY.md` · `23-VERIFICATION.md` · `24-ARCHITECTURE-REVIEW.md` (dated evidence and defects) · `25-LONG-HORIZON-CONTROL.md` (integrated run/task LLD) · `26-CORE-AGENT-CROSSWALK.md` (agent-pattern reuse and limits) · `27-COMMANDS-AGENTS-SETTINGS.md` (command/mention registry, agent directory, quota visibility, and operator settings) · `28-ARTIFACT-STORE.md` (shared session/run payload lifecycle and integrity) · `29-SOURCE-TRACEABILITY.md` (local source/test entry points and pinned peer-file links, with absences) · `30-DISTRIBUTION-UPDATES.md` (installation, signed update metadata, CLI/TUI flows, and release automation) · `31-CONTROL-API-APP-SERVER.md` (versioned client boundary, local IPC, supervisor lifecycle, attach/replay, and failure behavior) · `32-AGENT-MESSAGING.md` (bounded run-scoped mailbox, durable delivery, trust rules, and UI contract) · `33-MEMORY.md` (memory ownership, provenance, consent, conflicts, retrieval, and lifecycle).
+6. Module-level documents (`ARCH/06`–`ARCH/38`, with `17` intentionally unused) — the "LLD" and source-trail layer:
+   - `06-UI.md` · `07-SESSION.md` · `08-LOOP.md` · `09-CONTEXT.md` · `10-TOOLS.md` · `11-PROVIDER.md` · `12-GUARD.md` · `13-SANDBOX.md` · `14-AUDIT.md` · `15-PROTOCOLS.md` · `16-ORCH.md` · `18-CONFIG.md` · `19-COMPRESSION.md` · `20-ANALYTICS.md` · `21-DISCOVERY.md` · `22-SECURITY.md` · `23-VERIFICATION.md` · `24-ARCHITECTURE-REVIEW.md` (dated evidence and defects) · `25-LONG-HORIZON-CONTROL.md` (integrated run/task LLD) · `26-CORE-AGENT-CROSSWALK.md` (agent-pattern reuse and limits) · `27-COMMANDS-AGENTS-SETTINGS.md` (command/mention registry, agent directory, quota visibility, and operator settings) · `28-ARTIFACT-STORE.md` (shared session/run payload lifecycle and integrity) · `29-SOURCE-TRACEABILITY.md` (local source/test entry points and pinned peer-file links, with absences) · `30-DISTRIBUTION-UPDATES.md` (installation, signed update metadata, CLI/TUI flows, and release automation) · `31-CONTROL-API-APP-SERVER.md` (versioned client boundary, local IPC, supervisor lifecycle, attach/replay, and failure behavior) · `32-AGENT-MESSAGING.md` (bounded run-scoped mailbox, durable delivery, trust rules, and UI contract) · `33-MEMORY.md` (memory ownership, provenance, consent, conflicts, retrieval, and lifecycle) · `34-MODULARITY-AND-BOUNDARIES.md` (ports, adapters, dependency direction, and boundary checks) · `35-CAPABILITY-PARITY-AND-EVOLUTION.md` (capability evidence and adoption lifecycle) · `36-CODE-INTELLIGENCE.md` (revision-bound code graph, language services, and impact analysis).
 
 `TODO.md` is a delivery tracker, not a design authority. When it disagrees with `ARCH/`, `ARCH/` wins.
 The `TODO.md` source-trail column resolves to `ARCH/29`; that map is dated and must be
 rechecked against HEAD before implementation. Peer files explain influence, never
 override requirements or prove that HorizonCode implements a feature.
+
+## Proposed architectural laws (`ARCH/34`)
+
+1. One control plane commits canonical Run/Task state.
+2. Capability parity is measured at user-visible capability level.
+3. Vendor nouns and schemas stay behind adapters.
+4. Canonical durable state lives in owner stores; prompt/UI state is a bounded projection.
+5. Completion belongs to independent HorizonCode verification on an integrated revision.
+6. Dependencies form an acyclic graph pointing inward; each policy/state owner is singular.
 
 ## Implementation-status rule
 
@@ -43,7 +52,7 @@ rewrite design as though it had shipped.
 | `AX-<nnn>` | Delivery task in `TODO.md` | `AX-010` |
 | `AX-<MISSION>-<nnn>` | Reserved form for a coding task bound to an architecture decision; minted only when such a task exists | *(reserved)* |
 
-Area codes: `VISION`, `UPDATE`, `REQ`, `ARCH`, `LOOP`, `TOOL`, `CTX`, `PROV`, `GUARD`, `AUDIT`, `SBX`, `PROTO`, `SESS`, `ORCH`, `UI`, `HORIZON`, `REPO`, `RESEARCH`, `DELIVERY`, `MEM`, `SKILL`, `PLUGIN`, `ANALYTICS`, `SEC`, `PERF`, `VER`.
+Area codes: `VISION`, `UPDATE`, `REQ`, `ARCH`, `LOOP`, `TOOL`, `CTX`, `PROV`, `GUARD`, `AUDIT`, `SBX`, `PROTO`, `SESS`, `ORCH`, `UI`, `HORIZON`, `REPO`, `RESEARCH`, `DELIVERY`, `MEM`, `SKILL`, `PLUGIN`, `ANALYTICS`, `SEC`, `PERF`, `VER`, `WORK`, `STOP`.
 
 ## Requirement quality bar
 
@@ -80,3 +89,22 @@ example).
 ## How to read this set
 
 Start with `01-VISION` for intent, `02-REQUIREMENTS` for the contract, then `03-ARCHITECTURE` for structure. Read `04-DECISIONS` before proposing structural changes. Read `05-SOURCE-LEDGER` before adding any dependency.
+
+## Final contract reconciliation (2026-09-30)
+
+All 36 current architecture documents were read in full, including ARCH/34–36;
+ARCH/17 remains intentionally unused. The dated reconciliation sections implement
+DEC-090/091 as proposed design refinements. Within the design contracts they supersede the explicitly identified older sketches; historical source observations and ADR rationale remain
+historical evidence. No prose changes a persisted format without its versioned
+migration, and no design refinement promotes delivery status.
+
+Full findings and per-file disposition: [final audit](../research%20docs/architecture-final-audit-2026-09-30.md).
+
+## Additional cross-feature owners
+
+- [37 — Interaction and fast path](37-INTERACTION-AND-FAST-PATH.md): proposed artifact/composer/queue/branch schemas, settings, motion, streaming and performance contracts; uses existing owners.
+- [38 — litePSM integration](38-LITEPSM-INTEGRATION.md): proposed external lifecycle adapter, identity/approval/effect boundaries and sibling compatibility gates.
+
+DEC-092..095 and REQ-UI-034..040 extend the design; TODO and acceptance records alone
+determine delivery status. The fresh full reading of ARCH00..36 is recorded separately
+from the earlier audit; new owners were read during authoring/review.

@@ -75,11 +75,11 @@ Agent memory policy is an authority-constrained preference: project/profile conf
 |---|---|---|
 | main config | JSONC | schema-directed field merge; preference precedence above, authority intersection below |
 | instruction files | markdown (+ optional frontmatter) | concatenated, outer→inner |
-| skills | markdown with frontmatter | deduped by name |
+| skills | markdown with frontmatter | source-qualified canonical identity; collisions retained and qualified |
 | custom command definitions | markdown with frontmatter or plugin manifest | validated `CommandDescriptor`; collisions rejected, never last-wins shadowing |
 | agent profiles | schema-versioned JSONC / local profile file | stable profile ID + explicit source; conflicts rejected or explicitly overridden in user scope |
 | plugin manifest | JSON/JSONC | schema-validated |
-| MCP server entries | JSON/JSONC | array concatenation |
+| MCP server entries | JSON/JSONC | stable scoped ID merge; ambiguous duplicates rejected |
 
 Each walk level may also carry instruction files, skills, and commands; the effective configuration records the origin of every winning key.
 
@@ -101,7 +101,8 @@ injection; it is not treated as support.
 <global-config-dir>/config.jsonc         (global)
 <project-root>/<config-dir>/config.jsonc (project root)
 <project-root>/sub/<config-dir>/config.jsonc (nearest project)
-  → merged: global first, nearest wins per key
+  → merged using the authoritative preference/policy scope order above;
+    nearest project file resolves only within that project scope
 ```
 
 The effective value retains a `(layer, file)` record for every key so precedence can be explained.
@@ -126,7 +127,7 @@ Semantics: a hook may **tighten** (add a restriction) or **block** (veto the act
 | Surface | Contribution | Gate |
 |---|---|---|
 | tool | new tool definition | declared schema + permission |
-| provider | provider/model adapter | protocol code confined here |
+| provider | declarative candidate metadata only in v1 | executable adapters require reviewed compiled release code; cannot shadow the catalog |
 | command | slash command | declared input schema |
 | UI panel | panel contribution | declared slot; no raw renderer code in v1 |
 
@@ -134,7 +135,7 @@ A manifest may only claim surfaces from this closed set, and each claim passes t
 
 **Plugin manifest.** `{id, version, source, content_digest, signer?, surfaces[], requested_capabilities[], hooks[], compat_window, provenance}`. Surfaces are a closed set (tools, providers, model adapters, UI panels, commands). A manifest is data, not a grant; capabilities require explicit user/managed approval and are still passed through the guard/sandbox. No plugin may patch core behavior or inject a raw hook outside the declared set.
 
-**Memory record.** `{scope: user|project, key, value, created, updated, ttl?, bytes}` with explicit per-scope size bounds and eviction by age/size. Memory is durable and survives restart; it is distinct from Thread event history.
+**Memory settings.** Scope, consent, retrieval, bounds and retention configure CMP-memory. ARCH/33 owns its canonical records and explicit candidate/review lifecycle; capacity refuses writes and never silently evicts accepted records.
 
 **MCP/provider entries.** MCP: `{id, transport, command/args/env | url/headers, auth, timeout, enabled}`. Provider: `{id, endpoint, auth_ref, models{}, headers}`. Every secret field stores a reference, never a value.
 
@@ -148,9 +149,9 @@ provenance, while `CMP-orch` owns active limits, `CMP-provider` owns usage facts
 1. **Load.** Discover all sources → parse → validate/migrate → resolve preferences and authority ceilings independently → produce an `EffectiveConfig` with source, digest, lock state, and apply boundary for each setting. A bad non-security preference leaves its prior effective value visible as stale with an error; a malformed or unreadable security policy blocks new effectful work. Reusing a previously validated policy snapshot requires its pinned digest and explicit stale status; it must never silently widen authority.
 2. **Instruction assembly.** Walk user → repository, collect instruction files nearest-wins, dedupe by digest, and hand typed sources to `CMP-context`. Referenced extra instruction files are added after in-repo ones.
 3. **Skill lifecycle.** Scan sources → parse frontmatter → build the description-only summary → on a relevance match or explicit invocation, activate and inject the bounded body. Skills are never bulk-dumped into context.
-4. **Hook execution.** Pre-tool hooks run before authorization and may return only `continue`, `restrict`, or `block`; their result is fed into the single guard decision and cannot grant. Post-tool hooks observe; session hooks bracket the session; compaction hooks run before and after `CMP-context` compaction. A hook failure is isolated and leaves the action at its original guarded authority.
+4. **Hook execution.** Pre-tool hooks run before authorization and may return only `continue`, `restrict`, or `block`; their result is fed into the single guard decision and cannot grant. Post-tool hooks observe; session hooks bracket the session; compaction hooks run before and after `CMP-context` compaction. A required pre-effect hook failure, timeout, or malformed result blocks the effect. An explicitly optional observational hook may fail without blocking, but cannot authorize, widen policy, or suppress the visible failure.
 5. **Plugin lifecycle.** Install from local path → validate manifest → review gate (declared surfaces, requested permissions, provenance) → explicit per-scope enable → run sandboxed. A crash loop auto-disables the plugin and audits it. Updates apply at next activation, never mid-call.
-6. **Memory.** Read/write within scope and size bounds; oversized writes are rejected typed; eviction is deterministic.
+6. **Memory.** Validate effective settings and pass them to CMP-memory; no config-owned content write, summary or eviction.
 7. **Migration.** Run before the feature that needs them; failure blocks cleanly and reports the exact migration and error.
 8. **Change propagation.** A setting update is proposed → typed-validated → authority-checked → atomically persisted → shown with source/effective value → applied at its declared boundary (`immediate | next_turn | restart`). A change affecting a run is versioned into that run; provider/model/agent/compaction changes create a new context epoch and never rewrite prior cost or verification facts.
 
@@ -158,7 +159,7 @@ provenance, while `CMP-orch` owns active limits, `CMP-provider` owns usage facts
 
 | Failure | Behavior |
 |---|---|
-| Config parse error | Fail closed for that layer; fall back to previous layer with a warning + audit |
+| Config parse error | Reject activation; retain last valid snapshot as stale and fence affected effectful work. Preference-only errors may use a declared safe fallback; authority layers never silently disappear |
 | Unknown keys | Warning + migration note; never silently accepted |
 | Unknown or malformed security-policy key | Reject policy activation, pause new effectful work, show exact source/key/error; never use a permissive fallback |
 | Conflicting preference layers | Apply declared field merge order and show the winning source and shadowed values in settings |
@@ -174,7 +175,7 @@ provenance, while `CMP-orch` owns active limits, `CMP-provider` owns usage facts
 | Invalid custom command or command collision | Reject descriptor and preserve built-ins; never dispatch through ambiguous alias |
 | Unsupported theme color depth or contrast failure | Show validation error and effective fallback; retain non-color labels/glyphs |
 | Skill/instruction injection | Untrusted content: provenance + the same injection hygiene as other external data |
-| Hook throws | Isolated and logged; the action proceeds under its original authority |
+| Hook throws | Required pre-effect hook failure fences the effect; optional notification hook failure is logged without granting or changing authority |
 | Hook attempts to loosen | Rejected; hooks may only tighten or block |
 | Plugin manifest invalid | Rejected at review with a typed reason |
 | Plugin crash loop | Auto-disable + audit; core unaffected |
@@ -301,3 +302,48 @@ config digest is pinned to the run and changes create a new context/policy epoch
 4. **Plugin permission model.** Whether plugins request capability grants or surface grants, and how review depth maps to v1.
 5. **Hook surface freeze.** The exact v1 hook event set and whether experimental transform hooks ship or are deferred.
 6. **Skill provenance signing.** Whether skills loaded from remote sources require a signature/digest gate in v1 or only local provenance.
+
+## Proposed evolution keys
+
+ui.mode_defaults selects pair | mission | review | explore per surface while
+retaining the three-slot layout; it is a view preference only. runtime.ag_ui_enabled
+defaults to false; in this architecture phase enabling it allows only a same-host
+adapter and cannot expose a network listener. Capability packs are declarative
+references under packages.capability_packs; user/project configuration can select
+members but never author grants or widen Guard authority.
+
+## Final settings and hooks reconciliation (proposed, DEC-091)
+
+This component owns memory settings only; ARCH/33 owns the canonical consent-based
+memory lifecycle. Historical append-to-memory/automatic eviction sketches here do not
+apply to v1. Skills preserve source-qualified collision identities (ARCH/21), rather
+than collapsing packages by bare name. Preference merge follows the documented scope
+order; nearest directory does not override user authority.
+
+Required pre-effect hooks fail closed on timeout/crash/malformed output; optional
+observers may report failure without granting authority. Policy parse errors retain a
+validated no-broader snapshot and fence activation rather than omit restrictions.
+Provider adapters are compiled, reviewed release code in v1; a plugin manifest cannot
+download/execute a new provider SDK or shadow the catalog.
+
+Canonical settings keep the existing session namespace for persistence:
+`session.checkpoint.cadence` and `session.log.max_event_bytes`; proposed historical
+`thread.checkpoint.cadence` aliases require an explicit migration. `loop.maxSteps`
+controls native steps. UI workspace tokens are pair/mission/review/explore;
+`runtime.ag_ui_enabled=false` does not permit any network bind. Capability packs are
+finite declarative members with per-member trust, not executable configuration.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+ARCH37 InteractionSettingsV1 maps into the canonical config schema and settings apply boundaries. Plugins carry declarative provider metadata only; executable vendor adapters are release code. ARCH38 selects one extension lifecycle manager per scope. Invalid managed/security config fences effects; preferences may safely fall back only as explicitly declared.
+
+Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.
+
+### AX-405 offline inspection slice (2026-09-30)
+
+`inspect_skill(SkillSummary) -> SkillInspection` reuses digest-validated reading and
+returns only parsed body byte length and an explicitly approximate four-byte token
+heuristic. It does not activate/inject a skill or follow resources. `/skills show`
+uses this operation; listing remains metadata-only. Unknown injection and activation
+metrics are printed as unknown. Tokenizer-specific measurement, visibility controls,
+qualified registry migration and workflow execution remain separate open work.
