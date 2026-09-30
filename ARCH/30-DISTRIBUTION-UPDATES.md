@@ -15,16 +15,24 @@ release metadata and artifacts from its configured TUF repository are trusted.
 Managed deployments may use a content mirror, but a mirror cannot replace signing
 keys or weaken metadata validation.
 
-The requirements are `REQ-UPDATE-001..007`. A release being available is not permission
+The requirements are `REQ-UPDATE-001..007` (`DEC-061`). A release being available is not permission
 to install it. Interactive TUI startup performs a background check of the selected signed channel and
 shows a non-blocking notice; non-interactive/headless launches never check implicitly; installation is a separate, explicit operator decision. The
 default channel is `stable`. `preview` may be selected explicitly only while signed
 preview targets are published; it is never inferred from an install URL or update feed. No automatic update, downgrade, unsigned hot patch, or remote executable
 plugin update is part of this contract.
 
+Provider connector maintenance is a separate input to the release pipeline
+(`DEC-076`, `ARCH/11`). A source monitor tracks pinned OpenCode/Cline provider
+connector revisions and prepares reviewable native adapter/fixture changes when
+upstream behavior changes. It does not publish or install provider code directly;
+updates enter the normal HorizonCode review, build, signing, and explicit install
+flow. The running application never downloads or executes upstream provider source.
+Catalog metadata refresh remains data-only and does not update adapter code.
+
 ## Product, package, and executable names
 
-The product/display name is **HorizonCode**. The canonical distribution/package name
+The product/display name is **HorizonCode** (`DEC-033`). The canonical distribution/package name
 is **`hzcode`** for the npm package, crates.io package, and installer/download entry
 point. After installation, both `hzcode` and `horizoncode` launch the same versioned
 binary and the same app state; `horizoncode` is a compatibility command alias, not a

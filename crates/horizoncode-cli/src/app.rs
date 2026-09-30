@@ -9,8 +9,7 @@ use horizoncode_analytics::{AnalyticsConfig, AnalyticsLog};
 use horizoncode_audit::{AuditConfig, AuditLog, RedactionConfig};
 use horizoncode_commands::{Invocation, parse};
 use horizoncode_guard::{
-    AutoApproveResolver, DenyAllResolver, Effect, Guard, GuardMode, Rule, canonical_action,
-    default_rules,
+    DenyAllResolver, Effect, Guard, GuardMode, Rule, canonical_action, default_rules,
 };
 use horizoncode_provider::{ChatCompletionsProvider, Provider, ProviderConfig};
 use horizoncode_runner::{ApprovalRecorder, PolicySnapshot, Recorder, RouteRef, RunConfig, Runner};
@@ -278,14 +277,18 @@ fn build_context(args: &Cli, state: StateDir) -> Result<Context, CliError> {
         // avoidable PII (`ARCH/14-AUDIT.md` §Privacy / PII handling).
         .with_project(workspace_label(&workspace));
 
-    let resolver: Arc<dyn horizoncode_guard::ApprovalResolver> = if guard.mode() == GuardMode::Yolo
-    {
-        Arc::new(AutoApproveResolver)
-    } else if args.format == OutputFormat::Default && std::io::stdin().is_terminal() {
-        Arc::new(InteractiveApprovalResolver)
-    } else {
-        Arc::new(DenyAllResolver)
-    };
+    // Reduced approval is applied by Guard itself: under `--yolo` an eligible
+    // ask already resolves to allow before this point, so only ineligible asks
+    // (network egress, extension installs, external-directory reaches,
+    // unmatched actions) reach the resolver. An interactive terminal prompts
+    // for those; every other posture denies, and none may widen a deny or the
+    // catastrophic gate (`DEC-073`).
+    let resolver: Arc<dyn horizoncode_guard::ApprovalResolver> =
+        if args.format == OutputFormat::Default && std::io::stdin().is_terminal() {
+            Arc::new(InteractiveApprovalResolver)
+        } else {
+            Arc::new(DenyAllResolver)
+        };
     // The approval observer watches the single permission seam: it records the
     // reply — including `always` and the exact remembered pattern — and cannot
     // change a decision (`ACC-P1-03`). It shares the *same* recorder the loop

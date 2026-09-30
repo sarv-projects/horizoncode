@@ -1,11 +1,28 @@
 # HorizonCode test and benchmark plan
 
 Status: **plan only**. No test, build, benchmark, or acceptance suite was executed
-during the 2026-09-28 documentation/UI architecture review. The reviewed source
-baseline is Git `23d4ce8`, an ancestor of HEAD `cbba87b9c6a33fc6faac31cdef9b38d2aae67243`;
-the Rust source tree is unchanged between them. See [`CURRENT_RUN.md`](../CURRENT_RUN.md)
-for the exact handoff and [`ARCH/23-VERIFICATION.md`](../ARCH/23-VERIFICATION.md) for
-evidence rules. A proposed test is not evidence that its behavior exists.
+during this 2026-09-29 documentation pass. The checked-out Git revision is
+`1bdea2689316904d2cc6ef884202f6c35a272a48`; the working tree also contains
+uncommitted changes, so neither HEAD nor this plan alone identifies the exact source
+tree used by any earlier test result. See [`CURRENT_RUN.md`](../CURRENT_RUN.md) for the
+handoff and [`ARCH/23-VERIFICATION.md`](../ARCH/23-VERIFICATION.md) for evidence rules.
+A proposed test is not evidence that its behavior exists.
+
+## Operator diagnostics (`REQ-UI-029`, `ACC-DIAG-01`)
+
+Plan only: exercise the same report through `hzcode doctor --json` and `/doctor` and
+compare normalized findings for the same observation set, and verify any startup
+warning points to the matching stable finding ID. Cover supported, unknown, unsupported,
+not-checked, unavailable, permission-denied, timeout, and probe-error observations;
+report collection must make no provider or network call and must not mutate files.
+Include secret canaries in environment and config fixtures and verify output redaction;
+configured sandbox settings must not be rendered as observed OS enforcement. Exercise
+unknown fix IDs, stale report/target digests, out-of-root and symlink targets, preview
+decline, unauthenticated/stale Guard
+confirmation, atomic-write/backup failures, audit failure, and postcondition failure.
+Successful repairs must use a finite named fix and owning config/service, carry an
+authenticated confirmation and audit receipt, and verify the resulting state. No live
+provider endpoint or arbitrary shell fixer is part of this suite.
 Current protocol references were rechecked against official ACP v1, its elicitation
 RFD, and changelog on 2026-09-27. The RFD says elicitation was completed on
 2026-07-22; changelog 1.7.0 (2026-08-20) stabilizes its schema, while 1.9.1
@@ -15,12 +32,138 @@ than follow mutable `main`.
 
 ## Goals and claim boundaries
 
-The primary evaluation target is **verified completion of multi-hour software tasks**.
-Cost, latency, memory, integration breadth, and UI quality are measured alongside
-completion, but must not be optimized by silently lowering security, intent alignment,
-or verification requirements. Do not claim that HorizonCode is better than another
-agent until a reproducible, task-matched comparison has been completed and its failures
-are published.
+The evaluation has two co-equal product targets: **fast interactive coding** and
+**verified completion of long-horizon software tasks**. Everyday tasks must not be
+forced through goal creation or plan approval. Measure correctness, latency, cost,
+memory, integration breadth, permission friction, and UI quality without silently
+lowering security, intent alignment, or verification requirements. Do not claim that
+HorizonCode is better than another agent until a reproducible, task-matched comparison
+has been completed and its failures and uncertainty are reported.
+
+## Paired quick-coding benchmark
+
+The benchmark compares HorizonCode and selected coding agents from equivalent
+repository snapshots, task prompts, available model/provider routes, tool permissions,
+network settings, and resource budgets. Pin each product version, configuration,
+model ID, and starting commit. Where exact model parity is impossible, report that
+confound and do not combine the runs into a headline ranking. Randomize run order,
+repeat tasks sufficiently to estimate uncertainty, retain per-run outcomes, and report
+provider-reported usage separately from estimated or unavailable usage.
+
+Use a stratified task set that includes:
+
+1. Explain or locate behavior without changing files.
+2. Make a small targeted edit.
+3. Fix a failing test or reproducible bug.
+4. Add a modest endpoint or feature.
+5. Run an appropriate check, inspect the diff, and respond to a user correction.
+
+Score task success and regressions using held-out acceptance criteria and the exact
+integrated working-tree revision. Also record time to first useful action, time to
+first model token, local pre-model overhead, permission prompts and repeated prompts,
+human interventions, tool calls, total duration, output/check quality, and
+provider-reported/estimated/unknown input, output, cache-read, cache-write/creation,
+and money. Capture failures and incomplete attempts; do not discard runs because a
+product or provider failed. User-visible approval count is a product metric, not a
+reason to bypass hard safety gates.
+
+Compare default workflows as users encounter them. Record whether a product required
+goal/plan setup, editor changes, or user-directed tests. The benchmark is a plan until
+the pinned harness, tasks, acceptance rubric, and competitor configurations are
+published and runs are executed; architecture descriptions do not count as results.
+
+### Competitor selection and comparability
+
+Use Claude Code, Codex, OpenCode, Cursor, Kimi Code, Cline, and Aider as direct
+coding-agent comparators where their current surfaces can run the same task. Pin the
+release, model, provider route, permissions, network access, editor/runtime surface,
+and starting revision for every trial. A same-model comparison is preferred; when a
+product's hosted route or model cannot be matched, publish it as a separate stratum and
+do not merge its score into a causal product ranking. Record setup friction, failed
+provider/auth routes, unavailable features, and product version changes. Hermes Agent,
+DeepSeek Harness preview, CowAgent, LibreChat, and Reasonix are adjacent or distinct
+products; include them only in a task-specific comparison that states the surface and
+does not imply coding-agent parity.
+
+### Cross-feature acceptance coverage
+
+The acceptance records in `ARCH/23` map implementation work to the following
+reproducible checks. These are test-plan additions only; no implementation or test run
+is implied.
+
+- **Provider parity and maintenance (`ACC-PROV-SYNC-01`):** compare complete pinned
+  OpenCode and Cline connector/auth inventories with HorizonCode's supported/blocked
+  rows; a blocked row fails the full-parity claim. Exercise every route's auth,
+  request/stream/tool/error/cancellation,
+  context, usage, pricing/cache reporting and quota semantics. Simulate upstream source
+  changes and verify the monitor creates a reviewable candidate with exact source
+  commit/files and per-file license/notice review. Verify candidate generation does
+  not change installed code, active route snapshots, or execute upstream code.
+- **Editors and concurrent edits (`ACC-EDITOR-01`, `ACC-EDIT-02`):** exercise
+  terminal-wait, GUI-wait and GUI-detach profiles on every advertised OS/editor
+  combination (VS Code, Vim/Neovim, Zed, Helix, and explicitly configured editors).
+  Resize while a terminal editor owns the terminal; test cleanup after spawn/exit
+  failures, fresh dimensions and layout rebuild. Save through detached editors and
+  prove watcher refresh, operator-edit lock, and write admission behavior. Exercise
+  raw-byte digests, CRLF/LF alignment, meaningful trailing whitespace, unique and
+  ambiguous hunk relocation, clean/conflicting three-way merges, compare-and-swap
+  races, and confirm no staging/index/commit/reflog mutation. Show Turn Diff separately
+  from Total Working Diff when the checkout already contains user edits.
+- **Direct coding and approvals (`ACC-UX-01`, `ACC-UX-02`):** measure direct prompts
+  with no goal/plan/Run review, Chat/Explore and Plan restrictions, user correction,
+  and Code edits. Count repeated prompts for unchanged valid grants while also testing
+  explicit deny, external paths, network, catastrophic commands, and required
+  confinement. Validate any competitor-reported settings and prompts from that exact
+  pinned release; do not infer them from marketing copy.
+- **Cancellation, checks, and capacity (`ACC-UX-03`):** cancel during provider
+  streaming, tool dispatch, process spawn, descendant process execution, and a quick
+  check. Verify process-tree cleanup using the OS-specific mechanism, grace deadline,
+  force termination where supported, truthful pending/unknown state, stale-result
+  fencing, and explicit continuation after measured per-turn ceilings. Stress worker
+  FD/handle allocations while preserving a declared supervisor/control reserve.
+- **Direct compaction and retrieval (`ACC-UX-04`, `ACC-REPO-01`):** adversarially test
+  long casual threads with task changes and corrections to detect both lost and
+  resurrected instructions. Compare lexical, syntax/reference ranking, and optional
+  local embedding retrieval on exact-symbol, error/path, and natural-language tasks;
+  test semantic indexing off-by-default, opt-in, stale-index fallback, local-only
+  operation, and explicit remote embedding data-egress disclosure.
+- **Compaction trigger and recovery (`ACC-P1-07`, `ACC-P1-10`):** use multiple route
+  context windows to prove the configurable fractional trigger defaults to 0.5 of the
+  selected resolved window; independently test output/buffer/uncertainty hard-fit
+  refusal. With auto disabled, exercise threshold, hard-fit, pre-content provider
+  rejection, and proven remaining-context truncation; assert zero automatic compact
+  or retry, zero dispatch after hard-fit failure, and a typed `CONTEXT_TOO_LARGE` or
+  incomplete-attempt result while explicit manual compact still works. With auto
+  enabled, test both typed recovery causes, route/revision/effect fences, budget
+  admission, exact partial usage accounting, and one shared recovery counter per
+  logical step: if provider rejection spends it, subsequent output truncation cannot
+  compact/retry again, and vice versa. Test no-progress compaction, compaction model
+  failure/empty output, cancellation races, and restart with the counter retained.
+  Use a compaction model with a smaller context window than the conversation and prove
+  automatic and manual compaction fail visibly with `COMPACTION_CONTEXT_TOO_LARGE`
+  without route switching, silent skip, or dispatch of an oversized original request.
+  For output clearing, prove compaction changes only the model-context projection:
+  canonical Thread bytes and artifact digest remain unchanged; full exact bytes are
+  retrievable by authorized read/grep while retained; expiry/corruption yields typed
+  `EXPIRED`/`UNAVAILABLE`, never an empty successful tool result; open output and
+  verifier-pinned evidence are not cleared.
+- **Hooks, shells, output and events (`ACC-UX-05`):** run Bash, PowerShell, cmd, zsh,
+  and fish where advertised; verify shell choice changes command interpretation only,
+  not Guard/Sandbox/Audit ownership. Test noninteractive pipe defaults, explicit PTY
+  behavior, bounded output and process resources. Exercise hook source changes, trust
+  prompts, JSON input/output, scrubbed environment, malformed/oversized responses,
+  timeout and process failure; none may widen permission. Flood UI subscriptions with
+  output/event deltas and verify summaries remain bounded while durable records remain
+  retrievable by cursor without hidden gaps.
+- **Direct analytics (`ACC-ANALYTICS-01`):** attribute ordinary usage to Thread/Turn;
+  verify managed IDs are nullable, cache reads differ from cache writes/creation, and
+  missing provider usage remains unknown rather than zero. Rebuild projections from
+  canonical records and check idempotent replay.
+
+For the competitor benchmark, report confidence intervals or another predeclared
+uncertainty estimate, all failures and timeouts, and missing/unsupported configurations.
+Public benchmark scores and architecture descriptions are context only; they cannot
+replace paired quick-task results or the acceptance evidence above.
 
 Keep these outcomes separate:
 
@@ -99,6 +242,19 @@ test suites only (never linked into the binary):
 | Audit writer race | `crates/horizoncode-audit/tests/writer_race.rs` | two real processes contending for one store; 20 cycles asserting unique contiguous sequence numbers and a chain that still verifies |
 | Read-path immutability | `horizoncode-audit/tests/integrity.rs`, `horizoncode-session/tests/list.rs` | byte- and metadata-level proof that `verify`/`replay`/`census`, `read_only`/`scan`/`inspect`/`list` change nothing |
 | Explicit repair | `horizoncode-audit` `AuditLog::repair_segment` | torn-tail repair that preserves the original bytes in a linked artifact, and the `audit repair` surface that drives it |
+
+### Commit durability gates (`ACC-P1-13A`, `ACC-P1-13`)
+
+Run `ACC-P1-13A` as a primitive-only gate as soon as AX-352 lands: assert the exact
+`sync_file` → committed-head sync → required `sync_dir` → acknowledgement ordering;
+inject each sync failure/unavailable backend and disabled per-append sync; prove none
+returns durable success; and record the profile/backend/revision in
+`acceptance/commit-durability-primitive/<platform>/<build-id>.json`. This gate does
+not wait for session migration, segment rotation, or physical reserve. Run
+`ACC-P1-13` only after AX-350 integrates the primitive with session creation, segment
+rotation, seals/heads, and physical control reserve; include actual ENOSPC and the
+declared platform acceptance method. Primitive evidence must not be presented as
+integrated-store or power-loss acceptance.
 
 Two boundaries remain honest gaps and must be reported as `insufficient evidence`
 rather than as passes:
@@ -502,13 +658,21 @@ test-data revision.
   recall, or decoding fails. Measure verified task success, evidence recall, tokens
   by class, provider-reported cost, latency/retries, and RSS; byte reduction by itself
   is not a pass criterion.
-- Skill/tool capability inventory (`AX-373`): test skill discovery, explicit
-  activation, content digest changes between discovery and use, symlink/frontmatter
-  rejection, progressive reference loading, scope and privacy, and advertised tool
-  lists. `allowed-tools` is metadata, never permission. Any script must be denied
-  unless routed through the same Guard/Sandbox/Audit path. Candidate LSP/web/MCP
-  resource/prompt/Code Mode tools require separate owner, security and conformance
-  tests before they can appear in a model schema.
+- Skill/tool capability inventory (`AX-373`, `ACC-SKILL-01`,
+  `ACC-TOOL-DISCOVERY-01`): test skill discovery, explicit activation, content
+  digest/source changes between discovery and use, built-in/skill and skill/skill
+  name collisions across multiple plugins and duplicate same-source paths; assert
+  stable `/<source-kind>:<source-id>:<skill-name>` keys and path disambiguation,
+  visible full-source suggestions independent of load order,
+  `/skill` manager separation, and symlink/frontmatter rejection. For deferred tool
+  catalogs, use a large synthetic MCP/tool set to bound search candidates and tokens;
+  cover exact-ID and natural-language search, malicious metadata, only-selected
+  schema materialization, permission filtering, and schema/catalog/permission races
+  before dispatch. Prove no execution happens during search and stale/guessed tools
+  fail before effects. `allowed-tools` is metadata, never permission. Any script
+  must use the same Guard/Sandbox/Audit path. Candidate LSP/web/MCP resource/prompt/
+  Code Mode tools require their own security and conformance acceptance before they
+  appear in a model schema.
 - OpenCode TUI comparison tests (design-derived, not peer implementation reuse):
   acceptance should cover home/empty state, normal and shell submission, active model
   and tool status, permission/question blocking, child navigation, narrow/wide
@@ -604,14 +768,17 @@ after one call settles and before the rest: replay settled receipts into the sam
 ordered projection without repeating their effects; preserve failure/cancel slots and
 reject duplicate IDs before dispatching any call in that malformed batch.
 
-Output termination gets a dedicated decision table: completed, context-window rejection,
+Output termination gets a dedicated decision table: completed, pre-content context-window rejection,
 explicit requested output cap, validated server remaining-context cap, and unknown
 finish reason. Inject generic `length` with a requested cap, a smaller remaining-context
 cap, missing usage, mismatched route fingerprint, local-server version/template drift,
 partial text, malformed partial tool JSON, provider-side tools enabled, streamed
 side-effect receipts, user input/cancel during compaction, budget reservation loss,
 compaction failure/truncation, retry route outage, and a second truncation. Assert that
-provider-hosted execution is refused before dispatch for HorizonCode-managed turns and
+`compaction.auto=false` blocks all automatic recovery paths and that one shared
+logical-step recovery admission prevents a second retry across provider rejection
+then output truncation (and in the reverse order). Assert that provider-hosted
+execution is refused before dispatch for HorizonCode-managed turns and
 can never count as a local effect receipt; partial tool arguments never execute;
 incomplete assistant attempts survive restart but are excluded from completed
 conversation context; both attempts and compaction are billed/recorded independently;
@@ -735,23 +902,33 @@ provider request. Include refresh rollback and old-snapshot/new-catalog cases.
   model/profile availability, permission ceiling, budget reservation, review-before-run,
   cancellation and process-crash recovery through the normal Run controller. Templates
   must not execute arbitrary script code or create a second scheduler.
-- Extension manager tests (AX-378) distinguish search result, staged, configured,
+- Extension manager tests (AX-378, `ACC-SKILL-01`) distinguish search result, staged, configured,
   authenticated, probed, enabled, and permitted states. Include malicious/changed
   manifests, license/source review, registry outage, duplicate IDs, missing/expired
   secrets, failed health check, tool-schema drift during a turn, cancellation and
-  uninstall with active calls. Search/install never executes an extension.
+  uninstall with active calls. Verify `/extensions`, singular/plural MCP, skill, and
+  plugin spellings, `/hooks`, `/workflows`, and `/marketplace` all open the same
+  category-aware overlay on the expected category, preserve composer/layout state,
+  and have no trust/enable/execute effect. Verify `/create-skill` opens the same
+  Skills → Create view; its guided project/user scope, name/frontmatter validation,
+  exact preview, cancel/decline, overwrite refusal, guarded write, and no automatic
+  enable/script execution. Cover headless typed results, bounded
+  category loading, cancellation, and loading/empty/stale/error presentation.
+  Search/install never executes an extension.
 - Web capability tests (AX-376) cover redirect loops, public-to-private DNS rebinding,
   IPv4/IPv6 private/link-local ranges, credential-bearing URLs, sensitive query
   stripping, `no-store`/personalized response exclusion, cache expiry/size eviction,
   stale-cache labels, cancellation, response limits, duplicate fetches, project history
   opt-out/purge, and network guard/audit receipts. Compare cached and uncached results
   for digest/freshness correctness.
-- Repository intelligence tests (AX-375) cover initial scan and incremental updates,
+- Repository intelligence tests (AX-375, `ACC-REPO-LSP-01`) cover initial scan and incremental updates,
   ignored/vendor/generated files, symlink escape, rename/delete, dirty buffers,
   revision drift, stale symbol/reference edges, missing parser/LSP, malformed syntax,
-  huge files/monorepos, cancellation, concurrent edits, and bounded cache/RSS. Verify
-  lexical fallback stays available and every context package reports its source commit
-  and per-file freshness.
+  huge files/monorepos, cancellation, concurrent edits, and bounded cache/RSS. Exercise
+  the shared LSP owner for definitions, references, hover, document/workspace symbols,
+  implementations, and call hierarchy. Verify read-only operations have no workspace
+  writes, external paths are guarded, lexical fallback stays available, and every
+  context package reports its source commit and per-file freshness.
 - UI resource benchmark (AX-374) records startup/idle/active RSS and PSS, CPU, render
   latency, peak transcript/search/tree size and allocation behavior on fixed terminal
   sizes and corpus digests. Measure HorizonCode process tree separately from provider
@@ -1038,6 +1215,7 @@ stale spec evidence, or hard-budget exhaustion blocks `accepted` status.
 
 ## Sources checked for the September 2026 plan
 
+- [Compaction upstream comparison](compaction-upstream-comparison.md) — pinned Codex, Grok Build, and OpenCode source comparison; distinct defaults do not imply a universal threshold. Historical OpenCode issues are failure reports, not source-contract evidence.
 - [Cline v4.1.21 release](https://github.com/cline/cline/releases/tag/v4.1.21) — released 2026-09-24; documents local-model remaining-context output truncation recovery and explicitly limits automatic replay to text-only turns without tool activity. Treat this as route-specific peer evidence, not a provider guarantee.
 - [DeepSeek-Reasonix releases](https://github.com/esengine/DeepSeek-Reasonix/releases) — checked 2026-09-27; Studio release notes report the image/event-log size and recovery problem that motivates `ACC-P1-09`. This is an upstream report, not a HorizonCode reproduction.
 - [Codex Goals in the CLI](https://developers.openai.com/cookbook/examples/codex/using_goals_in_codex) — checked 2026-09-27; available in Codex CLI 0.128.0+; documents structured goal lifecycle commands, thread-scoped state, idle-boundary continuation, queued-input checks, no-tool-call suppression, and budget-limited stopping. These are peer workflow references, not a HorizonCode implementation or proof of multi-hour reliability.

@@ -18,7 +18,7 @@ handoff. Source presence is not verification (`ARCH/00`).
 
 ## 1. Shape
 
-A **single Rust workspace** producing one core executable per platform where feasible. The user may run it interactively on a laptop/workstation or headlessly on a user-managed server; no HorizonCode-operated control service is required. A detached-run supervisor may be a local helper process, but it uses the same controller and durable state. Required host capabilities are probed and disclosed per feature: the current Linux confinement path invokes `bwrap`, and Git/LSP/local inference or detached execution can need external processes. A missing required backend refuses that feature; one-binary packaging is not a claim that every capability works without host tools. ACP/MCP are protocol edges, and the local app server is a client transport around the same control service, never a second engine. Remote UI attachment is not implied by server deployment. `DEC-029..031`, `DEC-046`, `DEC-063`, `ARCH/25`, and `ARCH/31` define the durable run controller in `CMP-orch`; `CMP-execution-host` owns process/adapter lifecycle mechanics under that controller's authority.
+A **single Rust workspace** producing one core executable per platform where feasible. The user may run it interactively on a laptop/workstation or headlessly on a user-managed server; no HorizonCode-operated control service is required. A detached-run supervisor may be a local helper process, but it uses the same controller and durable state. Required host capabilities are probed and disclosed per feature: at Rust source baseline `23d4ce8`, the Linux confinement path invokes `bwrap`, and Git/LSP/local inference or detached execution can need external processes. A missing required backend refuses that feature; one-binary packaging is not a claim that every capability works without host tools. ACP/MCP are protocol edges, and the local app server is a client transport around the same control service, never a second engine. Remote UI attachment is not implied by server deployment. `DEC-029..031`, `DEC-046`, `DEC-063`, `ARCH/25`, and `ARCH/31` define the durable run controller in `CMP-orch`; `CMP-execution-host` owns process/adapter lifecycle mechanics under that controller's authority.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -75,6 +75,7 @@ target component and is not implemented at the source snapshot above.
 | ID | Component | Owner layer | Responsibility |
 |---|---|---|---|
 | `CMP-runner` | Runner / Loop | Control | One admitted turn's provider/tool step loop, continuation, cancellation and terminal receipt; `CMP-orch` grants system-wide run/work admission before dispatch |
+| `CMP-verifier` | Independent runtime verifier | Control plane | Evaluates an exact workspace revision against the approved specification and scenarios and returns typed `PASS \| FAIL \| INSUFFICIENT_EVIDENCE` under a one-use `VerificationPermit` issued by `CMP-orch`; cannot grant tool authority, change run/task state, or write canonical truth (`ARCH/23`, `ARCH/25`) |
 | `CMP-execution-host` | Worker execution host | Runtime boundary | Idempotent local process launch, process/adapter handle ownership, heartbeat and exit observation, termination, and restart observations for `WorkerExecution`; no durable task-state, permission, or verification authority |
 | `CMP-session` | Thread store | Persistence | Durable HorizonCode Threads (legacy component/crate name), segmented event log, committed head, bounded replay, read-only listing, explicit recovery, checkpoints, canonical Thread artifact references, user-local ProjectIdentity/workspace registry, and rebuildable message/title search projection plus verified navigation (`ARCH/07`) |
 | `CMP-artifact` | Artifact store | Persistence | Scoped immutable payload bytes, digest verification, bounded reads, physical emergency-space reservation, owner pins, import/export staging and safe garbage collection (`ARCH/28`) |
@@ -96,12 +97,17 @@ target component and is not implemented at the source snapshot above.
 | `CMP-memory` | Memory service | Capability | Provenance-bearing candidate records, user review/consent, dedupe/conflict/supersession, retrieval, bounded consolidation and deletion (`ARCH/33`); no policy or verification authority |
 | `CMP-analytics` | Analytics | Observability | Usage/cost/tool/session metrics, local ledger, `stats`/`export` surfaces |
 | `CMP-command` | Command registry | Surface adapter | Typed slash-command descriptors, completion/help, parse and dispatch to owning services; no business state or permission decisions |
+| `CMP-diagnostics` | Diagnostics service | Observability | Bounded local readiness probes, stable findings, human/JSON projections, and named repair plans; read-only report owns no authority, and repair effects use the owning config/service through Guard (`ARCH/27`) |
 | `CMP-control-api` | Shared typed control dispatcher | Surface boundary | Versioned requests/responses/events and method registry routed to canonical domain owners; no duplicate state, policy, or agent loop (`ARCH/31`) |
 | `CMP-app-server` | Local supervisor IPC and lifecycle | Surface/runtime boundary | Same-host authenticated IPC, bounded lanes, singleton and attach lifecycle; no Run/Session truth or network listener (`ARCH/31`) |
 | `CMP-app-client` | Shared surface client | Surface | In-process/IPC transport parity, request idempotency, reconnect and per-aggregate cursor replay; no business decisions (`ARCH/31`) |
 | `CMP-agent-directory` | Agent profiles | Capability | Built-in/local/catalog profile records, provenance, install staging, probing, trust/enable state and adapter selection; no run/task truth |
 | `CMP-reference` | Composer references | Capability | Namespaced resolution of agents, files, tasks, runs, symbols and skills against current registries and revision-bound repository context; no launch or grant |
 | `CMP-update` | Installer/update service | Trust + maintenance | Signed update metadata/target verification, install-method detection, staging, explicit consent, safe activation/rollback; activation requires a one-use quiescence permit from `CMP-orch`; no release signing key or run/task state ownership (`ARCH/30`) |
+
+Adapter edges (`native | acp_stdio | acp_remote | cli_opaque`) are implementation
+mechanics of `CMP-execution-host` under `CMP-orch` authority, with the ACP transport
+owned by `CMP-acp`; there is no separate `CMP-adapter` component.
 
 ## 3. The agent loop (contract)
 
@@ -112,8 +118,12 @@ INPUT → ADMISSION → PLAN → MODEL STEP → SCHEDULER → EXECUTE → OBSERV
 ```
 
 - **INPUT** — user prompts, queued messages, steers.
-- **ADMISSION** — accept/deny the step against guard + budget + policy.
-- **MODEL STEP** — resolve route, assemble context, stream the model.
+- **ADMISSION** — accept/deny the step against guard + budget + policy. A direct
+  coding turn begins from its user prompt and uses the ordinary bounded runner path;
+  it does not require a goal, durable plan, or Run-start review. The planning phase
+  may be a lightweight internal choice or an optional user-requested proposal.
+- **MODEL STEP** — resolve route, assemble context, stream the model. Mode and
+  policy determine the permission-filtered tool set for that turn.
 - **SCHEDULER** — partition tool calls into parallel-safe groups and ordered barriers.
 - **EXECUTE** — run tools under guard + sandbox; record effects.
 - **OBSERVE** — collect results, split model-content from UI-detail.
@@ -124,6 +134,13 @@ INPUT → ADMISSION → PLAN → MODEL STEP → SCHEDULER → EXECUTE → OBSERV
 - **CONTINUATION** — decide to continue, compact, or terminate.
 
 Terminal states: `completed | failed | interrupted | declined`. Exactly one per turn (`REQ-LOOP-004`).
+
+Direct Code turns edit the selected working tree through the same guarded write path.
+They do not automatically stage or commit; the user can inspect the result with
+ordinary Git tools or HorizonCode's Turn Diff. Managed Runs may use fenced worktrees
+when isolation, unattended execution, or explicit `/explore` warrants it. Run/task
+verification and completion semantics remain owned by `CMP-orch` and do not turn
+ordinary turns into mandatory Run workflows (`DEC-075`).
 
 ## 4. Boundaries
 

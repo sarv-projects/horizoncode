@@ -40,10 +40,10 @@ rewrite design as though it had shipped.
 | `DEC-<nnn>` | Architecture decision | `DEC-003` |
 | `SRC-<nnn>` | Source/provenance entry | `SRC-007` |
 | `CMP-<name>` | Component | `CMP-runner` |
-| `AX-<nnn>` | Delivery task in `TODO.md` | `AX-012` |
-| `AX-<MISSION>-<nnn>` | Coding task bound to an architecture decision | `AX-ARCH-003` |
+| `AX-<nnn>` | Delivery task in `TODO.md` | `AX-010` |
+| `AX-<MISSION>-<nnn>` | Reserved form for a coding task bound to an architecture decision; minted only when such a task exists | *(reserved)* |
 
-Area codes: `VISION`, `REQ`, `ARCH`, `LOOP`, `TOOL`, `CTX`, `PROV`, `GUARD`, `AUDIT`, `SBX`, `PROTO`, `SESS`, `ORCH`, `UI`, `HORIZON`, `REPO`, `RESEARCH`, `DELIVERY`, `MEM`, `SKILL`, `PLUGIN`, `ANALYTICS`, `SEC`, `PERF`, `VER`.
+Area codes: `VISION`, `UPDATE`, `REQ`, `ARCH`, `LOOP`, `TOOL`, `CTX`, `PROV`, `GUARD`, `AUDIT`, `SBX`, `PROTO`, `SESS`, `ORCH`, `UI`, `HORIZON`, `REPO`, `RESEARCH`, `DELIVERY`, `MEM`, `SKILL`, `PLUGIN`, `ANALYTICS`, `SEC`, `PERF`, `VER`.
 
 ## Requirement quality bar
 

@@ -21,7 +21,7 @@ Cline has evolved from an editor extension into multiple clients over a layered 
                          │
               local filesystem / SQLite
 
-The SDK architecture docs state that dependencies flow downward: core depends on agents, llms and shared; agents depend on llms and shared. In hub-spoke mode, a singleton daemon coordinates sessions and events, spoke workers execute the loop, and clients connect over WebSocket. The client is not the worker owner.
+The SDK architecture docs state that dependencies flow downward: core depends on agents, llms and shared; agents depend on llms and shared. The public hub-spoke document describes a hub/spoke topology, but that document is not proof that the pinned runtime implements remote spokes. At pin `787ad1b077d8b697892dc3bfcd42e7c65b88789e`, `HubServerTransport` defaults to a `LocalRuntimeHost` when no host is injected (`sdk/packages/core/src/hub/server/hub-server-transport.ts:262-282`), so the default loop executes in the hub process. `SpokeRecord` is defined in `sdk/packages/shared/src/hub.ts`, but a search across the pinned hub app, core hub, and shared source found only its declaration and a containing schema field; no runtime producer or consumer was identified. Treat Cline Hub as supervisor-hosted local execution at this pin, not as evidence of detached spoke workers or reconnect-safe worker ownership. The public doc remains useful as a desired topology description only.
 
 ## Source layout
 
@@ -202,3 +202,27 @@ Additional source-verified observations:
 
 No Cline tests or UI were run. Exact source path references and release-specific scope
 remain pinned above; v4.1.20 observations must not be substituted for v4.1.21 behavior.
+
+## Provider integration source map for HorizonCode
+
+At the same pin, Cline's SDK identifies `sdk/packages/llms` as its provider/model
+layer, with a typed provider registry, model catalog, gateway contracts, and
+AI-SDK-backed handler creation. The focused source anchors are the pinned
+[`@cline/llms README`](https://github.com/cline/cline/blob/787ad1b077d8b697892dc3bfcd42e7c65b88789e/sdk/packages/llms/README.md),
+[`providers/README.md`](https://github.com/cline/cline/blob/787ad1b077d8b697892dc3bfcd42e7c65b88789e/sdk/packages/llms/src/providers/README.md),
+[`ai-sdk.ts`](https://github.com/cline/cline/blob/787ad1b077d8b697892dc3bfcd42e7c65b88789e/sdk/packages/llms/src/providers/ai-sdk.ts),
+[`config.ts`](https://github.com/cline/cline/blob/787ad1b077d8b697892dc3bfcd42e7c65b88789e/sdk/packages/llms/src/providers/config.ts),
+[`builtins-runtime.ts`](https://github.com/cline/cline/blob/787ad1b077d8b697892dc3bfcd42e7c65b88789e/sdk/packages/llms/src/providers/builtins-runtime.ts),
+and the pinned [`docs/sdk/model-providers.mdx`](https://github.com/cline/cline/blob/787ad1b077d8b697892dc3bfcd42e7c65b88789e/docs/sdk/model-providers.mdx).
+The docs describe a broad provider gateway (including Anthropic, OpenAI, Google,
+Bedrock, Mistral, OpenRouter, DeepSeek, and others), but this focused audit did not
+read every provider-specific handler or establish exhaustive auth/setup coverage.
+
+This is the starting pin for the new parity matrix, not evidence that HorizonCode
+already supports those providers. AX-362 must enumerate every provider-specific file,
+model mapping, auth path, and limitation from the pinned Cline and OpenCode trees.
+AX-363 then monitors upstream revisions and prepares native HorizonCode code/fixture
+updates. The Cline repository advertises Apache-2.0 at root, but an adapter file is
+not cleared for copying until its exact path, package dependencies, notices, and any
+subdirectory license have been checked at the pinned revision. Do not vendor the
+AI-SDK runtime, generated catalog, or Cline client identity wholesale.

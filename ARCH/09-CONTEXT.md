@@ -27,7 +27,8 @@ Owns:
 - assembly order and the stable-prefix / dynamic-suffix split;
 - token estimation and the named budget model;
 - typed system-context sources (baseline / update / reconcile, epoch pinning);
-- instruction discovery (global config + project walk);
+- ordered assembly and rendering of typed instruction sources discovered and
+  validated by `CMP-config` (`ARCH/18`); this component does not discover files;
 - the ranked repository map (repo map) under a token budget;
 - symbol intelligence via LSP plus an index-exchange ingest;
 - deterministic selection (embeddings are a deferred fallback, never the first path);
@@ -47,6 +48,7 @@ or sub-agent lifecycle (`CMP-orch`).
 |---|---|---|
 | `CMP-runner` | caller | `assemble(step) -> Request`; `estimateBudget(request)`; `compactIfNeeded(step)`; `compactAfterOverflow(step)` |
 | `CMP-session` | read | ordered projected history + latest compaction marker + context epoch row |
+| `CMP-config` | read | ordered, validated instruction records with provenance and availability state (`ARCH/18`) |
 | `CMP-provider` | read | resolved context window and output limit for the active route |
 | `CMP-tools` | read | materialized tool definitions and their JSON schemas (counted, never owned) |
 | `CMP-orch` | caller | `shard(parent, child task) -> ChildContextRequest` |
@@ -123,7 +125,7 @@ names, schema digests, policy snapshot and catalog generation are pinned for tha
 step. A later catalog update starts a new context epoch; it cannot change the
 meaning of a tool call already emitted. If the model names a tool absent from that
 step's selection, return a typed unavailable-tool result and replan without
-executing a similarly named replacement (`REQ-CTX-010`).
+executing a similarly named replacement (`REQ-CTX-010`, `DEC-032`).
 
 System sources render through one `combine` with duplicate-key rejection; each
 source contributes its baselines in declared order. The output is the model
@@ -150,51 +152,91 @@ retries, and never degrades into an unplanned context.
 
 ### 3. Token estimation and budget model
 
-Estimation is deterministic and cheap: `estimate(text) = round(len(text) / 4)`,
-clamped at 0, applied to `JSON.stringify` of a structured value where needed.
-This is a conservative byte heuristic, not a tokenizer; drift can be large for
-multilingual text, unusual scripts, code, and provider-specific serialization.
-When the provider reports usage, the measured value replaces the estimate for
-budget accounting; the estimate is the pre-send gate.
+The current preflight estimate is deterministic and cheap: `estimate(text) =
+round(len(text) / 4)`, clamped at 0, applied to `JSON.stringify` of a structured
+value where needed. This is a rough byte heuristic, **not a conservative upper
+bound or a tokenizer**; it can undercount multilingual text, unusual scripts,
+code, and provider-specific serialization. Treat it as a provisional estimate
+only. The pre-send gate must include an explicit uncertainty reserve derived from
+route-specific calibration or a documented fail-closed bound; if request
+serialization or estimation uncertainty cannot be bounded for a required budget,
+refuse dispatch as `ROUTE_UNSATISFIABLE`. Reconcile actual provider usage when
+reported without rewriting the estimate or claiming the estimate proved fit.
 
 Named budget terms (no magic numbers in code):
 
-`reserve = max(output, buffer)` and
+`reserve = max(output, buffer) + estimation_uncertainty` and
 `usable = window.saturating_sub(reserve)` (the pre-send gate). If `reserve >= window`,
 return typed `ROUTE_UNSATISFIABLE` before provider dispatch; do not underflow or send a
-zero-context request as valid.
+zero-context request as valid. `estimation_uncertainty` is route/serializer-specific;
+it must be calibrated from recorded request-versus-usage observations or set to a
+documented fail-closed bound, and cannot be silently zero when calibration is absent.
 `keep_recent = keep.tokens` (serialized tail retained intact), and
 `summary_output = min(requested_output, summary_token_cap)` (summarize-call cap).
 
-Defaults: `buffer = 20_000`, `keep.tokens = 8_000`,
-`summary_token_cap = 4_096`, `tool_output_chars = 2_000` during serialization.
-Window and output come from `CMP-provider`'s resolved route; the engine never
-hardcodes a window.
+Defaults: `auto_threshold = 0.5` (50% of the resolved context window),
+`buffer = 20_000`, `keep.tokens = 8_000`, `summary_token_cap = 4_096`, and
+`tool_output_chars = 2_000` during serialization. The automatic threshold is a
+fraction in `(0, 1]`, evaluated against the active route's resolved model window;
+it is not a token count and is not derived from a universal model limit. Window and
+output come from `CMP-provider`'s resolved route; the engine never hardcodes a
+window.
 
 ### 4. Compaction engine
 
-Trigger rule (exact, `REQ-CTX-002`):
+Automatic trigger rule (exact, `REQ-CTX-002`):
 
 ```
-if estimate(system + messages + tools) <= window − max(output, buffer): no compaction
-else:                                                                  compact
+utilization = estimate(system + messages + tools) / resolved_context_window
+if compaction.auto && utilization >= compaction.auto_threshold: compact
+else:                                                            do not auto-compact
 ```
 
-`compactIfNeeded` runs pre-send, before the model call. `compactAfterOverflow`
-handles a provider-confirmed overflow and retries the same step once
-(`REQ-CTX-004`).
+The default threshold is `0.5`. `compactIfNeeded` evaluates it pre-send, before the
+model call. This early trigger is independent of the hard admission limit:
+`usable = window.saturating_sub(reserve)` (with `reserve` defined in §3). The hard
+fit check always runs. If the assembled request exceeds `usable` and
+`compaction.auto=false`, do not dispatch and return typed `CONTEXT_TOO_LARGE` with
+manual-compaction and larger-context-route guidance. If auto is enabled, admit at
+most one bounded compaction/rebuild attempt for that logical step; after rebuilding,
+the hard fit check runs again and returns `CONTEXT_TOO_LARGE` if the request still
+does not fit. Explicit manual compaction remains available when auto is disabled.
+
+Automatic recovery has two distinct post-trigger classes: (a) a typed provider
+context-window rejection before any response content/effect, owned by `REQ-CTX-004`;
+(b) a typed response truncation proven by route conformance to use the remaining
+context as its output cap, owned by `REQ-CTX-011`. Both require `compaction.auto=true`,
+unchanged pinned route and user/control/task/workspace/spec/policy revisions, no
+possible tool or provider-side effect, and a reservation for compaction, one retry,
+and required verification. The controller persists one shared automatic
+compaction/retry counter per logical step across both classes; whichever class spends
+it first prevents a second recovery trigger on the same logical step. When auto is disabled, either error is surfaced without automatic
+compaction/retry. Unknown, explicit output-cap, or second-failure outcomes are
+terminal for automatic recovery. A new user instruction or approved replan creates a
+new logical step/revision; it does not reset counters on an existing step.
 
 The compaction sequence:
 
 1. **Select** — serialize entries (excluding prior compaction markers), walk
    newest → oldest accumulating estimated tokens until `keep.tokens` is reached;
    the split yields `head` (to summarize) and `recent` (retained verbatim).
-2. **Serialize with truncation** — each entry becomes a role-tagged line
+2. **Serialize with bounded observations** — each entry becomes a role-tagged line
    (`[User]`, `[Assistant]`, `[Assistant tool call]`, `[Tool result]`,
-   `[Shell]`), and tool content longer than `tool_output_chars` is truncated with
-   an explicit `[truncated]` marker.
-3. **Summarize** — a single model call with tools disabled and
-   `maxTokens = summary_output`. The prompt contains the conversation head,
+   `[Shell]`). An old completed tool result may be cleared from this *model-context
+   projection* only after the exact full bytes are committed to `CMP-artifact`,
+   digest-verified, and pinned by the canonical owner event. The projection then
+   carries a bounded exact preview plus the immutable artifact reference/digest and
+   retrieval instructions. This never edits the canonical Thread event or deletes
+   artifact bytes. Uncommitted, open, unresolved, verifier-pinned, or otherwise
+   required evidence is not cleared. If the artifact is absent, expired, or cannot
+   be read, emit a typed unavailable result; never present an empty or summarized
+   substitute as the original output (`REQ-CTX-006`, `ARCH/10`, `ARCH/28`).
+3. **Summarize** — first verify that the bounded summary input plus output allowance
+   fits the selected compaction model's resolved window. If it does not, return a
+   visible typed `COMPACTION_CONTEXT_TOO_LARGE` result; do not silently skip, switch
+   models/routes, or dispatch the original over-budget request. If it fits, make a
+   single model call with tools disabled and `maxTokens = summary_output`. The prompt
+   contains the conversation head,
    plus the prior summary when one exists, plus update instructions.
 4. **Land** — append a checkpoint carrying `summary`, `recent`, the shadowed
    range, and the count. The checkpoint renders as historical context framed as
@@ -206,7 +248,12 @@ The compaction sequence:
 **Anchored summary template** — our own structure, implemented by us, not
 transcribed from any upstream template (see `ARCH/05` §2). Section order is fixed;
 empty sections render `(none)`; entries stay terse (bullets, not paragraphs); exact
-paths, symbols, commands, and error strings are copied verbatim, never reworded:
+paths, symbols, identifiers, commands, and error strings are copied verbatim, never
+reworded. Code and tool observations may be retained only by verbatim selection or
+grouping; they must not be abstracted, paraphrased, or converted into inferred intent
+or state. Abstraction is permitted only for prose and must preserve uncertainty and
+source attribution. Omitted code/tool observations must retain an exact recovery
+reference:
 
 `## Aim` → `## Load-Bearing Facts` → `## Where Things Stand` (`### Settled` /
 `### In Flight` / `### Held Up`) → `## Next Concrete Action` → `## Touchpoints`.
@@ -233,26 +280,24 @@ strategy or template change is adopted only if it does not regress the probe
 score; regressions are recorded with the evaluation id. The gate runs offline
 against captured sessions, not on the live critical path.
 
-### 6. Instruction discovery
+### 6. Instruction source assembly
 
-`REQ-CTX-005`:
+`CMP-config` discovers and validates instruction files as specified by
+`ARCH/18`, including the project-root boundary, path/content deduplication, and
+scope precedence. It supplies an ordered list of typed instruction records to
+`CMP-context`. Context owns rendering that list as one system source and its
+baseline/update/replacement semantics under `REQ-CTX-005`:
 
-1. Read the **global** config instruction file (`<config>/AGENTS.md`).
-2. Walk **up** from the working directory to the project root, collecting each
-   `AGENTS.md` along the way; stop at the project root, never above it. The
-   project root is the nearest ancestor carrying a `.git` marker (a directory in
-   a normal checkout, a file in a worktree) or a `.horizoncode` directory; when
-   no ancestor carries one, the working directory is its own project root, so a
-   plain directory tree cannot leak instruction files from above it
-   (implementation note recorded with `AX-008`).
-3. Deduplicate by canonical absolute path and, because two files can hold
-   identical text, by content digest; global first, then outermost → nearest. A nearer instruction overrides only conflicting advice within its lower-trust project-instruction scope; it never changes system policy or grants authority (`ARCH/18`, `DEC-031`).
-4. Render each as `Instructions from: <absolute path>\n<content>`, joined by a
+1. Preserve the supplied order: global first, then outermost → nearest. A nearer
+   instruction may override only conflicting advice within the lower-trust
+   project-instruction scope; it never changes system policy or grants authority
+   (`ARCH/18`, `DEC-031`).
+2. Render each as `Instructions from: <absolute path>\n<content>`, joined by a
    blank line, as one typed `core/instructions` source.
 
-If a *discovered project* file cannot be read, the source reports `Unavailable`
-and initialization is blocked (fail closed). A missing global file is simply
-absent. When instructions change, the update line states that the new set
+If a discovered project file cannot be read, `CMP-config` reports `Unavailable`
+and initialization is blocked (fail closed); a missing global file is absent.
+When instructions change, the update line states that the new set
 *replaces* all previously loaded ambient instructions, and removal states that
 the prior instructions no longer apply — the renderer never appends a partial
 diff.
@@ -290,9 +335,20 @@ and unsaved-buffer views are explicit, revision-bound inputs)
 
 ### 8. Symbol intelligence
 
-- **LSP bridge:** definitions, references, hover, diagnostics, document/workspace
-  symbols; rename is policy-gated. Absent or crashed servers degrade to the
-  tree-sitter graph + lexical search — never a silent empty answer.
+- **LSP bridge:** one `CMP-repo-intel` owner exposes read-only definitions,
+  references, hover, diagnostics, document/workspace symbols, implementation
+  lookup, and call-hierarchy preparation/incoming/outgoing calls. Each result
+  carries the repository revision and source-file digest/freshness that were
+  actually observed. Rename is a separate policy-gated write operation. Absent,
+  unsupported, stale, or crashed servers return an explicit typed state and degrade
+  to the tree-sitter graph plus lexical search — never a silent empty answer.
+- **Shared ownership:** repository-intelligence tools call this same owner and its
+  LSP client; they do not create another server manager, symbol index, or cache.
+  External workspaces and files continue through the existing Guard/path boundary.
+  OpenCode's pinned [`lsp.ts`](https://github.com/anomalyco/opencode/blob/b471c2b4495747353af768fbf2e0790c9d820ce2/packages/opencode/src/tool/lsp.ts)
+  is a concrete operation-set reference only (`SRC-033`; see
+  [`ARCH/29` U-OC-LSP](29-SOURCE-TRACEABILITY.md#u-oc-lsp)); HorizonCode owns result
+  revision binding and safe fallback, and copies no code.
 - **Index-exchange format:** a language-neutral artifact of
   `{ symbol, kind, file:range, references[] }` records produced by an external
   indexer is ingested into the per-workspace store to supply precise,
@@ -352,7 +408,10 @@ visible; it may be omitted only when the task permits that omission.
 | Failure | Behavior |
 |---|---|
 | Tokenizer/estimate drift | Conservative defaults; re-measure on model switch; the pre-send gate uses the resolved window. |
-| Provider context overflow | `compactAfterOverflow` once, then retry the step; bounded, never an infinite loop; if still over, the step fails closed with guidance. |
+| Provider context rejection | If auto is enabled and the exact pre-content overflow class is proven, compact and retry once under the unchanged-revision/no-effect fence; otherwise return a typed terminal error. `auto=false` never triggers this recovery. |
+| Remaining-context output truncation | If the pinned route proves this distinct finish cause, auto is enabled, and the no-effect/revision/budget fence passes, compact and retry once; explicit/unknown/second truncation is terminal. `auto=false` never triggers this recovery. |
+| Hard pre-send fit failure | The hard fit guard always runs. `auto=false` returns `CONTEXT_TOO_LARGE` without dispatch; auto mode allows one compact/rebuild, then returns the same typed error if the request still does not fit. |
+| Summary-model context too small | Automatic and manual compaction return typed `COMPACTION_CONTEXT_TOO_LARGE`; do not silently skip compaction, switch models/routes, or send an over-budget original request. |
 | Source `Unavailable` | Preserve the admitted snapshot; block initialization/replacement rather than render an incomplete baseline. |
 | Duplicate source key | Rejected immediately at `combine`. |
 | Snapshot decode mismatch | Force a full replacement generation; never partially trust a corrupt snapshot. |
@@ -362,11 +421,47 @@ visible; it may be omitted only when the task permits that omission.
 | Repo map/LSP unavailable | Degrade to tree-sitter + lexical search; mark diagnostics unavailable. |
 | Stale checkpoint | Rebuild prefers live state; checkpoints are versioned. |
 
+## Direct Thread compaction (`DEC-075`, `REQ-CTX-013`)
+
+Managed Run checkpoints preserve task-graph contracts and verifier evidence. An
+ordinary coding conversation uses a lighter projection: retain a configurable recent
+verbatim tail, then summarize older visible conversation as concise narrative and
+structured references. The summary must preserve the original active request, later
+user corrections, accepted decisions, current relevant files/errors/evidence, and
+unresolved questions. It must not import goal/task headings when no managed Run exists.
+
+This projection is disposable and rebuildable from canonical Thread events. It cannot
+rewrite intent, approve effects, establish task completion, or serve as evidence. If
+reconstruction is incomplete, report what could not be recovered and request user
+input rather than inventing or resurrecting an old objective. Trigger and retained
+tail size are selected from the resolved context budget and evaluated; no fixed turn
+count is assumed to fit every provider.
+
+## Optional hybrid repository retrieval (`REQ-CTX-014`)
+
+Use three independently inspectable signals when enabled: lexical search for exact
+identifiers/errors/paths, syntax and reference topology for symbol structure, and
+local embedding retrieval for natural-language concepts. Semantic indexing is off by
+default. The user can choose local-only embedding models and local storage; any
+remote embedding route requires a separate explicit egress disclosure/approval and
+must identify what repository content leaves the machine. Index updates are
+incremental, cancellable, revision-bound, and run outside the interactive render and
+model-stream path. PowerShell here is a command shell profile for `exec.run`, not a
+special source-language indexing requirement.
+
+The result identifies which signals contributed and their freshness. If embeddings,
+parser, or graph data are missing/stale, fall back to labeled lexical search and direct
+reads. Evaluate natural-language concept queries alongside exact-token queries,
+including retrieval relevance, missed relevant files, indexing CPU/RAM/disk, and
+first-use latency. No token-saving or correctness guarantee follows from a repository
+map alone.
+
 ## Configuration
 
 | Key | Meaning | Default |
 |---|---|---|
 | `compaction.auto` | enable automatic compaction | `true` |
+| `compaction.auto_threshold` | context-window utilization at which automatic compaction starts | `0.5` |
 | `compaction.buffer` | reserve subtracted from the window | `20000` |
 | `compaction.keep.tokens` | serialized tail retained verbatim | `8000` |
 | `compaction.summary.max_tokens` | summarize-call cap | `4096` |
@@ -385,7 +480,7 @@ overridable. No key changes an authorization decision (`CMP-guard` owns that).
 | `REQ-CTX-001` | Ranked repo map from the configured source view + language parsing (§7); every edge and excerpt carries freshness/provenance. |
 | `REQ-CTX-002` | Trigger rule, serialized tail + structured summary (§3, §4). |
 | `REQ-CTX-003` | Eval-gated compaction, not window-fit only (§5). |
-| `REQ-CTX-004` | Pre-send estimate + overflow compaction-and-retry (§3, §4). |
+| `REQ-CTX-004` | Pre-send estimate/hard fit guard and separately fenced pre-content provider rejection recovery (§3, §4). |
 | `REQ-CTX-005` | Hierarchical `AGENTS.md` discovery as a typed source (§6). |
 | `REQ-PERF-003` | Incremental indexing off the loop (§7). |
 | `REQ-ORCH-001/002/005` | Sharded child context + receipts (§11). |
@@ -395,8 +490,9 @@ overridable. No key changes an authorization decision (`CMP-guard` owns that).
 
 ## Open questions
 
-1. **Default `buffer`/`keep`/`summary-cap` per model class.** Absolute floors vs
-   percentage-of-window for small local models. (→ `DEC-006` tuning.)
+1. **Default reserve/tail/summary caps per model class.** The 50% automatic trigger
+   is fixed by `DEC-006`; reserve, retained-tail, and summary-cap calibration for
+   small local models remains open.
 2. **Repo-map budget default and personalization policy.** The token allowance
    and how strongly an active file overrides global centrality are unmeasured.
 3. **Tokenizer strategy.** A single conservative estimator vs per-provider

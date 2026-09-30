@@ -1,23 +1,219 @@
 # CURRENT_RUN — HorizonCode
 
+## Architecture audit and storage-source correction (2026-09-30)
+
+Read all 33 active `ARCH/*.md` documents (`ARCH/00`–`ARCH/33`, with `ARCH/17`
+intentionally absent), through their final lines: 14,028 physical lines in the
+pre-audit document snapshot. Reconciled requirements, decisions, source trails, TODO owners,
+and the relevant Doctor, Extensions, skills, deferred-tool-search, LSP, and compaction
+acceptance contracts. Upstream behavior remains pattern evidence only; no code was
+copied and no product tests or benchmarks were run.
+
+Corrected `ARCH/07-SESSION.md`: the segmented `EventLog` implementation is not yet
+integrated into session/run stores, while `CommitSink`/`DurabilityProfile` are already
+used by the flat-file session store and by the segmented EventLog. The durability
+types live in `horizoncode-eventlog/src/durability.rs`; the session integration is in
+`horizoncode-session/src/store.rs`. This is primitive reuse, not segmented-store
+migration or proof of the full multi-hour durability contract.
+
+The 2026-09-29 paragraph below that described the AX-350/AX-352 gate as circular is
+superseded. AX-352 has an independently runnable primitive acceptance `ACC-P1-13A`;
+integrated segment/reserve acceptance `ACC-P1-13` remains owned by AX-350. The durable
+store task order is AX-309, then AX-311/AX-312, then AX-350 session migration and
+Run-store integration. Updated the AX-350 TODO row and implementation entry point to
+state these dependencies and that AX-311 is a prerequisite, not a co-delivered task.
+The existing `AX-311` dependency on AX-309/AX-104 remains authoritative.
+
+Web source review confirmed Codex's deferred tool search over bounded metadata and
+OpenCode's grouped LSP operations; Grok's pinned research records the Extensions,
+Doctor, skill-collision, and guided-creation patterns. The tool's direct open of the
+pinned Grok pages and OpenCode LSP page returned cache misses; immutable source URLs
+and focused prior checkout/review notes remain in `ARCH/29` and `research docs/`.
+Codex's pinned file was directly available. These source limits are retained; this
+pass does not claim a fresh full-repository review.
+
+No source code or TODO status was changed; the AX-350 TODO description and dependency
+notes were clarified. `git diff --check` passed, and a local Markdown-link scan checked
+85 Markdown files with zero missing local targets. The repository's documented
+`scripts/check-doc-refs.mjs` is absent from this checkout, so that project-specific
+checker could not run. No product tests or benchmarks were run. Preserve the
+pre-existing dirty worktree and user data. Next safe action: keep AX-309/311/312/350
+proposed until their owner-specific evidence is recorded.
+
+## Context compaction threshold decision (2026-09-30)
+
+The automatic compaction trigger is now designed as configurable
+`compaction.auto_threshold`, default `0.5` of the active provider route's resolved
+model context window. The separate output/buffer/estimation-uncertainty reserve stays
+as the hard fit guard; disabling automatic compaction does not disable explicit
+manual compaction. Updated `REQ-CTX-002`, `DEC-006`, `ARCH/09`, `ARCH/19`,
+`ACC-P1-07`, and TODO rows AX-203/AX-390. These remain proposed design: the current
+Rust crates contain compaction event types but no context compaction engine or
+automatic trigger. No tests were run; `git diff --check` passed for the edited docs.
+
+## Upstream pattern adoption traceability (2026-09-30)
+
+Audited TODO-to-architecture ownership for Grok Doctor/shared Extensions, Grok skill
+collision and guided creation, Codex deferred tool search, and OpenCode's grouped LSP
+tool. TODO rows AX-392, AX-378, AX-373, and AX-375 describe the proposed implementation
+and link their owning architecture docs plus `ARCH/29` source-trail anchors. Added
+direct immutable upstream file links in the owning LLD/decision sections (`ARCH/04`,
+`ARCH/09`, `ARCH/10`, `ARCH/21`); pinned URLs, exact files, license/provenance, and
+pattern-only dispositions remain indexed in `ARCH/05`, `ARCH/29`, and `research docs/`.
+No upstream code was copied. These tasks remain proposed; `git diff --check` passed.
+
 ## Active handoff — architecture audit continuation (2026-09-29)
+
+### AX-370 guard fix (2026-09-29)
+
+Implemented the critical guard fix (T0) across `horizoncode-guard`, the tool approval
+seam, and CLI posture, with regression tests and the corresponding architecture/task
+updates. No delivery row was promoted to `verified`.
+
+- `evaluate_pairs` now resolves find-last-wins within the user/global base
+  (`base_rules`: global layers + saved rules) and within each project/agent/session
+  restriction layer, then composes with `deny > ask > allow`, so a lower-trust
+  `allow` can no longer lower an upstream `ask`/`deny` (F-70).
+- `names_the_area_deliberately` takes the requested action and searches only the
+  user/global base: an `fs.read` grant no longer exempts `fs.write`/`fs.delete`/
+  `fs.move`, and a project/agent/session rule can never waive the external-directory
+  floor (F-69, `DEC-024`, `DEC-025`).
+- `GuardMode::Yolo` now auto-resolves only eligible, rule-raised asks (`fs.*`,
+  `exec.run`, `todo`, `question`). Network egress, MCP/extension installs,
+  external-directory reaches, unmatched asks, explicit denials, and catastrophic
+  entries remain governing (F-84, `DEC-073`).
+- The approval seam carries that eligibility (`ApprovalRequest.reduced_approval_eligible`
+  and `Guard::ask_is_eligible`); `AutoApproveResolver` refuses an ineligible ask, and
+  the CLI no longer installs a blanket auto-approver under `--yolo` — only ineligible
+  asks reach a resolver, where an interactive terminal prompts and every other posture
+  denies.
+- `Guard::from_rules` installs its rules as the user/global base layer; tests that
+  used the session layer as the primary policy now use the base layer, and the
+  policy-fingerprint fixture reflects the global layer plus its deny ceiling.
+- Regression coverage added in `crates/horizoncode-guard/tests/guard.rs`; the tools
+  permission helper was aligned in `crates/horizoncode-tools/tests/permission.rs`.
+
+Evidence: `cargo test -p horizoncode-guard` (50 passed); `cargo test --workspace
+--no-fail-fast` (62 suites, 519 passed, 0 failed); `cargo clippy --workspace
+--all-targets -- -D warnings` clean. `cargo fmt -p horizoncode-guard -p
+horizoncode-tools --check` fails on formatting deltas in unchanged sections of touched
+crates and other existing files; no broad reformat was applied. No acceptance record
+(`ACC-P1-02`) exists, so AX-370 remains `implemented`.
+
+Independent verification on 2026-09-29 reran `cargo test --workspace --no-fail-fast`
+and `cargo clippy --workspace --all-targets -- -D warnings`; both passed. The test suite
+first failed inside the restricted sandbox because mock-provider tests bind loopback
+listeners, then passed when rerun with approval outside it. `cargo fmt -p
+horizoncode-guard -p horizoncode-tools --check` fails on formatting deltas in unchanged
+sections of touched crates and other existing files; no broad reformat was applied.
+`git diff --check` passes.
+
+### Current product priority after the requirements revision
+
+The active product direction now prioritizes AX-362 (complete pinned OpenCode/Cline
+provider and auth inventories), followed by AX-363 (HorizonCode-owned route parity and
+the reviewed upstream-change candidate pipeline); AX-387 direct-turn coding and its
+paired quick-task evaluation proceeds alongside. A provider blocker means full parity
+is incomplete. These tasks do not claim implementation. AX-350/AX-311 remain necessary
+for durable managed Runs after their acceptance/dependency cycle is resolved.
+
+Source review confirms T1 integration has not started: `SessionStore` still reads and
+writes `<id>.jsonl`; the segmented event-log core, AX-352 session durability seam, and
+DEC-058 storage defaults are prerequisites already present. AX-350 remains proposed;
+AX-311 remains proposed and depends on AX-309/AX-104; AX-379 remains proposed and
+depends on the versioned store migration. Historical assessment that the TODO gate was
+circular is superseded by the 2026-09-30 correction at the top of this file:
+`ACC-P1-13A` is the independent AX-352 primitive gate, while integrated segment/reserve
+acceptance `ACC-P1-13` belongs to AX-350. AX-311 also depends on AX-309, which remains
+proposed. Follow the corrected dependency order before integrated migration, then
+AX-379.
+
+### Architecture consistency pass (2026-09-29)
+
+A cross-document identifier/ownership review of all 33 `ARCH/` files was run and its
+findings fixed. No requirement, source baseline, or delivery status changed; the
+reviewed Rust source baseline remains `23d4ce8` and no Rust file was touched.
+
+- Added `DEC-073` (reduced-approval posture is a bounded, run-scoped grant) and
+  replaced the incorrect `DEC-040` citations in `ARCH/02`, `ARCH/12`, `ARCH/22`, and
+  `ARCH/24` (`F-43`, `F-84`); `ARCH/23` `ACC-P1-02`, `ARCH/27`, `ARCH/29` `AX-370`,
+  and the `TODO.md` `AX-370` row now cite it.
+- Added the `CMP-verifier` row to the `ARCH/03` component table; removed the undefined
+  `CMP-adapter` references in `ARCH/27`/`ARCH/32` and recorded that adapter edges are
+  mechanics of `CMP-execution-host`/`CMP-acp`.
+- Defined `ACC-PROV-OC-GO` in `ARCH/23` (live OpenCode Go route acceptance, owner
+  `AX-364`) and mapped `REQ-PROV-009/010` to it.
+- Added row-ID namespace notes in `ARCH/22`, `ARCH/23`, `ARCH/24` and qualified the
+  ambiguous `F-02`/`G-05` citations; replaced the dangling `EDGE-038` reference with
+  `ARCH/22` `G-06`.
+- Added the missing `UPDATE` area code and corrected the `AX-*` convention examples
+  in `ARCH/00`; fixed the malformed `AX-12` license-gate citation in `ARCH/05` to
+  `AX-001`/`AX-010`.
+- Added one-way decision citations in `ARCH/09`, `11`, `15`, `19`, `20`, `21`, `25`,
+  `27`, and `30` for `DEC-007`, `013`, `015`, `017`, `019`, `032`, `033`, `041`,
+  `061`, `068`, and `071`.
+- Added the two missing anchors (`u-cx-egress`, `u-cx-retry-usage`) that `TODO.md`
+  linked to in `ARCH/29`.
+
+Checks for this pass: an identifier-resolution scan over `ARCH/*.md` (all
+`REQ`/`DEC`/`SRC`/`RR`/`ACC` references resolve; `DEC-028` remains the only
+intentionally unassigned ID; no `DEC-*` is still cited only inside `ARCH/04`), a
+local-link and `git diff --check` scan of the edited files, and a `TODO.md` AX-370
+traceability update. No product tests, benchmarks, provider calls, or UI runs were
+performed. The documentation changes are uncommitted.
+
+### Product README follow-up (2026-09-29)
+
+Added a root `README.md` describing the intended HorizonCode product from the approved
+vision and architecture: durable repository runs, task planning, a terminal workspace,
+governed effects, model/protocol choice, and independent verification. The opening
+notice says the project is in development; there are no install instructions or claims
+that target capabilities are already released. The README was informed by a review of
+Hermes Agent, LibreChat, CowAgent, DeepSeek Reasonix, grok-build, OpenHands, Aider, and
+OpenCode README structures, using product framing and navigation patterns without
+copying their implementation or promotional claims. `AGENTS.md` now explicitly allows
+the root README and defines its role. `git diff --check` passes and each local README
+link resolves. No product tests were run.
 
 ### Checkout and handoff status
 
-Checked-out Git revision: `7e4b03d2d35d4a012827ea3980ec893b91768677`.
-The reviewed Rust source baseline remains `23d4ce8`; the current working diff is
-documentation-only. `TODO.md` contains 130 unique task IDs: 46 `implemented` and 84
-`proposed`, with an owning architecture link and source-traceability link on every
-row; none is `verified` or `accepted`. `TODO.md` is authoritative for the next
-implementation task. Its current first action is AX-370, the source-confirmed guard
-fix; older implementation queues later in this file are historical and must not
-override that row or its dependencies.
+Checked-out Git revision: `1bdea2689316904d2cc6ef884202f6c35a272a48`.
+The reviewed Rust source baseline remains `23d4ce8`; the current working diff contains
+the architecture consistency pass plus the AX-370 source fix in
+`crates/horizoncode-guard`. `TODO.md` contains 130 unique task IDs: 46 `implemented`
+and 84 `proposed`, with an owning architecture link and source-traceability link on
+every row; none is `verified` or `accepted`. `TODO.md` is authoritative for the next
+implementation task: AX-370 is fixed at the source level with regression tests, and
+the next planned implementation wave follows AX-309, then AX-311/AX-312, then AX-350;
+AX-379 follows the versioned store migration. Its 2026-09-29 claim of a circular
+AX-350/AX-352 acceptance gate is superseded by the 2026-09-30 correction at the top of
+this file. See the current handoff above before selecting work. Older implementation queues later
+in this file are historical and must not override the ledger.
 
-Latest documentation-only checks: `git diff --check` passes; all 602 local links in
-`TODO.md` resolve to files and anchors; `CURRENT_RUN.md` has no local links. The
-active architecture/research link scan is recorded below. No product tests,
-benchmarks, provider calls, or UI runs were performed. The documentation changes are
-uncommitted. Preserve existing untracked workspace data.
+Latest checks: `git diff --check` passes; local links across `ARCH/*.md`, `TODO.md`,
+`CURRENT_RUN.md`, `README.md`, and `AGENTS.md` resolve (901 checked, 0 broken); the
+guard fix passed `cargo test --workspace --no-fail-fast` (62 suites, 519 passed,
+0 failed) and `cargo clippy --workspace --all-targets -- -D warnings` is clean.
+`cargo fmt -p horizoncode-guard -p horizoncode-tools --check` fails on formatting
+deltas in unchanged sections of touched crates and other existing files (including
+`ticket.rs` and `tools/src/builtin/*`); no broad reformat was applied. No benchmarks,
+provider calls, or UI runs were performed. The docs and source changes are uncommitted.
+Preserve existing untracked workspace data.
+
+The current-turn follow-up checked corrections to the Codex comparison against the
+local source snapshot labeled `67a709665ac7b50311b93e32612c9a8281684787`, with pinned
+GitHub links spot-checked for the redirect executor, retry helper, and migration flow.
+The local snapshot itself has no `.git` metadata, so it cannot independently prove its
+origin commit; do not report this as a complete Codex checkout or a full-file review.
+The Codex findings and corrections are in `ARCH/01`, `ARCH/02`, `ARCH/07`, `ARCH/08`,
+`ARCH/11`, `ARCH/12`, `ARCH/22`, `ARCH/23`, `ARCH/24` F-95/F-98, `ARCH/26`,
+`ARCH/29`, `TODO.md`, and `research docs/codex.md`. Retry safety now has explicit
+finite attempt/deadline/backoff limits, terminal-error preservation, and replay
+idempotency in `REQ-PROV-015`; usage fields are unknown rather than zero when absent.
+The credential-endpoint environment-variable observation is recorded with the caveat
+that it does not by itself prove an egress bypass. The claimed zero-peer scheduler
+novelty was rejected because the existing DeepCode note describes durable scheduling;
+exact equivalence against LongHorizon Harness remains unverified.
 
 ### Current architecture/source reconciliation
 
@@ -26,7 +222,7 @@ read in three non-overlapping line-by-line reviews and reconciled with requireme
 decisions, TODO, and source trails. Current fixes align the Thread model across
 security, tools, orchestration, analytics, search, UI, artifact, update, and app-server
 contracts; make provider fallback/cache semantics explicit; tighten the optional
-unconfined grant boundary; and align the P1 acceptance matrix at 20 rows. Findings
+unconfined grant boundary; and align the P1 acceptance matrix at 21 rows. Findings
 F-84..F-90 add the broad legacy Yolo Ask conversion, pinned-provider fallback exposure,
 malformed owner-lease acceptance, conservative unknown provider-capability semantics,
 model-facing compacted-history retrieval, immutable adapter-build provenance, and
@@ -42,13 +238,15 @@ F-23's overbroad secret-scanning guarantee was corrected to distinguish broker-h
 credentials from arbitrary workspace text. AX-370, AX-384, AX-359, AX-360, and AX-328
 own the implementation and acceptance work.
 
-This remains a documentation/source audit, not implementation. Source-confirmed guard
-defects are the external-path action mismatch and flattened rule-layer precedence; the
-legacy Yolo posture also converts every surviving Ask to Allow, contrary to the
-approved bounded grant. Source separately preserves global/project deny ceilings; do
-not report those denies as bypassed. No product regression tests were added or run.
-Documentation-only checks must be rerun against the current revision before handoff;
-earlier QA counts belong to earlier commits and are not current evidence.
+This section remains a documentation/source audit; the AX-370 guard fix is the first
+implementation wave on top of it. The source-confirmed guard defects — the
+external-path action mismatch (F-69), flattened rule-layer precedence (F-70), and the
+broad legacy Yolo Ask conversion (F-84) — are fixed at the source level with
+regression tests (see the AX-370 section above); their `ACC-P1-02` acceptance record
+and the run-scoped approval acknowledgement/expiry/revocation remain open. Source
+separately preserves global/project deny ceilings; do not report those denies as
+bypassed. Earlier QA counts belong to earlier commits and are not current evidence;
+rerun the owning checks against the current revision.
 
 ### Claude Code and subagent memory follow-up
 
@@ -153,6 +351,22 @@ requirements (`F-87`). Codex research records non-atomic Goal/rollout persistenc
 unbounded client event-queue behavior, message-board receipt semantics, and its
 thread-scoped rather than task-verified goal model. Re-run documentation QA after any
 further report-driven edits.
+
+### Architecture-document audit fixes (2026-09-29)
+
+The report-driven documentation fixes align `ARCH/23` at 21 P1 rows and map
+`REQ-GUARD-006` / `REQ-CTX-008` to acceptance evidence; scope deterministic-input
+rules to L1/L2 while explicitly recording real-host L3–L5 dependencies; and reconcile
+`CMP-config` instruction discovery with `CMP-context` assembly. Security assets now
+separate Thread history from Run/task/evidence state. The context estimator is labeled
+rough and requires an uncertainty reserve; compression forbids abstraction of code
+and tool observations. `ARCH/05` treats repo-map ranking as proposed synthesis until
+pinned provenance exists and removes the claim that a subprocess alone resolves LGPL
+obligations. `ARCH/15` now names owners, safe interim behavior, and release gates for
+its unresolved protocol questions. `ARCH/24` finding coverage and the source-baseline
+labels were reconciled to the checked-out revision. These are documentation changes;
+no product code was inspected or changed and no product tests were run. The open
+protocol decisions remain release-gated as recorded in `ARCH/15`.
 
 The currently confirmed target layout is **Explorer/editor on the left, chat fixed in
 the center, and verified Tasks on the right**. All three regions resize through
@@ -882,3 +1096,111 @@ The user-owned untracked `uipics/` and `.code-intelligence/` are preserved and w
 staged. No remote was touched, nothing was pushed, published, or deployed, and no
 production data was changed. Two temporary baseline worktrees were created under
 `/tmp/opencode` for the failure comparison and were removed.
+
+## Product requirements and provider-maintenance revision (2026-09-29)
+
+Expanded the proposed product contract so HorizonCode targets both fast direct coding
+and durable managed Runs. A normal natural-language turn may explain, inspect, edit,
+check, review a diff, and respond to correction without creating a goal or accepting a
+Run plan. `/goal` remains optional and is the path for work needing managed planning,
+recovery, and independent verification. The new paired benchmark records quick tasks,
+long-horizon outcomes, permissions, latency, cost/unknown usage, regressions, and
+uncertainty; no competitor superiority claim is made.
+
+Added architecture contracts for ordinary permission ergonomics, editor profiles and
+external-edit coordination, Turn Diff versus Total Working Diff, safe stale-base
+reconciliation, no auto-stage/commit, direct-turn cancellation and resource ceilings,
+bounded inner checks, shell profiles (including PowerShell), trusted hooks, lightweight
+direct-thread compaction, optional hybrid retrieval, progressive UI state, and
+Thread/Turn analytics without fabricated Run IDs. PTY use is explicit and does not
+claim confinement. The reviewer-proposed fixed `$0.50`/five-step defaults, universal
+cache-neutral mode switching, automatic whitespace normalization, fuzzy `±5` patch
+matching, and Git-shadow commits were not adopted because they are unmeasured or can
+weaken existing contracts.
+
+Provider scope now explicitly targets integration parity with every connector in the
+pinned OpenCode and Cline matrices. Models.dev/catalog records remain inert metadata.
+An upstream monitor is to detect source changes and prepare reviewable HorizonCode
+adapter/fixture candidates with exact provenance and per-file license/notice review;
+only the normal reviewed signed release can deliver those changes. Runtime download or
+execution of changed upstream code remains disallowed. AX-362/363 remain proposed and
+the existing Cline provider review is explicitly incomplete; no full provider parity
+or new adapter is claimed.
+
+Added proposed acceptance IDs `ACC-UX-01..05`, `ACC-EDITOR-01`, `ACC-EDIT-02`,
+`ACC-REPO-01`, `ACC-PROV-SYNC-01`, and `ACC-ANALYTICS-01`; created delivery rows
+AX-387..391 and source-traceability rows. `research docs/tests.md` now records the
+paired competitor protocol and cross-feature edge cases. These are test plans, not
+results. No code, schema, provider integration, benchmark, or acceptance record was
+implemented or verified in this documentation pass; no tests were run.
+
+The current checkout is Git `1bdea2689316904d2cc6ef884202f6c35a272a48` with the
+pre-existing dirty worktree preserved. `git diff --check` and a local-link target scan
+passed for the touched Markdown set. The next product-priority work is AX-362 (complete
+pinned provider/auth matrices), then AX-363 (native connector parity and the reviewed
+upstream-change candidate pipeline), with AX-387 direct-turn implementation/evaluation
+proceeding alongside it. The existing AX-350/AX-311 storage path remains required for
+managed Runs. Before implementation, inspect current source and exact upstream pins,
+then update the selected task’s source trail and acceptance scope.
+
+## Extensions-manager source check (2026-09-29)
+
+Checked the Grok Build public source at `2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8`
+for its Extensions modal and slash-command routing. The pinned pager has six category
+tabs and 74 static built-ins; ACP commands and skills/workflows are additional dynamic
+sources. Updated proposed `DEC-078`, `REQ-UI-020`, `ARCH/06`, `ARCH/21`, and `ARCH/27`
+so all extension slash entry points share one category-aware overlay, while `/workflow`
+continues to use the existing Run-controller boundary. Added source trail `U-GROK-EXTENSIONS`,
+provenance `SRC-029`, and focused research note `research docs/grok-build-extensions.md`.
+AX-378 remains proposed; these are architecture and acceptance-plan changes only. No
+implementation or tests were run, and no upstream code was copied.
+
+## Grok Build Doctor and adjacent-pattern review (2026-09-29)
+
+Reviewed the pinned Grok Build Doctor command, model, probe, fix, renderer, and test
+paths at `2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8` (Apache-2.0). The review is
+focused on Doctor and its direct paths; it is not a claim that every Grok Build source
+line or subsystem was audited. Findings and adoption decisions are recorded in
+`research docs/grok-build-doctor.md` and `ARCH/29` `U-GROK-DOCTOR`.
+
+Decided to adapt the shared typed diagnostics report, stable finding IDs, explicit
+unknown/unavailable/error states, human plus versioned JSON output, and named repair
+planning. HorizonCode's proposed implementation uses `CMP-diagnostics`, shared by
+`hzcode doctor [--json]` and `/doctor`; routine reports are bounded local reads with no
+provider/network call or mutation. Repairs require finite first-party IDs, current
+target revalidation, exact preview, authenticated Guard confirmation, safe owned-service
+application, audit, and postcondition verification. Grok's terminal-specific checks and
+`--yes` option are excluded. Other candidates were checked against existing contracts:
+typed slash dispatch and source-aware command registry are already specified; shared
+extension routing is AX-378; concurrent `/btw` is deferred; eager loading of every
+extension category and a second task registry are not adopted.
+
+Added proposed `DEC-079`, `REQ-UI-029`, `CMP-diagnostics`, `ACC-DIAG-01`, and delivery
+row `AX-392`; updated `ARCH/02`, `ARCH/03`, `ARCH/04`, `ARCH/05`, `ARCH/23`, `ARCH/27`,
+`ARCH/29`, `TODO.md`, `research docs/tests.md`, and the research index. No HorizonCode
+implementation exists for Doctor, and no upstream code/tests/schema were copied or run.
+No tests were run for this design pass.
+
+## Focused Grok/Codex/OpenCode pattern adoption (2026-09-29)
+
+Added proposed architecture only; no implementation status changed and no upstream
+code, schemas, tests, or assets were copied. AX-392 Doctor and AX-378 shared
+Extensions were already tracked and remain the owners. Skill collision-safe
+source-qualified invocation is now `DEC-080` / `REQ-SKILL-005` under AX-373;
+`/skill` stays manager navigation and `/create-skill` opens the existing Skills →
+Create view under AX-378. Codex deferred tool discovery is specified in `ARCH/10`
+under existing `REQ-CTX-010` and AX-373, using one registry with bounded search,
+selected permission-filtered schemas, per-step pinning, and stale-call refusal.
+OpenCode's grouped read-only LSP operations are assigned to the one `CMP-repo-intel`
+owner under `REQ-CTX-012`, `ARCH/09`, and AX-375.
+
+Updated `ARCH/02`, `04`, `05`, `09`, `10`, `21`, `23`, `27`, `29`, `TODO.md`,
+`research docs/tests.md`, the research index, and the focused note
+`research docs/agent-tool-skill-command-adoption.md`. Pinned source records identify
+the exact Grok skill guide, Codex `tool_search.rs`, and OpenCode `lsp.ts`, with
+pattern-only dispositions and stated review limits. All affected TODO rows remain
+`proposed`; acceptance contracts are `ACC-SKILL-01`, `ACC-TOOL-DISCOVERY-01`, and
+`ACC-REPO-LSP-01`. No product tests or benchmark were run for this documentation-only
+change. `git diff --check` passes; a local-link target check across the 14 edited
+Markdown files found zero missing targets, and the new requirement/decision/source/
+acceptance identifiers resolve in `ARCH/`. No Rust/source files were changed.

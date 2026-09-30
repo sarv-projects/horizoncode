@@ -53,7 +53,11 @@ impl Effect {
     }
 }
 
-/// Where a rule layer came from; order is precedence (later wins).
+/// Where a rule layer came from.
+///
+/// `Global` (plus saved rules) is the user base policy and resolves
+/// find-last-wins within itself; `Project`, `Agent`, and `Session` are
+/// restrictions that can only narrow it (`ARCH/12` §Evaluate).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RuleSource {
     /// User/global configuration.

@@ -18,7 +18,7 @@ fn make(rules: Vec<Rule>, mode: GuardMode) -> Guard {
         .discover_global(false)
         .with_mode(mode)
         .with_unmatched(Effect::Deny)
-        .with_session_rules(rules)
+        .with_default_rules(rules)
         .build()
 }
 
@@ -74,21 +74,33 @@ fn unmatched_may_be_ask_but_never_allow() {
 }
 
 #[test]
-fn outer_deny_ceiling_cannot_be_widened_by_a_session_allow() {
-    let project = Rule::new("fs.write", ".git/**", Effect::Deny);
-    let session = Rule::new("fs.write", "**", Effect::Allow);
+fn lower_trust_layers_cannot_lower_an_upstream_ask_or_deny() {
+    // An agent-layer deny is a restriction: a later session allow cannot widen
+    // it (`ARCH/12` §Evaluate, AX-370).
     let guard = Guard::builder()
         .discover_global(false)
-        .with_agent_rules(vec![project])
-        .with_session_rules(vec![session])
+        .with_default_rules(vec![Rule::new("fs.write", "**", Effect::Allow)])
+        .with_agent_rules(vec![Rule::new("fs.write", ".git/**", Effect::Deny)])
+        .with_session_rules(vec![Rule::new("fs.write", "**", Effect::Allow)])
         .build();
-    // An agent-layer deny is not a ceiling; a later session allow wins.
-    assert_eq!(
+    assert!(matches!(
         guard.evaluate("fs.write", &resources(&[".git/hooks/pre-commit"])),
-        GuardDecision::Allow
+        GuardDecision::Deny { .. }
+    ));
+
+    // A user/global ask is likewise never lowered by a session allow: the
+    // session layer is a restriction, not a second authority.
+    let guard = Guard::builder()
+        .discover_global(false)
+        .with_default_rules(vec![Rule::new("fs.read", "/etc/**", Effect::Ask)])
+        .with_session_rules(vec![Rule::new("fs.read", "**", Effect::Allow)])
+        .build();
+    assert_eq!(
+        guard.evaluate("fs.read", &resources(&["/etc/hosts"])),
+        GuardDecision::Ask
     );
 
-    // A project-layer deny is a ceiling and cannot be widened.
+    // A global/project deny is a non-overridable ceiling.
     let guard = Guard::builder()
         .discover_global(false)
         .with_default_rules(vec![Rule::new("fs.write", ".git/**", Effect::Deny)])
@@ -263,7 +275,7 @@ fn saved_rule_takes_effect_and_persists() {
 }
 
 #[test]
-fn project_config_overrides_global_nearest_wins() {
+fn a_project_rule_cannot_widen_the_user_base() {
     let root = tempfile::tempdir().unwrap();
     let global = root.path().join("global.jsonc");
     std::fs::write(
@@ -278,6 +290,7 @@ fn project_config_overrides_global_nearest_wins() {
         r#"{ "guard": { "rules": [ { "action": "fs.write", "resource": "**", "effect": "allow" } ] } }"#,
     )
     .unwrap();
+
     // The global deny is a ceiling, so the project allow cannot widen it.
     let guard = Guard::builder()
         .with_global_config(&global)
@@ -288,15 +301,42 @@ fn project_config_overrides_global_nearest_wins() {
         GuardDecision::Deny { .. }
     ));
 
-    // Without the global ceiling, the project allow wins.
+    // Without a user grant the fail-closed default stands: a project `allow`
+    // is a restriction-layer NoOpinion, not authority, and cannot widen it
+    // (`ARCH/12` §No-match semantics, `ARCH/18`).
     let guard = Guard::builder()
         .discover_global(false)
+        .with_workspace(root.path().join("project"))
+        .build();
+    assert!(matches!(
+        guard.evaluate("fs.write", &resources(&["src/main.rs"])),
+        GuardDecision::Deny { .. }
+    ));
+}
+
+#[test]
+fn a_project_rule_still_narrows_the_user_grant() {
+    let root = tempfile::tempdir().unwrap();
+    let project_dir = root.path().join("project/.horizoncode");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    std::fs::write(
+        project_dir.join("config.jsonc"),
+        r#"{ "guard": { "rules": [ { "action": "fs.write", "resource": "vendor/**", "effect": "deny" } ] } }"#,
+    )
+    .unwrap();
+    let guard = Guard::builder()
+        .discover_global(false)
+        .with_default_rules(vec![Rule::new("fs.write", "**", Effect::Allow)])
         .with_workspace(root.path().join("project"))
         .build();
     assert_eq!(
         guard.evaluate("fs.write", &resources(&["src/main.rs"])),
         GuardDecision::Allow
     );
+    assert!(matches!(
+        guard.evaluate("fs.write", &resources(&["vendor/lib.rs"])),
+        GuardDecision::Deny { .. }
+    ));
 }
 
 /// The default and yolo resolvers are exercised through their async contract.
@@ -311,16 +351,28 @@ async fn approval_resolvers_are_fail_closed_by_default() {
         save: Vec::new(),
         prompt: "run echo".to_owned(),
         catastrophic: false,
+        reduced_approval_eligible: true,
     };
     assert_eq!(deny.resolve(&request).await, ApprovalReply::Reject);
 
+    // The reduced-approval resolver approves one eligible, non-catastrophic ask.
     let auto = horizoncode_guard::AutoApproveResolver;
     assert_eq!(auto.resolve(&request).await, ApprovalReply::Once);
+
+    // It refuses a catastrophic request, and it refuses an ineligible ask
+    // (network/extension/external-boundary) that Guard left as a manual ask
+    // (`DEC-073`).
     let catastrophic = ApprovalRequest {
         catastrophic: true,
-        ..request
+        ..request.clone()
     };
     assert_eq!(auto.resolve(&catastrophic).await, ApprovalReply::Reject);
+    let ineligible = ApprovalRequest {
+        action: "net.connect".to_owned(),
+        reduced_approval_eligible: false,
+        ..request
+    };
+    assert_eq!(auto.resolve(&ineligible).await, ApprovalReply::Reject);
 }
 
 /// The global document carries posture, not only rules. Reading `mode` and
@@ -535,7 +587,7 @@ mod external_directory_floor {
             .with_workspace(dir)
             .with_mode(GuardMode::Act)
             .with_unmatched(Effect::Deny)
-            .with_session_rules(rules)
+            .with_default_rules(rules)
             .build()
     }
 
@@ -587,6 +639,45 @@ mod external_directory_floor {
     }
 
     #[test]
+    fn a_deliberate_allow_is_action_specific() {
+        // `DEC-024`: an `fs.read` grant cannot exempt `fs.write`, `fs.delete`,
+        // or `fs.move` (AX-370's action-aware floor).
+        let ws = ws();
+        let mut rules = allow_fs();
+        rules.push(Rule::new("fs.read", "/opt/vendor/**", Effect::Allow));
+        let guard = guard_in(ws.path(), rules);
+        assert_eq!(
+            guard.evaluate("fs.write", &["/opt/vendor/lib.rs".to_owned()]),
+            GuardDecision::Ask,
+            "the read grant must not waive the write floor"
+        );
+        assert_eq!(
+            guard.evaluate("fs.read", &["/opt/vendor/lib.rs".to_owned()]),
+            GuardDecision::Allow
+        );
+    }
+
+    #[test]
+    fn a_lower_trust_deliberate_external_allow_cannot_waive_the_floor() {
+        // `DEC-025` / `REQ-SEC-025`: only the user/global base policy may name
+        // an external area deliberately; an agent or project allow stays bound
+        // by the floor.
+        let ws = ws();
+        let guard = Guard::builder()
+            .discover_global(false)
+            .with_workspace(ws.path())
+            .with_mode(GuardMode::Act)
+            .with_unmatched(Effect::Deny)
+            .with_default_rules(allow_fs())
+            .with_agent_rules(vec![Rule::new("fs.write", "/opt/vendor/**", Effect::Allow)])
+            .build();
+        assert_eq!(
+            guard.evaluate("fs.write", &["/opt/vendor/lib.rs".to_owned()]),
+            GuardDecision::Ask
+        );
+    }
+
+    #[test]
     fn the_floor_never_lowers_a_deny() {
         let ws = ws();
         let mut rules = allow_fs();
@@ -603,8 +694,8 @@ mod external_directory_floor {
         // Nothing is granted, so nothing is inside: the floor is fail-closed.
         let guard = Guard::builder()
             .discover_global(false)
-            .with_unmatched(Effect::Allow)
-            .with_session_rules(allow_fs())
+            .with_unmatched(Effect::Deny)
+            .with_default_rules(allow_fs())
             .build();
         assert_eq!(
             guard.evaluate("fs.read", &["/etc/passwd".to_owned()]),
@@ -832,17 +923,26 @@ mod policy_hash {
         let mut bytes: Vec<u8> = b"horizoncode/guard/policy/v1".to_vec();
         field(&mut bytes, mode.as_str());
         field(&mut bytes, unmatched.as_str());
-        // `from_rules` builds exactly one layer: the session layer.
+        // `from_rules` builds exactly one layer: the user/global base layer.
         bytes.extend_from_slice(&1u64.to_be_bytes());
-        field(&mut bytes, "session");
+        field(&mut bytes, "global");
         bytes.extend_from_slice(&(rules.len() as u64).to_be_bytes());
         for rule in rules {
             field(&mut bytes, &rule.action);
             field(&mut bytes, &rule.resource);
             field(&mut bytes, rule.effect.as_str());
         }
-        // No global or project layer, so the ceiling is empty.
-        bytes.extend_from_slice(&0u64.to_be_bytes());
+        // Global deny rules are duplicated into the non-overridable ceiling.
+        let denies: Vec<&Rule> = rules
+            .iter()
+            .filter(|rule| rule.effect == Effect::Deny)
+            .collect();
+        bytes.extend_from_slice(&(denies.len() as u64).to_be_bytes());
+        for rule in denies {
+            field(&mut bytes, &rule.action);
+            field(&mut bytes, &rule.resource);
+            field(&mut bytes, rule.effect.as_str());
+        }
         format!("ph_{}", horizoncode_audit::digest(&bytes))
     }
 
@@ -927,5 +1027,120 @@ mod policy_hash {
             Effect::Deny,
         );
         assert_ne!(left, right);
+    }
+}
+
+/// `DEC-073` / `REQ-GUARD-005`: reduced approval auto-resolves only eligible
+/// asks. Everything else — network egress, extension installs, external-
+/// directory reaches, and unmatched actions — stays a manual ask, and hard
+/// denials never move.
+mod reduced_approval {
+    use horizoncode_guard::{Effect, Guard, GuardDecision, GuardMode, GuardRequest, Rule};
+
+    fn yolo(rules: Vec<Rule>) -> Guard {
+        Guard::builder()
+            .discover_global(false)
+            .with_mode(GuardMode::Yolo)
+            .with_unmatched(Effect::Deny)
+            .with_default_rules(rules)
+            .build()
+    }
+
+    #[test]
+    fn an_eligible_rule_ask_is_auto_resolved() {
+        let guard = yolo(vec![
+            Rule::new("fs.read", "**", Effect::Allow),
+            Rule::new("fs.write", "**", Effect::Ask),
+        ]);
+        assert_eq!(
+            guard.evaluate("fs.write", &["src/a.rs".to_owned()]),
+            GuardDecision::Allow
+        );
+    }
+
+    #[test]
+    fn external_extension_and_network_asks_stay_manual() {
+        for action in ["net.connect", "mcp.call", "skill.install"] {
+            let guard = yolo(vec![Rule::new(action, "**", Effect::Ask)]);
+            assert_eq!(
+                guard.evaluate(action, &["example.invalid:443".to_owned()]),
+                GuardDecision::Ask,
+                "{action} must stay a manual ask under reduced approval"
+            );
+        }
+    }
+
+    #[test]
+    fn a_floor_raised_ask_stays_manual() {
+        let ws = tempfile::tempdir().unwrap();
+        let guard = Guard::builder()
+            .discover_global(false)
+            .with_workspace(ws.path())
+            .with_mode(GuardMode::Yolo)
+            .with_unmatched(Effect::Deny)
+            .with_default_rules(vec![Rule::new("fs.write", "**", Effect::Allow)])
+            .build();
+        assert_eq!(
+            guard.evaluate("fs.write", &["/etc/shadow".to_owned()]),
+            GuardDecision::Ask,
+            "an external-directory reach is never auto-approved"
+        );
+    }
+
+    #[test]
+    fn an_unmatched_ask_stays_manual() {
+        let guard = Guard::builder()
+            .discover_global(false)
+            .with_mode(GuardMode::Yolo)
+            .with_unmatched(Effect::Ask)
+            .build();
+        assert_eq!(
+            guard.evaluate("exec.run", &["echo hi".to_owned()]),
+            GuardDecision::Ask,
+            "an ask the policy never raised is not an eligible ask"
+        );
+    }
+
+    #[test]
+    fn a_restriction_ask_is_eligible_but_a_restriction_deny_still_denies() {
+        let guard = Guard::builder()
+            .discover_global(false)
+            .with_mode(GuardMode::Yolo)
+            .with_unmatched(Effect::Deny)
+            .with_default_rules(vec![Rule::new("fs.write", "**", Effect::Allow)])
+            .with_session_rules(vec![
+                Rule::new("fs.write", "src/**", Effect::Ask),
+                Rule::new("fs.write", "vendor/**", Effect::Deny),
+            ])
+            .build();
+        assert_eq!(
+            guard.evaluate("fs.write", &["src/a.rs".to_owned()]),
+            GuardDecision::Allow
+        );
+        assert!(matches!(
+            guard.evaluate("fs.write", &["vendor/lib.rs".to_owned()]),
+            GuardDecision::Deny { .. }
+        ));
+    }
+
+    #[test]
+    fn ask_eligibility_matches_the_reduced_approval_boundary() {
+        let guard = Guard::builder()
+            .discover_global(false)
+            .with_mode(GuardMode::Act)
+            .with_unmatched(Effect::Deny)
+            .with_default_rules(vec![
+                Rule::new("fs.write", "**", Effect::Ask),
+                Rule::new("net.connect", "**", Effect::Ask),
+            ])
+            .build();
+        assert!(guard.ask_is_eligible(&GuardRequest::new(
+            "fs.write",
+            vec!["src/a.rs".to_owned()],
+        )));
+        assert!(!guard.ask_is_eligible(&GuardRequest::new(
+            "net.connect",
+            vec!["example.invalid:443".to_owned()],
+        )));
     }
 }

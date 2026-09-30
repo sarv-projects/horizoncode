@@ -91,7 +91,7 @@ fn guard_in(dir: &std::path::Path, rules: Vec<Rule>) -> Arc<Guard> {
             .with_workspace(dir)
             .with_mode(GuardMode::Act)
             .with_unmatched(Effect::Deny)
-            .with_session_rules(rules)
+            .with_default_rules(rules)
             .build(),
     )
 }
@@ -664,4 +664,61 @@ fn an_empty_target_contributes_nothing() {
     );
     let target = PermissionTarget::new("fs.read", vec!["a.txt".to_owned()]);
     assert_eq!(target.action, "fs.read");
+}
+
+// ------------------------------------------ reduced approval on the gate
+
+#[tokio::test]
+async fn reduced_approval_resolves_an_eligible_ask_without_the_resolver() {
+    let dir = workspace();
+    let guard = Arc::new(
+        Guard::builder()
+            .discover_global(false)
+            .with_workspace(dir.path())
+            .with_mode(GuardMode::Yolo)
+            .with_unmatched(Effect::Deny)
+            .with_default_rules(vec![Rule::new("fs.write", "**", Effect::Ask)])
+            .build(),
+    );
+    let resolver = Arc::new(RecordingResolver::new(ApprovalReply::Reject));
+    let gate = gate(guard, resolver.clone());
+    assert_eq!(
+        gate.authorize(&request("write", "write", vec!["a.txt"]))
+            .await,
+        GateDecision::Allow,
+        "an eligible ask is resolved by the guard's reduced-approval posture"
+    );
+    assert!(resolver.asked().is_empty());
+}
+
+#[tokio::test]
+async fn reduced_approval_leaves_an_external_reach_to_the_resolver() {
+    let dir = workspace();
+    let guard = Arc::new(
+        Guard::builder()
+            .discover_global(false)
+            .with_workspace(dir.path())
+            .with_mode(GuardMode::Yolo)
+            .with_unmatched(Effect::Deny)
+            .with_default_rules(vec![
+                Rule::new("exec.run", "**", Effect::Allow),
+                Rule::new("fs.read", "**", Effect::Allow),
+                Rule::new("fs.write", "**", Effect::Allow),
+            ])
+            .build(),
+    );
+    let resolver = Arc::new(RecordingResolver::new(ApprovalReply::Reject));
+    let gate = gate(guard, resolver.clone());
+    let command = "cat /etc/passwd";
+    let mut req = request("bash", "bash", vec![command]);
+    req.targets = additional_targets_from_input(&json!({"command": command}));
+    assert!(
+        matches!(gate.authorize(&req).await, GateDecision::Deny { .. }),
+        "the external-directory ask must stay manual even under reduced approval"
+    );
+    assert_eq!(
+        resolver.asked().len(),
+        1,
+        "the external reach is still presented for an explicit decision"
+    );
 }

@@ -6,8 +6,16 @@ Default posture: **deny-by-default**. Nothing discovered is enabled, executed, o
 
 ## Extension manager and registry UX
 
-`/mcp`, `/skills`, and `/plugins` open the same centered extension-manager overlay,
-with three top-level tabs: **Search**, **Installed**, and **Create**. Search covers the
+`/extensions`, `/mcp` (`/mcps`), `/skill` (`/skills`), `/plugin` (`/plugins`), `/hooks`,
+`/workflows`, and `/marketplace` open the same centered Extensions overlay, selecting
+the matching category. The shared surface has category tabs for MCP servers, skills,
+plugins, hooks, workflows, and marketplace; applicable **Search**, **Installed**, and
+**Create** views are scoped to the selected category. Opening or switching tabs is
+read-only navigation: it does not trust, enable, install, execute, or grant permissions.
+The overlay preserves the composer draft and workspace layout. Category loading is
+bounded and cancellable, and one category does not wait for unrelated remote/catalog
+requests. Noninteractive surfaces return typed data/results rather than claiming to
+open a TUI. Search covers the
 official MCP Registry for MCP metadata plus a small HorizonCode-curated list that
 records independent review and compatibility evidence. The official registry is a
 discovery/index service, not an installer, code-signing authority, security verdict,
@@ -15,6 +23,14 @@ or source of HorizonCode trust. Catalog records are inert, bounded, schema-valid
 metadata with publisher/source/version/license/transport/auth/provenance fields. A
 catalog refresh never changes an installed artifact or active Run. See the official
 [MCP Registry API](https://github.com/modelcontextprotocol/registry/blob/main/docs/reference/api/official-registry-api.md).
+
+**Pattern provenance:** the shared-modal and slash-routing reference is Grok Build's
+pinned [`extensions_modal.rs`](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/src/views/extensions_modal.rs),
+[`plugin.rs`](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/src/slash/commands/plugin.rs),
+and [`transcript.rs`](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/src/app/dispatch/transcript.rs)
+(`SRC-029`; see [`ARCH/29` U-GROK-EXTENSIONS](29-SOURCE-TRACEABILITY.md#u-grok-extensions)).
+HorizonCode adopts the navigation pattern only; loading, trust, install, and enable
+semantics remain HorizonCode-owned.
 
 An apparent one-click install is a guided, resumable transaction, not a single trust
 grant:
@@ -33,11 +49,11 @@ referenced by ID; never write them into project manifests or logs. Installation 
 be completed but disabled while authentication or review is pending. Removal and
 rollback preserve run/audit provenance and clean only HorizonCode-owned install data.
 
-The **Installed** tab groups MCP servers, skills, and plugins by enabled/disabled,
-needs-auth, failed, stale, or quarantined status, showing provenance pins and recent
-health. **Create** starts a local MCP config, skill package, plugin bundle, or workflow
-template wizard; it validates and previews files before writing. Project-sourced
-definitions remain untrusted data until user trust and policy permit their use.
+The **Installed** view lists MCP servers, skills, plugins, hooks, and workflows with
+type-appropriate lifecycle state, provenance pins, and recent health where applicable.
+**Create** starts a local MCP config, skill package, plugin bundle, or workflow template
+wizard; it validates and previews files before writing. Project-sourced definitions
+remain untrusted data until user trust and policy permit their use.
 
 Implementation phases: start with the official Registry's read-only metadata API and
 HorizonCode-local curated catalog; ship no general open upload/publish service in v1.
@@ -96,6 +112,38 @@ Gating fields: `disable-model-invocation` (user-only skills such as `/deploy`), 
 
 **Curator.** Enable/disable is stored in HorizonCode-owned config/lock state keyed by canonical skill identity and the discovered source digest. HorizonCode MUST NOT edit upstream or user-authored `SKILL.md` frontmatter to persist activation. A changed digest invalidates the old activation and requires review/re-pin; a lockfile pins externally sourced skills by version/hash. Discovery runs a quarantine scan; fetched sources are pinned before use, never trusted from a live index.
 
+**Command identity.** A skill name that conflicts with a built-in remains invocable
+through `/<source-kind>:<source-id>:<skill-name>` (for example
+`/plugin:acme:login`); the built-in keeps `/login`. The source ID is a stable,
+URL-safe registry identity, not a display label or load-order index. If one source
+contains duplicate skill names, append canonical relative path segments in a stable
+escaped form. Suggestions/help show the full key and source; any residual key
+collision fails registration with both source identities and paths. Do not resolve
+these collisions by load order. This exception applies only to skill invocation;
+user command descriptor collisions remain registration errors (`DEC-080`,
+`REQ-SKILL-005`).
+`/skill` and `/skills` open this manager; they are not the route for executing a
+selected skill. Explicit invocation resolves the registered source identity and
+rechecks its content digest before loading the body. The upstream behavior reference
+is Grok Build's pinned [`08-skills.md`](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/docs/user-guide/08-skills.md)
+(`SRC-031`; see [`ARCH/29` U-GROK-SKILLS](29-SOURCE-TRACEABILITY.md#u-grok-skills));
+the deterministic identity and digest rules here are HorizonCode's design.
+
+**Guided creation.** The Skills category's Create view provides the guided draft
+wizard, reached from `/create-skill` (and `/skill create`) as a deep link into the
+same Extensions surface. It asks for scope (project or user), canonical
+name, description, and instruction body, and may add references/assets as explicit
+draft files. Validate the name/directory relationship and frontmatter before showing
+the exact file manifest and content preview. Creation is a guarded, auditable local
+write through the existing configuration/filesystem owner; it MUST refuse to
+overwrite an existing target. Cancel preserves the draft for the current UI flow but
+creates no files. Create does not enable the new skill, trust project content, run
+scripts, or make a skill model-invocable; activation remains a separate reviewed
+action. Both create spellings open the same surface at Skills → Create, while `/skill`
+without that subcommand remains manager navigation. The wizard is a
+HorizonCode-owned design inspired by Grok's documented guided flow (`SRC-031`); see
+the pinned upstream guide linked in **Command identity** above. No code is copied.
+
 ## 3. Plugins & hooks (`CMP-config`)
 
 **Manifest.** A plugin directory with a manifest declaring name/version/description and component paths: skills, agents, hooks, MCP servers, LSP servers. Components are auto-discovered at conventional paths; the manifest overrides.
@@ -108,9 +156,9 @@ Gating fields: `disable-model-invocation` (user-only skills such as `/deploy`), 
 
 ## 4. Peer agents over ACP (`CMP-acp`)
 
-**Both roles are first-class** (`REQ-PROTO-004`): HorizonCode is driven by clients (editors) and drives peer agents as subordinates.
+**Both roles are first-class** (`REQ-PROTO-004`, `DEC-019`): HorizonCode is driven by clients (editors) and drives peer agents as subordinates.
 
-**Current source status at `23d4ce8` / HEAD `cbba87b`:** the ACP crate is a
+**Current source status at `23d4ce8` / source-map commit `cbba87b`:** the ACP crate is a
 server-only v1 edge. It implements `initialize`, `session/new`, `session/prompt`,
 `session/cancel`, `session/close`, streamed `session/update`, and
 `session/request_permission`; it advertises only the implemented prompt capability.

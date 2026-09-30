@@ -1,10 +1,13 @@
 //! The policy engine (`CMP-guard`, `ARCH/12-GUARD.md`).
 //!
 //! Guard answers one question for every effectful action: *may this run now?*
-//! Ordered rules evaluate find-last-wins with a non-overridable outer deny
-//! ceiling and a fail-closed default. It also owns the plan/act/yolo mode
-//! ceiling, the irreducible catastrophic gate, scoped TTL'd tickets, and the
-//! persisted "always allow" memory.
+//! Rules resolve find-last-wins within one authority layer; layers compose
+//! monotonically (`deny > ask > allow`), so user/global is the base policy and
+//! project/agent/session layers can only narrow it (`ARCH/12` §Evaluate). A
+//! non-overridable outer deny ceiling and a fail-closed default bound the rest.
+//! It also owns the plan/act/yolo mode ceiling, the irreducible catastrophic
+//! gate, the eligible-ask boundary of reduced approval (`DEC-073`), scoped
+//! TTL'd tickets, and the persisted "always allow" memory.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -143,14 +146,20 @@ impl std::fmt::Debug for Guard {
 }
 
 impl Guard {
-    /// Builds a guard from an explicit session-level rule set.
+    /// Builds a guard from an explicit rule set installed as the user/global
+    /// **base** policy — the same layer position `default_rules()` occupies.
+    ///
+    /// A standalone policy built with this helper is the authority, so its rules
+    /// may allow. Project/agent/session restriction layers are added by the
+    /// builder or discovered from configuration, and they can only narrow this
+    /// base (`ARCH/12` §Evaluate).
     #[must_use]
     pub fn from_rules(rules: Vec<Rule>, mode: GuardMode, unmatched: Effect) -> Self {
         GuardBuilder::new()
             .discover_global(false)
             .with_mode(mode)
             .with_unmatched(unmatched)
-            .with_session_rules(rules)
+            .with_default_rules(rules)
             .build()
     }
 
@@ -228,16 +237,46 @@ impl Guard {
 
     /// Evaluates a set of `(action, resources)` pairs into one decision.
     ///
-    /// deny dominates, then ask, then allow, then the configured unmatched
-    /// effect. The deny ceiling, the catastrophic gate, the plan ceiling, and the
-    /// external-directory floor all run over the **whole** set, so an extracted
-    /// path target can raise the outcome but never lower it (`DEC-024`).
+    /// Authorization composes monotonically (`ARCH/12` §Evaluate): the
+    /// user/global layers — including saved "always allow" rules — form the base
+    /// policy and resolve find-last-wins within that base. Project, agent, and
+    /// session layers are restrictions; each resolves find-last-wins within its
+    /// own layer, then combines with `deny > ask > allow`. A lower-trust layer
+    /// with no match contributes nothing (`NoOpinion`), so it never masks the
+    /// user policy, and a lower-trust `allow` can never lower an upstream `ask`
+    /// or `deny`. The deny ceiling, the catastrophic gate, the plan ceiling, and
+    /// the external-directory floor all run over the **whole** set, so an
+    /// extracted path target can raise the outcome but never lower it
+    /// (`DEC-024`).
     #[must_use]
     pub fn evaluate_pairs(&self, pairs: &[(&str, Vec<String>)]) -> GuardDecision {
+        self.evaluate_pairs_internal(pairs).0
+    }
+
+    /// Returns whether an `ask` on this request is eligible for reduced approval
+    /// (`DEC-073`, `REQ-GUARD-005`).
+    ///
+    /// Only meaningful when [`Guard::evaluate_pairs`] returned `Ask`: an eligible
+    /// ask is one a rule raised, inside the eligible local-effect classes, that
+    /// the external-directory floor did not raise. A reduced-approval resolver
+    /// must refuse an ineligible ask rather than auto-approve it
+    /// (`ApprovalRequest.reduced_approval_eligible`).
+    #[must_use]
+    pub fn ask_is_eligible(&self, request: &GuardRequest) -> bool {
+        self.evaluate_pairs_internal(&request.pairs()).1
+    }
+
+    /// The evaluation behind [`Guard::evaluate_pairs`]; the boolean is whether
+    /// an `ask` outcome would be eligible for reduced approval.
+    #[must_use]
+    fn evaluate_pairs_internal(&self, pairs: &[(&str, Vec<String>)]) -> (GuardDecision, bool) {
         if let Some(reason) = &self.inner.degraded {
-            return GuardDecision::deny(format!(
-                "guard policy failed to load; failing closed: {reason}"
-            ));
+            return (
+                GuardDecision::deny(format!(
+                    "guard policy failed to load; failing closed: {reason}"
+                )),
+                false,
+            );
         }
         // A resource-less action is a whole-action check; evaluate it against the
         // wildcard resource so a rule that allows the action for `**` applies.
@@ -255,11 +294,14 @@ impl Guard {
         if self.inner.mode == GuardMode::Plan
             && let Some((action, _)) = normalized.iter().find(|(action, _)| is_mutating(action))
         {
-            return GuardDecision::deny(format!("plan mode blocks the mutating action `{action}`"));
+            return (
+                GuardDecision::deny(format!("plan mode blocks the mutating action `{action}`")),
+                false,
+            );
         }
         for (action, resources) in &normalized {
             if let Some(reason) = catastrophic(action, resources) {
-                return GuardDecision::deny(reason);
+                return (GuardDecision::deny(reason), false);
             }
             let ceiling_hit = self.inner.ceiling.iter().any(|rule| {
                 resources
@@ -267,76 +309,102 @@ impl Guard {
                     .any(|resource| rule.matches(action, resource).unwrap_or(false))
             });
             if ceiling_hit {
-                return GuardDecision::deny(format!(
-                    "denied by the non-overridable `{action}` deny ceiling"
-                ));
+                return (
+                    GuardDecision::deny(format!(
+                        "denied by the non-overridable `{action}` deny ceiling"
+                    )),
+                    false,
+                );
             }
         }
-        let rules = self.effective_rules();
+        let base_rules = self.base_rules();
         let mut effects: Vec<Effect> = Vec::new();
+        // Reduced approval may only resolve asks the policy actually raised and
+        // that this posture classifies as eligible (`DEC-073`, `REQ-GUARD-005`).
+        let mut only_eligible_asks = true;
         for (action, resources) in &normalized {
             for resource in resources {
-                let last = rules
+                let base_match = base_rules
                     .iter()
                     .rev()
                     .find(|rule| rule.matches(action, resource).unwrap_or(false));
-                let effect = last.map_or(self.inner.unmatched, |rule| rule.effect);
-                effects.push(self.apply_external_floor(
-                    action,
-                    resource,
-                    effect,
-                    last.is_some(),
-                    &rules,
-                ));
+                let mut effect = base_match.map_or(self.inner.unmatched, |rule| rule.effect);
+                let mut restriction_matched = false;
+                for layer in &self.inner.layers {
+                    if !is_restriction_layer(layer.source) {
+                        continue;
+                    }
+                    if let Some(rule) = layer
+                        .rules
+                        .iter()
+                        .rev()
+                        .find(|rule| rule.matches(action, resource).unwrap_or(false))
+                    {
+                        restriction_matched = true;
+                        effect = combine_effects(&[effect, rule.effect]).unwrap_or(effect);
+                    }
+                }
+                let raised_by_external_floor =
+                    self.external_floor_raises(action, resource, effect, &base_rules);
+                if raised_by_external_floor {
+                    effect = Effect::Ask;
+                }
+                if effect == Effect::Ask
+                    && (raised_by_external_floor
+                        || !reduced_approval_eligible(
+                            action,
+                            base_match.is_some() || restriction_matched,
+                        ))
+                {
+                    only_eligible_asks = false;
+                }
+                effects.push(effect);
             }
         }
         let combined = combine_effects(&effects).unwrap_or(self.inner.unmatched);
-        match combined {
+        let decision = match combined {
             Effect::Deny => GuardDecision::deny(
                 "the request is denied by policy for at least one of the resources it names"
                     .to_owned(),
             ),
             Effect::Ask => {
-                if self.inner.mode == GuardMode::Yolo {
+                if self.inner.mode == GuardMode::Yolo && only_eligible_asks {
                     GuardDecision::Allow
                 } else {
                     GuardDecision::Ask
                 }
             }
             Effect::Allow => GuardDecision::Allow,
-        }
+        };
+        let eligible = matches!(decision, GuardDecision::Ask) && only_eligible_asks;
+        (decision, eligible)
     }
 
-    /// The built-in external-directory floor (`DEC-024`, `ARCH/12`).
+    /// Returns whether the external-directory floor raises an allowed `fs.*`
+    /// resource (`DEC-024`, `ARCH/12`).
     ///
     /// An `fs.*` resource that names a path outside the granted roots is raised
-    /// to the single `external_directory` ask unless a rule *deliberately* names
-    /// that external area. The point is that a broad `**` allow of the workspace
-    /// does not silently become an allow of the whole host: authorization is not
-    /// reach (`REQ-SEC-010`), and the confinement layer is what actually bounds
-    /// the read, so the ask is where a user learns their grant reached further
-    /// than they wrote.
+    /// to the single `external_directory` ask unless the **user/global base
+    /// policy** deliberately names that external area for the same action. The
+    /// point is that a broad `**` allow of the workspace does not silently become
+    /// an allow of the whole host: authorization is not reach (`REQ-SEC-010`),
+    /// and the confinement layer is what actually bounds the read, so the ask is
+    /// where a user learns their grant reached further than they wrote.
     ///
-    /// The floor only ever **raises**: `deny` is returned untouched, an explicit
-    /// external allow stands, and a configuration cannot set it to `allow`.
-    fn apply_external_floor(
+    /// The floor only ever **raises**: it is applied to an `allow` and yields
+    /// `ask`; a `deny` is untouched and a configuration cannot set it to
+    /// `allow`.
+    fn external_floor_raises(
         &self,
         action: &str,
         resource: &str,
         effect: Effect,
-        matched: bool,
-        rules: &[Rule],
-    ) -> Effect {
-        if effect != Effect::Allow || !action.starts_with("fs.") || !matched {
-            return effect;
-        }
-        if !self.names_an_external_path(resource) {
-            return effect;
-        }
-        if self.names_the_area_deliberately(resource, rules) {
-            return effect;
-        }
-        Effect::Ask
+        base_rules: &[Rule],
+    ) -> bool {
+        effect == Effect::Allow
+            && action.starts_with("fs.")
+            && self.names_an_external_path(resource)
+            && !self.names_the_area_deliberately(action, resource, base_rules)
     }
 
     /// Returns whether a resource resolves to a path outside every granted root.
@@ -384,17 +452,27 @@ impl Guard {
             .all(|root| !candidate.starts_with(root))
     }
 
-    /// Returns whether some allow rule names the external area on purpose.
+    /// Returns whether the user/global base policy deliberately names the
+    /// external area for this exact action.
     ///
     /// A rule whose resource is itself an absolute or `~` path (or a globstar
     /// anchored at one) is a deliberate grant for that location. A wildcard such
-    /// as `**` is not: it is what the floor exists to bound.
-    fn names_the_area_deliberately(&self, resource: &str, rules: &[Rule]) -> bool {
-        rules.iter().any(|rule| {
+    /// as `**` is not: it is what the floor exists to bound. Only the user/global
+    /// base layer — and saved "always allow" rules, which are user acts — may
+    /// waive the floor; a project, agent, or session rule cannot (`DEC-025`,
+    /// `REQ-SEC-025`). The grant is action-specific, so an `fs.read` allow never
+    /// exempts `fs.write`, `fs.delete`, or `fs.move` (`DEC-024`).
+    fn names_the_area_deliberately(
+        &self,
+        action: &str,
+        resource: &str,
+        base_rules: &[Rule],
+    ) -> bool {
+        base_rules.iter().any(|rule| {
             rule.effect == Effect::Allow
-                && rule.action_matches("fs.read").unwrap_or(false)
+                && rule.action_matches(action).unwrap_or(false)
                 && is_anchored_path_pattern(&rule.resource)
-                && rule.matches("fs.read", resource).unwrap_or(false)
+                && rule.matches(action, resource).unwrap_or(false)
         })
     }
 
@@ -565,6 +643,25 @@ impl Guard {
             .collect()
     }
 
+    /// The user/global base policy: every global layer in discovery order plus
+    /// the saved "always allow" rules, resolved find-last-wins within this base
+    /// (`ARCH/12` §Evaluate).
+    fn base_rules(&self) -> Vec<Rule> {
+        let mut rules = Vec::new();
+        for layer in &self.inner.layers {
+            if layer.source == RuleSource::Global {
+                rules.extend(layer.rules.iter().cloned());
+            }
+        }
+        let saved = self
+            .inner
+            .saved
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        rules.extend(saved.iter().cloned());
+        rules
+    }
+
     fn effective_rules(&self) -> Vec<Rule> {
         let mut rules = Vec::new();
         for layer in &self.inner.layers {
@@ -650,6 +747,37 @@ pub fn is_mutating(action: &str) -> bool {
             | "skill.install"
     )
 }
+
+/// Returns whether a layer is a lower-trust restriction layer that may only
+/// narrow the user/global base (`ARCH/12` §Evaluate).
+fn is_restriction_layer(source: RuleSource) -> bool {
+    matches!(
+        source,
+        RuleSource::Project | RuleSource::Agent | RuleSource::Session
+    )
+}
+
+/// Returns whether reduced approval may auto-resolve an `ask` for this action
+/// (`DEC-073`, `REQ-GUARD-005`).
+///
+/// Eligibility fails closed: only local-effect action classes are listed, and
+/// the ask must come from an actual rule — never from the unmatched fallback.
+/// Network egress, MCP calls, extension installs, and any future action remain
+/// manual until explicitly added here.
+fn reduced_approval_eligible(action: &str, rule_matched: bool) -> bool {
+    rule_matched && REDUCED_APPROVAL_ELIGIBLE.contains(&action)
+}
+
+/// The action classes reduced approval may auto-resolve (`DEC-073`).
+const REDUCED_APPROVAL_ELIGIBLE: &[&str] = &[
+    "fs.read",
+    "fs.write",
+    "fs.delete",
+    "fs.move",
+    "exec.run",
+    "todo",
+    "question",
+];
 
 /// Builds a guard by discovering config and merging explicit overrides.
 pub struct GuardBuilder {

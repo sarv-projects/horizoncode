@@ -12,7 +12,9 @@ pub enum GuardMode {
     Plan,
     /// Normal evaluation.
     Act,
-    /// `ask` is auto-resolved to allow; deny and the catastrophic gate remain.
+    /// Reduced approval: an eligible `ask` is auto-resolved to allow; deny, the
+    /// catastrophic gate, external-directory reaches, network egress, extension
+    /// installs, and unmatched asks remain governing (`DEC-073`).
     Yolo,
 }
 

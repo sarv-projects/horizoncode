@@ -2,11 +2,11 @@
 
 ## What HorizonCode is
 
-A terminal-first coding agent that a developer runs in a repository and can trust with **long-running, multi-step work only after the acceptance evidence exists**. The user chooses the managed host: a laptop/workstation or a user-managed server. Its core is packaged as one Rust executable per platform where feasible; sandbox, Git, language-server, local-model, and detached-worker capabilities may require host services that are probed and disclosed. It speaks open protocols (ACP, MCP), and its differentiating control plane is built first-party (`DEC-029..031`, `DEC-046`). A server deployment is self-hosted/headless use, not a required HorizonCode-operated cloud service.
+A terminal-first coding agent for both fast interactive work and long-running, multi-step work. An ordinary turn can explain code, locate behavior, debug a failure, make a focused edit, run a relevant check, inspect the diff, and continue from a natural-language prompt. Managed Runs add durable planning, bounded unattended execution, recovery, and independent verification when the user asks for them or the task warrants them. The user chooses the managed host: a laptop/workstation or a user-managed server. Its core is packaged as one Rust executable per platform where feasible; sandbox, Git, language-server, local-model, and detached-worker capabilities may require host services that are probed and disclosed. It speaks open protocols (ACP, MCP), and its first-party control plane supports both everyday turns and managed work (`DEC-029..031`, `DEC-046`). A server deployment is self-hosted/headless use, not a required HorizonCode-operated cloud service.
 
 ## Who it is for
 
-- Engineers who delegate real, hours-long tasks — cross-repo refactors, migrations, audits — not one-shot edits.
+- Developers who want a capable coding agent for everyday questions, focused edits, debugging, and checks, as well as multi-step refactors, migrations, and audits.
 - Teams that require deterministic policy, verifiable execution history, and deployment on infrastructure they control.
 - Users who want a broad choice of hosted and local providers. A route is usable only
   when its authentication flow and concrete model/server/template capabilities have
@@ -15,16 +15,23 @@ A terminal-first coding agent that a developer runs in a repository and can trus
 
 ## Candidate differentiators to prove
 
-These are product hypotheses, not current benchmark results. The priority is verified multi-hour completion; cost, latency, integrations and usability are measured alongside it (`DEC-029`, `ARCH/25`). Public peer research is summarized in `ARCH/24` with its evidence limits.
+These are product hypotheses, not current benchmark results. Fast interactive coding and dependable long-horizon execution are co-equal product requirements. Measure task success, regressions, latency, cost, integrations, permission friction, and usability on representative tasks (`DEC-029`, `ARCH/25`, `research docs/tests.md`). Public peer research is summarized in `ARCH/24` with its evidence limits.
 
 1. **Long-horizon persistence.** Durable, event-sourced sessions, a separately persisted run/task graph, checkpoints and reconciled restart.
 2. **Deterministic policy and inspectable audit.** An allow/ask/deny guard, confinement and per-effect receipts with explicit anchoring limits.
 3. **Repository context with freshness.** Revision-bound maps, symbol navigation and eval-gated compaction that preserve task evidence across large changes.
 4. **Measured model routing.** Route selection by demonstrated task outcomes, capabilities and total cost, including local models when conformance is proven.
 5. **Open parallel orchestration.** Isolated worktrees, external-agent attempt tracking, fenced leases, independent verification and integration checks.
+6. **Atomic resource governance.** Reserve nested Run/Task/Attempt/worker, verification, recovery, event, and artifact ceilings before dispatch; concurrent workers cannot each spend the same remaining allowance (`REQ-HORIZON-003`). This is a design hypothesis to benchmark, not a claim that peers universally lack budget controls.
+7. **Mediated egress with honest claims.** Codex provides a concrete reference for a central managed network policy, per-hop redirect handling, request permits, and in-flight revocation. HorizonCode must additionally make the required enforcement level, mechanism, backend, and residual explicit, reject unsupported requirements, and prove the actual connected destination per tier (`REQ-SEC-007`, `DEC-026`). Do not claim that Codex lacks managed egress or that either design automatically covers every outbound path.
+8. **Bounded control delivery.** Bounded queues, prompt cancel/permission latency, durable cursors, and explicit gap/resnapshot or disconnect behavior (`REQ-HORIZON-013`). A bounded queue is a product choice with an explicit memory ceiling and overflow contract; it must not trade away liveness silently.
+9. **Whole-response tool admission.** Validate and bound the complete provider tool-call batch before dispatching any call, preventing partial admission when a response is oversized or contains a user-input boundary (`ARCH/10`, `ARCH/25`).
 
 ## Signature surfaces
 
+- **Direct coding loop.** Ordinary turns start from a prompt and move directly through
+  explanation, exploration, edits, checks, diff review, and correction; no goal, plan,
+  or Run review is a prerequisite. Managed Runs remain available when useful.
 - **Long-horizon cockpit.** A dockable, extensible pane that shows the worktree,
   live Git diffs, and a governed file-inspection/editing flow. Editing has a governed
   in-terminal path and an external-editor handoff; an embedded mini-editor is an
@@ -37,8 +44,8 @@ These are product hypotheses, not current benchmark results. The priority is ver
 ## Non-goals
 
 - Not a HorizonCode-operated hosted service or cloud IDE. Users may run the headless agent on a server they control.
-- Not a general chat client.
-- Not an editor or IDE replacement; it is a terminal agent with an in-terminal file surface.
+- Not a general-purpose chat client; direct coding questions and explanations are part of the coding workflow.
+- Not an editor or IDE replacement; it is a coding agent with Explorer/diff surfaces and native-editor handoff.
 - Not a re-implementation of a peer's codebase; peer designs inform ours, they do not constitute it.
 - No second orchestration engine, provider registry, or permission system — one of each.
 

@@ -40,7 +40,7 @@ versioned bridge; standard ACP session IDs or prompt methods do not imply one.
 | Membership, posting, recipient selection, ordering, delivery state, limits | `CMP-orch` | Run-stream facts; no task or permission authority |
 | Message tool schema and per-call authorization | `CMP-tools` + `CMP-guard` | Capability `agent.message`; child authority is intersected with parent/run ceilings |
 | Recipient durable inbox and safe-boundary promotion | `CMP-session` | Stores an untrusted message reference in the existing input inbox; does not own message truth |
-| Native/external transport | `CMP-adapter` / `CMP-execution-host` | Use only negotiated, explicit capabilities; never infer delivery from process state |
+| Native/external transport | `CMP-execution-host` (`CMP-acp` for ACP transports) | Use only negotiated, explicit capabilities; never infer delivery from process state |
 | User panel, command, notification and settings rendering | `CMP-tui` / `CMP-command` / `CMP-config` | Read and mutate through `CMP-control-api`; no UI-owned message state |
 | Durable payload and status | Existing Run and Thread streams | No new database or independent message event log; bounded body is inline in the Run event |
 

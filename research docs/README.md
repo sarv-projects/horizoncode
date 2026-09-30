@@ -28,6 +28,7 @@ on a volatile implementation detail.
 - [Codex memory pipeline](codex-memory.md) — memory-specific source review and limits.
 - [OpenCode](opencode.md)
 - [OpenCode provider and authentication inventory](opencode-provider-inventory.md) — pinned provider directory, auth-method/source map, and coverage limits.
+- [Kilo Code repository indexing](kilocode-indexing.md) — pinned documentation reference for opt-in Tree-sitter chunks, configurable embeddings/vector stores, and semantic search.
 - [Qwen Code](qwen-code.md)
 - [MiMo-Code](mimo-code.md) — OpenCode-derived fork; compare its deltas separately.
 - [Open Interpreter](openinterpreter.md)
@@ -47,6 +48,10 @@ on a volatile implementation detail.
 - [CodeBurn](codeburn.md)
 - [Command Code](command-code.md)
 - [Grok Build workflows](grok-build-workflows.md) — pinned authoring/runtime pattern review.
+- [Grok Build Extensions UI](grok-build-extensions.md) — pinned source review of the shared category modal and slash-command routing; no code copied.
+- [Grok Build Doctor](grok-build-doctor.md) — focused pinned-source review of typed diagnostics, CLI/TUI projections, bounded probes, and named repair plans; no code copied.
+- [Agent tool, skill, and command adoption](agent-tool-skill-command-adoption.md) — focused pinned Codex deferred-tool-search, OpenCode LSP, and Grok skill-collision/create patterns; no code copied.
+- [Compaction upstream comparison](compaction-upstream-comparison.md) — pinned Codex, Grok Build, and OpenCode threshold/trigger semantics, plus historical OpenCode `auto: false` failure reports; no code copied.
 - [Helix editor architecture](helix-editor.md) — module-boundary comparison only; no code reuse.
 
 ## Authority

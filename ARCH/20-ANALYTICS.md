@@ -1,11 +1,11 @@
 # 20 — Analytics
 
-`CMP-analytics`. Observability for long-horizon work. **Local-first**: the default analytics path performs no network egress. An explicitly enabled OTEL/remote exporter is a separate guarded, sanitized outbound effect, disabled by default and subject to managed policy.
+`CMP-analytics`. Observability for long-horizon work. **Local-first** (`DEC-017`): the default analytics path performs no network egress. An explicitly enabled OTEL/remote exporter is a separate guarded, sanitized outbound effect, disabled by default and subject to managed policy.
 
 ## Source status
 
 The schema and lifecycle below are the **proposed target**, not the current
-analytics database contract. At Rust baseline `23d4ce8` (HEAD `cbba87b`,
+analytics database contract. At Rust baseline `23d4ce8` (source-map commit `cbba87b`,
 2026-09-28), `AnalyticsEvent` is session/turn/step oriented and records
 USD-specific `cost_micros_usd`; run/task/attempt attribution, native source
 currency, quota provenance, and pinned pricing snapshots are not established by
@@ -45,6 +45,14 @@ Out of scope: being a source of truth for sessions or audit. `CMP-session` and `
 The append-only `~/.horizoncode/analytics/events.jsonl` is a durable, rebuildable **analytics projection**, not a canonical source of execution truth. Its rows are derived from canonical Thread, audit, provider, tool, and controller facts. SQLite rollups are derived again from this ledger. A rebuild must validate the source references and digests; it must not infer missing facts or promote an analytics-only row into an execution/audit fact. The event ledger itself is recoverable from its canonical sources and may be compacted only after the configured retention/export contract is satisfied.
 
 `analytics_event` (one per turn/step/tool): `{event_id, run_id?, task_id?, attempt_id?, thread_id, turn_id, project, agent, model, kind, source_refs[], audit_seq?, effect_id?, effect_receipt_ref?, ts, tokens{input,output,cache_read,cache_creation,reasoning}, money{amount_decimal?, currency?, basis, source, pricing_version?, observed_at?}, quota{units?, unit?, basis, source?, observation_ref?}, tool{name,outcome,latency_ms,bytes}, retry{reason,attempt}, error_class}`. `source_refs[]` contains one or more `DurableFactRef` values: `{store_id, aggregate_type, aggregate_id, seq, event_id, payload_digest, schema_version}`. A ref identifies the canonical persisted fact from which the analytics row was derived; it is not a copied payload. Every event that represents a security-relevant effect MUST carry its authoritative audit `DurableFactRef` (including `audit_seq`) or stable `effect_receipt_ref` and `effect_id`; ordinary usage-only rows still require a canonical source ref and must not invent an effect link. Provider quota analytics rows MUST reference a canonical provider-owned `QuotaObservation`; analytics never polls providers or becomes quota truth. Missing, unreadable, or digest-mismatched source facts quarantine the projection row and raise an integrity diagnostic; they do not become zero usage or successful work. `basis = actual | estimated | included | unknown`; an unknown amount has no fabricated numeric value. Currency uses ISO 4217 where known. Preserve the original source amount as immutable evidence. Imported legacy session events retain their source payload/digest; a versioned projection maps their verified local conversation ID to `thread_id`.
+
+For direct interactive turns, `run_id`, `task_id`, and `attempt_id` are absent/null;
+the canonical attribution key is `(thread_id, turn_id)`. Do not invent a ghost Run to
+fit a managed-run dashboard. Cache-read and cache-write/creation usage remain distinct
+provider observations. Preserve the provider's original usage fields and normalize
+only documented equivalents; provider route pricing determines their cost and an
+unknown cache field is not zero. The data model already permits absent Run/Task/Attempt
+IDs; this paragraph makes that direct-turn accounting contract explicit (`REQ-ANALYTICS-009`).
 
 Derived tables: `thread_usage`, `thread_model_usage` (per-route upsert), `tool_stats`, `daily_rollup`, `pricing_snapshot{version, source, fetched_at}`. Existing `session_usage` projections are rebuildable and migrate from canonical Thread events; they do not create a second conversation identity.
 

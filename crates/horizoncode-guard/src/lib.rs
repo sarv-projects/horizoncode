@@ -10,8 +10,11 @@
 //! ## Fail-closed guarantees
 //! - An unmatched action resolves to `deny` (or `ask` when configured); never
 //!   `allow` (`REQ-GUARD-002`).
-//! - A `deny` in the global or project layer is a non-overridable ceiling; a
-//!   more specific agent/session `allow` cannot widen it.
+//! - Rules resolve find-last-wins within a layer; project/agent/session layers
+//!   compose monotonically (`deny > ask > allow`) and can only narrow the
+//!   user/global base, so a lower-trust `allow` never lowers an upstream `ask`
+//!   or `deny` (`ARCH/12`).
+//! - A `deny` in the global or project layer is a non-overridable ceiling.
 //! - A malformed config layer is rejected and a deny-all ceiling is installed
 //!   for that layer position, so a typo can never widen the posture.
 //! - The catastrophic gate is applied after rule evaluation and after the mode

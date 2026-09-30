@@ -9,7 +9,7 @@ controller can derive those states (`DEC-029`).
 
 ## Purpose
 
-- Drive a bounded, model-directed loop that a developer can trust for hours-long work (`ARCH/01-VISION.md`; `REQ-LOOP-001`, `REQ-HORIZON-001`).
+- Drive bounded model turns for quick interactive coding as well as managed long-horizon work (`ARCH/01-VISION.md`; `REQ-LOOP-001`, `REQ-HORIZON-001`).
 - Accept steering and queued input while a turn is active without losing either (`REQ-LOOP-002`).
 - Execute independent tool calls concurrently and honor explicit ordering barriers (`REQ-LOOP-003`).
 - Terminate every turn in exactly one durable terminal state (`REQ-LOOP-004`).
@@ -208,9 +208,22 @@ Three verbs, aligned with the delegation contract:
 On interruption:
 
 1. Cancel provider streaming; the assistant turn ends with its partial content retained.
-2. Clear pending tool fibers and run fail-unsettled on every call without a durable result.
-3. If an assistant message is active, mark it interrupted.
-4. Emit `turn/end` with reason `interrupted`.
+2. Fence new tool dispatch and mark the turn's cancellation generation so late results
+   cannot start a write or be mistaken for current output.
+3. Request cancellation of pending/in-flight tools. For owned processes, terminate the
+   supervised process tree gracefully, then force-terminate after the configured
+   deadline using the platform backend (process group/job object where available).
+4. Reconcile every started effect. Calls without a durable result are not silently
+   treated as cancelled; unresolved child processes/effects remain `UNKNOWN`, show a
+   truthful cancellation-pending state, and fence conflicting follow-up work.
+5. If an assistant message is active, mark it interrupted and persist partial content.
+6. Emit `turn/end` with reason `interrupted` only after supported cancellation and
+   effect reconciliation have reached their recorded terminal/unknown states.
+
+Escape/Ctrl-C are ordinary-turn preemption controls when focus is not inside the
+composer/editor child; explicit managed Run controls retain target-specific semantics.
+They stop model streaming promptly but do not claim that every OS child can be killed
+instantly or that an already committed effect was rolled back.
 
 A declining decision (permission denied or question rejected) halts the loop rather than becoming model-facing tool output; the turn ends `declined`. Cancellation propagates parent → child.
 
@@ -251,6 +264,25 @@ tool-call JSON is inert until the complete response has been validated and admit
 a whole batch (`ARCH/10`); provider-managed tool execution makes the response ineligible
 for automatic recovery. Per-logical-step depth is persisted across restart and model
 session changes; there is no retry-counter reset on a new context window.
+
+### Bounded edit/check feedback
+
+An ordinary Code turn may select a relevant fast project check after a meaningful
+edit, such as a formatter check, targeted test, type check, or incremental build. The
+command comes from discovered project instructions/config or an explicit user choice,
+is displayed before execution when its effect/resource is not already covered by the
+effective policy, and runs through the normal tool guard. Do not assume one command
+works for every language or platform and do not run a complete suite after each file
+write by default.
+
+The runner may return a bounded failure summary plus a recall reference to the model
+for repair. Retry count, elapsed time, output bytes, tool count, and any reported
+provider cost are charged to the current Turn ceiling. The project check loop has a
+finite configured cap and reserves enough budget for a final diff/summary. Each check
+result is typed `not_run | passed | failed | cancelled | unknown` and binds command,
+working tree digest, exit state, and captured output. A check result is evidence for
+that revision only; a later edit invalidates it. The model or hook cannot promote it
+to pass.
 
 ### Turn completion versus run completion
 
@@ -300,8 +332,9 @@ Events are appended before the phase's work is considered settled (`REQ-LOOP-006
 | Model call fails/times out | Transport-owned bounded retry; if unresolved, the turn blocks with a surfaced reason; a user abort vetoes retry. |
 | Post-content provider failure | Handled at the turn level; the step is not retried mid-stream. |
 | Tool failure | Recovery pipeline: retry (idempotent/read-only), alternate path, or re-plan; typed failure recorded. |
-| Context overflow | Compact-after-overflow once, retry the same step; a second overflow escalates (`REQ-CTX-004`). |
-| Remaining-context output truncation | Preserve typed incomplete attempt/partial usage; controller may compact and retry same step once only with validated route evidence, no side effects or revision change, and budget reservation (`REQ-CTX-011`, `DEC-054`). |
+| Context-window rejection | A typed rejection before content/effects may enter the shared one-recovery-per-logical-step compaction budget only when `compaction.auto=true`, route and revision fences hold, and retry plus verification are reserved (`REQ-CTX-004`). A second failure is terminal. With auto disabled, surface `CONTEXT_TOO_LARGE`; do not compact/retry. |
+| Remaining-context output truncation | Preserve the typed incomplete attempt/partial usage. It may enter the same shared one-recovery-per-logical-step budget only with validated route evidence, no possible side effect, unchanged route/revisions, `compaction.auto=true`, and reserved budget (`REQ-CTX-011`, `DEC-054`). A recovery already spent on that logical step prohibits another automatic recovery. |
+| Hard pre-send fit rejection | Always enforce the route's usable-context bound. If auto is off, do not dispatch and return `CONTEXT_TOO_LARGE`; if auto is on, allow one compaction/rebuild, recheck, then either dispatch a fitting request or return the typed error. |
 | Explicit or unknown output cap | Keep partial response; mark incomplete and offer bounded user-directed recovery; never infer completion or auto-retry (`REQ-CTX-011`). |
 | Interrupt mid-step | Stream cancelled, unsettled tools failed, partial work retained, `turn/end` = `interrupted`. |
 | Declined permission/question | Loop halts; `turn/end` = `declined`; not turned into model-facing output. |
@@ -332,6 +365,17 @@ Events are appended before the phase's work is considered settled (`REQ-LOOP-006
 | `budget.tokens` / `budget.cost` / `budget.wallClock` | per direct interactive Thread; managed Runs use Run → Task → Attempt → WorkerExecution reservations | Hard maxima enforced atomically at admission; managed Run verification/recovery reserves are protected |
 
 Configuration is layered (`defaults → user → workspace → agent profile → session`) and the effective model/mode/permission snapshot is persisted with the session (`REQ-SESS-004`). Security ceilings, no-progress ceilings, output limits and budget caps cannot be widened by less trusted layers.
+
+All automatic retry/reconnect branches have a finite controller-owned attempt and
+elapsed-time ceiling, exponential backoff with jitter where retryable, and a durable
+failure signature. Server `Retry-After` can shorten/defer within the cap but never
+raise it. No feature flag, environment variable, build profile, provider response,
+peer, or user/workspace setting may turn any retry loop unbounded (`REQ-SEC-013`).
+No-progress counters are updated only from controller-validated state/evidence
+changes: assistant prose, a plan/reasoning item, heartbeat, activity volume, or a
+model's claim of progress cannot reset or satisfy the counter. Codex's pinned
+feature-gated connection retry has no attempt ceiling and is expressly not an allowed
+HorizonCode option (`research docs/codex.md`).
 
 ## Requirements mapping
 

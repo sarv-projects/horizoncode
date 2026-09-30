@@ -113,8 +113,8 @@ For a substantial task:
 
 ## Repository layout
 
-Keep top-level Markdown limited to `AGENTS.md`, `CURRENT_RUN.md`, `TODO.md`, and the
-generated `THIRD-PARTY-NOTICES.md` required by `ARCH/05` §4.
+Keep top-level Markdown limited to `README.md`, `AGENTS.md`, `CURRENT_RUN.md`,
+`TODO.md`, and the generated `THIRD-PARTY-NOTICES.md` required by `ARCH/05` §4.
 Architecture belongs in `ARCH/`; upstream research and test strategy belong in
-`research docs/`. Keep links valid when moving documents. Do not restore an untracked
-root README or add a second task ledger without updating this policy.
+`research docs/`. Keep links valid when moving documents. Keep product orientation in
+the root README; do not add a second task ledger.

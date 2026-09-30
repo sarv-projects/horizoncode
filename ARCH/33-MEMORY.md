@@ -1,7 +1,8 @@
 # 33 — Memory (`CMP-memory`)
 
 Status: **proposed target design; not implemented at source baseline
-`23d4ce8` / repository HEAD `cbba87b` (2026-09-28).** `CMP-config` owns
+`23d4ce8` (source-map commit `cbba87b`, 2026-09-28; unchanged through the
+checked-out revision recorded in `CURRENT_RUN.md`).** `CMP-config` owns
 settings only. `CMP-session` owns conversation history. `CMP-context` selects and
 renders memory for a request. `CMP-memory` owns records, provenance, lifecycle,
 conflict handling, and retrieval. Memory is neither policy nor proof of task

@@ -474,6 +474,13 @@ cannot satisfy verification or restore permission/goal authority. Use the same
 rebuildable index and canonical event reader as UI search; do not create a second
 per-Thread archive or persistence owner. See `REQ-TOOL-007` and `ARCH/10`.
 
+The Codex comparison is narrower than “compaction permanently deletes history.” At
+the pinned source, context replacement advances a history generation, and
+ThreadManager says a fork taken during an active turn may include only items persisted
+mid-turn. That supports retrieving from HorizonCode's committed visible Thread stream
+instead of assuming the current provider context or a live fork is a complete archive;
+it does not establish loss of Codex's canonical rollout (`research docs/codex.md`).
+
 The current workspace dependency is pinned at `Cargo.toml`/`Cargo.lock`; exact
 upstream implementation evidence and the local FTS5 build flag are recorded in
 [`ARCH/29`](29-SOURCE-TRACEABILITY.md#arch07) and the test plan. OpenChamber's pinned
@@ -520,6 +527,12 @@ durable commit record.
 
 ### Append, rotation, and replay contract
 
+The first canonical event in a Thread is a typed `thread/configured` record containing
+the startup model/route, tool registry, permission/configuration snapshot, workspace
+identity, and format version. Creation and replay reject a missing, malformed, or
+header-mismatched first event. No model/tool dispatch is admitted before this record
+is durably committed.
+
 1. Before accepting an input or dispatching a model/tool/effect whose outcome needs a
    canonical event, reserve enough bytes in the thread/run storage ledger for the
    bounded event envelope, terminal/reconciliation record, and the applicable
@@ -534,6 +547,12 @@ durable commit record.
    synced as required by the backend. Every append checks the current fencing epoch;
    a stale process cannot write after recovery. The run-durable profile cannot disable
    required syncs.
+   Extension, hook, and external callbacks that can observe or act on transcript state
+   run only after the corresponding canonical record has been durably flushed. Flush
+   failure prevents callback execution and fails closed. Codex flushes before its
+   SessionEnd/Interrupt hooks but its current path logs a flush failure and continues;
+   HorizonCode adopts the ordering and strengthens the failure handling
+   (`research docs/codex.md`).
 3. When the next record would cross a segment ceiling, sync and seal the current
    segment, persist its seal, create the next segment atomically, and then append.
    Rotation changes physical layout only; it does not renumber or delete history.
@@ -558,8 +577,11 @@ durable commit record.
    events to make room. Retention/export is a separate, authorized post-terminal
    lifecycle with exact digest and evidence-owner checks (`ARCH/28`).
 
-**Source status (2026-09-28, `AX-358`).** The shared framing is implemented in
-`horizoncode-eventlog` and consumed by nothing yet. It provides the canonical
+**Source status (2026-09-28, `AX-358`).** The shared segmented framing is implemented in
+`horizoncode-eventlog`, but `EventLog` is not yet integrated into the session or run
+stores. The shared durability types are already used by the current flat-file session
+store; do not confuse that primitive reuse with segmented-store migration. The framing
+provides the canonical
 event envelope with a `blake3` digest over a versioned domain and sorted object
 keys, bounded segments that rotate on the `DEC-058` byte/event ceilings, seals
 written and synchronized before a successor segment receives a record, an
@@ -593,15 +615,20 @@ A durability backend is exactly two capabilities — `sync_file` and `sync_dir` 
 declaration of whether it can provide the `run_durable` contract on this platform. A
 failed sync never returns a durable success, and the `run_durable` profile cannot be
 combined with a disabled per-append sync. Recording the backend, the filesystem, and
-the assumptions it makes is the acceptance obligation (`ACC-P1-13`), not a source-level
-`sync` call.
+the assumptions it makes is the primitive acceptance obligation
+(`ACC-P1-13A`), not a source-level `sync` call. The integrated session/run store,
+segment rotation, and physical reserve remain under `ACC-P1-13` after `AX-350`;
+`ACC-P1-13A` is independently runnable and does not wait on that migration.
 
-**Source status (2026-09-28).** The backend abstraction, the two profiles, the
-`sync_file`→`sync_dir`→acknowledge ordering, and the refusal rules are implemented in
-the thread store (`durability.rs`); tests assert the ordering and the failure paths
-with an injected backend. The physical control/recovery **reserve** and the segmented
-rotation that a multi-hour run needs are not implemented (`AX-350`), so `run_durable`
-currently promises namespace durability of the event log only.
+**Source status (2026-09-28).** The backend abstraction and two profiles live in
+`horizoncode-eventlog/src/durability.rs`. The segmented `EventLog` uses them, and the
+current flat-file session store imports `CommitSink`/`DurabilityProfile` and applies
+the same file/directory sync ordering. Session-store integration is at
+`horizoncode-session/src/store.rs`; tests in both crates assert ordering and failure
+paths with injected backends. The physical control/recovery **reserve** and segmented
+session/run-store integration are not implemented (`AX-350`), so the current
+`run_durable` session profile promises file and namespace durability for the flat event
+log only; it does not establish the full multi-hour run-store contract.
 
 ### Read-only and recovery API boundary
 
@@ -617,6 +644,12 @@ generation with deterministic closers or returns typed `UNKNOWN`/
 changed payload conflicts. `read_only` remains byte-identical even when the last
 record is incomplete. This contract is `DEC-056`; the current mutation on read path
 is `F-62`.
+
+Any SQLite-backed inspection path must open a connection/transaction that is
+provably read-only at the driver/SQLite mode level. A command named `read` or a query
+intended to be read-only over a writable WAL handle is insufficient. The current
+session scanner is file-based; this rule covers future indexes and diagnostic
+databases and requires a write-attempt plus byte/snapshot-comparison fixture.
 
 **Source status (2026-09-28).** One pure scanner now backs `read_only`, `scan`,
 `inspect`, and enumeration: it never truncates a torn tail, never appends, and never
@@ -769,7 +802,9 @@ The store persists, never computes. `prepare` distinguishes unchanged, replaceme
 
 ### 9. Checkpoint and rewind
 
-Checkpoints are produced at step boundaries, before waits/approvals, and before compaction. Rewind to a prior turn boundary is `stage` → review → `commit`/`clear`; the staged plan restores file trees and records the diff, and it is surfaced before it is applied (`REQ-SESS-003`).
+Checkpoints are produced at step boundaries, before waits/approvals, and before compaction. Rewind to a prior turn boundary is `stage` → review → `commit`/`clear`; the staged plan restores file trees and records the diff, and it is surfaced before it is applied (`REQ-SESS-003`). `/rewind` is a user-facing alias over this existing owner, not a second rollback engine. Compare each current file with its captured checkpoint digest before restore; concurrent user changes are retained and surfaced as conflicts rather than overwritten.
+
+Checkpoint and rewind data live in HorizonCode-owned artifact/snapshot storage with a closed-world manifest of affected paths, exact bytes/digests, and relevant Git baseline metadata. Never create temporary commits in the user's repository, run `git reset --hard`, or mutate `.git`, the index, reflog, or commit history to implement a checkpoint. Stage/commit operations are separate explicit guarded user actions. A turn-level rewind supersedes affected conversation/evidence projections but never deletes or rewrites canonical hash-chained Thread events; record a durable revert event and bind it to the exact restored file set. If a snapshot is incomplete, current bytes changed unexpectedly, or file ownership is ambiguous, stop for review rather than applying a partial restore.
 
 ### 10. Deterministic interrupted-turn recovery
 

@@ -11,6 +11,7 @@ Run units of work — native workers, external agents, background jobs, and depe
 **Owned.**
 - **Delegation.** Spawn, bound, monitor, cancel, and collect sub-agents. One child Thread per sub-agent with its own context and toolset/persona (`REQ-ORCH-001`).
 - **Depth/count guard.** Enforce max depth, max total per tree, max parallel, and per-lane concurrency from configuration; a spawn may narrow these but never widen them (`REQ-ORCH-005`).
+- **Host resource budget.** Reserve and account for worker/process slots, open file descriptors (POSIX) or handles (Windows), PTYs, pipes, watchers, and parser/index resources before fan-out. Keep explicit controller/audit/operator-control reserve. Apply per-worker and aggregate limits; use OS limits where available and refuse/reduce concurrency when a backend cannot safely contain the requested resource count. Do not claim `RLIMIT_NOFILE` applies to Windows.
 - **Permission derivation.** A child's effective authority is the parent's ceiling intersected with the spawn's declared scope; no child ever exceeds its parent.
 - **Receipts.** Schema-validated summaries (status, scope, summary, findings, changed files, tests, artifacts, blockers, confidence, usage, partial marker) delivered under a no-authority header. Full transcripts stay in the child's own log.
 - **Agent messaging.** Own a bounded, optional Run-scoped mailbox for explicit operator/worker recipients; append message and delivery facts to the existing Run stream and bridge recipients through idempotent `CMP-session` Thread-inbox receipts. The mailbox is not another task graph, thread tree, policy owner, or completion authority (`REQ-HORIZON-031`, `ARCH/32`).
@@ -21,6 +22,7 @@ Run units of work — native workers, external agents, background jobs, and depe
 - **Application maintenance fence.** Before a signed update replaces the executable, atomically close admission for new runs and all new model-driven worker/direct-turn executions, prove that no active or unknown execution/effect remains, and issue a one-use `MaintenancePermit` bound to the update operation, install identity, controller generation, and current binary digest. Keep the permit/fence through replacement and health check or rollback. On controller restart, reconcile the updater and helper before reopening admission; expiry alone cannot release an uncertain fence (`REQ-UPDATE-005`, `ARCH/30`).
 - **Durable task graph.** A persisted DAG with dependencies, per-node budgets (tokens, cost, wall-clock, tool-calls), attempts, artifacts, and resumability across compaction and restart (`REQ-HORIZON-002`).
 - **Worktree lifecycle.** Create, key, lease, diff, merge, and reap worktrees.
+- **Direct versus isolated workspace.** Ordinary interactive coding edits the selected worktree directly for the lowest-friction pair-programming loop. An explicit `/explore` or a managed unattended/high-risk Run may create an isolated Git worktree. The user can inspect isolated results and explicitly apply/merge or discard them; a verifier PASS is not required for inspection or every ordinary edit. Worktree isolation protects the primary checkout from those file edits, not from network or other separately authorized external effects.
 - **Merge arbitration.** Apply clean work, surface conflicts with evidence, deterministic given identical inputs (`REQ-ORCH-003`, `REQ-ORCH-004`).
 - **Team orchestration + CI feedback.** Run N workers against a shared backlog, feed CI results back into the graph, and escalate conflicts.
 
@@ -238,6 +240,7 @@ and enter typed recovery; do not allow a new run to race a possibly partial swap
 ## Configuration
 
 - `orch.max_depth`, `orch.max_parallel`, `orch.max_total_per_tree`, `orch.per_lane_defaults`.
+- `orch.resources.{processes,open_fds_or_handles,ptys,pipes,watchers}` with a protected supervisor/control reserve and per-child allocation; platform backend reports effective limits and unsupported enforcement.
 - `orch.default_isolation` (`readonly_inprocess`), `orch.wake_default`, fairness quotas and maximum wait age.
 - `orch.limits.{max_worker_tokens, max_session_spend{amount,currency}, wall_time_ms, max_tool_calls, max_output_bytes, max_disk_bytes, max_children, max_depth, max_concurrent}` (Core-owned ceilings; spawns narrow only).
 - Agent profile model-control, source/trust state, and per-attempt usage capability are specified in `ARCH/27`; a profile is not itself a budget or a verified task.

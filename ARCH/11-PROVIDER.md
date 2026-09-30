@@ -9,9 +9,9 @@ Turn a vendor-neutral model request into provider traffic and back, and choose w
 ## Responsibilities
 
 **Owned.**
-- **Catalog service.** Load a small, curated, versioned primary catalog offline; refresh the explicitly approved OpenCode provider/model sources in the background by default, and allow generic enrichment only when enabled. Validate and record provenance and project records into descriptors. External metadata is advisory data, never code, credential, auth-method, or arbitrary-host authority (`REQ-PROV-002`, `REQ-SEC-017`, `DEC-021`, `DEC-060`).
+- **Catalog service.** Load a versioned primary catalog offline; refresh approved OpenCode/Models.dev provider/model metadata in the background by default, and allow generic enrichment only when enabled. Validate and record provenance and project records into descriptors. External metadata is advisory data, never code, credential, auth-method, or arbitrary-host authority (`REQ-PROV-002`, `REQ-SEC-017`, `DEC-007`, `DEC-021`, `DEC-060`).
 - **Route abstraction.** The orthogonal tuple `Protocol × Endpoint × Auth × Framing` plus per-route defaults; vendor quirks live only in protocol adapters (`REQ-PROV-003`).
-- **Wire protocol adapters.** A fixed, small adapter set plus one generic compatible adapter for arbitrary endpoints. Adding a provider is route data, not a new code path.
+- **Wire protocol adapters.** Versioned, HorizonCode-owned adapters cover provider integrations in the monitored OpenCode and Cline source matrices, plus a generic compatible adapter for user-configured compatible endpoints. Adding a provider uses an existing route family where conformance permits; provider-specific auth, framing, request shaping, or lifecycle behavior may require a dedicated local adapter. Catalog records alone never make a route usable.
 - **Executor.** Request send, bounded retries, watchdogs, `Retry-After` handling, typed error classification, and the bounded credential-redaction guarantees in `REQ-PROV-004` / `ARCH/14`; do not claim perfect scanning of arbitrary payload text.
 - **Usage and cost accounting.** Observed vs estimated split; inclusive totals plus a non-overlapping breakdown.
 - **Quota observation.** Optional read-only adapters for documented provider account/quota endpoints. `CMP-provider` owns capability checks, user opt-in/manual refresh, normalization, bounded coalescing/backoff, freshness, and a protected bounded observation cache. It does not own HorizonCode budget reservations or infer limits from response headers unless a provider contract explicitly defines them.
@@ -108,6 +108,46 @@ ProviderIntegrationRecord {
 }
 ```
 
+## Upstream provider maintenance
+
+`DEC-076` changes provider breadth from “catalog visibility” to a maintained
+integration target. `research docs/opencode-provider-inventory.md` and the Cline
+provider inventory enumerate the exact upstream snapshot, documented connector/auth
+paths, HorizonCode adapter family, per-file source/license provenance, route
+conformance, and availability reason. Every monitored connector is either locally
+usable with evidence or visibly blocked; unknown/ineligible auth must not disappear
+behind a catalog entry.
+
+A scheduled source monitor compares pinned OpenCode and Cline revisions and reports
+provider/auth/protocol changes. It prepares a reviewable HorizonCode-native update
+candidate and refreshed conformance fixtures. Candidate implementation may selectively
+adapt source only after the exact file and applicable license/notice are reviewed under
+`ARCH/05`; otherwise implement behavior from public protocol documentation. It may
+not copy OAuth/client identity, tokens, cookies, auth stores, or remote code. Merge and
+distribution use the ordinary reviewed source tree and signed release/update process.
+No provider code is downloaded, compiled, or executed by the installed application,
+and a source update cannot modify an active route snapshot. `DEC-060`'s inert metadata
+and fixed endpoint rules remain in force.
+
+“Support all OpenCode/Cline providers” is the product target: every connector in the
+pinned monitored inventories must reach `usable` with a HorizonCode-owned adapter, an
+authorized credential flow, fixed reviewed origin/protocol, terms/client-registration
+clearance, and route-specific conformance. An unavailable entry states its exact blocker
+and means full parity is incomplete; it is not counted as supported. The maintenance
+process revisits blockers as sources or authorized integration options change. HorizonCode
+does not impersonate the upstream client or claim that its own conformance means
+upstream endorsement.
+
+## Route-specific prompt-cache behavior
+
+Stable prompt prefixes, tool ordering, cache writes/reads, affinity, and in-history
+prompt updates remain route capabilities. No V1 requirement promises cache-neutral
+mode changes or identical tool schemas across modes; `REQ-TOOL-003` continues to omit
+tools denied by hard/user policy. The provider must preserve raw usage fields and
+separately normalize cache-read and cache-write/creation values only where the route
+documents their meaning. Absence remains unknown. This is accounting evidence, not a
+promise of a cache hit or cost reduction (`DEC-075`, `AX-384`).
+
 `method_kind` is typed, not free-form (`api_key`, `bearer_token`,
 `oauth_authorization_code`, `oauth_pkce`, `oauth_device_code`,
 `provider_customer_registered_oauth`, `cloud_cli_identity`, `cloud_identity_chain`,
@@ -146,13 +186,30 @@ identified, semantics stay `unknown`.
 `FinishRecord = { finish: completed | context_overflow | explicit_output_cap |
 remaining_context_cap | unknown_truncation | provider_error,
 raw_reason_code?, reason_source: protocol | validated_route_profile | unknown,
-model_attempt_id, logical_step_id, route_fingerprint, usage_ref? }`. Raw finish codes are retained as
+model_attempt_id, logical_step_id, route_fingerprint, usage_ref?, partial_usage_ref?,
+usage_status: COMPLETE | PARTIAL_REPORTED | ESTIMATED | UNKNOWN }`. Raw finish codes are retained as
 bounded, redacted metadata for diagnosis, not interpreted by UI or loop code. A
 generic `length`/`max_tokens` response is `explicit_output_cap` only when the
 request's configured output ceiling is the demonstrated limiting cap; it is
 `remaining_context_cap` only under a matching validated profile and the route's
 observed semantics; otherwise it is `unknown_truncation`. It is never promoted to
-normal completion because content parses as plausible prose or JSON.
+normal completion because content parses as plausible prose or JSON. Usage reported
+on a terminal completion or partial/interrupted stream is retained and reconciled
+exactly once even when the attempt fails. If the provider does not report usage after
+failure, HorizonCode records `UNKNOWN` or a clearly labeled estimate; it never
+silently charges zero or fabricates exact tokens. The pinned Codex sampling error
+path passes emitted items to `record_failed` but does not pass `token_usage`, which is
+handled on `ResponseEvent::Completed`; this is a risk signal in that path, not proof
+of final provider billing or every Codex accounting surface (`research docs/codex.md`).
+
+`context_overflow` has a narrower meaning than a generic provider error: the adapter
+has evidence that the request was rejected for context-window size before any
+response content/tool proposal was exposed. Only that typed cause may enter the
+pre-content recovery path in `CMP-context` (`REQ-CTX-004`). HTTP 413, a generic
+`invalid_request`, local payload-size failure, or a provider error is not sufficient
+by itself; absent route/protocol evidence it remains `provider_error` (or another
+typed non-recoverable error). It must not be conflated with
+`remaining_context_cap`, which describes a response truncated after generation began.
 
 **Catalog data and cache** — the curated primary is bundled as HorizonCode-owned records with per-row source/retrieval/method/revision provenance and a content hash. Optional enrichment is opt-in and cached with a short TTL, cross-process lock, atomic temp+rename writes, validation, and a visible freshness state. Do not bundle a full upstream snapshot or third-party marks. Refresh failure retains the curated primary plus any still-valid cache, marks their source/freshness separately, and never blocks inference; missing enrichment must not be described as a cached full catalog (`DEC-021`).
 
@@ -286,7 +343,7 @@ current.
 
 **Router state** — per-deployment health, cooldown expiry, latency estimate, in-flight count, observed rate-limit hints, and (optional) published eval scores.
 
-**Provider quota observation contract.** A provider integration may advertise `quota_observation: supported | unsupported | unknown` independently of inference/auth support. Only documented endpoints and the exact authorized account credential may be used; no hidden endpoint probing, another CLI's credential cache, or refresh outside `CMP-secrets`. Background polling is user opt-in per provider and disabled by default; project settings/instructions cannot enable network refresh. Explicit `/providers quota refresh <provider>` is available where documented. Refresh uses one in-flight request per provider/account, bounded timeout/body/window count, cancellation generations, provider-specific minimum intervals, and persisted 429/backoff state. Timeout, 401/403, 429, provider error, parse error, and missing capability produce distinct states and do not erase last-good data. Authentication and quota denial are not retried as transient failures. The user can clear the local observation cache without changing the provider account or credential.
+**Provider quota observation contract.** A provider integration may advertise `quota_observation: supported | unsupported | unknown` independently of inference/auth support (`DEC-071`). Only documented endpoints and the exact authorized account credential may be used; no hidden endpoint probing, another CLI's credential cache, or refresh outside `CMP-secrets`. Background polling is user opt-in per provider and disabled by default; project settings/instructions cannot enable network refresh. Explicit `/providers quota refresh <provider>` is available where documented. Refresh uses one in-flight request per provider/account, bounded timeout/body/window count, cancellation generations, provider-specific minimum intervals, and persisted 429/backoff state. Timeout, 401/403, 429, provider error, parse error, and missing capability produce distinct states and do not erase last-good data. Authentication and quota denial are not retried as transient failures. The user can clear the local observation cache without changing the provider account or credential.
 
 ```text
 QuotaObservation {
@@ -304,7 +361,7 @@ QuotaObservation {
 
 1. **Catalog load.** On boot, load the curated primary and validated caches, then schedule due OpenCode metadata refresh in the background; generic enrichment refresh runs only when opted in. Resolve records lazily. Projection merges provider and model fields (`provider.api` defaults overlaid by model overrides). Each view shows source, retrieval time, expiry, and stale/error state.
 2. **Model step.** `Router.resolve` picks a route → `Executor.prepare` applies auth, lowers tool schemas, and builds the protocol body → transport sends → framing decodes bytes → protocol translates frames into the common typed stream (`step-start · text/reasoning/tool-input deltas · tool-call · tool-result · step-finish · FinishRecord · usage · provider-error`) → usage is recorded against immutable `model_attempt_id` and `logical_step_id`, including partial attempts. These IDs are distinct from orchestration's task-attempt ID. Consumers branch on normalized capability/evidence, never raw provider id/reason text.
-3. **Retry ownership (single-owner rule).** Transport retries only for request-start failures, bounded with exponential backoff + jitter, honoring `Retry-After` in seconds, milliseconds, or HTTP-date. Pre-content stream interruptions retry via buffer-until-proven, summing discarded-attempt usage. Post-content transport failures are handed to `CMP-runner`'s turn-level recovery. A user abort anywhere vetoes retry. Context overflow is **terminal** here: the adapter surfaces typed `context_overflow` and does not re-request; `CMP-context` owns the existing single compact-and-retry. Output truncation is classified in the `FinishRecord`; only `CMP-runner`/the durable controller may request the separate bounded remaining-context recovery in `ARCH/08`/`DEC-054`.
+3. **Retry ownership (single-owner rule).** Transport retries only for request-start failures and other explicitly classified safe cases, bounded by controller-owned attempt count, total elapsed deadline, maximum backoff multiplier, and maximum absolute delay, with bounded jitter. Parse `Retry-After` in seconds, milliseconds, or HTTP-date, sample wall time before converting to a monotonic deadline, and clamp it to the remaining controller ceiling; peer values cannot extend that ceiling. A request body that may be replayed or incur provider-side work/billing is retryable only when acceptance is known not to have occurred or a provider-documented idempotency mechanism is used with the same stable request/effect key. No key and uncertain acceptance means no replay. On exhaustion, retain the actual terminal typed error, request ID, and attempt identity; do not replace it with a synthetic status. Pre-content stream interruptions retry via buffer-until-proven and reconcile usage across discarded attempts. Post-content transport failures are handed to `CMP-runner`'s turn-level recovery. A user abort anywhere vetoes retry. Context overflow is **terminal** here: the adapter surfaces typed `context_overflow` and does not re-request; `CMP-context` owns the existing single compact-and-retry. Output truncation is classified in the `FinishRecord`; only `CMP-runner`/the durable controller may request the separate bounded remaining-context recovery in `ARCH/08`/`DEC-054`.
 4. **Routing.** Filter (policy-allowed, healthy, not cooling down, meets task requirements: context size, vision, tool-calling, reasoning) → rank by configured strategy → pick → persist the selected route and ordered permitted fallback chain at managed-attempt admission → record an observable decision. A catalog refresh cannot change an admitted chain. Cross-provider fallback follows `DEC-070`/`REQ-PROV-012`: it is allowed only for a typed transient failure before any provider content or tool-call delta is exposed, and only to a pre-pinned compatible, authorized route with a successful budget reservation. Auth, authorization, quota, policy/egress, protocol/schema, capability, cancellation, and post-exposure failures never silently switch providers. Each actual dispatch has its own immutable route snapshot and usage record; cooldown is applied to the failed deployment.
 5. **Eval gating.** When enabled, selection is bounded by published per-model suite scores and a configured threshold; the gate is deterministic and the score set is versioned.
 6. **Budget gates.** Token/cost ceilings are evaluated before sending; an exhausted budget fails closed with a typed reason and no silent downgrade.

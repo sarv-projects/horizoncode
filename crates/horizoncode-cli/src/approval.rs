@@ -1,9 +1,11 @@
 //! Approval resolution for the headless CLI.
 //!
 //! The default headless posture denies every `ask` (it never blocks on stdin);
-//! `--yolo` uses the guard's auto-approve resolver; an interactive terminal gets
-//! a prompt. No resolver can widen the catastrophic gate, which Guard applies
-//! before asking.
+//! an interactive terminal gets a prompt. Reduced approval (`--yolo`) is applied
+//! by Guard before this seam: eligible asks already resolve to allow, so only
+//! ineligible asks reach a resolver and their reply stays governed by the
+//! posture above (`DEC-073`). No resolver can widen the catastrophic gate, which
+//! Guard applies before asking.
 
 use std::io::{BufRead, Write};
 

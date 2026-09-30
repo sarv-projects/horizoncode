@@ -122,11 +122,96 @@ return { definitions, settle }
 The advertised set is the model's tool list. `CMP-context` counts these
 definitions into the token budget; the registry never sends them itself.
 
+### Deferred tool discovery
+
+Large MCP and other extension catalogs MUST keep full schemas out of the default
+model request. `CMP-tools` owns one bounded searchable catalog containing exact
+tool identity, source/server, short description, and schema digest. A model-facing
+`tool_search` operation searches that metadata and returns bounded candidate
+summaries; it never executes a candidate and never treats tool-provided text as
+instructions. Search results use opaque registry IDs plus the display name and
+provenance, so a guessed name cannot select a different implementation.
+
+The bounded candidate IDs selected by search become the only schema-load candidates
+for the next model step. `CMP-runner` asks this same registry to materialize those
+schemas, applies the current permission filter and context budget, and pins
+registration identity, schema digests, catalog generation, and the permission
+snapshot for that model step. Calls outside that pinned set, removed or
+changed registrations, and newly denied tools fail typed before execution. A refresh
+can affect a later model step only; it cannot mutate the active step's advertised
+contract. Search ranking is an implementation choice and MUST be evaluated on exact
+identifier and natural-language queries before it is enabled by default; no particular
+retrieval algorithm is required by this architecture (`REQ-CTX-010`, `SRC-032`).
+The source pattern is Codex's pinned
+[`tool_search.rs`](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/core/src/tools/handlers/tool_search.rs)
+(`ARCH/29` [U-CX-TOOL-SEARCH](29-SOURCE-TRACEABILITY.md#u-cx-tool-search)); no code is copied.
+
+This is deferred materialization inside the existing registry and guard path, not a
+second tool registry or permission system. Search metadata and returned summaries are
+untrusted bounded data; schema selection does not authorize execution.
+
+## Command-shell profiles and process I/O
+
+`exec.run` supports user-configured interpreter profiles rather than assuming one
+shell. A profile names the executable, typed argv template, quoting/command-string
+convention, environment allowlist, working-directory policy, platform, and default I/O
+mode. Profiles may target PowerShell (`pwsh`/`powershell`), Bash, zsh, fish, cmd, or
+another configured shell. The exact command text is passed as one profile-defined
+argument without constructing a second shell command around it. Shell selection is a
+user preference, not confinement; the same command resource extraction, Guard,
+spawn-time sandbox, audit receipt, and output bounds apply to every profile.
+
+Use pipe-based execution by default for noninteractive commands. Offer a PTY only
+when the user or a reviewed tool profile explicitly requests interactive terminal
+semantics. PTY mode streams terminal output and accepts bounded input, but may change
+color/progress/buffering behavior and can expose interactive prompts; it is not a
+security boundary. Both modes retain full bounded output in the managed-output store,
+produce a concise status row, and support inspection of complete captured output.
+
+Every child execution is tracked as a process tree. Cancellation sends a graceful
+signal/request, then force-terminates after a configured deadline using the platform's
+supported process-group/job mechanism. Do not promise POSIX `killpg` on Windows; use a
+Windows job/console mechanism where available. Process/descriptor or handle budgets
+must cap concurrent commands/workers and reserve capacity for the controller,
+operator control, cleanup, and audit. If a descendant escapes supervision or its
+effect cannot be reconciled, mark it unknown and fence conflicting follow-up work.
+
+## Hook IPC contract
+
+Hooks are optional extension effects dispatched through the existing registry and
+`CMP-tools`/extension confinement. `/hooks` inspects registered definitions, source
+digest, event, argv, environment, limits, trust state, and recent typed outcomes. A
+project hook is not executable until the user trusts the exact reviewed source
+digest; edits invalidate that trust.
+
+The hook receives a bounded versioned JSON event on stdin and returns one typed JSON
+decision on stdout; human diagnostics belong on stderr. Unknown fields, extra output,
+invalid JSON, timeout, oversized output, or nonzero exit become a typed failure. Hook
+environment is constructed from an allowlist; inherited `HORIZONCODE_*`, credential,
+control-socket, and approval variables are removed unless a specific nonsecret,
+read-only field is explicitly defined by the contract. Hooks may observe, deny, or
+make a policy decision stricter. They cannot convert deny to allow, mint a ticket,
+rewrite audit facts, hide tool output, or create verifier evidence. Required hooks fail
+closed; optional observers may fail open only for their non-authoritative annotation,
+with failure visible and audited. A generic safety hook may impose bounded command
+limits, but it is not a second path-policy or resource-authority evaluator.
+
+## Patch relocation and stale-base handling
+
+Patch application first validates the entire patch and all file digests before any
+mutation. When a captured file base has shifted, the reconciler may locate a hunk by
+its exact surrounding context only if that context occurs uniquely in the exact
+captured base/current-file comparison. It must not apply a hunk from approximate line
+numbers alone or use a fixed search radius as proof. Unique, non-overlapping hunks may
+be rebased through the guarded three-way merge in `ARCH/06`; ambiguous or overlapping
+matches return typed stale/conflict details for review. Final writes compare-and-swap
+against the current raw digest and preserve atomic all-file preflight semantics.
+
 ## Built-in tools: source baseline and target
 
 The table is split deliberately: source presence is not inferred from a target
 contract. At HorizonCode Rust source baseline `23d4ce8` (confirmed unchanged for
-Rust/Cargo manifests through HEAD `cbba87b`), these are the first-party tools
+Rust/Cargo manifests through source-map commit `cbba87b`), these are the first-party tools
 registered by `horizoncode-tools`; `question` is registered only when the caller
 selects interactive mode. The registry has no model-visible skill, web, agent,
 mailbox, LSP, or image tool at that baseline. See `ARCH/29` for exact files/tests.
@@ -354,9 +439,12 @@ Model-visible content is bounded so one tool cannot exhaust the window
 
 - If the textual content fits `max_lines` (default 2000) and `max_bytes`
   (default 51200), it is passed through unchanged.
-- Otherwise the full content is written to a managed `tool-output` file and the
-  model receives a head/marker/tail preview citing the saved path; the path is
-  returned in `outputPaths` for the UI.
+- Otherwise the full content is committed to `CMP-artifact` before the owning
+  canonical event is acknowledged, and the model receives a bounded head/marker/tail
+  preview citing the immutable artifact reference and digest; the reference is
+  returned in `outputPaths` for the UI. The preview is not the complete result and
+  is not sufficient evidence by itself. The full bytes remain retrievable through
+  the governed artifact read/grep path for the retention period while pinned.
 - Media is bounded before context assembly by provider- and format-aware byte, pixel,
   frame, and item caps. Oversized media is rejected or deterministically resized /
   sampled when that transformation is supported; the durable artifact and digest stay
@@ -367,6 +455,12 @@ Model-visible content is bounded so one tool cannot exhaust the window
   (`ARCH/28`); `CMP-tools` emits bounded owner references and never deletes artifact
   bytes itself. Checkpoint creation pins every reachable required output; rewind keeps
   any object still referenced by another retained generation or evidence record.
+- Compaction may remove an old completed tool result from the model-context
+  projection only after its exact result is committed and referenced as above. It
+  cannot clear the canonical Thread event, rewrite the transcript, delete artifact
+  bytes, or clear open/unsettled output or evidence with an active pin. Expiry or a
+  failed read produces typed `EXPIRED`/`UNAVAILABLE`; it never becomes an empty
+  successful result (`REQ-CTX-006`, `ARCH/09`, `ARCH/28`).
 - Managed files use the configured retention (default target: 7 days) only after
   all owner pins are released. Active attempts, unresolved effects, pending
   verification, and evidence artifacts hold explicit pins; TTL alone cannot

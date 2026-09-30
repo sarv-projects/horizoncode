@@ -46,7 +46,7 @@ or UI copy (`CMP-tui`).
 | `CMP-secrets` | outbound | redaction of approval display strings; never receives raw secrets back |
 
 Guard sits on the control path and is bounded; a slow or hung decision is a deny, not
-an allow (`EDGE-038` analogue).
+an allow (`ARCH/22` `G-06`).
 
 ## Data / state model
 
@@ -57,8 +57,13 @@ RuleSource  = GlobalConfig | ProjectConfig | AgentLevel | ThreadRestriction
 Decision    = { effect, matched: [RuleRef], source, policy_hash }
 Pending     = { id, session, action, resources[], save[], deferred, created_at, timeout }
 SavedRule   = { project, action, resource }   // persisted "always" memory
+ApprovalChallenge = { id, effect_id, request_digest, shown_content_digest,
+                      action_digest, resource_state_digest, revision_vector,
+                      principal_ref, control_session_id, connection_ref,
+                      policy_hash, cancel_generation, expires_at, state }
 Ticket      = { id, action, scope[], uses, expires_at, provider_epoch,
-                approval_ref?, policy_hash, single_use }
+                approval_ref?, approval_digest?, revision_vector?, policy_hash,
+                single_use }
 GuardMode   = Plan | Act                 // execution posture, never project-settable
 ApprovalPosture = Standard | AutoApproveEligibleAsks
 RunPostureGrant = { run_id, actor, classes[], scope_digest, policy_digest,
@@ -102,14 +107,56 @@ RunPostureGrant = { run_id, actor, classes[], scope_digest, policy_digest,
 
 ## Lifecycle & flows
 
+### Everyday interactive permission defaults
+
+Direct coding is designed for routine use without repeated confirmation dialogs.
+The shipped local profile explicitly allows workspace-scoped reads and edits through
+the guarded write path, and may allow recognized project checks under the configured
+confinement profile. These are visible defaults, not implicit “anything in the
+workspace” authority: canonical path checks, policy denies, protected files, tool
+resource checks, sandbox reach, and audit still apply. Network, package installation,
+external directories, credentials, production/deployment actions, and commands with
+destructive or broad effects continue to ask or deny according to the effective
+policy. If required confinement is unavailable, the operation is refused with the
+actual backend/reason; a permission grant cannot pretend the OS enforced it.
+
+Use readable approval categories in prompts and settings: workspace read; workspace
+edit; project check/build; external path; network/remote service; credential/account;
+install/extension; Git history/index mutation; production/deployment; destructive
+filesystem/process action. Each prompt states the action, exact resource/command,
+why it was raised, the enforcing sandbox tier, and the proposed grant scope and expiry.
+Repeated prompts are suppressed only while the exact action/resource grant remains
+valid and its policy, workspace, content, and principal bindings still match. A user
+may select once, bounded session, project rule, or reject where that scope is safe;
+the exact saved rule is shown before confirmation. A stale/changed command or target
+requires a new decision.
+
+Catastrophic/destructive classes are never eligible for managed reduced approval:
+recursive/broad deletion, destructive Git cleanup/reset/checkout/clean, writes outside
+the authorized worktree, credential export, production mutation, publish/deploy,
+security-control weakening, and process termination outside the owned child tree.
+The command classifier is conservative and cannot decide that a command is safe based
+only on its name; unknown command semantics remain ask/deny under current policy.
+`/goal yolo` is a user-facing explicit choice for a specific managed Run and cannot be
+activated by the agent. Ordinary direct-turn defaults do not require Yolo.
+
+### Approval state and prompt friction
+
+Guard remains the sole decider. Approval categories are presentation/policy classes
+over the existing action/resource model, not a second permission engine. Measure
+prompt count, repeated prompts for unchanged valid grants, grant scope, and time
+blocked on simple edit/build/debug tasks. The user can inspect `/permissions` to see
+the effective decision source, matching rule, grants, expiry, and confinement
+boundary. Read-only inspection of policy never creates a grant.
+
 ### Startup
 1. Discover user/global config (then project, nearest wins) and agent/session
    restrictions.
 2. Parse each source into a `Ruleset`, preserving order within that layer; reject a malformed layer and
    fall back to the previous valid layer with a warning — never fail open.
 3. Resolve each layer independently. The user/global layer is the base policy;
-   project, agent, and Thread layers may only narrow that authority. Existing source
-   code currently flattens layers and is defective; AX-370 owns this correction.
+   project, agent, and Thread layers may only narrow that authority. The AX-370 fix
+   implements this: rules resolve within their layer and layers compose monotonically.
    Compute and freeze `policy_hash` from the composed result.
 4. Record the requested safe posture (default `act`) and the policy snapshot to
    `CMP-session`/`CMP-audit`; create a reduced-approval grant only after run-scoped
@@ -180,8 +227,36 @@ Issue a ticket bound to the action, resources, `expires_at`, `provider_epoch`, a
 
 ### Tickets
 Effects never execute without a valid ticket. Validation checks scope match, `uses`,
-`expires_at`, and `provider_epoch`; a provider restart or cancellation revokes the
-ticket and bumps the epoch so stale handles fail closed.
+`expires_at`, `provider_epoch`, policy digest, approval digest, and the approved
+revision vector; a provider restart or cancellation revokes the ticket and bumps the
+epoch so stale handles fail closed. The current basic ticket fields prove the grant's
+scope and lifecycle; by themselves they do not prove that the world still matches
+what the operator reviewed.
+
+**The approval is bound to the reviewed world.** For an `ask`, the controller persists
+an `ApprovalChallenge` before rendering it. `shown_content_digest` binds the exact
+bounded diff/preview and explanation shown to the user; `resource_state_digest`
+binds canonical resource identity plus expected pre-effect state (for a file write,
+the base file digest and target path; for a command or remote action, its canonical
+arguments/target and relevant workspace/route state). `revision_vector` binds the
+Thread or Run input/control sequence, spec/task/attempt revisions where present,
+workspace/repository base and head digests, policy/config epoch, and effect identity.
+The challenge also binds the authenticated principal, control session, exact
+connection, and cancellation generation. A response from any other connection is
+`WrongPrincipal`; a connection close durably invalidates unanswered challenges before
+teardown; finite TTL expiry is a denial. A denied/stale challenge is never silently
+re-asked or converted into a fresh grant.
+
+After a user or extension/reviewer callback returns, the controller re-reads the
+revision vector and cancellation generation. It repeats that check immediately before
+minting/consuming the effect ticket. The effect executor recomputes the canonical
+resource/content digest at the effect boundary and compares it with the approved
+digest; a mismatch returns `STALE_APPROVAL`, records the mismatch, and requires a new
+review. Cancellation after an extension callback wins. This follows the useful
+revision-revalidation shape in Codex's pinned Guardian review path, while HorizonCode
+also binds operator connection and the displayed effect bytes (`research docs/codex.md`,
+2026-09-29 security/control audit). The peer is a pattern reference, not proof of
+equivalent behavior or a reason to omit HorizonCode's extra connection binding.
 
 **One decision, one grant, one effect.** A call passes the seam twice, and the two
 passes are different acts:
@@ -223,7 +298,11 @@ grant it was issued (`F-66`).
   a user-confirmed run ceiling. It never overrides explicit `deny`, catastrophic
   operations, full-access acknowledgement, unavailable enforcement, managed locks,
   production/external-effect requirements, or configured network boundaries
-  (`REQ-GUARD-005`, `DEC-040`). Store a preference separately from activation. Project,
+  (`REQ-GUARD-005`, `DEC-073`). The guard auto-resolves only eligible, rule-raised
+  asks in the local-effect classes; network egress, MCP/extension installs,
+  external-directory reaches, and unmatched asks remain manual, and a
+  reduced-approval resolver MUST refuse an ineligible ask rather than approve it.
+  Store a preference separately from activation. Project,
   agent, plugin, prompt, or model content cannot activate or widen this posture.
   Activation displays affected classes, sandbox/network tier and residual, child
   inheritance, external actions that remain gated, and expiry. Active posture is
@@ -254,6 +333,7 @@ for approval.
 | Rule parse/eval error | Deny with reason; audited (fail closed). |
 | Decision deadline exceeded | Deny with reason; never an implicit allow. |
 | Approval timeout | Per-class expiry; default deny, surfaced. |
+| Foreign approval response, closed connection, expired challenge, or changed reviewed resource | `WrongPrincipal`, `CANCELLED`, `EXPIRED`, or `STALE_APPROVAL`; no ticket is minted/used and a fresh explicit review is required. |
 | Saved-rule store corrupt | Ignore the saved layer (drop to stricter rules); warn; audited. |
 | Ticket replay / stale epoch | `InvalidState`; audited; re-authorize normally. |
 | Concurrent bounded-use tickets | Atomic decrement; loser fails `InvalidState`; both audited. |
@@ -267,11 +347,25 @@ restrictions. File discovery precedence is distinct from policy authority. The
 effective policy resolves last-match only inside one layer, then composes
 monotonically (`deny > ask > allow`); never apply find-last-wins across layers.
 
-**Source status at `23d4ce8` / HEAD `cbba87b`.** Current Rust source does flatten
-the rule layers before selecting its last match. Global/project deny ceilings are
-checked separately, but a lower-trust project allow can override a global ask for
-an in-root resource. This is a known defect assigned to `AX-370`, not the target
-behavior in this document.
+**Source status after the `AX-370` fix (2026-09-29, source baseline `23d4ce8`).** `horizoncode-guard` now
+resolves find-last-wins within the user/global base and within each restriction layer,
+composes the layers monotonically (`deny > ask > allow`), applies the
+external-directory floor after composition with an action-aware and user/global-only
+deliberate-grant check, and limits reduced approval to eligible rule-raised asks
+(`DEC-073`); the approval seam carries that eligibility
+(`ApprovalRequest.reduced_approval_eligible`, `Guard::ask_is_eligible`) so a
+reduced-approval resolver refuses ineligible asks instead of approving them.
+Evidence: `crates/horizoncode-guard/tests/guard.rs`
+(`lower_trust_layers_cannot_lower_an_upstream_ask_or_deny`,
+`a_project_rule_cannot_widen_the_user_base`,
+`a_deliberate_allow_is_action_specific`,
+`a_lower_trust_deliberate_external_allow_cannot_waive_the_floor`, `reduced_approval::*`),
+`crates/horizoncode-tools/tests/permission.rs`
+(`reduced_approval_resolves_an_eligible_ask_without_the_resolver`,
+`reduced_approval_leaves_an_external_reach_to_the_resolver`), plus
+`cargo test --workspace --no-fail-fast` (519 passed, 0 failed) and
+`cargo clippy --workspace --all-targets -- -D warnings`. The acceptance record
+`ACC-P1-02` is still required before this behavior is `verified`/`accepted`.
 
 ```jsonc
 {
@@ -324,15 +418,16 @@ than the guard evaluates path policy (`REQ-SEC-023`, `AX-121`).
 
 ## Open questions
 
-1. **Granular approval categories for v1** — which action classes get their own
-   timeout/decision independently of the global default.
-2. **Session-scoped "always"** — whether to add a bounded `session` reply alongside
-   `once`/`always`/`reject`, and how it interacts with durable saved rules.
-3. **Saved-rule scope key** — project identity vs. workspace path when a repository
+1. **Grant-scope implementation details** — persist `once`, bounded session, or
+   project scopes with expiry, exact resource/action, policy/workspace/principal
+   binding, and user-visible reason. Product posture is settled in `DEC-075`; data
+   schema and expiry/revocation acceptance remain open.
+2. **Saved-rule scope key** — project identity vs. workspace path when a repository
    is moved or opened through a symlink.
-4. **Catastrophic-gate catalogue** — the exact deny-by-default action list that
-   survives reduced-approval mode, and how it is versioned.
-5. **Wildcard/glob unification** — **Resolved by `DEC-025`:** there is exactly one
+3. **Catastrophic-gate catalogue** — `DEC-073` and this LLD name minimum destructive
+   classes; the complete command/effect catalogue and versioning must be settled
+   before implementation. `rm` spelling alone is not a complete semantic classifier.
+4. **Wildcard/glob unification** — **Resolved by `DEC-025`:** there is exactly one
    path grammar. `fs.*` resources are matched with the shared path grammar
    (`MatchMode::Path`) and `exec.run` with the raw command matcher
    (`MatchMode::Raw`); the grammar is versioned and the same corpus is replayed

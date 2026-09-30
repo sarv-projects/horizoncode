@@ -385,3 +385,183 @@ Evidence: local checkout `codex-rs/app-server/src/request_processors/thread_goal
 The full-file coverage and partial-path list are recorded in the 2026-09-29 source
 audit handoff. Do not treat the local checkout as evidence for behavior at the separate
 `67a709...`, `368e5eae`, or `41ed72c` source pins.
+
+## 2026-09-29 targeted corrections from the HorizonCode audit
+
+The following claims were checked directly against the local source snapshot
+`67a709665ac7b50311b93e32612c9a8281684787`; this is targeted path evidence, not a
+new whole-repository review.
+
+- **Initialize/capabilities:** [`v1.rs`](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/app-server-protocol/src/protocol/v1.rs)
+  has client-declared initialize capabilities, including experimental API opt-in.
+  The server's [`InitializeResponse`](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/app-server/src/request_processors/initialize_processor.rs)
+  carries user-agent, Codex home, platform family, and OS; it does not return a
+  negotiated wire major/minor or a server capability set. Therefore “Codex has no
+  capability negotiation” is too broad; the precise gap is no returned server-method
+  capability/version negotiation in this initialize response.
+- **Dispatch:** [`common.rs`](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/app-server-protocol/src/protocol/common.rs)
+  uses a macro to declare the typed request enum, and the server dispatches that typed
+  request surface. This is an exhaustive typed-dispatch pattern worth reviewing for
+  HorizonCode. The earlier audit's 298/651 response-schema reachability count is not a
+  dead-method count and is not carried as a defect claim. HorizonCode should still
+  generate/check that every declared method has an owner handler at build time.
+- **Approval callbacks:** [`outgoing_message.rs`](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/app-server/src/outgoing_message.rs)
+  stores pending callbacks in a process-wide map keyed by request ID (line 134).
+  `connection_closed` clears connection-scoped request contexts (275–280), while
+  callback ownership checks apply only to entries marked as verification-owned
+  (561–579). This demonstrates a protocol-level connection-binding risk for ordinary
+  callbacks; exploitability depends on request routing and the broader host. It is
+  sufficient evidence for HorizonCode to require authenticated principal and exact
+  connection binding, disconnect invalidation, TTL, and a displayed-resource digest.
+- **Guardian revalidation:** [`review_request.rs`](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/core/src/guardian/review_request.rs)
+  captures root `(thread_id, history_reset_version)`, root authorization version, and
+  the user-message revision, then re-reads these after an `Allow` and returns
+  `Cancelled` or `StaleAuthorization` on change. [`decision.rs`](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/core/src/guardian/decision.rs)
+  checks cancellation after extension callbacks. A separate process-global field named
+  `guardian_review_context_revision` was not found in this snapshot; HorizonCode's
+  reference is the verified re-read pattern, not that unverified field claim.
+- **Budget and retries:** [`rollout_budget.rs`](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/core/src/rollout_budget.rs)
+  uses an in-memory mutex-backed weighted counter and increments it when usage is
+  recorded. The [`responses_retry.rs`](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/core/src/responses_retry.rs)
+  branch for `UnboundedConnectionRetries` uses capped exponential delay but no attempt
+  ceiling. HorizonCode forbids any unbounded retry escape hatch and reserves before
+  dispatch (`ARCH/08`, `ARCH/25`, `REQ-SEC-013`, `REQ-HORIZON-003`).
+- **Recovery:** [`daemon_recovery.rs`](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/core/src/session/daemon_recovery.rs)
+  captures an eligible interrupted local turn and explicitly excludes non-local
+  environment identities from restart recovery. This is a resume-input snapshot, not
+  general dispatch/effect reconciliation. `thread_manager.rs` rejects a new thread if
+  the initial `SessionConfigured` event is not first and uses `Entry::Vacant` to avoid
+  duplicate thread insertion. These are scoped lifecycle patterns, not evidence of
+  durable external-worker recovery.
+- **History and compaction:** `context_manager/history.rs` advances an in-memory
+  history generation on replacement; `thread_manager.rs` warns that a fork snapshot
+  during a live turn may contain only items persisted so far. This supports a
+  HorizonCode model-facing reader over committed visible Thread history, but does not
+  prove canonical rollout deletion. Avoid saying Codex irreversibly loses all
+  pre-compaction history unless a canonical-store path is separately shown.
+- **Local versus remote transport:** Codex's local app-server JSON-RPC surface and
+  cloud remote-control relay are distinct. The [remote-control WebSocket transport](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/app-server-transport/src/transport/remote_control/websocket.rs)
+  has sequence/cursor and acknowledgement/unacked-buffer behavior. This is a useful
+  reconnect pattern for its relay, not proof that local app-server JSON-RPC has the
+  same cursor or that relay retention is durable across server restart. HorizonCode's
+  local server-side cursor/replay and explicit resnapshot contract remains its own
+  design choice (`ARCH/31`).
+- **Partial stream usage:** the sampling client path handles token usage on
+  `ResponseEvent::Completed`; the error path calls `record_failed` with emitted items
+  but no usage argument (`core/src/client.rs:2424–2487`). This verifies a path-level
+  observability gap. It does not by itself prove the provider charged zero or that
+  every Codex accounting layer lost the usage; HorizonCode's acceptance fixture tests
+  its own accounting rule independently (`ARCH/11`, `ARCH/23` `ACC-P1-10`).
+
+## 2026-09-29 managed-egress, retry, migration, and accounting corrections
+
+The following additional claims were checked against the broad Codex source pin
+`67a709665ac7b50311b93e32612c9a8281684787`. They correct the scope of earlier
+comparisons; they do not certify every Codex networking call site or deployed build.
+
+- **Managed egress exists and is substantial.** Each [`NetworkPolicyController`](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/http-client/src/network_policy.rs)
+  instance owns publication; transport-facing `NetworkPolicy` exposes narrowing and
+  invalidation operations, not policy publication. The app has distinct local and
+  effective policy controllers for bootstrap and live application policy
+  ([`application_network.rs`](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/app-server/src/application_network.rs),
+  [`in_process_bootstrap.rs`](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/app-server/src/in_process_bootstrap.rs)).
+  `RouteAwareClientPool` selects a
+  route and, on managed traffic, follows redirects manually. Its [`execution.rs`](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/http-client/src/route_aware_client_pool/execution.rs)
+  acquires a permit for each hop, strips sensitive headers when the proxy route changes,
+  and returns a response retaining the permit. [`response.rs`](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/http-client/src/response.rs)
+  keeps that permit active while response bodies/streams are consumed, allowing policy
+  revocation to cancel an in-flight operation. Unsupported SDK transports fail under
+  endpoint restrictions. The app's requirements-to-policy mapping turns an absent or
+  disabled network section into `Unrestricted`; that is an explicit policy semantics,
+  not evidence the mechanism always restricts egress. This corrects the earlier claim that Codex had no central
+  managed-egress mechanism. The limit is equally important: `NetworkPolicy::unmanaged`,
+  direct client construction, legacy compatibility factories, and platform/route-specific
+  code exist. The inspected `DestinationPolicy` authorizes normalized URL hosts; this
+  path alone does not prove DNS resolution is pinned to a validated IP through connect.
+  Cite Codex as a strong managed-egress mechanism, not proof that every outbound path is
+  mediated or that it meets HorizonCode's declared level/mechanism/residual contract.
+  Some listed escape hatches need more context before being called independent product
+  fail-opens: `build_direct` is documented for exceptional use such as tests, localhost
+  callbacks, or sandbox traffic with separate egress handling; the two custom-CA fallback
+  builders are deprecated and explicitly legacy; and `BwrapOptions::default()` sets
+  `FullAccess`, but the normal Linux launch path explicitly computes `network_mode` from
+  sandbox policy and managed proxy requirements before invoking bubblewrap. The `ProxyOnly`
+  mode is documented as an intended mode whose bridge is established by the helper;
+  its stated semantics require integration acceptance. `landlock` being public despite
+  a legacy/backup module comment is an API-surface concern, not by itself a bypass.
+- **Retry details must not be merged across retry owners.** The generic
+  [`codex-client` retry helper](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/codex-client/src/retry.rs)
+  has independent 429/5xx/transport switches, uses `0..=max_attempts`, and computes
+  exponential jittered backoff without a maximum delay. It does not accept an
+  idempotency-key/effect argument or inspect the HTTP method before retrying; callers
+  can recreate requests through `make_req`. However, this helper returns the last
+  concrete transport error when the bounded attempt limit is reached. The audit claim
+  that it always discards that error and replaces it with a synthetic 500 is false for
+  this helper; `TransportError::RetryLimit` maps to a synthetic status only when that
+  variant is independently produced. Separately, core's feature-gated
+  [`responses_retry.rs`](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/core/src/responses_retry.rs)
+  has a `ConnectionFailed` sampling path with capped delay (5–60 seconds) but no
+  attempt ceiling. Keep these peer cases distinct. HorizonCode retains a finite attempt
+  count, bounded multiplier and absolute delay, preservation of the last real error,
+  and no replay of an effectful request without its stable idempotency key.
+- **Missing usage fields are normalized to zero in some projections.** The
+  [`Responses` usage conversion](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/codex-api/src/sse/responses.rs)
+  defaults absent cache-detail structures and absent reasoning-token detail to zero.
+  The sampling client's failed/cancelled trace calls receive emitted items but no
+  `token_usage` argument (`core/src/client.rs:2416–2487`). These are verified
+  accounting/observability behaviors at those paths. They do not prove the provider
+  charged zero, or that all Codex billing views lose partial usage. HorizonCode's
+  `UNKNOWN`/estimated state and exactly-once accounting requirement remain appropriate.
+- **External-agent migration is user-selected, but not a content-level trust review.**
+  The [`/import` TUI flow](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/tui/src/external_agent_config_migration/flow.rs)
+  detects candidate sources, asks the user to select an app when multiple sources are
+  found, presents a summary/customization picker, and calls import only after the user
+  chooses “Import selected.” Therefore “zero trust prompt” / wholly unprompted transfer
+  is false for this CLI flow. The picker selects migration categories/items and shows
+  summaries; it is not evidence of line-by-line review or sandboxing of imported hooks,
+  skills, agents, configuration, or plugin definitions. The app-server import endpoint
+  itself accepts selected items from a client; any API path that bypasses the TUI
+  selection flow needs separate review. `migration_source.rs` maps every value other
+  than Cursor's recognized identifier to Claude; that is a source-selection robustness
+  issue, not proof that the TUI silently imports without a user action.
+- **Bundled skills are build-time assets, not installed from GitHub by this code path.**
+  [`skills/src/lib.rs`](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/skills/src/lib.rs)
+  uses `include_dir!` to materialize embedded `.system` assets. The skill config
+  defaults bundled skills to enabled and treats parse failure as enabled. Skill metadata
+  defaults `allow_implicit_invocation` to true, and the product-gating function is
+  defined with a source TODO comment. However, broader source search found actual
+  product-restriction enforcement in environment-skill loading, host-skill merging,
+  plugin skill display/selection, and external-agent marketplace import
+  (`ext/skills/src/loader/environment.rs`, `host_merge.rs`,
+  `app-server/src/request_processors/plugins.rs`, and
+  `external-agent-migration/src/service.rs`). Therefore the audit's claim that product
+  gating is simply unenforced is too broad; the TODO indicates a remaining/possibly
+  separate injection concern that requires tracing the precise bundled-skill path.
+  HorizonCode should test the full discover→select→inject path. This supports testing
+  HorizonCode's default-deny and pinned activation, but not the audit's claim of a
+  default GitHub download.
+- **Credential and provider-classification details:** the auth manager reads
+  `CODEX_REFRESH_TOKEN_URL_OVERRIDE` and `CODEX_APP_SERVER_LOGIN_CLIENT_ID`; the
+  `CODEX_REVOKE_TOKEN_URL_OVERRIDE` is read by `login/src/auth/revoke.rs` (not by the
+  manager module itself). These environment variables can redirect token operations or
+  replace the OAuth client ID when deliberately set in the process environment; that is
+  a real endpoint/configuration trust surface, although the source alone does not prove
+  an untrusted party can set the environment in a deployed process. The resulting
+  request remains subject to whichever network route/policy owns that call site; the
+  environment read alone does not prove an egress bypass. Separately, `AutoAuthStorage`
+  falls back to file storage when keyring load/save returns an error; this is the
+  semantics of the named `Auto` mode, not evidence that every credential-storage mode
+  silently downgrades. Separately,
+  `codex-api/src/provider.rs::matches_azure_responses_base_url` uses substring matching
+  to classify a provider as Azure. It is a provider-capability classification helper,
+  not the authorization function for outbound origins. HorizonCode must still parse and
+  compare URL hosts at security boundaries and must not reuse provider-name heuristics
+  as origin authorization.
+- **Backpressure evidence is local and mixed.** The session mailbox is an
+  unbounded `Mutex<VecDeque<_>>`; `schedule_mcp_prewarm` ignores `try_send` failure;
+  the Responses SSE event channel is bounded at 1,600 while the WebSocket inbound event
+  channel is unbounded and its outbound command channel is bounded at 32. The provider
+  builder sets no whole-request timeout by default, while the stream path has a separate
+  idle timeout. These observations justify explicit capacity, overflow observability,
+  total deadlines, and cancellation tests in HorizonCode; they do not mean every Codex
+  queue or transport is unbounded.

@@ -54,7 +54,7 @@ Architecture decision records. Each constrains the design until superseded by a 
 
 **Status:** accepted.
 
-**Decision.** Maintain a ranked repository map (parsed definitions + reference graph), LSP symbols, and indexed navigation. Compaction preserves a serialized tail plus a structured summary and is gated by retrieval evaluation, not just window fit.
+**Decision.** Maintain a ranked repository map (parsed definitions + reference graph), LSP symbols, and indexed navigation. Automatic compaction is enabled by default and uses a configurable context-window utilization threshold, defaulting to 50% of the active route's resolved model window; it preserves a serialized tail plus a structured summary and is gated by retrieval evaluation, not just window fit. The output/buffer/estimation-uncertainty reserve remains an independent hard fit guard. Setting automatic compaction off disables every automatic compaction path, including pre-send threshold compaction and reactive overflow/truncation recovery. The hard fit guard still refuses an oversized request with `CONTEXT_TOO_LARGE` guidance; it never dispatches the request or silently compacts. Explicit manual compaction remains available independently.
 
 **Rationale.** Context survival at scale is a stated differentiator (`REQ-CTX-001..005`).
 
@@ -86,7 +86,7 @@ Architecture decision records. Each constrains the design until superseded by a 
 
 **Status:** accepted for bounded editor scope; the original scrollback-first and freely dockable layout is superseded by `DEC-066`.
 
-**Decision.** The embedded editor remains bounded to file open/edit/save/undo and syntax highlighting, with no IDE feature claim. Its original primary-interface and free-docking language is historical; `DEC-066` controls current pane positions. Telemetry and server status move behind a command/palette surface.
+**Historical decision, amended by DEC-074 (2026-09-29).** This record originally scoped a bounded embedded editor for open/edit/save/undo and syntax highlighting. Normal source editing now uses the user's native editor through the governed bridge; a general in-terminal editor is not a v1 dependency. The Explorer, read-only viewer, and diff remain in the left dock. Its original primary-interface and free-docking language is historical; `DEC-066` controls pane positions. Telemetry and server status move behind a command/palette surface.
 
 **Rationale.** The cockpit is the user's persistent state-of-the-world during long runs; per-request telemetry belongs on demand, not permanently on screen (`REQ-UI-005..006`).
 
@@ -216,18 +216,19 @@ Architecture decision records. Each constrains the design until superseded by a 
 | `local-sink` (**target default**) | `file` | locally authenticated roots appended to a distinct, ownership- and mode-validated append-only sink **outside** `<state-dir>/audit`; claims are bounded by access to both key and sink. |
 | `off-box` | `remote` | roots with independently verifiable proof recorded off-host or counter-signed; required for any deployment that declares an off-box trust requirement. |
 
-**Rationale.** `REQ-AUDIT-004` (strict: authenticated *and* anchored off-box) and `ARCH/14`'s
-`offbox: "none"` default genuinely conflicted. The stricter requirement stays the floor,
-and the weaker statement is scoped to the case where it is demonstrably true (a
-genuinely local-only deployment). A fresh install cannot invent a remote sink, so the
-honest zero-config default is the strongest level that needs no external party: locally
-authenticated roots written to a sink *outside* the audit store root. That defends against
+**Rationale.** The earlier wording of `REQ-AUDIT-004` said every deployment required
+authenticated off-box anchoring, while `ARCH/14` defaulted to no sink. The accepted
+requirement is now explicitly scoped: `local-sink` is the target default, `local-trust`
+requires explicit acknowledgement, and `off-box` is mandatory when a deployment
+declares that trust requirement. A fresh install cannot invent a remote sink, so the
+local sink is the strongest default that needs no external party. It defends against
 audit-store-local rewriting and against a *different* unprivileged principal (`AV-6`),
-which are exactly the in-scope adversaries; `off-box` is reserved for the claim that
-survives against the invoking user (out of scope per the threat model, but a deployment
-may still require it). The requirement also had to stop over-claiming: a chain — even
-anchored — proves detection of modification of already-anchored history, never content
-authenticity, and never detects fabrication in the unanchored tail.
+which are the in-scope adversaries for that level; `off-box` is reserved for a claim
+that survives against the invoking user (out of scope per the threat model, but a
+deployment may still require it). This is a scope distinction recorded in the
+requirement, not a universal off-box guarantee. A chain — even anchored — proves
+detection of modification of already-anchored history, never content authenticity, and
+never detects fabrication in the unanchored tail.
 
 **Consequences.** `"offbox": "file"` replaces `"none"` as the shipped default
 (`ARCH/14` §Configuration), with `sink_path` validated per `REQ-SEC-018` and a
@@ -452,6 +453,9 @@ three record fields, so no acceptance row changed meaning.
 Evidence in `ACC-P1-01(d)` and `ACC-P1-01(j)` and gate `G-4`; residual risks `RR-07`,
 `RR-08`. Tracked by `TODO.md` `AX-102`, `AX-113`, `AX-114`, `AX-119`.
 
+> `DEC-028` is currently unassigned; decision IDs are stable and are not reused. No
+> active decision or requirement depends on a missing `DEC-028` record.
+
 ## DEC-029 — One durable run controller with independent verification
 
 **Decision (2026-09-27).** `CMP-orch` becomes the deterministic controller for a long-horizon run. It owns the task DAG, state transitions, budget reservations, leases, retry history, stop decisions, and recovery. `CMP-session` owns the canonical append-only run/task events and rebuildable projections; `CMP-runner` continues to own a bounded model turn. A runtime verifier is a separately authorized service invoked by the controller. Its result may be `PASS`, `FAIL`, or `INSUFFICIENT_EVIDENCE`; the worker cannot mark its own task passed. `ARCH/25` defines the records and transitions. A multi-process daemon is an optional deployment mode when detached work requires it, not a second scheduler or separate product core.
@@ -460,7 +464,7 @@ Evidence in `ACC-P1-01(d)` and `ACC-P1-01(j)` and gate `G-4`; residual risks `RR
 
 **Alternatives.** A Markdown TODO cannot provide atomic claims or leases. A separate orchestration framework would duplicate the existing control plane and increase consistency risk. A permanent team of specialist agents is not required; the roles may run sequentially and are routed by measured need.
 
-**Consequences.** `REQ-HORIZON-005..010`, `REQ-REPO-001..002`, `REQ-DELIVERY-001`; tasks in `TODO.md`. Priority is verified multi-hour completion, as the user confirmed. Latency, cost, and breadth remain measured constraints rather than reasons to weaken verification.
+**Consequences.** `REQ-HORIZON-005..010`, `REQ-REPO-001..002`, `REQ-DELIVERY-001`; tasks in `TODO.md`. Verified multi-hour completion is a differentiator, while fast interactive coding is an equally first-class product requirement. Ordinary prompt-led turns do not require creating a goal, preparing a plan, or accepting a Run review; the managed Run controller is used when the user requests it or the task warrants its durable planning, recovery, and independent verification. Latency, cost, permission friction, and breadth are measured alongside correctness rather than reasons to weaken verification.
 
 ## DEC-030 — Configurable operator surfaces and truthful source naming
 
@@ -1027,18 +1031,22 @@ default is allowed.
 
 ## DEC-054 — Recover only proven remaining-context output truncation once
 
-**Decision (2026-09-27).** Keep context-window rejection (`REQ-CTX-004`) distinct
-from a response cut off during generation. A provider adapter may classify a
-truncation as `remaining_context_limit` only when protocol evidence or an explicitly
-validated route capability proves that the server used the remaining context as its
-effective output cap. The controller may compact and retry the same logical step
-once only when the attempt produced no completed tool call or provider-side effect,
-the user/control/spec/policy revisions are unchanged, and the budget can reserve both
-compaction and retry plus required verification. Preserve partial bytes, finish
-reason, usage and attempt event for the UI/audit record; never treat partial output as
-a completed assistant message. Explicit configured output caps and unknown/ambiguous
-finish reasons do not trigger compaction retry. A second truncation is terminal for
-automatic recovery.
+**Decision (2026-09-27, clarified 2026-09-30).** Keep a provider's pre-content
+context-window rejection (`REQ-CTX-004`) distinct from a response cut off during
+generation (`REQ-CTX-011`). A provider adapter may classify a truncation as
+`remaining_context_cap` only when protocol evidence or an explicitly validated route
+capability proves that the server used remaining context as its effective output cap.
+The controller may compact and retry the same logical step exactly once only when
+`compaction.auto=true`, the attempt produced no completed tool call or possible
+provider-side effect, the pinned route and user/control/task/workspace/spec/policy
+revisions are unchanged, and the budget reserves compaction, retry, and required
+verification. Provider rejection recovery has the same `auto` and effect/revision
+fences but is a separate recovery class. When automatic compaction is disabled, both
+classes return typed recoverable errors without automatic compaction or retry.
+Preserve partial bytes, finish reason, usage and attempt event for the UI/audit
+record; never treat partial output as a completed assistant message. Explicit
+configured output caps and unknown/ambiguous finish reasons do not trigger compaction
+retry. A second rejection/truncation is terminal for automatic recovery.
 
 **Why.** [Cline v4.1.21 (2026-09-24)](https://github.com/cline/cline/releases/tag/v4.1.21)
 reports compact-and-retry for long local-model replies when servers cap output at
@@ -1141,10 +1149,14 @@ of a universal durability guarantee. See [Rust `File::sync_data`](https://doc.ru
 [SQLite's atomic-commit assumptions](https://sqlite.org/atomiccommit.html).
 
 **Consequences.** `REQ-SESS-006`, `ARCH/07`, `ARCH/25`, `ACC-P1-11`,
-`ACC-P1-13`, and per-platform acceptance in `research docs/tests.md` define the
-contract. `ARCH/24` `F-63` records the source durability gap; `TODO.md` `AX-352`
-tracks implementation. Source-level sync calls do not prove host hardware honors
-flushes, so evidence states the tested tier and residual assumptions.
+`ACC-P1-13A` (the independently runnable commit primitive), `ACC-P1-13` (the
+integrated segmented-store and reserve gate), and per-platform acceptance in
+`research docs/tests.md` define the contract. `ACC-P1-13A` does not depend on
+`ACC-P1-11` or `ACC-P1-13`; integration uses the primitive after its own gate is
+available. `ARCH/24` `F-63` records the source durability gap; `TODO.md` `AX-352`
+tracks the primitive and `AX-350` the integrated store. Source-level sync calls do
+not prove host hardware honors flushes, so evidence states the tested tier and
+residual assumptions.
 
 ## DEC-058 — Publish finite storage ceilings before the segmented logs exist
 
@@ -1673,3 +1685,286 @@ project identity seam; `CMP-orch` pins it to a Run and child worktrees inherit i
 AX-379. Acceptance measures fan-out token multiplication and tests identity
 consistency, policy, privacy, staleness, idempotent resume/compaction, nested-child,
 and external-adapter boundaries before enabling memory by default.
+
+## DEC-073 — Reduced-approval posture is a bounded, run-scoped grant, not a policy override
+
+**Status:** accepted target contract; current source violates it (`ARCH/24` `F-84`, `TODO.md` `AX-370`). Recorded 2026-09-29 to close a citation gap: `REQ-GUARD-005` and `ARCH/12` required this posture, but no decision entry defined it and three citations attributed it to `DEC-040`, which governs typed operator settings rather than approval authority.
+
+**Decision.** A user-selectable reduced-approval posture MAY auto-approve only eligible `ask` decisions inside the active run's already-approved authority ceiling. It MUST NOT override explicit `deny`, catastrophic-effect gates (including broad recursive deletion and destructive Git cleanup/reset/checkout/clean), sandbox/confinement limits, managed locks, required enforcement backends, production-data or publish actions, secret export, or configured external-network boundaries. It MUST NOT be activated or widened by project, agent, plugin, prompt, or model content. Storing the preference is not activation: activation requires a local, explicit, auditable acknowledgement bound to a run with a finite expiry. The agent may offer the user a clearly labeled choice to enable reduced approval for a managed `/goal`; only the user can accept that exact run-bound scope. The active reduced-approval posture, its remaining scope, and its composition with a `full-access` profile MUST remain visible in every effect-capable surface; deactivation fences new dispatch and revokes unused tickets while in-flight effects are reconciled and never retroactively undone. Permission eligibility and run-loop progress remain separate controls: no auto-approval setting disables the durable no-progress or repeated-batch ceilings. Ordinary direct turns use routine local permission defaults and do not require reduced-approval mode.
+
+**Why.** An authority switch whose only home was a requirement paragraph invites drift in both directions — the legacy source path mapped every surviving `Ask` to `Allow`, broader than `REQ-GUARD-005` (`ARCH/24` `F-84`), while the mis-citation to `DEC-040` left the posture's real boundaries unrecorded. `ARCH/24` `F-43` shows the failure class: a remembered approval must never disable no-progress protection.
+
+**Consequences.** `REQ-GUARD-005`, `ARCH/12` §Plan/act/reduced-approval, `ARCH/22` `G-05`/`RR-04`, `ARCH/27` §Reduced-approval, and the `ARCH/18` settings contract cite this record. `AX-370` implements the eligible-class filter, acknowledgement, expiry/revocation, and UI/status acceptance; this record changes no behavior beyond replacing the incorrect citations and stating the boundaries `REQ-GUARD-005` already required.
+
+## DEC-074 — Native editor handoff is the primary editing surface
+
+**Status:** proposed target architecture; current TUI/editor bridge is not implemented.
+
+**Decision (2026-09-29).** Keep the Explorer, read-only code view, and live diff in
+HorizonCode; use the user's configured editor for normal source editing. Resolve an
+explicit HorizonCode editor profile first, then `$VISUAL`/`$EDITOR`, then a user
+configured fallback. Profiles cover common GUI and terminal editors, including VS
+Code, Cursor, Zed, JetBrains IDEs, Neovim, Helix, Vim, Emacs, nano, and micro; a
+custom argv template supports other editors. Profiles explicitly choose
+`terminal_wait`, `gui_wait`, or `gui_detach`, including editor-specific wait flags.
+Do not infer lifecycle from executable-name substring tests or pass paths through a
+shell. A waiting editor suspends HorizonCode's terminal input/rendering, then restores
+terminal modes in error-safe cleanup, queries current dimensions, invalidates layout
+caches, and rebuilds virtualized offsets. A detached editor creates a visible
+operator-edit lock for the selected path until the user clears it; this is a
+HorizonCode dispatch fence, not proof that the editor closed or an OS file lock.
+
+Before opening a path an active turn may edit, stop or pause the turn and reconcile
+unknown effects. Never release a write lease while the worker continues. Filesystem
+watch events refresh saved bytes and the diff but cannot observe unsaved buffers; the
+authoritative write path always rechecks the current raw content digest immediately
+before mutation. A stale-base patch may be merged only against its exact captured
+base and current bytes. Unique, non-overlapping hunks may be rebased deterministically
+and compare-and-swapped against the current digest; ambiguity or overlap produces an
+interactive conflict review. CRLF/LF normalization may assist alignment, but raw
+bytes remain the authorization/CAS boundary and trailing whitespace is never
+discarded globally.
+
+The left dock's default is **Turn Diff**, comparing the working files with the
+pre-turn snapshot. A separate **Total Worktree Diff** shows cumulative working-tree
+changes against the selected Git baseline, including pre-existing user edits. Neither
+view stages, commits, or rewrites Git state. Direct turns and editor handoff never
+auto-stage or auto-commit. Rewind/checkpoint storage is HorizonCode-owned and MUST
+not alter the user's `.git`, index, reflog, or commit history.
+
+**Rationale.** Native editors provide the user's key bindings, language services, and
+format-on-save behavior. The TUI remains useful for navigation, review, and safe
+handoff without becoming a second general-purpose editor. The exact editor lifecycle
+must be explicit because terminal programs and GUI daemons have different wait and
+terminal ownership semantics.
+
+**Consequences.** Replaces the v1 embedded-editor scope in `DEC-010` and updates
+`REQ-UI-005`, `ARCH/06`, `ARCH/07`, `ARCH/08`, `ARCH/10`, `ARCH/12`, and `ARCH/18`.
+Safe merge, concurrent-edit, terminal-resume, no-Git-mutation, and multi-editor
+acceptance belongs to `research docs/tests.md` and the owning TODO tasks.
+
+## DEC-075 — Everyday coding uses direct turns; managed Runs remain optional
+
+**Status:** proposed target architecture; direct turn workflow and short-task
+benchmark are not yet accepted.
+
+**Decision (2026-09-29).** The ordinary coding workflow begins from a natural-language
+prompt and can answer, inspect, edit, run a relevant check, show a diff, and accept a
+correction without first creating a goal, planning artifact, or Run approval. Chat /
+Explore, Plan, and Code are user-selectable interaction modes; they change what the
+user asks HorizonCode to do, not the durable source of task/session truth. Plan output
+is advisory until the user chooses execution. `/goal` invokes the existing managed Run
+controller for tasks that benefit from explicit decomposition, budgets, detach/recover,
+and independent verification.
+
+V1 keeps `REQ-TOOL-003` intact: tools excluded by the effective hard/user policy remain
+absent from the model request. A universal byte-identical tool schema across modes and
+cache-neutral mode switching are deferred beyond V1. Provider request-shape/cache
+behavior is route-specific; no cache hit, latency, or cost improvement is promised
+without pinned route evidence. Direct turns have explicit cancellation and bounded
+per-turn resources with visible continuation; numerical defaults are selected from
+the paired short-task evaluation, not guessed in advance. Context compaction for a
+direct Thread uses a lightweight rebuildable summary plus a recent verbatim tail and
+preserves the active request, user corrections, decisions, evidence, and open
+questions. The canonical Thread log remains the source of truth.
+
+For V1, `Code` is the default interactive mode for a new composer unless the user has
+saved another preference; `Chat/Explore`, `Plan`, and `Code` remain user-selected modes
+enforced before effects. The tool set is materialized from both the active mode and the effective
+permission policy; tools unavailable in that mode are not advertised, and policy-
+denied tools remain absent under `REQ-TOOL-003`. The mode transition may change the
+request schema and context epoch, so cache reuse is a measured route behavior rather
+than a contract. No V1 `MODE_READ_ONLY` settlement is required because mode-excluded
+tools are not offered; stale calls against a prior mode still fail typed at settlement.
+
+Everyday permission defaults should avoid repeated approval for the same unchanged,
+narrow action/resource while its exact grant is valid. The UI explains the action,
+resource, grant scope/expiry, and reason for each prompt. Only the user can enable
+reduced approval for a managed Run after an explicit review; an agent may offer the
+choice but cannot activate it. Hard denies, catastrophic effects, confinement,
+required enforcement, and external-effect gates remain in force.
+
+**Consequences.** Updates `ARCH/01`, `ARCH/02`, `ARCH/06`, `ARCH/08`, `ARCH/09`,
+`ARCH/12`, `ARCH/27`, `ARCH/20`, and `research docs/tests.md`. `REQ-TOOL-003` is not
+weakened. `/specdriven` is optional and uses the same Run controller when execution
+is selected; `/hooks` is an inspection/trust surface, not another policy engine.
+
+## DEC-076 — Track upstream provider changes and maintain native integrations
+
+**Status:** proposed target architecture; provider-source synchronization is not
+implemented.
+
+**Decision (2026-09-29).** HorizonCode targets provider-integration parity with the
+documented provider connectors in pinned OpenCode and Cline source snapshots. Maintain
+a versioned provider-source matrix that records each upstream provider, auth/setup
+method, protocol family, model mapping, source revision, applicable per-file license
+and notice, local adapter status, conformance status, and any blocker. When monitored
+upstream sources change, an automated maintenance job detects the change and prepares
+a reviewable HorizonCode update candidate: refresh the matrix, identify changed
+provider/auth/protocol behavior, selectively port only license-cleared material or
+reimplement the documented behavior, and run route-conformance fixtures. Candidate
+changes enter HorizonCode's own source tree and signed release through the normal
+review/update process. They do not download, compile, or execute upstream code at
+runtime, and they never silently alter an active route or installed binary.
+
+The product target is usable integration parity for every provider connector in the
+monitored OpenCode/Cline snapshots. A row with an auth, terms, protocol, or conformance
+blocker is visible, but means parity is still incomplete; it cannot be counted as
+supported. Resolve the blocker through an authorized HorizonCode credential route or
+keep the limitation explicit. Models.dev/catalog presence alone never means
+integrated. Do not reuse another product's OAuth client ID, auth store, cookies, or
+identity. Source updates remain subject to `ARCH/05` per-file provenance/license
+review; source compatibility does not establish legal permission or route correctness.
+
+**Rationale.** Broad provider choice is a core product requirement. A metadata-only
+catalog becomes stale as an integration surface when upstream connectors evolve.
+Monitoring and preparing native, reviewable updates makes support track upstream
+changes while preserving route reproducibility, user identity, and signed-release
+control.
+
+**Consequences.** Amends `DEC-060` from catalog-only maintenance to catalog plus
+upstream adapter maintenance, without changing its data-only runtime rule. Updates
+`REQ-PROV-002`, `REQ-PROV-010`, `REQ-PROV-011`, `REQ-SEC-017`, `ARCH/05`, `ARCH/11`,
+`ARCH/24`, `ARCH/29`, `ARCH/30`, the provider inventory, and TODO `AX-360..363`.
+Every integration still requires a source pin, license/notice record, capability
+evidence, supported auth, route-specific conformance, and honest availability state.
+
+## DEC-077 — Hooks and shell execution remain subordinate to Guard
+
+**Status:** proposed target architecture; user/project hook execution and selectable
+shell profiles are not implemented.
+
+**Decision (2026-09-29).** Provide one `/hooks` inspection and trust command over the
+existing extension/tool ownership. Hook invocations use a bounded versioned JSON
+request on stdin and typed JSON response on stdout; diagnostics use stderr. Hook
+profiles declare event, executable/argv, timeout, input/output limits, environment,
+and source digest. Project hooks require explicit trust for the exact reviewed digest;
+any material change requires renewed review. Spawned hooks receive a minimal
+allowlisted environment with inherited HorizonCode control/credential variables
+removed and read-only event/workspace descriptors where supported. Hooks can observe
+or make the effective decision stricter; they cannot grant permission, bypass Guard,
+alter audit truth, or declare verification success. Failures follow the event's
+declared fail-closed or optional-observer policy and are visible.
+
+The user can configure the shell used for `exec.run` (including PowerShell, Bash,
+POSIX shells, and Windows command shells) through typed executable/argv profiles.
+Commands continue through the same Guard, sandbox, and audit path. Pipe mode is the
+default for noninteractive commands; a PTY is available only for an explicitly
+interactive command/profile. PTY allocation changes I/O behavior, not confinement.
+Process cancellation supervises the command tree with a grace period and forced
+termination where the OS supports it; unknown descendants/effects remain explicit
+and fence conflicting follow-up work.
+
+**Rationale.** Structured hooks and shell profiles improve extensibility and fit
+different developer environments, while hook code and shell commands remain
+untrusted effects. A TTY is an I/O facility, not a security boundary.
+
+**Consequences.** Updates `ARCH/02`, `ARCH/10`, `ARCH/13`, `ARCH/21`, `ARCH/22`,
+`ARCH/27`, and `research docs/tests.md`. A hook never becomes a second permission
+engine, and a PTY never upgrades a sandbox tier.
+
+## DEC-078 — Extension commands converge on one category-aware manager
+
+**Status:** proposed target architecture; the interactive Extensions overlay is not
+implemented.
+
+**Decision (2026-09-29).** Provide one centered Extensions overlay for MCP servers,
+skills, plugins, hooks, workflows, and marketplace discovery. `/extensions` opens its
+overview; the singular/plural MCP, skill, and plugin command aliases and the
+`/hooks`, `/workflows`, and `/marketplace` commands open the same surface with the
+matching category selected. `/create-skill` deep-links to Skills → Create in that
+surface; it does not auto-activate the new skill. The shared manager retains Search,
+Installed, and Create flows where applicable. `/workflow` remains the typed authoring and Run-controller
+command family; it may deep-link into the Workflows category but does not add a second
+workflow runtime. Opening the manager is read-only navigation and cannot install,
+enable, trust, execute, or grant permission. Preserve composer/layout state and fetch
+only the selected category or bounded summaries, with cancellable loading and explicit
+empty/stale/error states. Noninteractive surfaces return typed results instead of
+pretending to open a TUI.
+
+**Rationale.** Users should find and manage related extensions through one predictable
+surface while keeping discovery, trust, activation, and execution as separate states.
+Grok Build's pinned Extensions modal and slash-command routes provide a source-backed
+navigation pattern only; HorizonCode keeps its own install transaction, guard, trust,
+and data ownership.
+
+**Consequences.** Updates `REQ-UI-020`, `ARCH/06`, `ARCH/21`, `ARCH/27`, and task
+`AX-378`. Source evidence is recorded as `SRC-029`/`U-GROK-EXTENSIONS` and
+`SRC-031`/`U-GROK-SKILLS`; no upstream code is copied.
+
+## DEC-079 — One read-only diagnostics service, named guarded repairs
+
+**Status:** proposed target architecture; no HorizonCode Doctor implementation exists.
+
+**Decision (2026-09-29).** Provide a single `CMP-diagnostics` report service surfaced
+through `hzcode doctor [--json]` and interactive `/doctor`. The default report is local,
+bounded, read-only, and offline. It combines applicable host, terminal, configuration,
+provider-capability, extension, and declared-enforcement observations without turning
+unknown/unavailable into healthy. Stable finding IDs, typed observation states, evidence
+references, and remediation use one versioned report schema and finding rules; facts
+that a surface cannot observe stay explicitly unavailable/not checked. Any startup
+warning that points to Doctor uses the same stable finding ID and rule. Provider
+connectivity remains a separate explicitly requested, cost-bearing `hzcode providers
+test` operation. The service does not own policy, credentials, config, provider clients,
+or sandbox truth.
+
+Automated repair is limited to a finite registry of first-party fixes. Planning rechecks
+the current finding and target; the user sees the exact target and change; authenticated
+confirmation uses the normal Guard/control path; application goes through the owning
+service with safe replacement/backup behavior and the durable prepare plus exactly-one
+terminal receipt required by `REQ-AUDIT-001`; inability to record the prepare blocks the
+effect. A postcondition check reports success or failure. No free-form shell repair,
+fix-all, or unattended `--yes` path. A configured confinement profile is reported as configured unless the
+declared tier has independent runtime evidence proving enforcement; diagnostics cannot
+upgrade a sandbox claim.
+
+**Rationale.** Grok Build's Doctor source provides a useful shared-facts/report pattern,
+stable findings, human/JSON output, and named fix planning. HorizonCode needs host and
+operator readiness diagnostics across CLI and TUI, but its repairs must use the existing
+Guard, authenticated control session, audit, and owned config services. The focused
+source references are Grok Build's pinned [`doctor_cmd/mod.rs`](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/src/doctor_cmd/mod.rs),
+[`diagnostics/model.rs`](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/src/diagnostics/model.rs),
+and [`diagnostics/fix.rs`](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/src/diagnostics/fix.rs)
+(`SRC-030`; full path map: [`ARCH/29` U-GROK-DOCTOR](29-SOURCE-TRACEABILITY.md#u-grok-doctor)).
+
+**Consequences.** Adds `REQ-UI-029`, `CMP-diagnostics`, the `ARCH/27` diagnostics and
+command contracts, `ACC-DIAG-01`, and proposed task `AX-392`. Pattern provenance is
+`SRC-030` / `U-GROK-DOCTOR`; no code or tests are copied.
+
+## DEC-080 — Preserve colliding skills through source-qualified invocation
+
+**Status:** proposed target architecture; skill activation and slash invocation are
+not implemented.
+
+**Decision (2026-09-29, clarified 2026-09-30).** A skill whose unqualified name is
+already owned by a built-in command remains discoverable and invocable through a
+source-qualified key. The stable grammar is
+`/<source-kind>:<source-id>:<skill-name>` (for example `/plugin:acme:login`); a
+same-source duplicate name additionally includes its canonical relative skill path
+as escaped path segments. `source-id` is a stable URL-safe identity supplied by the
+source/registry, never a display label, load order, or transient filesystem listing
+index. The built-in keeps its normal bare name. Every colliding skill is qualified;
+the registry rejects any residual key collision and reports both sources rather
+than choosing by discovery or registration order. The full qualified key and source
+are shown in completion/help. `/skill` and `/skills` continue to open the Skills
+manager and do not invoke an arbitrary skill. Skill invocation is an explicit
+separate route and rechecks source identity, canonical path, and content digest
+before loading the body.
+
+This rule is specific to dynamically discovered skill invocation. User-authored
+command descriptors retain the collision-rejection rule in `ARCH/27`; they do not
+gain a shadowing or qualification escape hatch. Skill content remains untrusted and
+cannot grant authority.
+
+**Rationale.** Rejecting an ambiguous bare name should not make an otherwise valid
+skill inaccessible. Source kind alone is insufficient when two plugins share a skill
+name, so the canonical key includes both source kind and stable source identity, with
+path disambiguation only for duplicates within that same source. This preserves
+built-in behavior, keeps each skill addressable, and makes provenance visible at the
+invocation point.
+Grok Build's pinned skill guide documents built-in precedence and source-qualified
+skill names; HorizonCode specifies its own deterministic collision handling and
+digest check (`SRC-031` / `U-GROK-SKILLS`).
+
+**Consequences.** Adds `REQ-SKILL-005`; updates `ARCH/21`, `ARCH/27`, `ACC-SKILL-01`,
+and proposed tasks `AX-373`/`AX-378`. No code is copied.

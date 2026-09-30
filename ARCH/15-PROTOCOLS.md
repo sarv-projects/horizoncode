@@ -23,7 +23,7 @@ Let external editors and peer agents drive HorizonCode, let HorizonCode drive pe
 
 **`CMP-acp` — own.**
 - ACP **server** over stdio using the negotiated wire version: implemented lifecycle methods only, streamed session updates, permission requests to the client via canonical `session/request_permission` (`DEC-023`, `REQ-PROTO-002`), and optional client-side fs/terminal calls only when advertised and available.
-- ACP **client** mode: HorizonCode dials a peer ACP agent as a subordinate and maps its updates onto the control plane. This is the transport behind `CMP-orch`'s ACP isolation mode.
+- ACP **client** mode: HorizonCode dials a peer ACP agent as a subordinate and maps its updates onto the control plane. This is the transport behind `CMP-orch`'s ACP isolation mode (`DEC-019`).
 - Capability negotiation: advertise only implemented methods. ACP v1 permission requests are baseline; a method error, disconnect, malformed reply, or timeout is reject-by-default, never auto-allow.
 
 **`CMP-mcp` — own.**
@@ -261,9 +261,9 @@ grammar.
 
 ## Open questions
 
-1. **Multiple concurrent ACP clients.** Whether one process serves several editors simultaneously or enforces a single controlling connection per session.
-2. **MCP spec-revision strategy.** How far the modern stateless revision is preferred over the legacy handshake, and the exact force-legacy escape hatch semantics.
-3. **Headless exit-code table.** The precise numeric mapping and whether declined and guarded-deny share a code.
-4. **ACP client authentication.** How HorizonCode authenticates to a peer ACP agent (none, bearer, or negotiated) is not yet specified.
-5. **Edge SDK generation.** Whether the TS client is generated from pinned protocol schemas or hand-maintained, and how drift is verified.
-6. **MCP resource/prompt injection budget.** How mirrored resources and prompts are bounded before entering `CMP-context`.
+1. **ACP client concurrency — open, release-gated.** Owner: `CMP-acp` / `CMP-control-api`. `ACC-P1-05` already forbids silent dual ownership; before multi-client service is enabled, decide whether there is one controller lease with read-only observers or multiple explicitly serialized controllers. Acceptance must prove ownership, answer-origin binding, disconnect behavior, and control-lane responsiveness. Until decided, permit only one controlling connection per Thread and reject competing mutation/control claims.
+2. **MCP protocol revision — resolved in this LLD.** Owner: `CMP-mcp`. Prefer the modern stateless revision when supported; use legacy only as a compatibility fallback or explicit `force_legacy`. Test both handshakes, detection caching, reconnect, and incompatible-server reporting before advertising support.
+3. **Headless exit-code table — open, release-gated.** Owner: `CMP-headless`. Numeric values and whether guarded-deny shares a code must match the actual implementation and `--help`; do not invent values in this target document. `ACC-P1-08` is the acceptance gate and must capture the implemented table.
+4. **ACP client authentication — open, release-gated.** Owner: `CMP-acp` with `CMP-secrets` and `CMP-guard`. Before remote peer connections ship, decide and document peer identity/authentication, credential origin, rotation, and authorization scope. Until then, remote connections without an authenticated, authorized peer identity are unavailable; local stdio trust does not imply remote trust. Acceptance must cover wrong identity, missing/expired credentials, and refusal before session creation.
+5. **Edge SDK generation and drift — open, release-gated.** Owner: Edge SDK with `CMP-acp`. Decide generated versus hand-maintained bindings against a pinned released schema. Whichever path is chosen must have a reproducible build/schema-diff check and prove the SDK cannot introduce protocol or control-plane behavior absent from the Rust service.
+6. **MCP resource/prompt injection budget — open, release-gated.** Owner: `CMP-mcp` for acquisition bounds and `CMP-context` for admission/rendering. Specify per-resource bytes, page/count limits, aggregate token budget, provenance/framing, and behavior on overflow. Until those bounds are configured and tested, do not automatically inject discovered resources/prompts; explicit selection still remains subject to size limits. Acceptance must prove over-limit inputs are omitted atomically with a visible non-authorizing marker and cannot truncate into trusted-looking instructions.

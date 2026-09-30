@@ -339,6 +339,7 @@ impl GuardPermissionGate {
                 }
             ),
             catastrophic: catastrophic(canonical, &named).is_some(),
+            reduced_approval_eligible: self.guard.ask_is_eligible(guard_request),
         };
         let reply = self.resolver.resolve(&approval).await;
         // One notification, on the single resolution point, so exactly one

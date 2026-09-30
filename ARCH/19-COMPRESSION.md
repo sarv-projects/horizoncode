@@ -26,7 +26,7 @@ Output recall and hook coverage are features described by upstream documentation
 | **Prompt caching** (stable prefix, explicit breakpoint) | Repeated stable-prefix processing; billing/latency only where provider documents the effect | Provider adapter | No (exact reuse) | Implement only for documented route capabilities; comparative savings are unmeasured here |
 | **Ranked repo map + just-in-time reads** | What is loaded at all | Client | No (selection) | **Adopt** — avoid loading, don't compress |
 | **Deterministic observation formatters + recall** | Tool observations | Client | Yes, recoverable | **Adopt** (eval-gated per family) |
-| **Keep-tail + structured-summary compaction + tool-result clearing** | Old turns | Client | Yes | **Adopt** as engine core |
+| **Keep-tail + structured-summary compaction + projection-only tool-result clearing** | Old turns | Client | Yes | **Adopt** as engine core, with the exact-result retention contract below |
 | **Extractive retrieved-context compression** | Retrieved docs | Client | No (selection) | Prototype |
 | **Small-encoder prompt compression** (perplexity/classifier token dropping) | Prompt tokens | Client, CPU-friendly | Yes (ungrammatical) | Prototype for **prose only** — risky on code |
 | **Code-aware span pruning** | Candidate redundant code spans | Client | Yes | Untested hypothesis; no comparative evidence here establishes it as promising or safe |
@@ -44,9 +44,16 @@ semantics, not cross-provider comparative savings. No strategy is called “best
 paired task evaluation measures verified success, cost basis, latency, retries, output
 recall, and local resource use.
 
+Compaction trigger comparisons are recorded separately in
+[`compaction-upstream-comparison.md`](../research%20docs/compaction-upstream-comparison.md)
+and source-pinned in [`ARCH/29` U-CTX-COMPACTION](29-SOURCE-TRACEABILITY.md#u-ctx-compaction).
+Grok Build's 85%, Codex's 90%-clamped per-model token threshold, and OpenCode's
+buffer-based fit check are different policies; HorizonCode's 50% default is a product
+decision (`DEC-006`), not an upstream consensus or measured optimum.
+
 ## 3. Extractive vs abstractive (code vs prose)
 
-- **Extractive** (select spans verbatim) preserves identifiers, hashes, versions, exit codes, and line numbers. Whether it reduces cost or preserves task quality is an empirical question. **For code, extraction and grouping are safer than rewording; neither is automatically safe** — one omitted condition or log line can change a diagnosis.
+- **Extractive** (select spans verbatim) preserves identifiers, hashes, versions, exit codes, and line numbers (`DEC-015`). Whether it reduces cost or preserves task quality is an empirical question. **For code, extraction and grouping are safer than rewording; neither is automatically safe** — one omitted condition or log line can change a diagnosis.
 - **Abstractive** (generate a summary) is shorter and more readable for **prose** (issues, plans, discussions) but hallucinates: it merges versions, invents paths, and drops negations. Use it only for prose, **constrained by a schema** (decisions / open bugs with exact errors / file refs / next step / discarded-and-where-to-recover).
 - **Hierarchical**: parent summaries of child summaries, retrieved at the right altitude. Failure mode is error propagation — keep leaf recovery (full log in the store, original diff in VCS) and version summaries.
 
@@ -54,8 +61,8 @@ recall, and local resource use.
 
 1. **Provider-adapter-aware stable prefixes.** Keep HorizonCode's internal context projection deterministic, but let each adapter render the ordering and supported cache controls required by its wire API. Pin the exact serialized static prefix per context epoch; never claim a cache hit without provider usage evidence.
 2. **Ranked repo map + JIT file access.** Do not load what you can select (`REQ-CTX-001`).
-3. **Native deterministic observation formatters + full-output recall store**, per command family, **eval-gated** (`REQ-CTX-006`). This is the adopted "RTK" pattern.
-4. **Keep-tail + structured-summary compaction, with tool-result clearing as the lightest first step** (`REQ-CTX-002`, `REQ-CTX-004`).
+3. **Native deterministic observation formatters + full-output recall store**, per command family, **eval-gated** (`REQ-CTX-006`, `DEC-013`). This is the adopted "RTK" pattern.
+4. **Keep-tail + structured-summary compaction**, automatically triggered at the configured fraction of the active route's resolved model window (50% default). “Tool-result clearing” means removing an old completed tool observation only from the model-context projection after the exact bytes are committed, digest-verified, and pinned in `CMP-artifact`; the projection retains a bounded verbatim preview and immutable recovery reference. Canonical Thread events and artifact bytes are never cleared by compaction. Missing/expired reads are typed unavailable, not empty success. This step is not allowed for open/unsettled results or evidence under an active pin (`REQ-CTX-002`, `REQ-CTX-004`, `REQ-CTX-006`, `ARCH/09`, `ARCH/10`, `ARCH/28`). The output/buffer reserve remains a separate hard fit guard. Manual compaction is independent of the automatic trigger setting; setting automatic compaction off disables every automatic compaction/recovery path.
 5. **Prototypes behind a flag**, enabled only after a code-quality eval passes: small-encoder prompt compression for prose; code-aware span pruning; extractive retrieved-context compression; hierarchical trajectory notes + subagent distillation.
 6. **Avoid:** depending on the external filter binary; any server-plane KV/gist technique; abstractive summarization of diffs/logs/build output as a default; any "compress harder" knob without a paired task-success gate.
 
@@ -68,7 +75,7 @@ recall, and local resource use.
 
 ## 6. Requirements mapping
 
-`REQ-CTX-002`, `REQ-CTX-003`, `REQ-CTX-004`, `REQ-CTX-006`, `REQ-CTX-007`, `REQ-CTX-008`, `REQ-CTX-009` (see `ARCH/02`).
+`REQ-CTX-002`, `REQ-CTX-003`, `REQ-CTX-004`, `REQ-CTX-006`, `REQ-CTX-007`, `REQ-CTX-008`, `REQ-CTX-009`, `REQ-CTX-011`, `REQ-CTX-013` (see `ARCH/02`).
 
 ## 7. Open questions
 

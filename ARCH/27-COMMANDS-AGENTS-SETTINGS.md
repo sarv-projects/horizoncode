@@ -37,7 +37,7 @@ own syntax or state.
 | Slash command parse, validation, help, completion, dispatch | `CMP-command` (small facade over typed services) | Policy decisions, business state, direct provider/tool calls |
 | `@` parse and reference resolution | `CMP-reference` / `CMP-context` | Child launch, permission grant, implicit side effects |
 | Agent profile source, provenance, schema and migration | `CMP-config` + `CMP-agent-directory` | ACP wire parsing, child task completion, provider billing truth |
-| Agent lookup/install/launch | `CMP-agent-directory` + `CMP-adapter` | Trust decision, policy bypass, task verification |
+| Agent lookup/install/launch | `CMP-agent-directory` + `CMP-execution-host` | Trust decision, policy bypass, task verification |
 | Agent task scheduling, parent/child budgets, stop/recovery | `CMP-orch` / `CMP-runner` | UI session lifecycle, provider-specific wire details |
 | Run-scoped agent messages and delivery receipts | `CMP-orch` (canonical Run events), `CMP-session` (recipient inbox) | A separate mailbox database, task graph, permission engine, or implicit agent wake-up |
 | Provider/model capability and observed usage | `CMP-provider` | Claiming usage hidden inside an opaque peer |
@@ -127,6 +127,11 @@ receipts; current local scope is same-host control by the configured OS user.
 
 ### Target slash-command registry
 
+Ordinary coding does not require a slash command: a natural-language composer prompt
+starts a direct turn in the selected mode. The commands below expose optional controls
+and managed work. They must not make goal preparation or Run review a precondition for
+normal coding (`DEC-075`).
+
 Every command is declared in `CommandDescriptor`:
 
 ```text
@@ -145,14 +150,64 @@ generated from the same validated registry. Each extension command is hidden unt
 the extension is enabled and contributes only a schema-validated descriptor; command
 text cannot inject shell text or bypass the owning service.
 
+This rejection rule continues to apply to user-authored command descriptors. Dynamic
+skill invocation has the narrower `DEC-080` behavior: a colliding skill may remain
+available under `/<source-kind>:<source-id>:<skill-name>` (for example
+`/plugin:acme:login`), while a built-in keeps its bare command. `/skill`/`/skills` opens the Skills manager; `/create-skill` deep-links
+to that manager's Create view. Neither manager command dispatches arbitrary skill
+content.
+
 ### Native CLI maintenance and provider commands
 
 The CLI and TUI call the same typed services. These commands are separate from
 in-session slash commands; package-manager-owned installations remain under their
 manager's lifecycle.
 
+### Diagnostics report and repair boundary
+
+`CMP-diagnostics` is a read-only observer and deterministic finding builder. Its report
+is a versioned projection, not execution truth, permission authority, or task evidence:
+
+```text
+DiagnosticReport {
+  schema_version,
+  captured_at,
+  scope,
+  coverage: COMPLETE | PARTIAL,
+  observations: [{ id, state, sanitized_value?, source, evidence_ref? }],
+  findings: [{ id, severity, disposition, message, evidence_refs[], remediation? }]
+}
+
+ObservationState = AVAILABLE | UNKNOWN | UNSUPPORTED | NOT_CHECKED |
+                   UNAVAILABLE | PERMISSION_DENIED | TIMED_OUT | ERROR
+FindingDisposition = ISSUE | RECOMMENDATION | INFORMATION
+```
+
+CLI and TUI renderers consume the same schema and finding rules. Surface-specific facts
+remain explicit (for example, live TUI state is `NOT_CHECKED` in headless mode), and
+coverage describes completion of the report's declared probe set, not overall product
+readiness; partial coverage cannot be shown as a clean bill of health. A startup warning
+that links to Doctor reuses its stable finding ID and rule. Probe work has per-probe
+deadlines and cancellation; report collection cannot mutate, resolve/open credential
+values, or make provider/network requests. A provider reachability check remains the
+separate, confirmed `providers test` action. Findings are deterministic rules over
+typed observations; no model call decides severity, availability, or a fix.
+
+Each repair ID is statically registered with its owning service and planner. The planner
+must recheck applicability and return a plan bound to the report/fact digest, exact
+target identity and current content digest, proposed change, and postcondition. Before
+apply, the operator reviews the exact plan and confirms through the authenticated
+control/Guard path; then `REQ-AUDIT-001` prepare is durably committed. The owning service
+performs the compare-and-swap/atomic update and backup as applicable, writes exactly
+one terminal audit receipt, and diagnostics re-collects the relevant observation to
+verify the postcondition. A changed target, expired/stale report, failed authorization,
+or unavailable audit prevents the write. The repair registry cannot execute an
+arbitrary model-provided command. A verified repair outcome is not independent task
+verification and cannot mark a Run task passed.
+
 | CLI command | Behavior |
 |---|---|
+| `hzcode doctor [--json]` | Collect a bounded, local-only diagnostics report; JSON is versioned. No provider call/network and no mutation. `hzcode doctor fix [<id>]` lists the finite applicable repair set or requests a plan for one named repair; applying requires an interactive authenticated Guard confirmation after exact preview. No `--yes` or fix-all. |
 | `hzcode --version` | Show version/build target and known install method, channel, and manager; no network. |
 | `hzcode providers list` | List the full versioned OpenCode/HorizonCode provider inventory with catalog source/freshness, auth method, adapter status, and honest availability. |
 | `hzcode providers show <id>` | Show provenance, documented auth/setup, registration/terms state, supported model protocols/capabilities, unavailable reason, and evidence references; never reveal secret values. |
@@ -192,7 +247,9 @@ normal guard/confirmation path. Read commands do not acquire write locks.
 | `/theme [list|show <id>|set <id>]` | Preview semantic color tokens against terminal capabilities and accessibility modes; allow custom accent/palette through `/settings appearance`. | Local preference; theme never carries task/security meaning by color alone |
 | `/tokens [tree|run|task|agent|provider] [id]` | Shortcut into the token detail view, showing input/output/cache/reasoning by provider/model, observed vs estimated amounts, pricing basis, quota observations, and missing/overlapping data. | Read-only local usage ledger |
 | `/subagents [list|show|assign|limits]` | Open the agent panel for built-in/local/ACP profiles, per-role model selection, capability/trust, concurrency, quota warnings/hard caps, and task-to-worker assignment. `assign` always targets a ready task and shows scope/budget before dispatch. | Read-only until an explicit assignment/setting action; provider limits unknown to an adapter remain `unknown` |
-| `/workflow [list|show|create|run|pause|resume|stop]` | Browse saved workflow templates or open the Workflow Builder. The builder creates a versioned, validated task graph; preview its inputs, permissions, budgets, dependencies, and verification plan before saving/running. | Create/save is a local guarded write; run uses normal Run approval and task controller; a workflow cannot bypass the controller |
+| `/workflow [list|show|create|run|pause|resume|stop]` | Browse saved workflow templates or open the Workflow Builder. The builder creates a versioned, validated task graph; preview its inputs, permissions, budgets, dependencies, and verification plan before saving/running (`DEC-068`). | Create/save is a local guarded write; run uses normal Run approval and task controller; a workflow cannot bypass the controller |
+| `/extensions [mcp|skills|plugins|hooks|workflows|marketplace]` | Open the shared Extensions overlay, defaulting to its overview when no category is supplied. | Navigation only; no trust, enablement, execution, or permission effect |
+| `/doctor [fix [<id>]]` | Open the diagnostics report, or list/plan a named registered repair. Human-readable findings and the CLI JSON projection come from the same local report; TUI remediation shows the exact current target/change and requires authenticated Guard confirmation. | Report is bounded/read-only/offline. Repair is a separate guarded, audited effect; no arbitrary command, fix-all, or unattended apply |
 | `/help [topic]` | Show help for commands, settings, references, keys, or a workflow. | Read only |
 | `/commands [filter]` | Search available command descriptors with source/availability. | Read only |
 | `/search [query]` | Search committed displayable messages and session-title history globally or in the current session; filter by project/date/role/archive state, inspect index coverage, and open a verified hit. `/search rebuild` runs bounded local index maintenance. | Local read or bounded maintenance; session access checks apply; no model/network; content indexing preferences are user-scoped |
@@ -218,14 +275,17 @@ normal guard/confirmation path. Read commands do not acquire write locks.
 | `/attach <run-id> [--after-seq <n>]` | Attach this UI client to a live local supervisor, return a snapshot at a stated aggregate sequence, then replay ordered events after that cursor. It never starts or resumes work. A gap forces a fresh snapshot. | Versioned `CMP-control-api`; authenticated local server (`ARCH/31`); read/subscribe only |
 | `/tasks [filter]` | Show task DAG, readiness, blockers, owners, attempts, dependencies, and evidence state. | Read only |
 | `/goal [show] [run-id]` | Inspect the original request, intended outcome, confirmed constraints, success conditions, unresolved assumptions, and current goal version. | Read only |
+| `/explore <request>` | Start an explicitly isolated exploratory coding attempt in a HorizonCode-owned worktree, then show its diff and let the user apply, keep, or discard it. | Uses ordinary Guard/Sandbox/Audit and bounded turn/run ownership; does not modify the primary worktree until explicit apply; external effects remain possible and separately governed |
 | `/goal set <request>` | Persist the exact original request as a new inert run/goal draft and select its pointer in this session. Show only supplied request text, pinned workspace/base, and fields still awaiting preparation; do not invent success conditions. | Pure durable draft write; no model, repository scan/tool, or peer work starts |
 | `/goal prepare <run-id>` | Explicitly request a bounded planning attempt: revision-pinned read-only repository discovery, proposed intent/specification, task DAG, verification plan, and review bundle. Show planner model/agent, read scope, cost/time/token ceiling, and no-write/no-peer boundary first. | Reserves the separate planning budget; may run planner/read-only discovery only. Unknown usage is reconciled; no coding worker, mutation, or external side effect starts |
 | `/goal clarify <run-id> <answer>` | Answer a persisted blocking clarification. Replaces no confirmed requirement silently; creates a new input/preparation proposal and invalidates older preview/approval receipts. | Durable user input; no inference until a new `/goal prepare` is explicitly requested |
 | `/goal start <run-id>` | If a nonterminal start intent exists, show its durable `starting`/`reconciling` status and do not open another review. Otherwise open the final review card for the exact spec/task-graph/plan, base commit, policy snapshot, route, permission boundary, and total/verification/recovery budgets. This persists an expiring `GoalApprovalChallenge` before rendering; only a confirmation in the same authenticated operator control session/connection can accept it. | Explicit digest-bound confirmation; stale/expired/replaced challenge or failed preflight leaves work undispatched. CLI: `hzcode run start <run-id>` opens the review in an authenticated operator control session; the user confirms the displayed challenge and bundle digest there. Same-delivery/same-payload retry is idempotent; changed payload conflicts. Digest flags or `--confirm` from a worker shell are rejected. Activation is committed after durable idempotent reservations; dispatch comes from an idempotent outbox and uncertain launches are reconciled by attempt ID. A control-plane timeout queries intent status before any retry. |
+| `/goal yolo <run-id>` | Review and explicitly enable eligible reduced approval for one bounded managed Run, showing exact eligible action classes, excluded harmful/catastrophic actions, scope, expiry, confinement level, and revocation behavior. | User-only authenticated confirmation; never activated by the agent, project config, or prompt. Hard denies, destructive Git, broad deletion, external effects, required confinement, and catastrophic gates remain manual/denied under `DEC-073` |
 | `/goal revise <run-id>` | Start a versioned intent/specification revision; show affected tasks/evidence and require confirmation when user-visible behavior changes. | Proposal only until accepted; accepted revisions invalidate affected evidence |
 | `/goal pause <run-id>` / `/goal resume <run-id>` | Aliases for the same controller-owned transitions as `/pause` and `/resume`; they neither create a second lifecycle nor issue a new prompt. | Priority control lane; durable intent/fence and effect reconciliation |
 | `/goal clear <run-id>` | Remove this goal from the current session's active-goal pointer only for a draft with no attempt, terminal run, or explicitly paused/blocked run. It never changes `RunGoal`, run/task lifecycle, history, or budget; a paused run remains resumable by ID. A running run must first be paused, cancelled, or stopped. | Explicit confirmation; writes a pointer-clear event, never deletes run history or resets budget |
 | `/spec [show|history|diff] <run-id>` | Inspect the immutable specification versions and their evidence/decision links. | Read only |
+| `/specdriven [<request>]` | Optional Kiro-style workflow that drafts requirements, design, and tasks for a substantial request, then offers the existing managed Run preparation/review path. | Does not change files or start execution unless the user chooses; does not create a second task store or make specs mandatory for direct turns |
 | `/plan [show]` | Show the active approved spec/task plan; planning/replanning itself is initiated by normal user task or explicit revise flow. | Does not approve a spec |
 | `/approve <request-id>` / `/deny <request-id>` | Resolve one pending approval after displaying exact requester, action, resource, scope, expiry, and policy. | Bound one-shot decision; audit required |
 | `/verify [task-id|run-id]` | Schedule the defined verification suite and show exact revision/commands as results arrive. | Resource reservation; no self-attestation |
@@ -233,6 +293,7 @@ normal guard/confirmation path. Read commands do not acquire write locks.
 | `/diff [run-id|worktree-id]` | Show scoped diff and untracked/staged state. | Read only |
 | `/checkpoint [create|list]` | Create/list named recoverable checkpoints with repo and task metadata. | Create writes state/Git ref; guarded and auditable |
 | `/checkpoint restore <id>` | Preview code and task-state rewind, affected evidence, and external effects. | Explicit confirmation; never rewinds external systems |
+| `/rewind [turn|checkpoint-id]` | Preview restoration to a prior turn boundary or existing checkpoint and show files/evidence that would be superseded. Applies only through the canonical checkpoint/revert owner. | Explicit user confirmation; compares current files to captured digests, preserves concurrent edits, and never runs `git reset`, stages, commits, or mutates the index/reflog |
 | `/resume <run-id>` | Explicitly authorize the controller to reconcile persisted state and resume only eligible work. A no-progress pause requires an untried bounded strategy or new user evidence/steering; consumed retry and budget counters never reset. | Controller recovery protocol; not “repeat last prompt” |
 | `/pause <run-id>` | Fence all new dispatch, request cancellation of in-flight work, reconcile uncertain effects, and preserve a resumable run. | Priority control lane; explicit `/resume` required; pause state survives restart |
 | `/cancel run <id>`, `/cancel task <id>`, `/cancel attempt <id>` | Use an explicit target kind; validate its ownership and require matching run/task/attempt cancel scope. Run cancellation fences all new claims and, if a goal start is not committed, races it against `GoalActivated`; task cancellation fences only that task and leaves dependents blocked; attempt cancellation affects only that attempt and allows retry only when policy permits. | Priority cooperative action; show the typed target and `requested`, `reconciling`, `cancelled`, or `already-terminal`; do not cascade task cancellation to descendants or label it terminal before in-flight work/effects reconcile. `/stop-now` is the separate hard-stop action. |
@@ -240,10 +301,16 @@ normal guard/confirmation path. Read commands do not acquire write locks.
 | `/usage [tree|run|task|agent|provider] [id]` | Show observed/estimated/included/unknown tokens, money, quota, time, and warning/cap state. | Read only |
 | `/insights [--days N]` | Inspect local aggregate metrics and provenance. | Read only |
 | `/context [show|sources]` | Inspect effective context, token estimate/usage, source provenance, compaction epoch, and retrieval pointers. | Read only; does not reveal secrets |
+| `/mode [chat|explore|plan|code]` | Select the direct-turn interaction mode. Chat/Explore is read-only, Plan proposes without workspace writes, and Code permits guarded edits/checks. | User choice; ordinary turns remain prompt-led. Effective policy still filters unavailable tools under `REQ-TOOL-003`; cache behavior is route-specific |
+| `/hooks [list|show <id>|review|trust <id>|disable <id>]` | Open the Hooks category in the shared Extensions overlay; arguments select inspection or an explicit lifecycle action. Inspect hook source/digest, event, command/argv, trust, environment, limits, and recent outcome. Review/trust applies only to the exact source digest. | Opening is navigation only. Trust is a separate explicit user action; hooks cannot grant authority, loosen policy, or certify verification |
+| `/shell [list|show|select <profile>]` | Inspect or select a configured command shell profile such as PowerShell, Bash, zsh, fish, or cmd, including executable/argv and interactive pipe/PTY behavior. | Selection is a user preference; all commands retain the same guard, sandbox, audit, and process limits |
 | `/compact [preview]` | Request a budgeted compaction preview, then apply only under current policy. Canonical intent/spec/task/effect/evidence records remain outside the summary. | Resource-consuming; loss report required |
-| `/mcp [search|installed|create|show <id>|install <id>|connect <id>|enable|disable <id>]` | Open the centered extension-manager overlay on Search, Installed, or Create. Search uses the official MCP Registry as data-only metadata plus a small versioned HorizonCode-curated catalog. Install stages a selected source/version, reviews package/license/transport/config, gets secrets from `CMP-secrets`, probes `initialize` and discovered capabilities, then requests per-tool policy before enabling. | Registry listing is not trust. Install, credential entry, probe, and enable are separate observable states; no tools execute before explicit policy approval |
-| `/skills [list|show <id>|enable|disable <id>]` | Inspect pinned skill metadata and activation state; body loaded on activation only. | Skill content is untrusted; never grants authority |
-| `/plugins [list|show <id>|enable|disable <id>]` | Inspect plugin source/hash/license/surfaces and separately enable declared surfaces. | Install and enable are distinct guarded effects |
+| `/mcp [search|installed|create|show <id>|install <id>|connect <id>|enable|disable <id>]` (alias `/mcps`) | Open the MCP Servers category in the shared Extensions overlay. Search uses the official MCP Registry as data-only metadata plus a small versioned HorizonCode-curated catalog. Install stages a selected source/version, reviews package/license/transport/config, gets secrets from `CMP-secrets`, probes `initialize` and discovered capabilities, then requests per-tool policy before enabling. | Opening is navigation only. Registry listing is not trust. Install, credential entry, probe, and enable are separate observable states; no tools execute before explicit policy approval |
+| `/skill [list|show <id>|enable|disable <id>|create]` (alias `/skills`) | Open the Skills category in the shared Extensions overlay; inspect pinned skill metadata and activation state, with body loaded on explicit invocation only. `create` opens Skills → Create in the same surface. A skill invocation uses its own explicit bare or source-qualified route (for example `/plugin:acme:login`), never `/skill <name>`. | Opening is navigation only; create is a guarded local draft/write flow that does not enable the skill; invocation rechecks source identity/path/digest; skill content is untrusted and never grants authority |
+| `/create-skill` | Deep-link to Skills → Create in the shared Extensions overlay and start the guided skill draft flow. | No write until the exact file manifest/content is previewed and confirmed; creation does not trust or enable the skill |
+| `/plugin [list|show <id>|enable|disable <id>]` (alias `/plugins`) | Open the Plugins category in the shared Extensions overlay; inspect plugin source/hash/license/surfaces and separately enable declared surfaces. | Opening is navigation only; install and enable are distinct guarded effects |
+| `/marketplace` | Open Marketplace in the shared Extensions overlay. | Discovery only; a listing is neither installation nor trust |
+| `/workflows` | Open the Workflows category in the shared Extensions overlay. | Browsing only; authoring/saving and Run-controller execution use `/workflow` boundaries |
 | `/memory [global|project|agent <profile-id>|candidates|search <query>|show <id>|approve <id>|reject <id>|supersede <id> <candidate-id>|forget <id>|export [scope]|purge [scope]]` | Open the memory inspector or perform an explicit, scope-bound lifecycle action. Explicit saves create candidates; auto-extraction is opt-in; acceptance always requires user review. Agent-profile memory is disabled by default and shows exact context-injection eligibility and policy. `supersede` requires the current accepted revision and a reviewed candidate; export creates an explicit local artifact; purge writes a tombstone before removing searchable content and reports pending audit/outbox reconciliation. | Local scoped storage; mutations are audited and idempotent by request ID; user/project/profile clear and export are explicit actions |
 | `/permissions [show]` | Explain effective permission rules and source/locks; editable policy opens `/settings permissions`. | No one-shot grant by merely viewing |
 | `/panels` / `/focus` / `/dock` | Open panel picker, focus workspace, or change layout. | Local UI preference only |
@@ -565,7 +632,7 @@ the selected preference and any effective restriction that overrides it.
 
 ### Reduced-approval / “bypass all” behavior
 
-The phrase “bypass all” is not an authorization primitive. UI labels the supported
+The phrase “bypass all” is not an authorization primitive (`DEC-073`). UI labels the supported
 option **Auto-approve eligible asks** and may show the user's alias “bypass approvals”;
 it never claims “all”. Setting it as a preference does not activate it on an existing
 or new run. Before a run starts, show the affected ask classes, unchanged hard-deny

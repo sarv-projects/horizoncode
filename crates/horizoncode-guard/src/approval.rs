@@ -47,6 +47,10 @@ pub struct ApprovalRequest {
     pub prompt: String,
     /// Whether the action is catastrophic (resolvers must never auto-allow).
     pub catastrophic: bool,
+    /// Whether this `ask` is inside the eligible classes reduced approval may
+    /// resolve (`DEC-073`). A reduced-approval resolver MUST refuse an
+    /// ineligible ask; ordinary interactive resolvers ignore this flag.
+    pub reduced_approval_eligible: bool,
 }
 
 /// The user's reply to an approval request.
@@ -81,18 +85,22 @@ impl ApprovalResolver for DenyAllResolver {
     }
 }
 
-/// A resolver that approves every non-catastrophic request once.
+/// A resolver for the reduced-approval posture: it approves one eligible,
+/// non-catastrophic request and refuses anything outside the eligible classes.
 ///
-/// This is the explicit `--yolo` posture: `ask` collapses to allow, while a
-/// `deny` decision and the catastrophic gate are applied by Guard and never
-/// reach the resolver.
+/// This is the explicit `--yolo` posture's resolver. Guard applies a `deny`
+/// decision and the catastrophic gate before asking, and it auto-resolves
+/// *eligible* asks itself, so this resolver normally sees only ineligible asks
+/// (network egress, MCP/extension installs, external-directory reaches,
+/// unmatched actions). Those are refused rather than auto-approved
+/// (`DEC-073`, `REQ-GUARD-005`).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AutoApproveResolver;
 
 #[async_trait]
 impl ApprovalResolver for AutoApproveResolver {
     async fn resolve(&self, request: &ApprovalRequest) -> ApprovalReply {
-        if request.catastrophic {
+        if request.catastrophic || !request.reduced_approval_eligible {
             ApprovalReply::Reject
         } else {
             ApprovalReply::Once

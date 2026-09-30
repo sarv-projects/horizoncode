@@ -325,7 +325,7 @@ moved Thread remains reconstructable and its decisions reproducible
   repair flow may produce a separately preserved recovery artifact. No ordinary
   surface repairs evidence as a side effect.
 
-**Source status at Rust baseline `23d4ce8` (HEAD `cbba87b`, 2026-09-28).** The
+**Source status at Rust baseline `23d4ce8` (source-map commit `cbba87b`, 2026-09-28).** The
 read-only inspection defects recorded on 2026-09-27 were addressed by the AX-346
 integrity slice: `AuditLog::open_read_only` does not repair; writable open refuses a
 torn tail; malformed/unreadable heads and segment-enumeration errors are typed; and
