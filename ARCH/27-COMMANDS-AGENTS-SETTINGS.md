@@ -30,6 +30,18 @@ same `CommandService`, `AgentDirectory`, settings API, and `RunController` MUST 
 TUI, headless, and ACP surfaces. UI and protocol adapters do not each invent their
 own syntax or state.
 
+Interactive buttons, command-palette entries, slash commands, and shortcuts are
+presentation/entry adapters over the same stable action identity and owning typed
+service. They MUST NOT create parallel state transitions or different permission
+semantics for the same intent. The action catalog supplies labels, help, command and
+shortcut metadata, availability, and unavailable reasons to all interactive entry
+points. A status/header click invokes the same action as its command or shortcut.
+Headless and ACP surfaces expose their own typed invocation/result contracts; they do
+not pretend to render TUI controls. iCode's pinned command catalog, composer
+suggestions, input bar, header, and status bar are pattern evidence at
+`SRC-035`/`U-ICODE-TUI`; HorizonCode uses its own typed registry and action/controller
+contract.
+
 ## Ownership and module boundaries
 
 | Capability | Owner | Must not own |
@@ -131,6 +143,16 @@ Ordinary coding does not require a slash command: a natural-language composer pr
 starts a direct turn in the selected mode. The commands below expose optional controls
 and managed work. They must not make goal preparation or Run review a precondition for
 normal coding (`DEC-075`).
+
+The interactive command palette, slash suggestions/help, visible buttons, and bound
+shortcuts resolve through this catalog to the same action/controller path. Composer
+suggestions remain inline and draft-preserving until explicit commit; argument
+completion may be a second stage. Command/help metadata is discoverable without
+memorizing a subsystem-specific route. The shared action catalog does not collapse
+distinct namespaces: `/...`, `hzcode ...`, `@...`, and ACP methods retain their
+surface-specific grammars and authorization contracts. If a prompt-history picker is
+provided, selecting an entry fills the draft only; it never submits without a separate
+user action.
 
 Every command is declared in `CommandDescriptor`:
 
@@ -248,7 +270,7 @@ normal guard/confirmation path. Read commands do not acquire write locks.
 | `/tokens [tree|run|task|agent|provider] [id]` | Shortcut into the token detail view, showing input/output/cache/reasoning by provider/model, observed vs estimated amounts, pricing basis, quota observations, and missing/overlapping data. | Read-only local usage ledger |
 | `/subagents [list|show|assign|limits]` | Open the agent panel for built-in/local/ACP profiles, per-role model selection, capability/trust, concurrency, quota warnings/hard caps, and task-to-worker assignment. `assign` always targets a ready task and shows scope/budget before dispatch. | Read-only until an explicit assignment/setting action; provider limits unknown to an adapter remain `unknown` |
 | `/workflow [list|show|create|run|pause|resume|stop]` | Browse saved workflow templates or open the Workflow Builder. The builder creates a versioned, validated task graph; preview its inputs, permissions, budgets, dependencies, and verification plan before saving/running (`DEC-068`). | Create/save is a local guarded write; run uses normal Run approval and task controller; a workflow cannot bypass the controller |
-| `/extensions [mcp|skills|plugins|hooks|workflows|marketplace]` | Open the shared Extensions overlay, defaulting to its overview when no category is supplied. | Navigation only; no trust, enablement, execution, or permission effect |
+| `/extensions [connectors|mcp|skills|plugins|hooks|workflows|marketplace]` | Open the shared Extensions overlay, defaulting to its overview when no category is supplied. | Navigation only; no trust, enablement, execution, or permission effect |
 | `/doctor [fix [<id>]]` | Open the diagnostics report, or list/plan a named registered repair. Human-readable findings and the CLI JSON projection come from the same local report; TUI remediation shows the exact current target/change and requires authenticated Guard confirmation. | Report is bounded/read-only/offline. Repair is a separate guarded, audited effect; no arbitrary command, fix-all, or unattended apply |
 | `/help [topic]` | Show help for commands, settings, references, keys, or a workflow. | Read only |
 | `/commands [filter]` | Search available command descriptors with source/availability. | Read only |
@@ -310,6 +332,7 @@ normal guard/confirmation path. Read commands do not acquire write locks.
 | `/create-skill` | Deep-link to Skills → Create in the shared Extensions overlay and start the guided skill draft flow. | No write until the exact file manifest/content is previewed and confirmed; creation does not trust or enable the skill |
 | `/plugin [list|show <id>|enable|disable <id>]` (alias `/plugins`) | Open the Plugins category in the shared Extensions overlay; inspect plugin source/hash/license/surfaces and separately enable declared surfaces. | Opening is navigation only; install and enable are distinct guarded effects |
 | `/marketplace` | Open Marketplace in the shared Extensions overlay. | Discovery only; a listing is neither installation nor trust |
+| `/connectors` (alias `/apps`) | Open the Connectors category in the shared Extensions overlay; browse services by name and start a staged Connect flow. | Listing is not an account Connection; provider authorization, scopes, and Guard grants remain explicit and product-local |
 | `/workflows` | Open the Workflows category in the shared Extensions overlay. | Browsing only; authoring/saving and Run-controller execution use `/workflow` boundaries |
 | `/memory [global|project|agent <profile-id>|candidates|search <query>|show <id>|approve <id>|reject <id>|supersede <id> <candidate-id>|forget <id>|export [scope]|purge [scope]]` | Open the memory inspector or perform an explicit, scope-bound lifecycle action. Explicit saves create candidates; auto-extraction is opt-in; acceptance always requires user review. Agent-profile memory is disabled by default and shows exact context-injection eligibility and policy. `supersede` requires the current accepted revision and a reviewed candidate; export creates an explicit local artifact; purge writes a tombstone before removing searchable content and reports pending audit/outbox reconciliation. | Local scoped storage; mutations are audited and idempotent by request ID; user/project/profile clear and export are explicit actions |
 | `/permissions [show]` | Explain effective permission rules and source/locks; editable policy opens `/settings permissions`. | No one-shot grant by merely viewing |

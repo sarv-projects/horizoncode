@@ -51,6 +51,8 @@ on a volatile implementation detail.
 - [Grok Build Extensions UI](grok-build-extensions.md) — pinned source review of the shared category modal and slash-command routing; no code copied.
 - [Grok Build Doctor](grok-build-doctor.md) — focused pinned-source review of typed diagnostics, CLI/TUI projections, bounded probes, and named repair plans; no code copied.
 - [Agent tool, skill, and command adoption](agent-tool-skill-command-adoption.md) — focused pinned Codex deferred-tool-search, OpenCode LSP, and Grok skill-collision/create patterns; no code copied.
+- [iCode TUI and interaction-pattern review](icode-ui-review.md) — pinned source-guided review of composer, commands, path scanning, task/workflow inspection, extension configuration, and explicit non-adoptions.
+- [Extension marketplace and connector strategy](extension-marketplace-review.md) — official Codex, Claude Code, Grok Build, MCP Registry, and Agent Skills source review; catalog count definition, connector/provider/connection distinction, source adapters, and product-local runtime boundary.
 - [Compaction upstream comparison](compaction-upstream-comparison.md) — pinned Codex, Grok Build, and OpenCode threshold/trigger semantics, plus historical OpenCode `auto: false` failure reports; no code copied.
 - [Helix editor architecture](helix-editor.md) — module-boundary comparison only; no code reuse.
 

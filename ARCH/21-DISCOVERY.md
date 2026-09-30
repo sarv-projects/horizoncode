@@ -1,23 +1,25 @@
 # 21 — Discovery & Extensions
 
-How HorizonCode **detects, inspects, and uses** external capabilities: MCP servers, skills, plugins, and peer agents over ACP. Owned jointly by `CMP-mcp`, `CMP-config`, `CMP-orch`, and `CMP-acp`.
+How HorizonCode **discovers, inspects, and uses** external capabilities: Connector services, MCP servers, skills, plugin bundles, and peer agents over ACP. `CMP-extension-catalog` owns metadata-source federation; runtime/lifecycle responsibilities remain with `CMP-mcp`, `CMP-config`, `CMP-orch`, `CMP-acp`, and the other named owners.
 
 Default posture: **deny-by-default**. Nothing discovered is enabled, executed, or trusted merely because it was found. Discovery is cheap; use requires explicit enable, pinned provenance, and policy approval.
 
 ## Extension manager and registry UX
 
 `/extensions`, `/mcp` (`/mcps`), `/skill` (`/skills`), `/plugin` (`/plugins`), `/hooks`,
-`/workflows`, and `/marketplace` open the same centered Extensions overlay, selecting
-the matching category. The shared surface has category tabs for MCP servers, skills,
-plugins, hooks, workflows, and marketplace; applicable **Search**, **Installed**, and
+`/connectors` (`/apps`), `/workflows`, and `/marketplace` open the same centered
+Extensions overlay, selecting the matching category. The shared surface has category
+tabs for Connectors, plugins, skills, MCP servers, hooks, workflows, and marketplace;
+applicable **Search**, **Installed**, and
 **Create** views are scoped to the selected category. Opening or switching tabs is
 read-only navigation: it does not trust, enable, install, execute, or grant permissions.
 The overlay preserves the composer draft and workspace layout. Category loading is
 bounded and cancellable, and one category does not wait for unrelated remote/catalog
 requests. Noninteractive surfaces return typed data/results rather than claiming to
-open a TUI. Search covers the
-official MCP Registry for MCP metadata plus a small HorizonCode-curated list that
-records independent review and compatibility evidence. The official registry is a
+open a TUI. Search covers the official MCP Registry for MCP metadata, supported Git
+marketplace formats, Agent Skills package sources, and a HorizonCode-curated
+connector/service catalog that records compatibility and review evidence. The
+official registry is a
 discovery/index service, not an installer, code-signing authority, security verdict,
 or source of HorizonCode trust. Catalog records are inert, bounded, schema-validated
 metadata with publisher/source/version/license/transport/auth/provenance fields. A
@@ -49,17 +51,153 @@ referenced by ID; never write them into project manifests or logs. Installation 
 be completed but disabled while authentication or review is pending. Removal and
 rollback preserve run/audit provenance and clean only HorizonCode-owned install data.
 
-The **Installed** view lists MCP servers, skills, plugins, hooks, and workflows with
-type-appropriate lifecycle state, provenance pins, and recent health where applicable.
-**Create** starts a local MCP config, skill package, plugin bundle, or workflow template
-wizard; it validates and previews files before writing. Project-sourced definitions
-remain untrusted data until user trust and policy permit their use.
+The default **Installed** view lists each MCP server, skill, plugin, hook, or workflow
+with its name/type, concise lifecycle state, and primary applicable Add/Remove/Enable
+action. Selecting an item reveals provenance pins, scope, capabilities, probe details,
+configuration, and recent health where applicable. **Create** starts a local MCP
+config, skill package, plugin bundle, or workflow template wizard; it validates and
+previews files before writing. Project-sourced definitions remain untrusted data until
+user trust and policy permit their use. This progressive-disclosure presentation is
+informed by iCode's focused extension configuration panels (`SRC-035`/`U-ICODE-TUI`),
+but the HorizonCode default is the simpler installed-items surface above.
 
-Implementation phases: start with the official Registry's read-only metadata API and
-HorizonCode-local curated catalog; ship no general open upload/publish service in v1.
+Implementation phases: start with the official Registry's read-only metadata API,
+HorizonCode-curated Connector/service records, and a small set of curated public Git
+marketplace/package sources; ship no general open upload/publish service in v1.
 Add user/team catalogs later as user-controlled Git/HTTP sources under the same
-metadata-only rules. This avoids operating a new registry while preserving a stable
-catalog adapter and provenance model.
+metadata-only rules. The shared market's catalog coverage target is **at least 500
+unique, source-resolvable listings for its first broad release, with 1,000 as the
+expansion target**. The coverage report groups entries as connector/service
+definitions, standalone MCP server packages, skill packages, and plugin bundles.
+Versions, alternate providers for one service, duplicate source mirrors, and
+components bundled inside a plugin do not inflate the unique-listing count. Counts
+are reported by family and source; they are goals until a dated catalog snapshot and
+coverage report prove them. Listing does not imply compatibility, security review,
+publisher verification, or enablement. This avoids operating a new registry while
+preserving a stable catalog adapter and provenance model.
+
+Working first-500 planning mix: 200 Connector/service definitions, 150 standalone
+MCP server packages, 100 skill packages, and 50 plugin bundles. These are planning
+floors, not a waiver to accept unresolved or unsuitable items. If a family cannot
+reach its floor at the required source quality, report the shortfall and revise the
+release plan explicitly; provider options, mirrors, versions, and embedded bundle
+parts do not fill a family floor.
+
+## Shared extension market: items, sources, and runtime boundary
+
+The market is a **discovery and distribution catalog**, not an executor or a universal
+extension runtime. One normalized listing envelope carries a stable namespaced ID,
+kind, display metadata, source identity and location, publisher claim, versions,
+license evidence, component references, declared host requirements, update time, and
+the evidence state for compatibility/review. Preserve the upstream manifest and
+unknown fields alongside normalized fields so a newer source-format field is not
+silently discarded. Source adapters fetch and validate bounded metadata; package
+adapters interpret a supported format and emit a compatibility report. Unsupported
+components remain visible as unsupported/ignored with source location; they do not
+silently gain HorizonCode behavior.
+
+The catalog distinguishes these entities:
+
+| Entity | Meaning in the product | What the listing represents |
+|---|---|---|
+| **Connector / service** | “Connect GitHub,” “Connect Slack,” or “Connect PostgreSQL.” This is the user-facing service identity and capability family. | One service card can offer one or more provider choices. A provider is not another service listing. |
+| **Connection** | A specific user's or organization's authenticated account and granted scopes for a service/provider. | Local HorizonCode state, never marketplace content; credentials stay in `CMP-secrets` and are represented by secret references. |
+| **MCP server** | A concrete package or remote endpoint implementing MCP. | A raw server listing for users who want to select/configure the server directly. It can also be an implementation option under a Connector service card. |
+| **Skill** | Agent Skills-compatible instructions, scripts, and resources. | A skill package. Metadata discovery does not activate its instructions or run its scripts. |
+| **Plugin** | A distributable bundle with a manifest and optional skills, MCP definitions, agents, hooks, assets, or supported host-specific components. | One bundle listing. Its bundled parts do not count again toward the catalog target unless independently published as separate entries. |
+| **Provider offer** | A concrete way to implement a Connector: service-operated MCP, local/remote community MCP, a future native adapter, or an explicitly integrated gateway. | A child option of the service, not a separate Connector and not a new account connection. |
+
+The runtime resolves a service through the selected provider offer, then binds it to a
+Connection and its scoped grants. `CMP-tools` remains the single model-facing tool
+registry; `CMP-guard` authorizes each effect; `CMP-secrets` owns credential material;
+`CMP-mcp` owns MCP protocol execution; and `CMP-sandbox` owns applicable process
+confinement. A catalog listing, plugin manifest, or skill cannot bypass those owners.
+`CMP-provider` remains exclusively the model/provider route registry and is unrelated
+to external service connectors.
+
+Connector coverage is a product priority. The shared catalog includes developer
+services (source control, issue/project tracking, CI, deployment, cloud, databases,
+observability, design, documentation, chat, security, package registries, and API
+testing) plus general-work services (email, calendar, files, office, CRM, support,
+research, analytics, and business systems). HorizonCode ranks developer-relevant
+services first while allowing search across the shared catalog; AgentCowork may rank
+the wider set later. The catalog does not imply that every service has a native
+connector or is compatible with both hosts.
+
+Initial source adapters are:
+
+1. The official MCP Registry read API for server metadata and version/source pointers.
+   Synchronization uses its cursor pagination and `updated_since`/deletion behavior;
+   the API's name-substring search is not treated as a rich marketplace search engine.
+   Keep an indexed copy for search, respect upstream update/deletion status, and retain
+   the source revision/time. The upstream registry recommends downstream registries
+   add their own search and value.
+2. Local/Git marketplace catalogs in the documented Codex/Agent Plugins format, plus
+   explicit Claude Code and Grok Build adapters. Support only documented fields with
+   a compatibility report. A package-format adapter does not grant access to a
+   vendor's hosted directory or its account credentials; do not scrape a directory
+   that exposes no documented public feed.
+3. Agent Skills-format packages from curated and user-selected Git sources. The open
+   `SKILL.md` folder format is the package contract; source identity, revision, and
+   content digest remain pinned before use.
+4. HorizonCode's curated Connector/service records and approved first-party listings.
+   The curated layer adds provider choices, clear compatibility evidence, and
+   safe-use metadata; it does not claim ownership of upstream implementations.
+
+Any later source adapter must use a documented public feed, a user-provided source,
+or publisher authorization. Do not scrape closed vendor directories or assume that
+one vendor's OAuth, hosted connector, or backend can be reused. A gateway such as an
+integration platform is a provider offer only after a separate decision covers its
+data handling, credentials, terms, cost, and failure model; the catalog contract must
+not depend on a specific gateway.
+
+**Catalog identity, deduplication, and status.** Stable IDs are namespaced by source
+and canonical publisher/package identity. Multiple source records can point to one
+canonical package; retain every provenance record and merge only when identity is
+strong enough (publisher ID plus canonical upstream identity or identical immutable
+digest). Similar names alone never merge. Versions and providers are children of the
+entry. Conflicting claims remain separate and are visibly related for review. The
+coverage metric counts each canonical entry once, type-qualified, and excludes
+duplicates, provider offers, versions, and embedded bundle components.
+
+Keep these claims separate in storage and UI: **listed**, **source-resolved**,
+**format-compatible**, **host-compatible**, **probe-passed**, **security-reviewed**,
+**publisher-verified**, **official**, and **enabled**. Each evidence claim has source,
+time, version/digest, scope, and method; stale evidence becomes stale rather than
+remaining an unqualified badge. “Listed” or a high catalog count never means safe.
+Default search prioritizes source-resolved and host-compatible entries, with other
+records clearly labeled and filterable. Installation remains staged and disabled
+until the existing provenance, Guard, secret, probe, per-tool review, and enablement
+steps succeed.
+
+**Connection lifecycle.** A Connector card exposes a plain-language **Connect**
+action; provider selection and scopes appear in focused detail only when more than one
+usable provider exists or when a user chooses advanced setup. A service being listed,
+installed, connected, enabled for a profile, and available to a particular Run are
+separate states. One service may have several accounts and providers. Connection
+records are host-local and account-scoped; do not synchronize or reuse OAuth tokens
+between HorizonCode and AgentCowork. Disconnect revokes/removes the connection's
+credential reference and access grants without uninstalling its packages. A Run pins
+the selected provider, connection identity, grants, tool/schema digests, and policy
+epoch; credential rotation or catalog refresh cannot mutate an active snapshot.
+
+**Scale and operations.** Catalog ingestion is bounded, incremental, resumable, and
+idempotent. Enforce request/page/item/manifest/archive/decompression/time limits,
+source-specific polling and rate limits, schema validation, URL/redirect policy, and
+explicit stale/error states. Do not fetch executable payloads during search. Search
+indexes only bounded metadata, never secrets or skill bodies. Record per-source
+discovered/resolved/compatible/reviewed counts, duplicate/conflict counts, stale age,
+last successful sync, and parse failures; alert on coverage loss instead of keeping
+deleted or unavailable entries as current. Expansion from 500 to 1,000 is a catalog
+quality/coverage target, not permission to weaken review or silently install items.
+
+**AgentCowork relationship.** The catalog envelope, package/source identities, and
+compatibility vocabulary are designed to be product-neutral. HorizonCode is the first
+consumer; AgentCowork can later read the same catalog but keeps its own installations,
+connections, credentials, grants, and runtime. A shared catalog does not make an
+AgentCowork installer or connector runtime exist in HorizonCode, nor does it override
+AgentCowork's local-first install and trust gates. Changes to this contract must be
+made in HorizonCode first, reviewed, then mirrored into AgentCowork's owning LLD.
 
 ## 1. MCP servers (`CMP-mcp`)
 
@@ -197,11 +335,12 @@ never merges configs silently.
 | Component | Role |
 |---|---|
 | `CMP-config` | discovery roots, precedence, enable/disable, validation |
+| `CMP-extension-catalog` | source adapters, normalized listing metadata, deduplication, bounded search, synchronization status, and compatibility evidence; no credential, installation, trust, or execution authority |
 | `CMP-mcp` | server lifecycle, discovery cache, tool bridging, status |
 | `CMP-acp` | capability negotiation, server + client roles |
 | `CMP-guard` | policy gate for every bridged/hook/plugin effect |
 | `CMP-sandbox` | confinement for untrusted plugin/server processes |
-| `CMP-tui` / `CMP-headless` | enumerate detected servers/skills/plugins with status (`REQ-PROTO-007`) |
+| `CMP-tui` / `CMP-headless` | show Connector/service, MCP, skill, plugin, hook, and workflow entries with typed status; interactive category routes share one overlay (`REQ-PROTO-007`) |
 
 ## 7. Failure modes
 
@@ -214,7 +353,7 @@ never merges configs silently.
 
 ## 8. Requirements mapping
 
-`REQ-PROTO-003`, `REQ-PROTO-004`, `REQ-PROTO-006`, `REQ-PROTO-007`, `REQ-SKILL-001..004`, `REQ-PLUGIN-001..004`.
+`REQ-PROTO-003`, `REQ-PROTO-004`, `REQ-PROTO-006`, `REQ-PROTO-007`, `REQ-SKILL-001..005`, `REQ-PLUGIN-001..006`.
 
 ## 9. Open questions
 

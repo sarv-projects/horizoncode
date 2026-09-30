@@ -1868,10 +1868,11 @@ engine, and a PTY never upgrades a sandbox tier.
 **Status:** proposed target architecture; the interactive Extensions overlay is not
 implemented.
 
-**Decision (2026-09-29).** Provide one centered Extensions overlay for MCP servers,
-skills, plugins, hooks, workflows, and marketplace discovery. `/extensions` opens its
-overview; the singular/plural MCP, skill, and plugin command aliases and the
-`/hooks`, `/workflows`, and `/marketplace` commands open the same surface with the
+**Decision (2026-09-29).** Provide one centered Extensions overlay for Connector/service
+discovery, MCP servers, skills, plugins, hooks, workflows, and marketplace discovery.
+`/extensions` opens its overview; `/connectors` (`/apps`), the singular/plural MCP,
+skill, and plugin command aliases and the `/hooks`, `/workflows`, and `/marketplace`
+commands open the same surface with the
 matching category selected. `/create-skill` deep-links to Skills → Create in that
 surface; it does not auto-activate the new skill. The shared manager retains Search,
 Installed, and Create flows where applicable. `/workflow` remains the typed authoring and Run-controller
@@ -1968,3 +1969,90 @@ digest check (`SRC-031` / `U-GROK-SKILLS`).
 
 **Consequences.** Adds `REQ-SKILL-005`; updates `ARCH/21`, `ARCH/27`, `ACC-SKILL-01`,
 and proposed tasks `AX-373`/`AX-378`. No code is copied.
+
+## DEC-081 — One action path with task-first progressive disclosure
+
+**Status:** proposed target architecture; interactive TUI and action catalog are not
+implemented.
+
+**Decision (2026-09-30).** Preserve HorizonCode's exactly three primary panes
+(`DEC-066`). Buttons, command palette, slash commands, and shortcuts are affordances
+for one stable action identity and controller path; they do not create separate
+behavior or permission routes. Do not adopt iCode's `bypass` approval mode; HorizonCode
+keeps Guard ceilings and exact, scoped approvals. Inline composer suggestions preserve
+the draft and focus until explicit commit. File references inserted with `@file:` remain distinct
+from opening a file in the Explorer/editor dock. The default Tasks list is task-first:
+show the requested task and concise user-relevant state/action; retain Attempt,
+Thread, WorkerExecution, adapter, event, and evidence detail behind task selection or
+the operational inspector, and preserve all canonical identities in controller data.
+Background completion updates state in place without unsolicited navigation. The
+Extensions Installed view starts with item/type/lifecycle and primary action; advanced
+provenance, scope, capability, probe, and configuration detail is revealed at the
+selected-item or staged-review step.
+
+**Rationale.** iCode's command/action, inline-suggestion, responsive-screen, and
+drill-in patterns are useful interaction evidence, but its chat/sidebar layout and
+agent-configuration forms do not replace HorizonCode's chosen workspace or its
+simple Extensions entry surface. The pinned review also confirms iCode's Explore is
+an agent profile, not a project-file Explorer; its `@` picker inserts references,
+and Ctrl+O edits the prompt rather than opening project files. HorizonCode's own
+Explorer/file opener remains defined by `ARCH/06`/`AX-208`.
+
+**Consequences.** Adds `REQ-UI-030`; clarifies `ARCH/06` and `ARCH/27`; updates
+`AX-009`, `AX-108`, `AX-207`, `AX-208`, `AX-335`, `AX-369`, `AX-374`, `AX-375`,
+`AX-378`, and `AX-388` acceptance scope. The interaction evidence is `SRC-035`/`U-ICODE-TUI` and
+`U-ICODE-COMPACTION` in `ARCH/05`, `ARCH/29`, and
+`research docs/icode-ui-review.md`. It changes no pane geometry, controller authority,
+permission posture, or runtime owner.
+
+## DEC-082 — Federated extension catalog with product-local connections
+
+**Status:** proposed target architecture; no shared marketplace service, catalog
+ingestor, external connector runtime, or broad catalog snapshot exists.
+
+**Decision (2026-09-30).** Treat the market as a federated metadata/distribution
+catalog consumed first by HorizonCode and later by AgentCowork. Do not create a new
+universal execution format or manually implement every integration. Normalize only
+listing identity, source/provenance, package family, declared capabilities/host
+requirements, versions, compatibility, and evidence; preserve the upstream document
+and unsupported fields. Support read-only MCP Registry ingestion, documented portable
+Agent Plugins and Claude/Grok Git marketplace adapters, Agent Skills packages from
+curated/user-selected sources, and HorizonCode-curated Connector/service records.
+Only public documented feeds, user-provided sources, or publisher-authorized sources
+may be indexed; do not scrape closed directories or inherit another vendor's OAuth.
+
+The market distinguishes Connector/service, provider offer, account Connection,
+MCP server, skill package, plugin bundle, capability, and permission grant. One
+Connector listing may expose several provider offers; a bundle is one listing and its
+embedded components do not increase the unique-entry target unless published
+independently. Marketplace search is metadata-only. It never executes code or
+activates a skill. Existing local owners (`CMP-config`, `CMP-mcp`, `CMP-tools`,
+`CMP-secrets`, `CMP-guard`, `CMP-sandbox`) retain install, activation, secret,
+authorization, and execution authority. `CMP-extension-catalog` owns source
+adaptation, indexing, deduplication, and listing/compatibility evidence only.
+
+The broad-release catalog goal is at least 500 unique, source-resolvable,
+type-qualified entries, with 1,000 as the expansion target; dated per-source and
+per-family snapshots must prove counts. Listed, resolved, compatible, probed,
+reviewed, publisher-verified, official, and enabled are distinct claims with scoped,
+dated evidence. Quantity cannot weaken trust gates. HorizonCode ranks developer
+services first; the shared catalog may include AgentCowork's wider service categories.
+Installation, enabled state, account Connections, credentials, and grants remain
+local to each product. No provider-gateway dependency is selected by this decision;
+any such adapter needs a separate review of cost, terms, security, and data handling.
+
+**Rationale.** Codex documents portable plugin packages and separate local/repository
+marketplace sources; Claude Code documents Git-backed marketplace manifests and
+component bundles; Grok Build combines several plugin/skill/MCP management views and
+documents Claude-format compatibility; the MCP Registry provides a machine-readable
+read API with pagination and incremental updates. These are different source and
+runtime contracts, not one interchangeable marketplace protocol. The product needs
+catalog breadth and clear Connector discovery without confusing service accounts
+with package installation or trusting catalog claims.
+
+**Consequences.** Adds `REQ-PLUGIN-005/006`, `CMP-extension-catalog`, a Connectors
+category in the shared Extensions UI, and proposed delivery tasks `AX-393`/`AX-394`;
+expands `AX-378` to include its UI entry points. Acceptance is `ACC-MARKET-01` and
+`ACC-CONNECTION-01`. Source
+observations are in `SRC-036`, `ARCH/29` (`U-EXTENSION-ECOSYSTEM`), and
+`research docs/extension-marketplace-review.md`. No upstream code or schema is copied.

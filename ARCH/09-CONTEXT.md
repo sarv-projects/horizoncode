@@ -333,6 +333,14 @@ and unsaved-buffer views are explicit, revision-bound inputs)
   inferred and never presented as certain; compiler/LSP-grade edges are labeled
   distinctly.
 
+The Explorer's project-path suggestion scanner is a view over this single
+`CMP-repo-intel` owner, not a second index. It performs bounded asynchronous lookup,
+coalesces/cancels superseded queries, binds results to the active workspace root and
+query generation, and refuses to publish results after either changes. Truncated,
+stale, cancelled, or unavailable scans are distinguishable from an empty result. The
+iCode `file_scanner.py` pattern is pinned as `SRC-035`/`U-ICODE-TUI`; HorizonCode's
+scanner and repository-intelligence contracts remain owned here.
+
 ### 8. Symbol intelligence
 
 - **LSP bridge:** one `CMP-repo-intel` owner exposes read-only definitions,
@@ -465,6 +473,14 @@ map alone.
 | `compaction.buffer` | reserve subtracted from the window | `20000` |
 | `compaction.keep.tokens` | serialized tail retained verbatim | `8000` |
 | `compaction.summary.max_tokens` | summarize-call cap | `4096` |
+
+The 0.5 trigger is HorizonCode's selected default (`DEC-006`), not an iCode-derived
+value. iCode's pinned `service/context/compaction/budgets.py` separately derives an
+output-token reserve and context safety margin from the model profile before choosing
+its trigger (`SRC-035`/`U-ICODE-COMPACTION`). HorizonCode adopts the reserve-awareness only:
+its configurable 0.5 threshold remains evaluated against the selected route's resolved
+context window, and output/buffer/uncertainty capacity remains a separate hard fit
+guard.
 | `tool_output.max_lines` | model-visible tool-output line bound | `2000` |
 | `tool_output.max_bytes` | model-visible tool-output byte bound | `51200` |
 | `repo_map.budget_tokens` | repo-map allowance | design default (see open questions) |

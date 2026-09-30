@@ -881,6 +881,34 @@ provider request. Include refresh rollback and old-snapshot/new-catalog cases.
   only from current independent PASS evidence for the integrated revision. Validate
   screen-reader labels, glyph
   alternatives, contrast, high contrast and reduced motion.
+- For each representative intent, invoke it from every available button, command
+  palette entry, slash command, and shortcut; compare the resolved action ID, owning
+  controller result, permission decision, and visible result. Test state-dependent
+  unavailable reasons and keyboard/pointer parity. Composer `/`, `@`, `#`, and `$`
+  suggestions must preserve draft/focus until explicit commit; command arguments may
+  use a second suggestion stage. Verify `@file:` inserts a reference without opening
+  a document, while Explorer selection opens the left-dock document tab. If prompt
+  history is provided, selecting an entry fills the draft and never submits it.
+- Task-list projection tests must show one requested task as the default row with a
+  concise state and user-needed action; select it to inspect dependencies, attempts,
+  Threads, worker executions, adapters, events, evidence, and diffs. Assert these
+  execution identities are not peer rows in the default checklist, remain in
+  controller/detail data, and that background completion changes the row/badge without
+  changing focus, scroll, draft, or open document. Verify narrow focused mode restores
+  the prior three-pane arrangement.
+- Session-history UI tests cover searchable/paginated results, incomplete-coverage
+  disclosure, explicit resume, delete confirmation, and preservation of the current
+  composer/layout when browsing. Diff/rollback UI tests cover per-file/per-turn
+  navigation back to chat, affected-file preview, cancel/confirm, and no claim that an
+  external effect was reversed; never auto-stage or commit. These are focused-surface
+  patterns only (`SRC-035`/`U-ICODE-TUI`), with HorizonCode semantics owned by
+  `ARCH/06`, `ARCH/07`, `ARCH/23`, and `AX-207`/`AX-369`/`AX-388`.
+- Event-stream ordering tests interleave multiple tool calls, delay/fail subscribers,
+  overflow bounded notification queues, and reconnect across a cursor gap. Assert
+  start/progress/result ordering and exact call identity; cancellation and permission
+  remain responsive, durable events are not silently lost, and the client reports a
+  gap before resnapshot. iCode's inline-subscriber wait is only pattern evidence
+  (`SRC-035`/`U-ICODE-TUI`); test HorizonCode's bounded sequencing contract.
 - Composer attachment tests cover multiline paste, threshold crossing, exact original
   bytes/digest, large-text attachment preview, supported clipboard image MIME types,
   decompression/pixel bombs, unsupported formats, missing terminal clipboard support,
@@ -907,14 +935,34 @@ provider request. Include refresh rollback and old-snapshot/new-catalog cases.
   manifests, license/source review, registry outage, duplicate IDs, missing/expired
   secrets, failed health check, tool-schema drift during a turn, cancellation and
   uninstall with active calls. Verify `/extensions`, singular/plural MCP, skill, and
-  plugin spellings, `/hooks`, `/workflows`, and `/marketplace` all open the same
+  plugin spellings, `/connectors`/`/apps`, `/hooks`, `/workflows`, and `/marketplace` all open the same
   category-aware overlay on the expected category, preserve composer/layout state,
   and have no trust/enable/execute effect. Verify `/create-skill` opens the same
   Skills → Create view; its guided project/user scope, name/frontmatter validation,
   exact preview, cancel/decline, overwrite refusal, guarded write, and no automatic
   enable/script execution. Cover headless typed results, bounded
   category loading, cancellation, and loading/empty/stale/error presentation.
-  Search/install never executes an extension.
+  Search/install never executes an extension. Verify the default Installed category
+  shows only concise item/type/state and primary Add/Remove/Enable/Connect actions; advanced
+  provenance, scopes, capability lists, probe details, and configuration appear after
+  selecting an item or entering the staged review step.
+- Federated catalog tests (AX-393, `ACC-MARKET-01`) pin a dated source snapshot and
+  prove at least 500 unique, source-resolvable, type-qualified entries for broad
+  release; report per-family/source counts and progress toward 1,000. Count invariants
+  exclude versions, duplicate source mirrors, provider offers, and embedded bundle
+  components unless separately published. Exercise MCP Registry cursor and
+  `updated_since` synchronization, restart/idempotency, tombstones, stale-source
+  indicators, source throttling, malformed/oversized metadata, URL/redirect policy,
+  Git source revision pinning, and source conflicts. Verify no package payload is
+  fetched while searching, metadata/body/secret boundaries, and that listing,
+  source-resolution, format/host compatibility, probe, review, publisher identity,
+  official status, and enablement remain separate evidence claims.
+- Connector lifecycle tests (AX-394, `ACC-CONNECTION-01`) distinguish a service
+  listing from provider offers and per-account Connections; test multiple
+  providers/accounts, secret-reference isolation, product-local auth, disconnect
+  without package removal, Guard scopes/effect classes, and active-Run
+  provider/schema/policy pinning. UI entry-point parity and category selection for
+  Connectors are covered under AX-378/`ACC-UX-06`.
 - Web capability tests (AX-376) cover redirect loops, public-to-private DNS rebinding,
   IPv4/IPv6 private/link-local ranges, credential-bearing URLs, sensitive query
   stripping, `no-store`/personalized response exclusion, cache expiry/size eviction,

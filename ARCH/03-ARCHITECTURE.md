@@ -91,6 +91,7 @@ target component and is not implemented at the source snapshot above.
 | `CMP-audit` | Audit log | Trust | Append-only hash-chained execution record; verification |
 | `CMP-acp` | ACP edge | Surface | ACP server (stdio) and client modes; protocol mapping |
 | `CMP-mcp` | MCP edge | Capability | MCP host: server lifecycle, tool/resource/prompt mirroring, dedupe |
+| `CMP-extension-catalog` | Extension catalog | Capability | Federated listing metadata, source adapters, identity/deduplication, bounded search, and compatibility evidence; no package execution, credentials, authorization, or runtime capability state (`ARCH/21`) |
 | `CMP-tui` | TUI | Surface | Explorer/editor left dock, central chat, verified Tasks right pane, composer, palette, settings, permissions, telemetry; virtualized and bounded (`ARCH/06`) |
 | `CMP-headless` | Headless | Surface | Non-interactive run, structured output, CI use |
 | `CMP-config` | Configuration | Capability | Discovery precedence, validation, instructions, skill/plugin/hook configuration, typed memory settings; no memory domain behavior |
@@ -108,6 +109,15 @@ target component and is not implemented at the source snapshot above.
 Adapter edges (`native | acp_stdio | acp_remote | cli_opaque`) are implementation
 mechanics of `CMP-execution-host` under `CMP-orch` authority, with the ACP transport
 owned by `CMP-acp`; there is no separate `CMP-adapter` component.
+
+`CMP-extension-catalog` is separate from `CMP-provider`: the former indexes external
+services and installable extension packages; the latter selects model/inference
+routes. The catalog resolves source records into listing metadata and compatibility
+evidence. Product-local installers and runtimes remain with `CMP-config`, `CMP-mcp`,
+`CMP-tools`, `CMP-secrets`, `CMP-guard`, and `CMP-sandbox`. A connector account and its
+secret references are local to the consuming product; a shared catalog never carries
+credentials or installation state. HorizonCode's Connector card is the user-facing
+service identity, while MCP/native/gateway choices are provider offers below it.
 
 ## 3. The agent loop (contract)
 

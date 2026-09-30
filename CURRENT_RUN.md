@@ -1,5 +1,80 @@
 # CURRENT_RUN — HorizonCode
 
+## Shared extension marketplace and Connector design (2026-09-30)
+
+Completed the HorizonCode-first design pass for a shared catalog later consumable by
+AgentCowork. `DEC-082`, `REQ-PLUGIN-005/006`, `CMP-extension-catalog`, `ARCH/21`, and
+`research docs/extension-marketplace-review.md` define four counted listing families:
+Connectors/services, standalone MCP servers, Skills, and Plugins. The target is at
+least 500 unique, source-resolvable entries for broad release and 1,000 as the
+expansion target. The planning mix is 200/150/100/50 respectively; mirrors, versions,
+provider offers, and plugin-contained components cannot inflate counts. This is a
+target only; there is no catalog snapshot or 500-entry evidence.
+
+The catalog uses the MCP Registry read API, documented Codex/Agent Plugins and
+Claude/Grok Git marketplace adapters, Agent Skills sources, and curated service
+records. It stores source/compatibility evidence but does not execute packages. A
+Connector is a service identity; provider offers, product-local account Connections,
+capabilities, grants, and MCP/runtime implementation remain distinct. Credentials,
+installations, and grants are not shared between HorizonCode and AgentCowork.
+`/connectors` and `/apps` join the shared Extensions surface; the user-facing default
+is a simple Connect action with provider/scopes behind details.
+
+Added proposed requirements `REQ-PLUGIN-005/006`, decisions `DEC-082`, acceptance
+plans `ACC-MARKET-01`/`ACC-CONNECTION-01`, source trail `U-EXTENSION-ECOSYSTEM`, and
+delivery tasks `AX-393`/`AX-394`; expanded `AX-378`. Updated the owning UI, command,
+architecture, verification, research index, and test-plan documents. Official Codex,
+Claude Code, Grok Build, MCP Registry, and Agent Skills sources were checked on
+2026-09-30. Their formats and hosted catalogs differ; no closed directory or OAuth
+reuse is assumed, and no upstream implementation or schema was copied.
+
+Validation: `git diff --check` passed. Cross-document identifiers, owners, acceptance
+IDs, source links, and TODO anchors were reviewed. No product tests or catalog sync
+were run; the 500/1,000 objective is not implemented or verified. Pre-existing
+worktree changes were preserved. HorizonCode documentation phase is complete; the
+next requested phase is to inspect AgentCowork's current owner docs and mirror the
+reviewed neutral catalog contract there without replacing its existing install/trust
+gates.
+
+## README product overview (2026-09-30)
+
+Rewrote `README.md` as a future-facing product overview: HorizonCode as an all-purpose
+coding agent, the Explorer/chat/tasks workspace, direct coding and Managed Runs, and
+user-chosen model routes and integrations. Kept one development-status note at the top.
+No screenshot or mock image is included; no app screen is being represented as built.
+Linked the overview to its vision, requirements, UI, security, and contributor docs.
+This is copy and documentation work; no TODO delivery status changed and no tests ran.
+
+## iCode interaction-pattern adoption (2026-09-30)
+
+Recorded the approved iCode interaction adaptations in the owning architecture and
+delivery documents. `DEC-081` and `REQ-UI-030` make action-entry parity, draft-preserving
+inline suggestions, task-first default rows, in-place background status, and progressive
+Extensions detail explicit while preserving HorizonCode's three-pane layout and Guard
+policy. `ARCH/06` specifies composer/file-opening distinctions, responsive path lookup,
+focused task/session/diff/rollback details, and simple Installed rows; `ARCH/27` specifies
+one command/action catalog; `ARCH/09` assigns path scanning to the single repository-
+intelligence owner and retains the independently chosen 50% compaction threshold with a
+separate reserve; `ARCH/15` specifies ordered tool events with bounded backpressure and
+gap recovery; `ARCH/21` keeps extension setup staged. `ACC-UX-06`, `ACC-H1-06`, and
+`research docs/tests.md` record observable interaction, event-ordering, stale-result,
+focus, resize, accessibility, and failure-path checks.
+
+Updated TODO rows AX-009, AX-108, AX-207, AX-208, AX-335, AX-369, AX-373, AX-374,
+AX-375, AX-378, and AX-388 with their owning architecture links, acceptance evidence, and
+source-traceability anchors. Added
+`SRC-035` and the pinned iCode file map `U-ICODE-TUI`/`U-ICODE-COMPACTION` for commit
+`bb45692104bc1d26882729e90fc145e3a114e066`, plus `research docs/icode-ui-review.md`.
+The review is limited to the named source files; it corrects the Explore-profile and
+project-file-opener premise and records explicit non-adoptions. All affected work remains
+proposed; this was documentation and design work only, with no code or product tests.
+
+Validation: checked the edited contracts and TODO links against their owning sections;
+all pinned iCode file paths exist in the local checkout at that commit. The local Markdown
+target scan found no missing targets in the edited set, and `git diff --check` passed.
+Unrelated pre-existing worktree changes were preserved. Next safe action: keep these
+contracts proposed until their owning implementation and acceptance evidence are delivered.
+
 ## Architecture audit and storage-source correction (2026-09-30)
 
 Read all 33 active `ARCH/*.md` documents (`ARCH/00`–`ARCH/33`, with `ARCH/17`

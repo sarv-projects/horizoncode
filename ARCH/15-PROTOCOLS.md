@@ -62,6 +62,18 @@ handle directly.
 
 **ACP update classes** (one typed vocabulary, no opaque chunk channel): message chunks, thought summaries (never raw chain-of-thought), plan, tool call, tool-call update, usage update, available-commands, config-option update, and the prompt/step boundary markers.
 
+**Event ordering and subscriber backpressure.** Within one Thread and control-stream
+epoch, visible tool-call start, progress, and terminal result/failure updates retain
+their canonical event sequence and call identity; a result cannot appear before its
+start or attach to another call. Protocol/UI subscribers must preserve that order for
+the ordered classes they consume. Implementations may await a bounded subscriber or
+apply equivalent per-Thread sequencing/backpressure, but must not create an unbounded
+queue or let a slow display block cancellation, permission, or other control lanes.
+Transient notification overflow is explicit: emit a typed gap/resnapshot indication
+and recover from the durable cursor; never silently drop/reorder canonical events or
+present a partial stream as complete (`AX-335`, `ARCH/23` `ACC-H1-06`). This adopts the
+ordering invariant, not iCode's particular subscriber-await implementation.
+
 **ACP target method matrix.** Each method maps to one control-interface operation and has a defined session effect. This is not a capability declaration; implementations must maintain an explicit supported-method table and reject unsupported calls without changing session state. The current v1 method set and capability rules are defined by the official [ACP v1 overview](https://github.com/agentclientprotocol/agent-client-protocol/blob/main/docs/protocol/v1/overview.mdx) and [session setup](https://github.com/agentclientprotocol/agent-client-protocol/blob/main/docs/protocol/v1/session-setup.mdx); pin a released schema in build/evaluation fixtures rather than relying on mutable `main` at runtime.
 
 | ACP method | Control operation | Session effect |
