@@ -110,10 +110,15 @@ Adapter edges (`native | acp_stdio | acp_remote | cli_opaque`) are implementatio
 mechanics of `CMP-execution-host` under `CMP-orch` authority, with the ACP transport
 owned by `CMP-acp`; there is no separate `CMP-adapter` component.
 
-`CMP-extension-catalog` is separate from `CMP-provider`: the former indexes external
-services and installable extension packages; the latter selects model/inference
-routes. The catalog resolves source records into listing metadata and compatibility
-evidence. Product-local installers and runtimes remain with `CMP-config`, `CMP-mcp`,
+`CMP-extension-catalog` is separate from `CMP-provider`: the former is each product's
+client/cache for one product-neutral Shared Extension Market; the latter selects
+model/inference routes. A separately deployed, read-only market build pipeline ingests
+approved public metadata sources and publishes versioned JSON snapshots over HTTPS;
+the product clients consume the same snapshot/revision and may add explicitly scoped
+local sources. The market publishes metadata and upstream package pointers only: it
+does not host executable payloads, accept public submissions, or hold accounts or
+credentials. The catalog resolves source records into listing metadata and
+compatibility evidence. Product-local installers and runtimes remain with `CMP-config`, `CMP-mcp`,
 `CMP-tools`, `CMP-secrets`, `CMP-guard`, and `CMP-sandbox`. A connector account and its
 secret references are local to the consuming product; a shared catalog never carries
 credentials or installation state. HorizonCode's Connector card is the user-facing

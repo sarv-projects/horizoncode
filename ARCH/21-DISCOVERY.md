@@ -1,6 +1,6 @@
 # 21 — Discovery & Extensions
 
-How HorizonCode **discovers, inspects, and uses** external capabilities: Connector services, MCP servers, skills, plugin bundles, and peer agents over ACP. `CMP-extension-catalog` owns metadata-source federation; runtime/lifecycle responsibilities remain with `CMP-mcp`, `CMP-config`, `CMP-orch`, `CMP-acp`, and the other named owners.
+How HorizonCode **discovers, inspects, and uses** external capabilities: Connector services, MCP servers, skills, plugin bundles, and peer agents over ACP. One product-neutral Shared Extension Market publishes the common read-only catalog for HorizonCode first and AgentCowork later. Its controlled ingestion pipeline is separate from each product's `CMP-extension-catalog` client; runtime/lifecycle responsibilities remain with `CMP-mcp`, `CMP-config`, `CMP-orch`, `CMP-acp`, and the other named owners.
 
 Default posture: **deny-by-default**. Nothing discovered is enabled, executed, or trusted merely because it was found. Discovery is cheap; use requires explicit enable, pinned provenance, and policy approval.
 
@@ -23,7 +23,11 @@ official registry is a
 discovery/index service, not an installer, code-signing authority, security verdict,
 or source of HorizonCode trust. Catalog records are inert, bounded, schema-validated
 metadata with publisher/source/version/license/transport/auth/provenance fields. A
-catalog refresh never changes an installed artifact or active Run. See the official
+catalog refresh never changes an installed artifact or active Run. The Shared Market
+is one neutral public read API backed initially by versioned JSON snapshots and a
+controlled sync/build job; product clients cache and search the same snapshot. It has
+no package hosting, user upload, ratings, account, or write API in its first release.
+Payloads stay at their declared upstream locations. See the official
 [MCP Registry API](https://github.com/modelcontextprotocol/registry/blob/main/docs/reference/api/official-registry-api.md).
 
 **Pattern provenance:** the shared-modal and slash-routing reference is Grok Build's
@@ -61,11 +65,13 @@ user trust and policy permit their use. This progressive-disclosure presentation
 informed by iCode's focused extension configuration panels (`SRC-035`/`U-ICODE-TUI`),
 but the HorizonCode default is the simpler installed-items surface above.
 
-Implementation phases: start with the official Registry's read-only metadata API,
-HorizonCode-curated Connector/service records, and a small set of curated public Git
-marketplace/package sources; ship no general open upload/publish service in v1.
-Add user/team catalogs later as user-controlled Git/HTTP sources under the same
-metadata-only rules. The shared market's catalog coverage target is **at least 500
+Implementation phases: one controlled ingestion pipeline builds the Shared Market
+snapshot from the official Registry's read-only metadata API, HorizonCode-curated
+Connector/service records, and documented public Git marketplace/package sources.
+HorizonCode consumes that same read-only snapshot as the first client. Ship no open
+upload/publish API in the first release. Add user/team catalogs later as separately
+scoped user-controlled Git/HTTP sources under the same metadata-only rules. The shared
+market's catalog coverage target is **at least 500
 unique, source-resolvable listings for its first broad release, with 1,000 as the
 expansion target**. The coverage report groups entries as connector/service
 definitions, standalone MCP server packages, skill packages, and plugin bundles.
@@ -73,8 +79,9 @@ Versions, alternate providers for one service, duplicate source mirrors, and
 components bundled inside a plugin do not inflate the unique-listing count. Counts
 are reported by family and source; they are goals until a dated catalog snapshot and
 coverage report prove them. Listing does not imply compatibility, security review,
-publisher verification, or enablement. This avoids operating a new registry while
-preserving a stable catalog adapter and provenance model.
+publisher verification, or enablement. This begins as a small, read-only catalog
+service, not a new package host or arbitrary publisher platform; a database and
+accounts are unnecessary until measured catalog operations require them.
 
 Working first-500 planning mix: 200 Connector/service definitions, 150 standalone
 MCP server packages, 100 skill packages, and 50 plugin bundles. These are planning
@@ -193,7 +200,8 @@ quality/coverage target, not permission to weaken review or silently install ite
 
 **AgentCowork relationship.** The catalog envelope, package/source identities, and
 compatibility vocabulary are designed to be product-neutral. HorizonCode is the first
-consumer; AgentCowork can later read the same catalog but keeps its own installations,
+consumer of one centrally published snapshot/API; AgentCowork later reads the same
+catalog revision instead of building a parallel public index, while keeping its own installations,
 connections, credentials, grants, and runtime. A shared catalog does not make an
 AgentCowork installer or connector runtime exist in HorizonCode, nor does it override
 AgentCowork's local-first install and trust gates. Changes to this contract must be

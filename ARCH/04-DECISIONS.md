@@ -2007,11 +2007,12 @@ permission posture, or runtime owner.
 
 ## DEC-082 — Federated extension catalog with product-local connections
 
-**Status:** proposed target architecture; no shared marketplace service, catalog
+**Status:** proposed target architecture; no Shared Extension Market service, catalog
 ingestor, external connector runtime, or broad catalog snapshot exists.
 
 **Decision (2026-09-30).** Treat the market as a federated metadata/distribution
-catalog consumed first by HorizonCode and later by AgentCowork. Do not create a new
+catalog served by one product-neutral, read-only Shared Extension Market and consumed
+first by HorizonCode and later by AgentCowork. Do not create a new
 universal execution format or manually implement every integration. Normalize only
 listing identity, source/provenance, package family, declared capabilities/host
 requirements, versions, compatibility, and evidence; preserve the upstream document
@@ -2029,7 +2030,13 @@ independently. Marketplace search is metadata-only. It never executes code or
 activates a skill. Existing local owners (`CMP-config`, `CMP-mcp`, `CMP-tools`,
 `CMP-secrets`, `CMP-guard`, `CMP-sandbox`) retain install, activation, secret,
 authorization, and execution authority. `CMP-extension-catalog` owns source
-adaptation, indexing, deduplication, and listing/compatibility evidence only.
+adaptation, indexing, deduplication, and listing/compatibility evidence only. The
+separately deployed market uses one controlled ingestion/review pipeline and publishes
+versioned JSON snapshots through a public read API/CDN; both products consume the same
+catalog revision. Its first release has no executable package hosting, public
+submission/write API, marketplace accounts, or ratings; packages remain at upstream
+locations. Product clients cache/filter the snapshot and may add explicitly scoped
+user sources.
 
 The broad-release catalog goal is at least 500 unique, source-resolvable,
 type-qualified entries, with 1,000 as the expansion target; dated per-source and

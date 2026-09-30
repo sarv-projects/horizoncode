@@ -28,13 +28,23 @@ Claude Code, Grok Build, MCP Registry, and Agent Skills sources were checked on
 2026-09-30. Their formats and hosted catalogs differ; no closed directory or OAuth
 reuse is assumed, and no upstream implementation or schema was copied.
 
+Cross-product review found the deployment boundary needed to be explicit: both
+products must consume one Shared Extension Market snapshot/API, not independently
+crawl sources. Updated `ARCH/03`, `ARCH/04` DEC-082, `ARCH/21`, `ARCH/23`, `ARCH/29`,
+and AX-393 to define a controlled ingestion/review pipeline publishing versioned JSON
+over a public read-only endpoint; v1 has no package hosting, public upload, accounts,
+or ratings. This remains proposed design: no market service, catalog snapshot, or count
+evidence exists. AgentCowork has now been updated with proposed DEC-067,
+REQ-SKILL-015, `TASK-ECO-004`, and `TC-071`; its requirements-to-matrix-to-task
+and document-reference gates pass.
+
 Validation: `git diff --check` passed. Cross-document identifiers, owners, acceptance
-IDs, source links, and TODO anchors were reviewed. No product tests or catalog sync
-were run; the 500/1,000 objective is not implemented or verified. Pre-existing
-worktree changes were preserved. HorizonCode documentation phase is complete; the
-next requested phase is to inspect AgentCowork's current owner docs and mirror the
-reviewed neutral catalog contract there without replacing its existing install/trust
-gates.
+IDs, source links, and TODO anchors were reviewed. AgentCowork `git diff --check`,
+`node scripts/check-doc-refs.mjs`, and `node scripts/check-doc-sync.mjs` passed (347
+requirements, 347 matrix rows, 185 referenced task IDs). No product tests or catalog
+sync were run; the 500/1,000 objective is not implemented or verified. Pre-existing
+worktree changes were preserved. Both documentation phases are complete; DEC-082 and
+DEC-067 remain proposed pending their respective review processes.
 
 ## README product overview (2026-09-30)
 
