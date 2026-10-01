@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use horizoncode_types::{
-    ContentPart, SessionId, ToolCall, ToolCallId, ToolDefinition, ToolStatus, TurnId,
+    CancelToken, ContentPart, SessionId, ToolCall, ToolCallId, ToolDefinition, ToolStatus, TurnId,
     is_valid_tool_name,
 };
 use serde_json::Value;
@@ -36,6 +36,8 @@ pub struct ToolContext {
     pub sandbox: Option<Arc<dyn horizoncode_sandbox::SandboxProvider>>,
     /// The resolved confinement plan matching `sandbox`.
     pub resolved: Option<Arc<horizoncode_sandbox::ResolvedProfile>>,
+    /// Cooperative cancellation shared with the owning turn.
+    pub cancel: CancelToken,
 }
 
 impl ToolContext {
@@ -55,6 +57,7 @@ impl ToolContext {
             gate: None,
             sandbox: None,
             resolved: None,
+            cancel: CancelToken::new(),
         }
     }
 
@@ -332,6 +335,26 @@ impl ToolRegistry {
         })
     }
 
+    /// Validates a model-proposed call against the schema of its registered tool.
+    ///
+    /// The runner uses this pure preflight for every call before it dispatches
+    /// any member of a response batch. Unknown tools, malformed schemas, and
+    /// unsupported schema keywords fail closed.
+    ///
+    /// # Errors
+    /// Returns [`ToolError::InvalidInput`] when the call is unknown or its
+    /// arguments do not satisfy the registered input schema.
+    pub fn validate_input(&self, call: &ToolCall) -> Result<(), ToolError> {
+        let Some(tool) = self.tools.get(&call.name) else {
+            return Err(ToolError::InvalidInput(format!(
+                "unknown tool `{}`",
+                call.name
+            )));
+        };
+        let definition = tool.definition();
+        validate_json_schema(&definition.input_schema, &call.arguments, "$")
+    }
+
     /// Settles one tool call.
     ///
     /// Returns a typed [`Settlement`] in every case, so the loop always has a
@@ -424,6 +447,183 @@ impl ToolRegistry {
             error_code: None,
         }
     }
+}
+
+/// Validates the deliberately small JSON Schema subset used by registered
+/// HorizonCode tools. Unsupported constraints fail closed so adding a schema
+/// feature cannot silently turn preflight validation into a partial check.
+fn validate_json_schema(schema: &Value, value: &Value, path: &str) -> Result<(), ToolError> {
+    let Some(object) = schema.as_object() else {
+        return Err(ToolError::InvalidInput(
+            "registered tool has a malformed input schema".to_owned(),
+        ));
+    };
+    const SUPPORTED: &[&str] = &[
+        "type",
+        "properties",
+        "required",
+        "additionalProperties",
+        "items",
+        "minimum",
+        "maximum",
+        "enum",
+        "description",
+        "title",
+        "$schema",
+        "$id",
+        "$comment",
+        "default",
+        "examples",
+        "deprecated",
+        "readOnly",
+        "writeOnly",
+    ];
+    if object.keys().any(|key| !SUPPORTED.contains(&key.as_str())) {
+        return Err(ToolError::InvalidInput(format!(
+            "registered tool schema at {path} uses an unsupported constraint"
+        )));
+    }
+    if schema
+        .get("additionalProperties")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(ToolError::InvalidInput(format!(
+            "registered tool schema at {path} has unsupported additionalProperties"
+        )));
+    }
+
+    if let Some(expected) = schema.get("type") {
+        let Some(expected) = expected.as_str() else {
+            return Err(ToolError::InvalidInput(format!(
+                "registered tool schema at {path} has an unsupported type declaration"
+            )));
+        };
+        let matches = match expected {
+            "object" => value.is_object(),
+            "array" => value.is_array(),
+            "string" => value.is_string(),
+            "integer" => value.as_f64().is_some_and(|number| number.fract() == 0.0),
+            "number" => value.as_f64().is_some(),
+            "boolean" => value.is_boolean(),
+            "null" => value.is_null(),
+            _ => {
+                return Err(ToolError::InvalidInput(format!(
+                    "registered tool schema at {path} has an unsupported type"
+                )));
+            }
+        };
+        if !matches {
+            return Err(ToolError::InvalidInput(format!(
+                "tool input at {path} must be {expected}"
+            )));
+        }
+    }
+
+    if let Some(allowed) = schema.get("enum") {
+        let Some(allowed) = allowed.as_array() else {
+            return Err(ToolError::InvalidInput(format!(
+                "registered tool schema at {path} has a malformed enum"
+            )));
+        };
+        if !allowed.contains(value) {
+            return Err(ToolError::InvalidInput(format!(
+                "tool input at {path} is outside the allowed values"
+            )));
+        }
+    }
+
+    if let Some(minimum) = schema.get("minimum") {
+        let Some(minimum) = minimum.as_f64() else {
+            return Err(ToolError::InvalidInput(format!(
+                "registered tool schema at {path} has an invalid minimum"
+            )));
+        };
+        if value.as_f64().is_none_or(|actual| actual < minimum) {
+            return Err(ToolError::InvalidInput(format!(
+                "tool input at {path} is below its minimum"
+            )));
+        }
+    }
+    if let Some(maximum) = schema.get("maximum") {
+        let Some(maximum) = maximum.as_f64() else {
+            return Err(ToolError::InvalidInput(format!(
+                "registered tool schema at {path} has an invalid maximum"
+            )));
+        };
+        if value.as_f64().is_none_or(|actual| actual > maximum) {
+            return Err(ToolError::InvalidInput(format!(
+                "tool input at {path} is above its maximum"
+            )));
+        }
+    }
+
+    if let Some(required) = schema.get("required") {
+        let Some(required) = required.as_array() else {
+            return Err(ToolError::InvalidInput(format!(
+                "registered tool schema at {path} has malformed required fields"
+            )));
+        };
+        let Some(values) = value.as_object() else {
+            return Err(ToolError::InvalidInput(format!(
+                "tool input at {path} must be an object"
+            )));
+        };
+        for key in required {
+            let Some(key) = key.as_str() else {
+                return Err(ToolError::InvalidInput(format!(
+                    "registered tool schema at {path} has malformed required fields"
+                )));
+            };
+            if !values.contains_key(key) {
+                return Err(ToolError::InvalidInput(format!(
+                    "tool input at {path} is missing required field `{key}`"
+                )));
+            }
+        }
+    }
+
+    if let Some(properties) = schema.get("properties") {
+        let Some(properties) = properties.as_object() else {
+            return Err(ToolError::InvalidInput(format!(
+                "registered tool schema at {path} has malformed properties"
+            )));
+        };
+        let Some(values) = value.as_object() else {
+            return Err(ToolError::InvalidInput(format!(
+                "tool input at {path} must be an object"
+            )));
+        };
+        if schema.get("additionalProperties") == Some(&Value::Bool(false))
+            && values.keys().any(|key| !properties.contains_key(key))
+        {
+            return Err(ToolError::InvalidInput(format!(
+                "tool input at {path} contains an unknown field"
+            )));
+        }
+        for (key, child_schema) in properties {
+            if let Some(child_value) = values.get(key) {
+                validate_json_schema(child_schema, child_value, &format!("{path}.{key}"))?;
+            }
+        }
+    } else if schema.get("additionalProperties") == Some(&Value::Bool(false))
+        && value.as_object().is_some_and(|values| !values.is_empty())
+    {
+        return Err(ToolError::InvalidInput(format!(
+            "tool input at {path} contains an unknown field"
+        )));
+    }
+
+    if let Some(items) = schema.get("items") {
+        let Some(values) = value.as_array() else {
+            return Err(ToolError::InvalidInput(format!(
+                "tool input at {path} must be an array"
+            )));
+        };
+        for (index, item) in values.iter().enumerate() {
+            validate_json_schema(items, item, &format!("{path}[{index}]"))?;
+        }
+    }
+    Ok(())
 }
 
 /// Writes oversized content to a managed output file, returning its path.
@@ -592,5 +792,61 @@ impl ToolRegistry {
     #[must_use]
     pub fn spill_dir(&self) -> Option<&std::path::Path> {
         self.spill_dir.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn validates_nested_types_required_fields_enums_and_unknown_properties() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "count": {"type": "integer", "minimum": 1},
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "status": {"type": "string", "enum": ["open", "done"]}
+                        },
+                        "required": ["status"],
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "required": ["items"],
+            "additionalProperties": false
+        });
+        assert!(
+            validate_json_schema(
+                &schema,
+                &json!({"count": 2, "items": [{"status": "open"}]}),
+                "$"
+            )
+            .is_ok()
+        );
+
+        for invalid in [
+            json!({"items": [{"status": "bad"}]}),
+            json!({"items": [{"unexpected": true}]}),
+            json!({"items": [{"status": "open", "other": true}]}),
+            json!({"count": 0, "items": []}),
+            json!({"count": "2", "items": []}),
+        ] {
+            assert!(
+                validate_json_schema(&schema, &invalid, "$").is_err(),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_constraints_fail_closed() {
+        let schema = json!({"type": "string", "pattern": "^safe$"});
+        assert!(validate_json_schema(&schema, &json!("safe"), "$").is_err());
     }
 }

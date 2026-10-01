@@ -46,7 +46,7 @@ Test files located but **not inspected**: `orchestration_model_tests.rs`,
 
 **HorizonCode:** reuse only the general pattern: explicit message origin, stable delivery
 IDs, server/client receipt distinction, parent/child navigation, stale async result
-discard, and explicit unsupported peer capabilities. `ARCH/32` already makes the Run
+discard, and explicit unsupported peer capabilities. `ARCH/product/AGENT-MESSAGING.md` already makes the Run
 stream canonical and the Thread inbox a receipt-linked projection. Keep Task DAG separate
 from the agent thread tree and keep UI rollups non-authoritative. Any remote exactly-once
 or durable-mailbox guarantee requires its own server protocol and acceptance tests.
@@ -89,9 +89,9 @@ approval policy; source inspection is not test coverage evidence.
 ## HorizonCode consequences and tests
 
 These peers reinforce already-owned HorizonCode contracts rather than justify new
-parallel owners: one provider registry/auth policy owner (`ARCH/11`), tool-call order
-and bounded tool batches (`ARCH/10`), durable inbox receipt/cursor/replay (`ARCH/32`),
-and controller-owned persistence/effect recovery (`ARCH/07`, `ARCH/25`). Make the
+parallel owners: one provider registry/auth policy owner (`ARCH/core/PROVIDERS.md`), tool-call order
+and bounded tool batches (`ARCH/core/TOOLS.md`), durable inbox receipt/cursor/replay (`ARCH/product/AGENT-MESSAGING.md`),
+and controller-owned persistence/effect recovery (`ARCH/core/SESSION-AND-THREADS.md`, `ARCH/execution/LONG-HORIZON.md`). Make the
 boundary explicit between a desktop message echo and a durable server receipt. Test
 duplicate IDs across local echo/server replay, out-of-order parallel completion with
 ordered model-visible results, no-fsync software-crash versus power-loss claims,

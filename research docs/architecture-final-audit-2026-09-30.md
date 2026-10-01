@@ -18,42 +18,42 @@ No product tests/builds, live-provider calls, commits, pushes or publications oc
 
 | Architecture owner | Findings and disposition |
 |---|---|
-| [00-INDEX](../ARCH/00-INDEX.md) | Authority, full coverage, proposed status and reconciliation precedence. |
+| [00-INDEX](../ARCH/00-README.md) | Authority, full coverage, proposed status and reconciliation precedence. |
 | [01-VISION](../ARCH/01-VISION.md) | First use, direct coding, optional managed depth, human outcomes versus technical mechanics. |
 | [02-REQUIREMENTS](../ARCH/02-REQUIREMENTS.md) | Pane guarantees, attention availability, recovery eligibility, enforceable budget/redaction claims; REQ-UI-033. |
-| [03-ARCHITECTURE](../ARCH/03-ARCHITECTURE.md) | Directory/worker/controller ownership, host versus confinement, index versus context, Markdown versus WASM, platform evidence. |
-| [04-DECISIONS](../ARCH/04-DECISIONS.md) | DEC-090/091; historical naming/reduced-approval/capacity claims kept within their original evidence scope. |
-| [05-SOURCE-LEDGER](../ARCH/05-SOURCE-LEDGER.md) | System Git license versus library clearance; no blanket permissive-license claim or upstream copying. |
-| [06-UI](../ARCH/06-UI.md) | Mode-aware focus, actual diff viewport, workspace manifests, task-list default, progressive details, Needs You, all journey states and action receipts. |
-| [07-SESSION](../ARCH/07-SESSION.md) | One Thread creation event, slash vocabulary, model-attempt identity, epoch attestation, read-only listing, fork boundaries and explicit resumed binding. |
-| [08-LOOP](../ARCH/08-LOOP.md) | Admission/task ownership, shared recovery eligibility, exact cancellation, effect reconciliation, server wait, native step setting. |
-| [09-CONTEXT](../ARCH/09-CONTEXT.md) | Single intelligence owner, context/provider dependency, complete epoch, bounded deterministic brief, stale semantic fallback, repaired settings table. |
-| [10-TOOLS](../ARCH/10-TOOLS.md) | Preflight versus partial publication, post-execution failures, typed tool failure, ProjectId, todo naming, collisions, artifact output and scoped locking. |
-| [11-PROVIDER](../ARCH/11-PROVIDER.md) | Generic provider port, auth mechanism versus credential state, RFC Retry-After units/deadlines, controller retry ownership and resolved failover question. |
-| [12-GUARD](../ARCH/12-GUARD.md) | Immutable grants versus consumption state, fail-closed policy parse, user-owned saved scopes, challenge selection versus ticket minting. |
-| [13-SANDBOX](../ARCH/13-SANDBOX.md) | Single process launch seam, explicit runtime roots, environment identity/probes, no unsupported confinement or remote lease guarantees. |
-| [14-AUDIT](../ARCH/14-AUDIT.md) | Execution/effect linkage, terminal append failure, filtered chain export proof/privacy, MAC versus public proof and sequence overflow. |
-| [15-PROTOCOLS](../ARCH/15-PROTOCOLS.md) | ACP callback direction, internal Thread types, released MCP initialized lifecycle, terminal-frame limits, disabled authenticated IPC-only AG-UI. |
-| [16-ORCH](../ARCH/16-ORCH.md) | Provider-qualified lifecycle and integration, one profile/worker registry, generated config bounds, restart-safe lease clocks and retained Run ownership. |
-| [18-CONFIG](../ARCH/18-CONFIG.md) | Memory settings versus store, fail-closed required hooks, restrictive parse recovery, scope order, qualified skills, compiled provider adapters and canonical setting names. |
-| [19-COMPRESSION](../ARCH/19-COMPRESSION.md) | Lossy selection versus durable exact recall, experimental indexing status, bounded epoch rehydration and one retention owner. |
-| [20-ANALYTICS](../ARCH/20-ANALYTICS.md) | Downstream analytics versus budget authority, direct-turn IDs, trigger/environment provenance, honest strategy metrics and paginated export. |
-| [21-DISCOVERY](../ARCH/21-DISCOVERY.md) | Composite CapabilityPack without catalog count inflation, bounded MCP discovery/materialization, disconnected metadata, scoped credential release gate. |
-| [22-SECURITY](../ARCH/22-SECURITY.md) | Exact-byte package pins, safe retention, shell scripts versus unsafe interpolation, post-effect uncertainty, terminal-only updates, integrated edge threat register. |
-| [23-VERIFICATION](../ARCH/23-VERIFICATION.md) | Fixture/platform/live test scope, no status promotion from absent source or mock, read-only metadata limits, quarantine gate, conditional feature gates and ACC-UX-08. |
-| [24-ARCHITECTURE-REVIEW](../ARCH/24-ARCHITECTURE-REVIEW.md) | F-103..F-109 with design dispositions and open delivery evidence; historical findings retained. |
-| [25-LONG-HORIZON-CONTROL](../ARCH/25-LONG-HORIZON-CONTROL.md) | Spent-aware reservation formula and durable linearization, exact execution/launch keys, direct-turn schema, generic revisions, clock identity, semantic progress, typed controls and read contexts. |
-| [26-CORE-AGENT-CROSSWALK](../ARCH/26-CORE-AGENT-CROSSWALK.md) | Focused upstream evidence versus runtime/usability claims and revised intelligence ownership; crosswalk is not code clearance. |
-| [27-COMMANDS-AGENTS-SETTINGS](../ARCH/27-COMMANDS-AGENTS-SETTINGS.md) | ActionDescriptor, buttons/key/palette/command mapping, proof/remember registration, scope/receipt failures, provider workspaces and post-accept disconnect semantics. |
-| [28-ARTIFACT-STORE](../ARCH/28-ARTIFACT-STORE.md) | Viewer hints versus safe decoding, retained capture versus unlimited output, byte identity versus evidence verdict, reserve/GC status. |
-| [29-SOURCE-TRACEABILITY](../ARCH/29-SOURCE-TRACEABILITY.md) | Full read coverage and task-to-owner/source navigation; no local absences promoted. |
-| [30-DISTRIBUTION-UPDATES](../ARCH/30-DISTRIBUTION-UPDATES.md) | Exact update-target consent, safe Later/cancel, paused Run deferral, stale metadata and probe invalidation. |
-| [31-CONTROL-API-APP-SERVER](../ARCH/31-CONTROL-API-APP-SERVER.md) | Pause/resume/stop/read/layout/proof method descriptors, authenticated scope, durable receipt and listener refusal. |
-| [32-AGENT-MESSAGING](../ARCH/32-AGENT-MESSAGING.md) | Non-one-to-one task/thread/execution relation, WorkerAdapter message transport, durable read preference and no peer verification authority. |
-| [33-MEMORY](../ARCH/33-MEMORY.md) | Remember candidate, source-kind versus acceptance, candidate review UX and canonical SQLite memory exception. |
-| [34-MODULARITY-AND-BOUNDARIES](../ARCH/34-MODULARITY-AND-BOUNDARIES.md) | One directory, scheduler, index and process authority; common value types, seven clusters and architectural boundary fixtures. |
-| [35-CAPABILITY-PARITY-AND-EVOLUTION](../ARCH/35-CAPABILITY-PARITY-AND-EVOLUTION.md) | Capability schema and separate health/evidence axes; five delivery statuses preserved; bounded authorized radar. |
-| [36-CODE-INTELLIGENCE](../ARCH/36-CODE-INTELLIGENCE.md) | Dirty files plus unsaved buffers, query coverage/limits, missing intelligence methods, host/confinement launch and multi-root freshness. |
+| [03-ARCHITECTURE](../ARCH/03-SYSTEM-ARCHITECTURE.md) | Directory/worker/controller ownership, host versus confinement, index versus context, Markdown versus WASM, platform evidence. |
+| [04-DECISIONS](../docs/history/architecture/decisions/DECISIONS-THROUGH-095.md) | DEC-090/091; historical naming/reduced-approval/capacity claims kept within their original evidence scope. |
+| [05-SOURCE-LEDGER](../docs/research/SOURCE-LEDGER.md) | System Git license versus library clearance; no blanket permissive-license claim or upstream copying. |
+| [06-UI](../ARCH/product/UI.md) | Mode-aware focus, actual diff viewport, workspace manifests, task-list default, progressive details, Needs You, all journey states and action receipts. |
+| [07-SESSION](../ARCH/core/SESSION-AND-THREADS.md) | One Thread creation event, slash vocabulary, model-attempt identity, epoch attestation, read-only listing, fork boundaries and explicit resumed binding. |
+| [08-LOOP](../ARCH/core/AGENT-LOOP.md) | Admission/task ownership, shared recovery eligibility, exact cancellation, effect reconciliation, server wait, native step setting. |
+| [09-CONTEXT](../ARCH/core/CONTEXT.md) | Single intelligence owner, context/provider dependency, complete epoch, bounded deterministic brief, stale semantic fallback, repaired settings table. |
+| [10-TOOLS](../ARCH/core/TOOLS.md) | Preflight versus partial publication, post-execution failures, typed tool failure, ProjectId, todo naming, collisions, artifact output and scoped locking. |
+| [11-PROVIDER](../ARCH/core/PROVIDERS.md) | Generic provider port, auth mechanism versus credential state, RFC Retry-After units/deadlines, controller retry ownership and resolved failover question. |
+| [12-GUARD](../ARCH/security/GUARD.md) | Immutable grants versus consumption state, fail-closed policy parse, user-owned saved scopes, challenge selection versus ticket minting. |
+| [13-SANDBOX](../ARCH/security/SANDBOX.md) | Single process launch seam, explicit runtime roots, environment identity/probes, no unsupported confinement or remote lease guarantees. |
+| [14-AUDIT](../ARCH/security/AUDIT.md) | Execution/effect linkage, terminal append failure, filtered chain export proof/privacy, MAC versus public proof and sequence overflow. |
+| [15-PROTOCOLS](../ARCH/integrations/PROTOCOLS.md) | ACP callback direction, internal Thread types, released MCP initialized lifecycle, terminal-frame limits, disabled authenticated IPC-only AG-UI. |
+| [16-ORCH](../ARCH/execution/ORCHESTRATION.md) | Provider-qualified lifecycle and integration, one profile/worker registry, generated config bounds, restart-safe lease clocks and retained Run ownership. |
+| [18-CONFIG](../ARCH/core/CONFIG.md) | Memory settings versus store, fail-closed required hooks, restrictive parse recovery, scope order, qualified skills, compiled provider adapters and canonical setting names. |
+| [19-COMPRESSION](../ARCH/core/COMPRESSION.md) | Lossy selection versus durable exact recall, experimental indexing status, bounded epoch rehydration and one retention owner. |
+| [20-ANALYTICS](../ARCH/product/ANALYTICS.md) | Downstream analytics versus budget authority, direct-turn IDs, trigger/environment provenance, honest strategy metrics and paginated export. |
+| [21-DISCOVERY](../ARCH/product/DISCOVERY-AND-EXTENSIONS.md) | Composite CapabilityPack without catalog count inflation, bounded MCP discovery/materialization, disconnected metadata, scoped credential release gate. |
+| [22-SECURITY](../ARCH/security/SECURITY-MODEL.md) | Exact-byte package pins, safe retention, shell scripts versus unsafe interpolation, post-effect uncertainty, terminal-only updates, integrated edge threat register. |
+| [23-VERIFICATION](../ARCH/acceptance/ACCEPTANCE-MATRIX.md) | Fixture/platform/live test scope, no status promotion from absent source or mock, read-only metadata limits, quarantine gate, conditional feature gates and ACC-UX-08. |
+| [24-ARCHITECTURE-REVIEW](../docs/history/architecture/audits/2026-09-30-review.md) | F-103..F-109 with design dispositions and open delivery evidence; historical findings retained. |
+| [25-LONG-HORIZON-CONTROL](../ARCH/execution/LONG-HORIZON.md) | Spent-aware reservation formula and durable linearization, exact execution/launch keys, direct-turn schema, generic revisions, clock identity, semantic progress, typed controls and read contexts. |
+| [26-CORE-AGENT-CROSSWALK](../docs/research/CORE-AGENT-CROSSWALK.md) | Focused upstream evidence versus runtime/usability claims and revised intelligence ownership; crosswalk is not code clearance. |
+| [27-COMMANDS-AGENTS-SETTINGS](../ARCH/product/COMMANDS-AND-SETTINGS.md) | ActionDescriptor, buttons/key/palette/command mapping, proof/remember registration, scope/receipt failures, provider workspaces and post-accept disconnect semantics. |
+| [28-ARTIFACT-STORE](../ARCH/product/ARTIFACTS.md) | Viewer hints versus safe decoding, retained capture versus unlimited output, byte identity versus evidence verdict, reserve/GC status. |
+| [29-SOURCE-TRACEABILITY](../docs/research/SOURCE-TRACEABILITY.md) | Full read coverage and task-to-owner/source navigation; no local absences promoted. |
+| [30-DISTRIBUTION-UPDATES](../ARCH/integrations/DISTRIBUTION-AND-UPDATES.md) | Exact update-target consent, safe Later/cancel, paused Run deferral, stale metadata and probe invalidation. |
+| [31-CONTROL-API-APP-SERVER](../ARCH/integrations/CONTROL-API.md) | Pause/resume/stop/read/layout/proof method descriptors, authenticated scope, durable receipt and listener refusal. |
+| [32-AGENT-MESSAGING](../ARCH/product/AGENT-MESSAGING.md) | Non-one-to-one task/thread/execution relation, WorkerAdapter message transport, durable read preference and no peer verification authority. |
+| [33-MEMORY](../ARCH/product/MEMORY.md) | Remember candidate, source-kind versus acceptance, candidate review UX and canonical SQLite memory exception. |
+| [34-MODULARITY-AND-BOUNDARIES](../ARCH/05-MODULARITY.md) | One directory, scheduler, index and process authority; common value types, seven clusters and architectural boundary fixtures. |
+| [35-CAPABILITY-PARITY-AND-EVOLUTION](../ARCH/contracts/CAPABILITIES.md) | Capability schema and separate health/evidence axes; five delivery statuses preserved; bounded authorized radar. |
+| [36-CODE-INTELLIGENCE](../ARCH/product/CODE-INTELLIGENCE.md) | Dirty files plus unsaved buffers, query coverage/limits, missing intelligence methods, host/confinement launch and multi-root freshness. |
 
 ## Cross-cutting conclusions
 
@@ -105,7 +105,7 @@ attractiveness and ease remain hypotheses until tested on the actual interactive
 - [MCP 2025-11-25 lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle):
   initialization includes notifications/initialized for that selected baseline.
 
-Existing ecosystem pins and license/source coverage remain in ARCH/05, ARCH/29 and
+Existing ecosystem pins and license/source coverage remain in docs/research/SOURCE-LEDGER.md, docs/research/SOURCE-TRACEABILITY.md and
 [the earlier evolution review](architecture-evolution-review-2026-09.md). No external
 code/schema/test/assets were copied. The checks above are focused primary-reference
 checks, not a fresh audit of every upstream source or external URL.

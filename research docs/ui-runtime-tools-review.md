@@ -146,9 +146,9 @@ review.
 
 ## Current implications
 
-The existing architecture already names one control API (`ARCH/31`), provider-specific
-protocol/cache capabilities (`ARCH/11`), thread-aware UI (`ARCH/06`), and bounded local
-repository search (`ARCH/09`/`ARCH/21`). This review supports those seams, not additional
+The existing architecture already names one control API (`ARCH/integrations/CONTROL-API.md`), provider-specific
+protocol/cache capabilities (`ARCH/core/PROVIDERS.md`), thread-aware UI (`ARCH/product/UI.md`), and bounded local
+repository search (`ARCH/core/CONTEXT.md`/`ARCH/product/DISCOVERY-AND-EXTENSIONS.md`). This review supports those seams, not additional
 parallel owners. Add explicit acceptance for stale/unknown agent events, accurate UI
 attribution, distinct infrastructure-vs-task-solving benchmarks, provider cache
 dialect fixtures, raw-output recovery after optimization, and optional tool process

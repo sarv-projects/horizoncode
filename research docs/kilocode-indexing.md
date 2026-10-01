@@ -15,10 +15,10 @@ disabled until globally or per-project enabled. This is useful evidence for a
 default-off, inspectable semantic-index preference and for separating source parsing,
 embedding provider, vector storage, and the model-facing retrieval tool.
 
-HorizonCode's proposed retrieval contract is in `ARCH/09` / `REQ-CTX-014`: lexical
+HorizonCode's proposed retrieval contract is in `ARCH/core/CONTEXT.md` / `REQ-CTX-014`: lexical
 search and syntax/reference evidence remain useful without embeddings; local
 embedding/indexing can be selected explicitly; remote embedding requires disclosure
 and separate egress authority. We do not adopt Kilo implementation code or claim its
 relevance/latency results apply to HorizonCode. PowerShell in this task means a
-configurable shell for command execution (`ARCH/10`), not a semantic-index source
+configurable shell for command execution (`ARCH/core/TOOLS.md`), not a semantic-index source
 language requirement.

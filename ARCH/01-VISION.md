@@ -1,4 +1,4 @@
-# 01 — Vision
+# Vision
 
 ## What HorizonCode is
 
@@ -13,20 +13,18 @@ A terminal-first coding agent for both fast interactive work and long-running, m
   been documented and pass the applicable conformance checks; API compatibility or a
   catalog entry alone does not establish support (`REQ-PROV-001`, `REQ-PROV-006`).
 
-## Candidate differentiators to prove
+## Product outcomes
 
-These are product hypotheses, not current benchmark results. Fast interactive coding and dependable long-horizon execution are co-equal product requirements. Measure task success, regressions, latency, cost, integrations, permission friction, and usability on representative tasks (`DEC-029`, `ARCH/25`, `research docs/tests.md`). Public peer research is summarized in `ARCH/24` with its evidence limits.
-
+Fast interactive coding and dependable long-horizon execution are co-equal requirements. Validate verified task success, regression rate, latency, total cost, permission friction and usability on representative tasks.
 1. **Long-horizon persistence.** Durable, event-sourced sessions, a separately persisted run/task graph, checkpoints and reconciled restart.
 2. **Deterministic policy and inspectable audit.** An allow/ask/deny guard, confinement and per-effect receipts with explicit anchoring limits.
 3. **Repository context with freshness.** Revision-bound maps, symbol navigation and eval-gated compaction that preserve task evidence across large changes.
 4. **Measured model routing.** Route selection by demonstrated task outcomes, capabilities and total cost, including local models when conformance is proven.
 5. **Open parallel orchestration.** Isolated worktrees, external-agent attempt tracking, fenced leases, independent verification and integration checks.
-6. **Atomic resource governance.** Reserve nested Run/Task/Attempt/worker, verification, recovery, event, and artifact ceilings before dispatch; concurrent workers cannot each spend the same remaining allowance (`REQ-HORIZON-003`). This is a design hypothesis to benchmark, not a claim that peers universally lack budget controls.
-7. **Mediated egress with honest claims.** Codex provides a concrete reference for a central managed network policy, per-hop redirect handling, request permits, and in-flight revocation. HorizonCode must additionally make the required enforcement level, mechanism, backend, and residual explicit, reject unsupported requirements, and prove the actual connected destination per tier (`REQ-SEC-007`, `DEC-026`). Do not claim that Codex lacks managed egress or that either design automatically covers every outbound path.
+6. **Atomic resource governance.** Reserve nested Run/Task/Attempt/worker, verification, recovery, event, and artifact ceilings before dispatch; concurrent workers cannot each spend the same remaining allowance (`REQ-HORIZON-003`).
+7. **Mediated egress with honest claims.** State required enforcement level, mechanism, backend and residual; reject unsupported guarantees and prove actual connected destinations per tier.
 8. **Bounded control delivery.** Bounded queues, prompt cancel/permission latency, durable cursors, and explicit gap/resnapshot or disconnect behavior (`REQ-HORIZON-013`). A bounded queue is a product choice with an explicit memory ceiling and overflow contract; it must not trade away liveness silently.
-9. **Whole-response tool admission.** Validate and bound the complete provider tool-call batch before dispatching any call, preventing partial admission when a response is oversized or contains a user-input boundary (`ARCH/10`, `ARCH/25`).
-
+9. **Whole-response tool admission.** Validate and bound the complete provider tool-call batch before dispatching any call, preventing partial admission when a response is oversized or contains a user-input boundary (`ARCH/core/TOOLS.md`, `ARCH/execution/LONG-HORIZON.md`).
 ## Signature surfaces
 
 - **Direct coding loop.** Ordinary turns start from a prompt and move directly through
@@ -37,7 +35,7 @@ These are product hypotheses, not current benchmark results. Fast interactive co
   in-terminal path and an external-editor handoff; an embedded mini-editor is an
   optional implementation choice, not a product dependency (`REQ-UI-005`). It is the
   user's persistent view of run state during long work.
-- **Portable conversations.** Every HorizonCode Thread is a durable, movable, replayable conversation artifact. This does not make its associated managed Run portable; Run/task/evidence export is a separate explicit bundle with new identity and no transferred authority (`ARCH/07`, `ARCH/25`, `ARCH/28`).
+- **Portable conversations.** Every HorizonCode Thread is a durable, movable, replayable conversation artifact. This does not make its associated managed Run portable; Run/task/evidence export is a separate explicit bundle with new identity and no transferred authority (`ARCH/core/SESSION-AND-THREADS.md`, `ARCH/execution/LONG-HORIZON.md`, `ARCH/product/ARTIFACTS.md`).
 - **Protocol-first.** Drives and is driven by other agents over ACP; integrates tools over MCP.
 - **User-selected execution host.** Runtime, state, and workspaces stay on the laptop or server chosen by the user. A provider receives only the request/context required by the selected route and policy. Remote UI attachment is a separate capability and is not implied by deploying headlessly on a server.
 
@@ -56,7 +54,7 @@ These are product hypotheses, not current benchmark results. Fast interactive co
 3. **Fail closed.** Unknown permission, unknown license, unknown capability ⇒ deny or refuse, never allow by default.
 4. **Prove it.** A capability is not complete without executable evidence.
 5. **Smallest justified change.** Prefer the existing owner and interface over a new abstraction.
-## Evolution note (proposed)
+## Operating tempos
 
 HorizonCode serves two operating tempos: fast interactive pair coding in ordinary
 Threads, and managed Runs that may span hours or days. Terminal-first describes the
@@ -65,10 +63,10 @@ content to Pair, Mission Control, Review, or Explore. A verified Run should expo
 task graph and an inspectable Proof Pack, not require the user to reconstruct status
 from terminal scrollback. Models, providers, workers, protocols, workspaces, and
 execution environments are replaceable behind HorizonCode-owned contracts; the user's
-software job and its approved intent remain canonical. These are proposed target
-capabilities, not current product claims (`DEC-083..089`, `ARCH/06`, `ARCH/25`).
+software job and its approved intent remain canonical. These are target
+capabilities (`DEC-083..089`, `ARCH/product/UI.md`, `ARCH/execution/LONG-HORIZON.md`).
 
-## Product clarity contract (proposed, DEC-090)
+## First-use clarity
 
 The first screen offers a useful composer, selected workspace, and one next action.
 Ordinary requests use the direct coding path; managed goals, workflow builders,
@@ -80,8 +78,6 @@ verification failures, and unsafe recovery must remain visible. These defaults a
 product hypotheses to validate with the usability acceptance plan, not measured
 claims about what all users prefer.
 
-## Interaction and integration reconciliation (2026-09-30)
+## Interaction quality
 
 Ordinary coding remains prompt-led: exact paste/images and inspectable artifacts improve daily interaction. Attractive themes and restrained feedback serve legibility; measured speed is a product requirement, not an unverified superiority claim.
-
-Detailed shared contracts: [ARCH/37](37-INTERACTION-AND-FAST-PATH.md) and [ARCH/38](38-LITEPSM-INTEGRATION.md). Status remains proposed; see TODO AX-401..410.

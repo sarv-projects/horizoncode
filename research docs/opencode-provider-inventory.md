@@ -1,5 +1,7 @@
 # OpenCode provider, model-directory, and authentication inventory
 
+> Provider source/docs and the general Models.dev feed were refreshed on 2026-10-01; the OpenCode Go directory and route documentation remain on the dated 2026-09-28 snapshot. See [the refresh record](#opencode-provider-source-and-model-feed-refresh-2026-10-01) for exact pins and digests.
+
 Reviewed 2026-09-28, with live catalog reads at 16:30 UTC. This is a **research snapshot**, not a claim that HorizonCode
 implements these providers. The provider-ID and Go-model response snapshots below
 were retrieved at that time; they are live service data, not data pinned by a source
@@ -477,7 +479,7 @@ At `083ed266e058dc3d2d1b377ff5540859d79de110`:
 The OpenCode repository is MIT-licensed at this pin (`LICENSE`). This review reused
 architecture observations and factual provider names only; HorizonCode did not copy
 source code, authentication code, tests, icons, or provider assets. Any future code
-reuse must separately pass `ARCH/05`'s license gate.
+reuse must separately pass `docs/research/SOURCE-LEDGER.md`'s license gate.
 
 ## Supplementary provider/API source review (2026-09-28)
 
@@ -530,7 +532,7 @@ while selected SDK routes construct cache-affinity keys or require explicit opt-
 This is evidence for adapter/model-level capability negotiation, not a universal
 OpenAI-compatible behavior. Horizon's local OpenAI-compatible endpoints have no
 cache capability until the concrete server/model pair passes request and usage
-conformance. See `DEC-070`, `REQ-PROV-012`, and `ARCH/11` for the resulting
+conformance. See `DEC-070`, `REQ-PROV-012`, and `ARCH/core/PROVIDERS.md` for the resulting
 route-pinning and cache-accounting contract.
 
 ### Go connector test matrix for a future implementation
@@ -609,3 +611,29 @@ This is not a legal opinion, live provider-access test, current price/quota guar
 or proof of HorizonCode compatibility. Recheck provider terms, OAuth registration,
 model availability, and service limits before each implementation and acceptance
 run. HorizonCode has not yet made a live Go API request or performed model inference.
+
+## OpenCode provider source and model-feed refresh (2026-10-01)
+
+The provider/source slice was rechecked at OpenCode `dev` commit
+[`0112a92c416f5ad833d96e7a8308441f0a875d94`](https://github.com/anomalyco/opencode/tree/0112a92c416f5ad833d96e7a8308441f0a875d94).
+The pinned `packages/core/src/plugin/provider/` directory contains 32 TypeScript
+provider modules. The pinned [`providers.mdx`](https://github.com/anomalyco/opencode/blob/0112a92c416f5ad833d96e7a8308441f0a875d94/packages/web/src/content/docs/providers.mdx)
+has SHA-256 `d311c7efcafb23100c993047dc71d3dab90f7f2890c841010323eb95a7ac03c7`;
+its 51 named provider entries plus `Custom provider` match the documented-entry
+matrix above. This source refresh does not claim that all 32 modules or provider
+routes have been re-reviewed line by line.
+
+A credential-free retrieval of `https://models.opencode.ai/api.json` on 2026-10-01
+returned 5,282,219 bytes with SHA-256
+`448ae274adb22c1b8fdff113a43eaec149a5e4f6b868ac299b5d545d1d465b8d`. It contained
+225 provider IDs and 8,339 model records: the provider-ID set is unchanged from the
+2026-09-28 snapshot, with 86 additional model records. The full feed is not checked
+into this repository. The 2026-09-28 sorted ID table remains the complete ID table
+for this refresh because its ID set was compared and found unchanged; its displayed
+model counts and feed digest remain historical values, not current metadata.
+
+The separate OpenCode Go `/models` directory and its documentation were not refreshed
+in this pass. Their 2026-09-28 counts/routes above remain dated evidence only. No
+provider route, credential method, price, quota, or compatibility status is promoted
+by this feed refresh. HorizonCode route implementation and conformance remain owned
+by AX-363; current local transport evidence is in the source-traceability matrix.

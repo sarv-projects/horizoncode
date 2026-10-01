@@ -1021,7 +1021,7 @@ impl GuardBuilder {
                 policy_hash,
                 saved_path: self.saved_path,
                 granted_roots,
-                home: dirs::home_dir(),
+                home: horizoncode_config::home_dir(),
             }),
         }
     }

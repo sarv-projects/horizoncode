@@ -1,0 +1,16 @@
+{
+  "packages": [
+    {
+      "name": "horizoncode-types",
+      "manifest_path": "crates/horizoncode-types/Cargo.toml",
+      "dependencies": [
+        { "name": "horizoncode-cli", "source": null, "kind": null }
+      ]
+    },
+    {
+      "name": "horizoncode-cli",
+      "manifest_path": "crates/horizoncode-cli/Cargo.toml",
+      "dependencies": []
+    }
+  ]
+}

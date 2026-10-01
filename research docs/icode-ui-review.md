@@ -29,7 +29,7 @@ controllers remain authoritative.
 - The reviewed revision has no general in-app project-file Explorer/opener. `@` is a
   prompt path reference, Ctrl+O edits the prompt, the file picker selects a path for a
   caller, and Trajectory can open a session directory externally. HorizonCode's
-  Explorer/file opener is a separate first-party design (`ARCH/06`, `AX-208`).
+  Explorer/file opener is a separate first-party design (`ARCH/product/UI.md`, `AX-208`).
 - Do not expose Task, Attempt, Thread, and WorkerExecution as peer rows in the default
   task list; retain their identities and evidence in detail/controller state.
 - Do not use iCode's deep agent/MCP/skill configuration forms as HorizonCode's default
@@ -39,6 +39,6 @@ controllers remain authoritative.
   runtime as a second runtime or its Textual-specific implementation.
 
 The reference set is iCode-specific; patterns from Codex, OpenCode, and Grok Build
-remain separately pinned in [`ARCH/29`](../ARCH/29-SOURCE-TRACEABILITY.md) and their
+remain separately pinned in [`docs/research/SOURCE-TRACEABILITY.md`](../docs/research/SOURCE-TRACEABILITY.md) and their
 focused research notes. All implementations, test plans, and acceptance evidence are
 HorizonCode-owned.

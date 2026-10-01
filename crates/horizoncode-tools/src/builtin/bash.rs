@@ -1,8 +1,8 @@
 //! The `bash` tool: run a shell command through the confinement backend.
 
+use async_trait::async_trait;
 use horizoncode_sandbox::{SandboxCommand, SandboxError, SandboxOutcome};
 use horizoncode_types::{ContentPart, ToolDefinition};
-use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use crate::builtin::{

@@ -389,7 +389,13 @@ fn a_recomputed_merkle_root_matches_the_signed_root_and_a_tampered_root_fails() 
         .unwrap()
         .chars()
         .enumerate()
-        .map(|(index, c)| if index == 0 { 'f' } else { c })
+        .map(|(index, c)| {
+            if index == 0 {
+                if c == '0' { '1' } else { '0' }
+            } else {
+                c
+            }
+        })
         .collect::<String>();
     let mutated = first_root.replace(parsed["merkle_root"].as_str().unwrap(), &forged);
     let rest: String = raw

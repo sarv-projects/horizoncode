@@ -272,7 +272,7 @@ controller:
 These cases expose two implementation boundaries: (1) the goal UI/prompt must not be
 the authority that controls the scheduler, and (2) a “wait” needs a timer/event
 handoff rather than another inference turn. HorizonCode's proposed contracts are in
-[`ARCH/25-LONG-HORIZON-CONTROL.md`](../ARCH/25-LONG-HORIZON-CONTROL.md), especially
+[`ARCH/execution/LONG-HORIZON.md`](../ARCH/execution/LONG-HORIZON.md), especially
 `ProgressSignature`, `WaitCondition`, pause fences, resume events, tool-batch admission,
 and persisted no-progress ceilings.
 
@@ -425,7 +425,7 @@ new whole-repository review.
   recorded. The [`responses_retry.rs`](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/core/src/responses_retry.rs)
   branch for `UnboundedConnectionRetries` uses capped exponential delay but no attempt
   ceiling. HorizonCode forbids any unbounded retry escape hatch and reserves before
-  dispatch (`ARCH/08`, `ARCH/25`, `REQ-SEC-013`, `REQ-HORIZON-003`).
+  dispatch (`ARCH/core/AGENT-LOOP.md`, `ARCH/execution/LONG-HORIZON.md`, `REQ-SEC-013`, `REQ-HORIZON-003`).
 - **Recovery:** [`daemon_recovery.rs`](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/core/src/session/daemon_recovery.rs)
   captures an eligible interrupted local turn and explicitly excludes non-local
   environment identities from restart recovery. This is a resume-input snapshot, not
@@ -445,13 +445,13 @@ new whole-repository review.
   reconnect pattern for its relay, not proof that local app-server JSON-RPC has the
   same cursor or that relay retention is durable across server restart. HorizonCode's
   local server-side cursor/replay and explicit resnapshot contract remains its own
-  design choice (`ARCH/31`).
+  design choice (`ARCH/integrations/CONTROL-API.md`).
 - **Partial stream usage:** the sampling client path handles token usage on
   `ResponseEvent::Completed`; the error path calls `record_failed` with emitted items
   but no usage argument (`core/src/client.rs:2424–2487`). This verifies a path-level
   observability gap. It does not by itself prove the provider charged zero or that
   every Codex accounting layer lost the usage; HorizonCode's acceptance fixture tests
-  its own accounting rule independently (`ARCH/11`, `ARCH/23` `ACC-P1-10`).
+  its own accounting rule independently (`ARCH/core/PROVIDERS.md`, `ARCH/acceptance/ACCEPTANCE-MATRIX.md` `ACC-P1-10`).
 
 ## 2026-09-29 managed-egress, retry, migration, and accounting corrections
 

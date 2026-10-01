@@ -1,0 +1,318 @@
+# Configuration
+
+Module LLD for `CMP-config`. One discovery hierarchy, one typed merge, and the extension surfaces that are configured rather than compiled in: project instructions, skills, hooks, plugins, memory, MCP servers, and providers.
+
+## Purpose
+
+Resolve everything that shapes a turn — model, mode, permissions, instructions, skills, hooks, plugins, memory scope, agents, commands, notifications, and servers — through a single, deterministic, typed configuration path. Configuration is data, validated on load, versioned with the work it shaped, and free of inline secrets. `CMP-config` owns discovery and validation; it owns no domain behavior. Target settings are edited in interactive `/settings`; non-interactive surfaces use typed config/control APIs.
+
+## Responsibilities
+
+**Owned.**
+- **Discovery.** Discover global and project sources; nearest project resolves only project preferences. User preferences and managed locks follow the authoritative field precedence below. Accept JSONC. Record which layer and which file supplied each winning value.
+- **Merge & validation.** Resolve user-visible preference values separately from permission/authority ceilings. Validate both with typed, versioned schemas. Unknown or invalid keys are surfaced with source and repair guidance; safety-critical policy parse errors block new effects instead of falling back to a broader default.
+- **Project instructions.** Discover `AGENTS.md`-style instruction files hierarchically (user → repository walk) and inject them as a typed context source (`REQ-CTX-005`).
+- **Skills.** Discover `SKILL.md` (and sibling markdown with frontmatter), route by description, and inject instructions only when activated and only within the context budget.
+- **Hooks.** Register pre/post tool, session, and compaction hooks with explicit ordering and tighten-not-loosen semantics.
+- **Plugins.** Load a manifest, gate it, and expose only declared extension points; plugin code runs sandboxed.
+- **Memory settings.** Configure user/project scope, consent mode, size/retention bounds, retrieval policy, and optional per-agent memory policy for `CMP-memory`; config does not store, infer, or consolidate memory records. Child memory defaults to none, and project configuration cannot widen user/managed policy or Run consent (`REQ-MEM-005..007`, `DEC-072`).
+- **MCP/provider config.** Supply server and provider entries; secret fields are references only.
+- **Agent profile and command config.** Load profile and declarative command descriptors from validated sources; config never launches or trusts an executable. See `ARCH/product/COMMANDS-AND-SETTINGS.md` for separate discovery/install/trust/enable lifecycle.
+- **Operator preferences.** Store theme tokens, accessibility, notification channels, sound, warning thresholds, update-check preferences, and user defaults. Preferences never disable the guard or rewrite run/task evidence. `updates.origin`, trust roots, and signing policy are compiled/managed trust settings, not user/project preferences (`ARCH/integrations/DISTRIBUTION-AND-UPDATES.md`).
+- **Migration.** Forward-only, idempotent schema migrations that never run against a half-migrated state. For binary rollback, upgrades use expand/contract compatibility: a new binary cannot perform an irreversible data/schema migration until the previous supported binary can read the result, unless a separately verified backup/restore path exists. Restoring an older executable alone is not a state rollback. Destructive migration requires a decision, recovery artifact, and platform acceptance; updater rollback claims are bounded by that evidence (`ARCH/integrations/DISTRIBUTION-AND-UPDATES.md`, `AX-365/366`).
+- **Secrets hygiene.** Config carries secret references; values are resolved by `CMP-secrets` and never written into config, logs, prompts, telemetry, or audit.
+
+**Not owned.** Loop and turn state (`CMP-runner`); context assembly and compaction (`CMP-context`); memory records or retrieval (`CMP-memory`); tool execution (`CMP-tools`); allow/ask/deny evaluation and egress (`CMP-guard`); credential storage (`CMP-secrets`); provider transports (`CMP-provider`); MCP transport lifecycle (`CMP-mcp`); skill/plugin execution (`CMP-tools` + `CMP-sandbox`).
+
+## Interfaces
+
+**Depends on.** `CMP-secrets` (reference resolution), `CMP-guard` (permission rules validated here, enforced there), `CMP-sandbox` (plugin isolation).
+
+**Exposes to.**
+- `CMP-context` — typed instruction sources and activated skill instructions.
+- `CMP-tools` — hook registry and plugin-contributed tools.
+- `CMP-provider` — provider entries, routing policy, budgets.
+- `CMP-mcp` — server entries and timeouts.
+- `CMP-orch` — sub-agent depth/count/isolation defaults.
+- `CMP-runner` — mode, model, and permission posture for a session.
+- `CMP-tui` / `CMP-headless` — effective configuration and the source of each winning value.
+
+**Public surface (sketch).**
+
+```
+discover(cwd)             -> [ConfigSource]        # ordered, nearest last
+load(sources)             -> EffectiveConfig
+instructions(cwd)         -> [InstructionSource]
+skills.list()             -> [SkillSummary]        # name + description only
+skills.activate(name)     -> SkillBody
+hooks.fire(event, ctx)    -> HookOutcome           # continue | block | restrict
+```
+
+## Data / state model
+
+**Preference value order (later preference wins, unless a managed lock fixes the value).**
+
+```
+defaults → managed defaults → project preference walk (outer→nearest) → user preferences → selected profile → session → explicit run override
+```
+
+A managed **lock** is applied as a final fixed-value constraint and cannot be
+overridden. A managed default can be overridden unless it is locked. Project values
+are preferences only; an explicit user choice in `/settings` wins over a project
+default. Agent-profile values apply only after the user selects that profile. Session
+and run choices create an epoch and apply only to future attempts. Authority is not
+resolved by this precedence (see below).
+
+Each value records `(layer, file, scope, schema_version, applied_at)`; arrays use per-field merge semantics rather than a blanket concatenation rule. User settings may select another model/provider/agent within the allowed capability set; an explicit session or run selection starts a new effective settings/context epoch.
+
+Agent memory policy is an authority-constrained preference: project/profile configuration may select `none` or narrow an already authorized shared-memory mode, but only user/managed policy plus explicit Run consent may enable retrieval. The resolved policy, selected records, and exact record revisions are snapshotted into the child `ContextEpoch`; later config changes affect future dispatches only.
+
+**Authority merge is separate and monotonic.** Hard runtime limits and managed policy form a non-overridable ceiling. User restrictions, project restrictions, and Thread/Run restrictions may narrow it, but project/run content cannot grant a capability, raise a budget ceiling, weaken a permission rule, enable an extension, or widen a network destination. Effective authority is the intersection of ceilings, not a last-writer-wins field. A user approval may authorize one requested effect within the ceiling; it does not rewrite the persistent policy. See `ARCH/security/GUARD.md`, `ARCH/security/SECURITY-MODEL.md`, and `DEC-031`.
+
+**File formats.**
+
+| Content | Format | Merge |
+|---|---|---|
+| main config | JSONC | schema-directed field merge; preference precedence above, authority intersection below |
+| instruction files | markdown (+ optional frontmatter) | concatenated, outer→inner |
+| skills | markdown with frontmatter | source-qualified canonical identity; collisions retained and qualified |
+| custom command definitions | markdown with frontmatter or plugin manifest | validated `CommandDescriptor`; collisions rejected, never last-wins shadowing |
+| agent profiles | schema-versioned JSONC / local profile file | stable profile ID + explicit source; conflicts rejected or explicitly overridden in user scope |
+| plugin manifest | JSON/JSONC | schema-validated |
+| MCP server entries | JSON/JSONC | stable scoped ID merge; ambiguous duplicates rejected |
+
+Each walk level may also carry instruction files, skills, and commands; the effective configuration records the origin of every winning key.
+
+Extensions declare commands as data with a typed argument schema and owning service;
+shell snippets are not a command handler. Agent profile executable declarations are
+inert until separately staged, probed, trusted, and enabled. ACP Registry entries,
+local paths, native agents, MCP servers, skills, plugins, and provider records retain
+their source type and do not inherit one another's trust decision (`ARCH/product/COMMANDS-AND-SETTINGS.md`).
+
+An agent profile may declare a memory preference (`none`, `relevant_shared`, or
+`shared_and_profile`), but this field cannot grant access. The effective policy is
+computed from user/managed ceiling, Run consent, profile preference, adapter
+capability, and egress scope. Unknown external capability means no profile memory
+injection; it is not treated as support.
+
+**Discovery walk.**
+
+```
+<global-config-dir>/config.jsonc         (global)
+<project-root>/<config-dir>/config.jsonc (project root)
+<project-root>/sub/<config-dir>/config.jsonc (nearest project)
+  → merged using the authoritative preference/policy scope order above;
+    nearest project file resolves only within that project scope
+```
+
+The effective value retains a `(layer, file)` record for every key so precedence can be explained.
+
+**Instruction source.** A typed record `{path, scope, digest, content}` injected into context; each canonical path is included once, byte-identical content is digest-deduplicated, and distinct scope files are assembled outer-to-inner; a matching filename does not erase outer-scope instructions.
+
+**Skill record.** `{name, description, slash?, location, content, digest}` parsed from frontmatter. **Description routing:** only `{name, description}` enters the always-on skill summary; the body loads only on activation, bounded by `CMP-context`. A skill whose declared requirements are unavailable activates in guidance mode naming the gap; activation never grants permissions.
+
+**Hook record.** `{name, event, matcher, handler_ref, order}`.
+
+| Event | When | May |
+|---|---|---|
+| `pre-tool` | before authorization | tighten, block |
+| `post-tool` | after settle | observe |
+| `session-start` / `session-end` | session boundary | tighten |
+| `pre-compaction` / `post-compaction` | around compaction | observe, annotate |
+
+Semantics: a hook may **tighten** (add a restriction) or **block** (veto the action); it may never loosen or grant. Blocking is a typed outcome; ordering is deterministic (declared order, then name).
+
+**Plugin surfaces.**
+
+| Surface | Contribution | Gate |
+|---|---|---|
+| tool | new tool definition | declared schema + permission |
+| provider | declarative candidate metadata only in v1 | executable adapters require reviewed compiled release code; cannot shadow the catalog |
+| command | slash command | declared input schema |
+| UI panel | panel contribution | declared slot; no raw renderer code in v1 |
+
+A manifest may only claim surfaces from this closed set, and each claim passes the review gate.
+
+**Plugin manifest.** `{id, version, source, content_digest, signer?, surfaces[], requested_capabilities[], hooks[], compat_window, provenance}`. Surfaces are the closed set tools, declarative provider metadata, UI panels and commands. Executable model adapters are compiled release code and cannot be contributed by a manifest. A manifest is data, not a grant; capabilities require explicit user/managed approval and are still passed through the guard/sandbox. No plugin may patch core behavior or inject a raw hook outside the declared set.
+
+**Memory settings.** CMP-memory owns direct user-authorized saves, scoped advisory project capture, reviewed notes and correction. New installations use ambient mode; upgrades preserve the previous effective mode. Config validates mode ambient|explicit|off, retrieval_enabled, project_capture_enabled, profile capture/sharing, exclusions, finite record/scope/query budgets, advisory/candidate retention and extraction budget. Global automatic inference remains disabled. Off disables capture and retrieval; retrieval-only disable does not imply deletion. Settings changes fence late capture and future context selection by generation. Bounds/defaults and deletion semantics are defined by the memory owner.
+
+**MCP/provider entries.** MCP: `{id, transport, command/args/env | url/headers, auth, timeout, enabled}`. Provider: `{id, endpoint, auth_ref, models{}, headers}`. Every secret field stores a reference, never a value.
+
+**Agent profile records, usage warning policies, theme tokens, and notification
+preferences** are specified in `ARCH/product/COMMANDS-AND-SETTINGS.md`; config stores requested/effective values and
+provenance, while `CMP-orch` owns active limits, `CMP-provider` owns usage facts,
+`CMP-analytics` owns the append-only usage ledger, and `CMP-tui` only renders them.
+
+## Lifecycle & flows
+
+1. **Load.** Discover all sources → parse → validate/migrate → resolve preferences and authority ceilings independently → produce an `EffectiveConfig` with source, digest, lock state, and apply boundary for each setting. A bad non-security preference leaves its prior effective value visible as stale with an error; a malformed or unreadable security policy blocks new effectful work. Reusing a previously validated policy snapshot requires its pinned digest and explicit stale status; it must never silently widen authority.
+2. **Instruction assembly.** Walk user → repository, collect distinct canonical instruction paths outer-to-inner, dedupe byte-identical content by digest, and hand typed sources to `CMP-context`. Referenced extra instruction files are added after in-repo ones.
+3. **Skill lifecycle.** Scan sources → parse frontmatter → build the description-only summary → on a relevance match or explicit invocation, activate and inject the bounded body. Skills are never bulk-dumped into context.
+4. **Hook execution.** Pre-tool hooks run before authorization and may return only `continue`, `restrict`, or `block`; their result is fed into the single guard decision and cannot grant. Post-tool hooks observe; session hooks bracket the session; compaction hooks run before and after `CMP-context` compaction. A required pre-effect hook failure, timeout, or malformed result blocks the effect. An explicitly optional observational hook may fail without blocking, but cannot authorize, widen policy, or suppress the visible failure.
+5. **Plugin lifecycle.** Install from local path → validate manifest → review gate (declared surfaces, requested permissions, provenance) → explicit per-scope enable → run sandboxed. A crash loop auto-disables the plugin and audits it. Updates apply at next activation, never mid-call.
+6. **Memory.** Validate effective settings and pass them to CMP-memory; no config-owned content write, summary or eviction.
+7. **Migration.** Run before the feature that needs them; failure blocks cleanly and reports the exact migration and error.
+8. **Change propagation.** A setting update is requested → typed-validated → authority-checked → atomically persisted → shown with source/effective value → applied at its declared boundary (`immediate | next_turn | restart`). A change affecting a run is versioned into that run; provider/model/agent/compaction changes create a new context epoch and never rewrite prior cost or verification facts.
+
+## Failure modes
+
+| Failure | Behavior |
+|---|---|
+| Config parse error | Reject activation; retain last valid snapshot as stale and fence affected effectful work. Preference-only errors may use a declared safe fallback; authority layers never silently disappear |
+| Unknown keys | Warning + migration note; never silently accepted |
+| Unknown or malformed security-policy key | Reject policy activation, pause new effectful work, show exact source/key/error; never use a permissive fallback |
+| Conflicting preference layers | Apply declared field merge order and show the winning source and shadowed values in settings |
+| Invalid settings change | Keep the last valid effective value visible as stale, show the validation error, and do not partially persist |
+| Migration failure | Block the dependent feature; never run against half-migrated state |
+| Secret value inlined in config | Rejected typed at load; only references are accepted |
+| Skill requirements unmet | Guidance naming the missing requirement; no silent degradation |
+| Agent catalog cannot refresh | Keep valid local profiles; mark cached catalog stale; never install, enable, or launch based on a stale candidate |
+| Executable profile path or digest changed | Refuse launch; mark profile quarantined until an explicit re-probe and trust review |
+| Requested agent model unsupported by adapter | Reject the override or require explicit selection of peer-managed model; do not display the requested model as effective |
+| Usage or quota is not observable | Show `unknown` with source/attempt; hard provider-spend policy blocks an unmetered route unless user explicitly selects a monitor-only policy allowed by higher-level rules |
+| Notification/sound disabled | Preserve durable event and controller behavior; required approvals and stop states remain visible on attach |
+| Invalid custom command or command collision | Reject descriptor and preserve built-ins; never dispatch through ambiguous alias |
+| Unsupported theme color depth or contrast failure | Show validation error and effective fallback; retain non-color labels/glyphs |
+| Skill/instruction injection | Untrusted content: provenance + the same injection hygiene as other external data |
+| Hook throws | Required pre-effect hook failure fences the effect; optional notification hook failure is logged without granting or changing authority |
+| Hook attempts to loosen | Rejected; hooks may only tighten or block |
+| Plugin manifest invalid | Rejected at review with a typed reason |
+| Plugin crash loop | Auto-disable + audit; core unaffected |
+| Plugin version skew | Rejected typed against the contract compat window |
+| MCP server entry invalid | That server is disabled typed; other servers unaffected |
+| Memory bound exceeded | Reject the new candidate/write with a visible typed result; never silently evict user-confirmed records; automatic advisory expiration follows the memory owner policy (`ARCH/product/MEMORY.md`) |
+
+## Configuration
+
+`ui.mode_defaults` chooses pair|mission|review|explore and only changes projections. `runtime.ag_ui_enabled=false` permits no network bind; enabling it requires the same-host adapter contract. `packages.capability_packs` holds finite declarative member references with individual trust, never executable grants. Exactly one extension lifecycle manager, native|litepsm, is selected per scope; manager selection never silently migrates installs.
+
+The versioned user-facing interaction group has this typed shape:
+
+```text
+InteractionSettingsV1 {
+  schema_version: 1,
+  appearance: {
+    theme: system|dark|light|high_contrast|custom,
+    accent: string,
+    color_depth: auto|truecolor|ansi256|ansi16|none,
+    density: comfortable|compact,
+    syntax_theme: string,
+    diff_style: string
+  },
+  motion: { level: off|reduced|subtle },
+  composer: {
+    fold_paste: boolean,
+    fold_bytes: bounded_integer,
+    fold_lines: bounded_integer,
+    image_previews: boolean,
+    autosave_delay_ms: bounded_integer,
+    submit_binding: string
+  },
+  streaming: {
+    follow_tail: boolean,
+    show_tool_details: boolean,
+    syntax_highlight: boolean
+  },
+  performance: {
+    background_jobs: bounded_integer,
+    tool_parallelism: bounded_integer,
+    cache_bytes: bounded_integer
+  },
+  extensions: { manager: native|litepsm, adapter_profile_id?: string }
+}
+```
+
+Numeric defaults and ceilings come from [the performance contract](../contracts/PERFORMANCE.md) and finite configuration-schema bounds. `frame_cap`, `feedback_duration_ms`, and `frame_coalesce_ms` are derived implementation settings, not user authority knobs. Settings preview is ephemeral; Apply uses compare-and-swap persistence, Cancel restores the persisted value, and Restore defaults is a guarded explicit action. Each field declares whether it applies immediately, at the next safe epoch, or after restart. Managed policy may restrict values but cannot silently rewrite the user's displayed requested/effective values.
+
+Canonical persistence keys are `session.checkpoint.cadence` and `session.log.max_event_bytes`; native loop steps use `loop.maxSteps`. Duplicate aliases are not registered; renames require versioned migration.
+
+This document *is* the configuration surface. Key groups: `providers.*`, `models.*`, `routing.*`, `budget.*`, `permissions.*`, `instructions.*`, `skills.*`, `hooks.*`, `plugins.*`, `memory.*`, `search.*`, `mcp.servers[]`, `agents.profiles[]`, `agents.messaging.*`, `commands.custom[]`, `orch.*`, `app_server.*`, `updates.*`, `ui.theme.*`, `ui.layout.*`, `ui.keymap.*`, `ui.notifications.*`, `ui.sound`, `ui.accessibility.*`, `ui.usage_warnings[]`, `compaction.*`, `repository.*`, `verification.*`, and `delivery.*`. Every field is schema-versioned; migration notes accompany renames. A `SettingView` contains `{key, requested_value, effective_value, source_scope, source_ref, shadowed_sources[], locked_by?, validation_error?, capability_status?, apply_boundary, schema_version, effective_digest}`. `/settings` exposes theme tokens, contrast/color depth, reduced motion and screen-reader mode, layout/keymap, provider/model/agent, reasoning, local endpoint, provider metadata freshness, context limits and compaction, routing, hierarchical run/task/worker budgets, warning thresholds, approval posture, agent-message limits/enablement, search/content-index preferences and coverage, update check/channel/defer state, notification channels and sound, extension enablement/provenance, evidence retention, local supervisor status, and cost/quota display. `managed` locks win; project content cannot widen authority or change update trust/channel, app-server lifecycle, IPC ceilings, or a user's search privacy choices. Changing model/provider/agent records capability and provenance; an unavailable setting is not silently approximated (`REQ-UI-010..015`, `REQ-ORCH-007..009`, `DEC-030`, `DEC-038..040`, `ARCH/integrations/DISTRIBUTION-AND-UPDATES.md`, `ARCH/integrations/CONTROL-API.md`, `ARCH/product/AGENT-MESSAGING.md`). The slash command and mention catalogs are owned by `ARCH/product/COMMANDS-AND-SETTINGS.md`.
+
+`app_server.detached_enabled` and `app_server.idle_shutdown_seconds` are local-user
+preferences. The supervisor endpoint is always same-host only in the initial contract;
+there is no setting for a network bind or cross-user listener. Frame, client,
+subscription, lane, and deadline ceilings are finite generated settings with compiled
+upper bounds; configuration can lower a ceiling but cannot set it to unlimited or
+raise the security maximum. A platform without accepted supervised-process and IPC
+support exposes `capability_status=unavailable` and refuses detach; it does not silently
+claim the preference is active.
+
+`providers.opencode.metadata_refresh.enabled` defaults to `true` with a bounded
+one-hour interval; only this explicitly approved provider/model source is automatic
+by default. It is data-only and cannot set hosts, credentials, auth methods, adapter
+code, or live run routes. Generic `catalog.enrichment.enabled` remains `false` by
+default. Active attempts retain their immutable route snapshot.
+
+`search.enabled=true`, `search.index_tool_output=false`,
+`search.include_archived=true`, `search.keep_renamed_title_aliases=true`, and
+`search.page_size=20`, and `search.model_history_retrieval=false` are user-scope
+preferences. Model-facing history retrieval requires `search.enabled=true`, is off by
+default, and cannot be enabled by project config or model/tool output. Search text indexing is local and
+does not send content to a model or network service. A user's disable/purge choice is
+not overridden by project configuration; managed policy may disable search for a
+deployment. `search.index_tool_output` can include only tool-result text explicitly
+marked displayable in the committed session projection. Query-byte, page-size,
+index-work, concurrent-query, and deadline limits are finite compiled ceilings that
+configuration may lower only. Turning `search.enabled` off disables queries and
+indexing and offers an explicit purge of derived index content; it never deletes
+canonical Thread history. Search dates are presented in the selected UI timezone;
+stored/query boundaries are UTC.
+
+`updates.check_on_start=true`, `updates.notify=true`,
+`updates.channel=stable|preview`, and `updates.check_interval=24h` are bounded user
+preferences. Only signed, currently published channels may be selected. A CLI
+`--channel` overrides the channel for that command only and does not write settings;
+`/settings updates` is the persistent channel control. `updates.auto_install=false`
+is a hard invariant, not a preference. `updates.origin` and TUF trust-root/key policy
+are compiled or managed-only; project/user config cannot change them. Check and
+notification toggles are independent: manual check remains available when startup
+checks are disabled, and a muted notice does not hide an explicit command result.
+Settings show install method and update deferral due to active work (`ARCH/integrations/DISTRIBUTION-AND-UPDATES.md`).
+
+`session.artifacts.*`, `run.artifacts.*`) with typed limit views and
+lower-only validation: a configuration or project may lower a limit, never raise the compiled
+ceiling, and a nonzero rule rejects zero. Every other key group above registers in
+the same registry as its owner lands, so no second settings engine appears. **Not covered:** managed locks (`locked_by`) and capability status
+(`capability_status`) arrive with managed policy; injection of the rendered
+instruction source into the assembled context is `AX-319`; permission rules remain
+validated and evaluated by `CMP-guard`.
+
+`session.artifacts.*` is a first-class schema group for maximum inline-event bytes,
+per-object and per-Thread encoded bytes, decoder expansion/pixel/time ceilings,
+artifact retention, orphan-cleanup grace, and required durability mode. Expose
+requested/effective values, current/reserved storage, and effective filesystem
+durability in `/settings`; managed policy and compiled resource ceilings win, and no
+default may be unbounded. `session.log.*` and `run.log.*` expose finite event/segment/
+session-or-run limits, replay batch size, durability profile, and protected
+control/recovery bytes plus physical-reserve allocation profile separately from
+artifact bytes. Multi-hour runs require the
+crash-durable profile; user settings and agent profiles cannot turn off required syncs
+or raise compiled ceilings, and a limit cannot be reduced below committed plus
+reserved use. `providers.<id>.termination_profile` is route-fingerprint
+bound evidence, not a user-authored capability flag;
+`models.output_truncation_recovery` is only a user preference between disabled and
+once-per-logical-step recovery for routes with a validated remaining-context cap
+profile. Unsupported/unknown finish semantics remain non-retrying.
+
+Security-relevant parse/read failure blocks activation of the new configuration. A
+previously validated snapshot may be retained only with an explicit stale warning and
+without widening authority; a silently restored broader rule is prohibited. Effective
+config digest is pinned to the run and changes create a new context/policy epoch.
+
+## Requirements mapping
+
+| REQ | How this module satisfies it |
+|---|---|
+| `REQ-CTX-005` | Project instructions discovered hierarchically (user → repository walk) and injected as a typed context source |
+| `REQ-GUARD-001` | Permission rules are ordered configuration validated here and evaluated deterministically by `CMP-guard` |
+| `REQ-GUARD-002` | Default posture fails closed; hooks may only tighten, never allow implicitly |
+| `REQ-PROV-004` | Configuration stores secret references only; values never appear in config or logs |
+| `REQ-SEC-001` | Plugin/dependency provenance and the license allowlist gate plugin admission |
+| `REQ-SEC-002` | Instruction files, skills, and plugin content are untrusted data, never instructions |
+| `REQ-VISION-002` | Migration and validation surface actionable guidance; no silent failure |
+| `REQ-VISION-003` | Product copy remains neutral; factual provider/model names and mandatory attribution have provenance and never imply an unmeasured comparison (`DEC-030`) |
+| `REQ-HORIZON-002` | Durable memory and config-versioned task state survive restart |
+| `REQ-UI-010..015` | Typed effective settings, accessible palette, registry-backed commands/references, and configurable notification/sound preferences |
+| `REQ-ORCH-007..009` | Profile/preferences are declarative; trust/install is separate; per-agent model and quota visibility respect adapter capability and known/unknown data |
+| `REQ-PERF-001` | Effective config is resolved within the warm-cache startup bound |

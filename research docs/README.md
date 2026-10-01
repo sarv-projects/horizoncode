@@ -29,6 +29,7 @@ on a volatile implementation detail.
 - [Codex memory pipeline](codex-memory.md) — memory-specific source review and limits.
 - [OpenCode](opencode.md)
 - [OpenCode provider and authentication inventory](opencode-provider-inventory.md) — pinned provider directory, auth-method/source map, and coverage limits.
+- [Cline provider and authentication inventory](cline-provider-inventory-2026-10-01.md) — pinned 228-entry effective provider registry, generated/runtime split, explicit unknown auth, regional routes, and provenance limits.
 - [Kilo Code repository indexing](kilocode-indexing.md) — pinned documentation reference for opt-in Tree-sitter chunks, configurable embeddings/vector stores, and semantic search.
 - [Qwen Code](qwen-code.md)
 - [MiMo-Code](mimo-code.md) — OpenCode-derived fork; compare its deltas separately.
@@ -48,10 +49,12 @@ on a volatile implementation detail.
 - [Superset](superset.md)
 - [CodeBurn](codeburn.md)
 - [Command Code](command-code.md)
+- [`ignore` crate review](ignore-crate-review-2026-10-01.md) — version-pinned walker, local ignore precedence, and error handling used by AX-004; no source copied.
 - [Grok Build workflows](grok-build-workflows.md) — pinned authoring/runtime pattern review.
 - [Grok Build Extensions UI](grok-build-extensions.md) — pinned source review of the shared category modal and slash-command routing; no code copied.
 - [Grok Build Doctor](grok-build-doctor.md) — focused pinned-source review of typed diagnostics, CLI/TUI projections, bounded probes, and named repair plans; no code copied.
 - [Agent tool, skill, and command adoption](agent-tool-skill-command-adoption.md) — focused pinned Codex deferred-tool-search, OpenCode LSP, and Grok skill-collision/create patterns; no code copied.
+- [`ignore` crate review](ignore-crate-review-2026-10-01.md) — pinned walker/ignore-file behavior and error handling used by AX-004; no source copied.
 - [iCode TUI and interaction-pattern review](icode-ui-review.md) — pinned source-guided review of composer, commands, path scanning, task/workflow inspection, extension configuration, and explicit non-adoptions.
 - [Extension marketplace and connector strategy](extension-marketplace-review.md) — official Codex, Claude Code, Grok Build, MCP Registry, and Agent Skills source review; catalog count definition, connector/provider/connection distinction, source adapters, and product-local runtime boundary.
 - [Architecture evolution source review](architecture-evolution-review-2026-09.md) — pinned AutoGPT Platform, planning-with-files, LobsterAI, SuperAGI, and AG-UI patterns; license/scope limits and explicit non-adoptions.
@@ -60,10 +63,10 @@ on a volatile implementation detail.
 
 ## Authority
 
-The product contract and architecture live in [`../ARCH/`](../ARCH/00-INDEX.md).
+The product contract and architecture live in [`../ARCH/`](../ARCH/00-README.md).
 The current implementation/status handoff is [`../CURRENT_RUN.md`](../CURRENT_RUN.md),
 and the delivery ledger is [`../TODO.md`](../TODO.md). For evidence rules, use
-[`../ARCH/23-VERIFICATION.md`](../ARCH/23-VERIFICATION.md); this directory's
+[`../ARCH/acceptance/ACCEPTANCE-MATRIX.md`](../ARCH/acceptance/ACCEPTANCE-MATRIX.md); this directory's
 [`tests.md`](tests.md) gives the concrete test and benchmark plan.
 
 ## Complete architecture audit (2026-09-30)

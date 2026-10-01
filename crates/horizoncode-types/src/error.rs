@@ -26,6 +26,8 @@ pub enum ProviderErrorKind {
     ProviderInternal,
     /// Network, timeout or idle-watchdog failure.
     Transport,
+    /// The provider response exceeded a local adapter body/frame ceiling.
+    ResponseLimit,
     /// Any unclassified failure.
     Unknown,
 }
@@ -42,6 +44,7 @@ impl ProviderErrorKind {
             Self::ContextOverflow => "context_overflow",
             Self::ProviderInternal => "provider_internal",
             Self::Transport => "transport",
+            Self::ResponseLimit => "response_limit",
             Self::Unknown => "unknown",
         }
     }
@@ -126,6 +129,12 @@ impl ProviderError {
         Self::build(ProviderErrorKind::Transport, message)
     }
 
+    /// Builds a non-retryable local provider-response ceiling failure.
+    #[must_use]
+    pub fn response_limit(message: impl Into<String>) -> Self {
+        Self::build(ProviderErrorKind::ResponseLimit, message)
+    }
+
     /// Builds an unclassified failure.
     #[must_use]
     pub fn unknown(message: impl Into<String>) -> Self {
@@ -186,3 +195,16 @@ impl fmt::Display for ProviderError {
 }
 
 impl std::error::Error for ProviderError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn response_limit_is_a_stable_non_retryable_kind() {
+        let error = ProviderError::response_limit("provider response limit exceeded");
+        assert_eq!(error.kind.as_str(), "response_limit");
+        assert!(!error.retryable);
+        assert_eq!(error.kind, ProviderErrorKind::ResponseLimit);
+    }
+}

@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust checks (MSRV)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install the declared minimum Rust toolchain
+        run: rustup toolchain install 1.89.0 --profile minimal --component clippy
+
+      - name: Run Clippy
+        run: cargo +1.89.0 clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Run workspace tests
+        run: cargo +1.89.0 test --workspace --locked -- --test-threads=1
+
+  dependency-licenses:
+    name: Dependency license policy
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Check the locked dependency graph
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25
+        with:
+          rust-version: "1.89.0"
+          manifest-path: ./Cargo.toml
+          arguments: --all-features --locked
+          command: check licenses
+
+      - name: Validate the negative-control fixture manifest
+        run: cargo metadata --manifest-path scripts/fixtures/license-deny/Cargo.toml --locked --offline --no-deps --format-version 1
+
+      - name: Validate the missing-license fixture manifest
+        run: cargo metadata --manifest-path scripts/fixtures/license-deny/unlicensed/Cargo.toml --locked --offline --no-deps --format-version 1
+
+      - name: Require rejection of the synthetic GPL dependency
+        id: reject-license
+        continue-on-error: true
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25
+        with:
+          rust-version: "1.89.0"
+          manifest-path: ./scripts/fixtures/license-deny/Cargo.toml
+          arguments: --all-features --locked
+          command: check licenses
+
+      - name: Require rejection of the missing-license dependency
+        id: reject-unlicensed
+        continue-on-error: true
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25
+        with:
+          rust-version: "1.89.0"
+          manifest-path: ./scripts/fixtures/license-deny/unlicensed/Cargo.toml
+          arguments: --all-features --locked
+          command: check licenses
+
+      - name: Fail if either negative control was accepted
+        if: steps.reject-license.outcome != 'failure' || steps.reject-unlicensed.outcome != 'failure'
+        run: exit 1

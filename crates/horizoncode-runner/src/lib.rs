@@ -15,7 +15,10 @@ mod observer;
 mod recorder;
 mod runner;
 
-pub use config::RunConfig;
+pub use config::{
+    DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_MAX_TOOL_ARGUMENT_BYTES_PER_RESPONSE,
+    DEFAULT_MAX_TOOL_CALLS_PER_RESPONSE, RESPONSE_LIMITS_VERSION, RunConfig,
+};
 pub use error::LoopError;
 pub use observer::{NullObserver, RecordingObserver, RunEvent, RunObserver};
 pub use recorder::{

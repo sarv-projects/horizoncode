@@ -26,7 +26,6 @@ horizoncode-guard.workspace = true
 horizoncode-sandbox.workspace = true
 blake3.workspace = true
 async-trait.workspace = true
-dirs.workspace = true
 serde.workspace = true
 clap.workspace = true
 serde_json.workspace = true

@@ -69,9 +69,9 @@ asset was used. Treat the inventory only as a set of prompts to compare against
 independently sourced designs.
 
 The general families already have HorizonCode owners or proposed rows: file/search
-and shell tools plus lazy schema materialization in `ARCH/10`; web search/fetch in
-`AX-376`; MCP/LSP in `ARCH/21`/`AX-202`; subagent delegation and messaging in
-`ARCH/16`/`ARCH/32`; worktrees in `ARCH/25`; and workflow authoring in `AX-377`.
+and shell tools plus lazy schema materialization in `ARCH/core/TOOLS.md`; web search/fetch in
+`AX-376`; MCP/LSP in `ARCH/product/DISCOVERY-AND-EXTENSIONS.md`/`AX-202`; subagent delegation and messaging in
+`ARCH/execution/ORCHESTRATION.md`/`ARCH/product/AGENT-MESSAGING.md`; worktrees in `ARCH/execution/LONG-HORIZON.md`; and workflow authoring in `AX-377`.
 Notebook-specific editing is not added: the README alone does not establish a user
 need, a safe notebook cell/output contract, or an independent implementation source.
 No extra tool is justified by this unverified inventory.
@@ -169,10 +169,10 @@ source-map disclosure is [Axios](https://www.axios.com/2026/03/31/anthropic-leak
 this is incident context only, not a technical source.
 
 HorizonCode disposition is recorded in `DEC-072`, `REQ-MEM-005..007`,
-`ARCH/16`, `ARCH/27`, and `ARCH/33`: synthesize a per-child context packet from
+`ARCH/execution/ORCHESTRATION.md`, `ARCH/product/COMMANDS-AND-SETTINGS.md`, and `ARCH/product/MEMORY.md`: synthesize a per-child context packet from
 the approved task contract, explicit source references, effective policy, and
 bounded memory retrieval. Do not inherit the parent's transcript or all memory
 implicitly. Optional agent-profile memory remains provenance-bound context;
 child writes go through the existing reviewable memory-candidate path. See
-`ARCH/26` for the decision crosswalk and `research docs/tests.md` for acceptance
+`docs/research/CORE-AGENT-CROSSWALK.md` for the decision crosswalk and `research docs/tests.md` for acceptance
 cases.

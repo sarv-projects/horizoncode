@@ -1,0 +1,9 @@
+[package]
+name = "unapproved-license-fixture"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+[lib]
+path = "src/lib.rs"

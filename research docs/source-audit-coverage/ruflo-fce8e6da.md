@@ -12,7 +12,7 @@ The MCP agent tool surface validates a small fixed set of agent types and expose
 
 ## HorizonCode delta disposition
 
-- **Already covered:** HorizonCode's HLD/LLD keeps durable Run/Task/Attempt state, fenced worker executions, budget reservations, permission checks, and independent verification as the authority. This is stricter than the inspected V3 in-memory task assignment/status path. See `ARCH/25` task transitions and dispatch/recovery sections and `ARCH/16`.
+- **Already covered:** HorizonCode's HLD/LLD keeps durable Run/Task/Attempt state, fenced worker executions, budget reservations, permission checks, and independent verification as the authority. This is stricter than the inspected V3 in-memory task assignment/status path. See `ARCH/execution/LONG-HORIZON.md` task transitions and dispatch/recovery sections and `ARCH/execution/ORCHESTRATION.md`.
 - **Reject:** Do not adopt the V3 `SwarmCoordinator` as evidence for durable orchestration, acceptance, or consensus. The source directly shows process-local state and a simulated consensus vote. Do not treat an agent's `completed` return value as Horizon task PASS.
 - **Defer:** No new topology/consensus subsystem is justified by these files. Existing worker/peer adapters can represent a separately governed external orchestrator, with HorizonCode remaining the run controller and verifier. Ruflo's broader published CLI, persistence, settings/UI, tool permissions, providers, and failure paths were not covered enough to make positive feature claims or propose a source delta.
 - **Add:** None from this bounded V3 source slice. This is not a claim that the full 2,993-file inventory was audited; the ledger records the limitation per path.

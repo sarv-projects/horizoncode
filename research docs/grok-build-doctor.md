@@ -77,7 +77,7 @@ our target design, so they do not warrant duplicate components or another state 
 | Grok Build boundary | HorizonCode mapping | Decision |
 |---|---|---|
 | `MvpAgent` host with per-session actors and handles | `CMP-orch`, `CMP-runner`, `CMP-session`, `CMP-control-api` | Keep one durable controller and explicit Thread/WorkerExecution ownership. Actor tasks are a sound implementation technique where one owner serializes mutation, not a new architecture layer. |
-| `ChatStateActor` plus session persistence actor/FIFO writes | `CMP-session`, event log, and runner-only event writes in `ARCH/07`/`ARCH/08`; separate audit and analytics stores in `DEC-020` | The target already has one canonical event writer and separates audit/analytics. Keep canonical event history separate from model-context projections; an actor is an implementation choice, not another state owner. |
+| `ChatStateActor` plus session persistence actor/FIFO writes | `CMP-session`, event log, and runner-only event writes in `ARCH/core/SESSION-AND-THREADS.md`/`ARCH/core/AGENT-LOOP.md`; separate audit and analytics stores in `DEC-020` | The target already has one canonical event writer and separates audit/analytics. Keep canonical event history separate from model-context projections; an actor is an implementation choice, not another state owner. |
 | Immutable `Agent`/builder, semantic ToolKind and `ToolBridge` | `CMP-context`, `CMP-tools`, `REQ-CTX-010`, provider/extension capability contracts | Already specified as typed context assembly, permission-filtered materialization, and dynamic tool discovery. Do not add a parallel Grok-style bridge/namespace layer. |
 | `WorkspaceOps` effect boundary and hook → permission → sandbox chain | `CMP-tools` → `CMP-guard` → `CMP-sandbox` → `CMP-audit`, `DEC-077` | Already explicit and stricter; hooks remain subordinate to Guard and cannot grant effects. |
 | Child SessionActors, subagent coordinator, goals and workflow state machines | `CMP-orch`, durable Task/Attempt/WorkerExecution graph, independent verifier, `DEC-039`/`DEC-069` | HorizonCode already models durable work and host-owned continuation. Do not add another task/goal store or copy Grok's one-level topology. |
@@ -87,7 +87,7 @@ our target design, so they do not warrant duplicate components or another state 
 | Grok Build pattern | Decision | Reason |
 |---|---|---|
 | Typed slash command returns a Doctor action instead of sending `/doctor` to the model | Keep | `REQ-UI-012` already requires one typed registry and no fallthrough to model prompts. |
-| Command registry tracks aliases, source, feature/tool availability and collisions | Keep existing target | `REQ-UI-012` and `ARCH/27` already define one source-aware registry; no second catalog is needed. |
+| Command registry tracks aliases, source, feature/tool availability and collisions | Keep existing target | `REQ-UI-012` and `ARCH/product/COMMANDS-AND-SETTINGS.md` already define one source-aware registry; no second catalog is needed. |
 | Extensions slash aliases deep-link into a category overlay | Already adopted | `DEC-078` / `AX-378` already record this pattern. |
 | Same finding system powers startup warnings and Doctor | Adopt within diagnostics | One canonical finding model should feed startup summary and full report, preventing duplicate predicates/messages. |
 | Fetch every Extensions tab when opening one category | Do not adopt literally | HorizonCode requires bounded cancellable work and explicit loading/error/empty states; selected category plus bounded summaries is enough. |

@@ -41,7 +41,7 @@ pub mod state_fs;
 
 pub use discovery::{
     CONFIG_FILE, ConfigLayer, ConfigSource, Discovery, DiscoveryIssue, PROJECT_CONFIG_DIR,
-    discover, discover_with, global_config_path, project_config_paths, state_root,
+    discover, discover_with, global_config_path, home_dir, project_config_paths, state_root,
 };
 pub use instructions::{
     INSTRUCTION_FILE, InstructionScope, InstructionSource, InstructionsError,

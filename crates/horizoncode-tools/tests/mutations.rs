@@ -4,14 +4,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use horizoncode_guard::{DenyAllResolver, Effect, Guard, GuardMode, Rule};
 use horizoncode_sandbox::{ConfinementProfile, ResolvedProfile, SandboxProvider};
 use horizoncode_tools::{
-    BuiltinOptions, GateDecision, GuardPermissionGate, OutputBounds, PermissionGate, PermissionRequest,
-    PolicyGate, ToolContext, ToolRegistry, register_all_builtins,
+    BuiltinOptions, GateDecision, GuardPermissionGate, OutputBounds, PermissionGate,
+    PermissionRequest, PolicyGate, ToolContext, ToolRegistry, register_all_builtins,
 };
 use horizoncode_types::{SessionId, ToolCall, ToolCallId, ToolStatus};
-use async_trait::async_trait;
 use serde_json::{Value, json};
 
 /// A gate that simulates another writer touching the file between the
@@ -276,6 +276,35 @@ async fn apply_patch_reports_a_non_matching_hunk() {
 }
 
 #[tokio::test]
+async fn apply_patch_validates_late_hunks_before_publishing_any_file() {
+    let dir = workspace();
+    let existing = dir.path().join("existing.txt");
+    std::fs::write(&existing, "base\n").unwrap();
+    let registry = registry();
+    let ctx = context(dir.path());
+    let patch = concat!(
+        "*** Begin Patch\n",
+        "*** Add File: new.txt\n",
+        "+new content\n",
+        "*** Update File: existing.txt\n",
+        "@@\n",
+        "-missing\n",
+        "+replacement\n",
+        "*** End Patch\n",
+    );
+
+    let settlement = settle(&registry, "apply_patch", json!({"patchText": patch}), &ctx).await;
+    assert_eq!(settlement.status, ToolStatus::Error, "{settlement:?}");
+    assert_eq!(
+        settlement.error_code.as_deref(),
+        Some("TOOL_INVALID_INPUT"),
+        "{settlement:?}"
+    );
+    assert!(!dir.path().join("new.txt").exists());
+    assert_eq!(std::fs::read(&existing).unwrap(), b"base\n");
+}
+
+#[tokio::test]
 async fn todo_state_is_maintained_per_session() {
     let dir = workspace();
     let registry = registry();
@@ -417,6 +446,110 @@ async fn read_refuses_a_denied_path_inside_the_workspace() {
     assert!(allowed.model_text().contains("fine"), "{allowed:?}");
 }
 
+#[tokio::test]
+async fn glob_refuses_a_denied_descendant_without_partial_paths() {
+    let dir = workspace();
+    std::fs::write(dir.path().join("notes.txt"), "ordinary\n").unwrap();
+    std::fs::write(dir.path().join(".env"), "SECRET=do-not-return\n").unwrap();
+    let registry = registry();
+    let denied_profile = ConfinementProfile::workspace_write(dir.path()).with_deny("**/.env");
+    let ctx = context(dir.path()).with_resolved_scope(scope(&denied_profile));
+
+    let result = settle(&registry, "glob", json!({"pattern": "**/*"}), &ctx).await;
+    assert_eq!(result.status, ToolStatus::Denied, "{result:?}");
+    assert!(!result.model_text().contains("notes.txt"), "{result:?}");
+    assert!(!result.model_text().contains("SECRET"), "{result:?}");
+}
+
+#[tokio::test]
+async fn grep_refuses_a_denied_descendant_without_partial_content() {
+    let dir = workspace();
+    std::fs::write(dir.path().join("notes.txt"), "marker ordinary\n").unwrap();
+    std::fs::write(dir.path().join(".env"), "marker SECRET=do-not-return\n").unwrap();
+    let registry = registry();
+    let denied_profile = ConfinementProfile::workspace_write(dir.path()).with_deny("**/.env");
+    let ctx = context(dir.path()).with_resolved_scope(scope(&denied_profile));
+
+    let result = settle(&registry, "grep", json!({"pattern": "marker"}), &ctx).await;
+    assert_eq!(result.status, ToolStatus::Denied, "{result:?}");
+    assert!(!result.model_text().contains("ordinary"), "{result:?}");
+    assert!(!result.model_text().contains("SECRET"), "{result:?}");
+}
+
+#[tokio::test]
+async fn recursive_search_stops_at_a_denied_directory() {
+    let dir = workspace();
+    std::fs::write(dir.path().join("public.txt"), "public marker\n").unwrap();
+    std::fs::create_dir(dir.path().join("private")).unwrap();
+    std::fs::write(
+        dir.path().join("private/secret.txt"),
+        "marker SECRET=do-not-return\n",
+    )
+    .unwrap();
+    let registry = registry();
+    let denied_profile = ConfinementProfile::workspace_write(dir.path()).with_deny("private");
+    let ctx = context(dir.path()).with_resolved_scope(scope(&denied_profile));
+
+    for (name, arguments) in [
+        ("glob", json!({"pattern": "**/*.txt"})),
+        ("grep", json!({"pattern": "marker"})),
+    ] {
+        let result = settle(&registry, name, arguments, &ctx).await;
+        assert_eq!(result.status, ToolStatus::Denied, "{name}: {result:?}");
+        assert!(
+            !result.model_text().contains("public.txt"),
+            "{name}: {result:?}"
+        );
+        assert!(
+            !result.model_text().contains("SECRET"),
+            "{name}: {result:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn recursive_search_refuses_to_read_a_denied_ignore_file() {
+    let dir = workspace();
+    std::fs::write(dir.path().join(".gitignore"), "private.txt\n").unwrap();
+    std::fs::write(dir.path().join("public.txt"), "public\n").unwrap();
+    let registry = registry();
+    let denied_profile = ConfinementProfile::workspace_write(dir.path()).with_deny("**/.gitignore");
+    let ctx = context(dir.path()).with_resolved_scope(scope(&denied_profile));
+
+    for name in ["glob", "grep"] {
+        let args = if name == "glob" {
+            json!({"pattern": "**/*"})
+        } else {
+            json!({"pattern": "public"})
+        };
+        let result = settle(&registry, name, args, &ctx).await;
+        assert_eq!(result.status, ToolStatus::Denied, "{name}: {result:?}");
+        assert!(
+            !result.model_text().contains("public.txt"),
+            "{name}: {result:?}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn recursive_search_refuses_a_symlink_ignore_file() {
+    let dir = workspace();
+    std::fs::write(dir.path().join("rules.txt"), "private.txt\n").unwrap();
+    std::os::unix::fs::symlink("rules.txt", dir.path().join(".ignore")).unwrap();
+    for (name, args) in [
+        ("glob", json!({"pattern": "**/*"})),
+        ("grep", json!({"pattern": "private"})),
+    ] {
+        let result = settle(&registry(), name, args, &context(dir.path())).await;
+        assert_eq!(result.status, ToolStatus::Error, "{name}: {result:?}");
+        assert_eq!(
+            result.error_code.as_deref(),
+            Some("TOOL_UNSUPPORTED_TARGET")
+        );
+    }
+}
+
 /// A read is refused when no confinement profile resolved, exactly as a write is.
 #[tokio::test]
 async fn read_is_refused_when_no_confinement_profile_resolved() {
@@ -539,10 +672,7 @@ async fn write_honours_a_caller_supplied_base_hash() {
         )
         .await;
     assert_eq!(settlement.status, ToolStatus::Success, "{settlement:?}");
-    assert_eq!(
-        std::fs::read_to_string(&file).unwrap(),
-        "replacement\n"
-    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "replacement\n");
 }
 
 fn gate_with(guard: Guard) -> Arc<dyn PermissionGate> {

@@ -15,8 +15,8 @@ use horizoncode_tools::{
     Materialization, PermissionGate, PolicyOutcome, Settlement, ToolContext, ToolRegistry,
 };
 use horizoncode_types::{
-    CancelToken, ContentPart, Event, EventKind, Message, ModelEvent, ModelRequest, SessionId,
-    ToolCall, ToolChoice, ToolStatus, TurnId, Usage,
+    CancelToken, ContentPart, Event, EventKind, FinishReason, Message, ModelEvent, ModelRequest,
+    SessionId, ToolCall, ToolChoice, ToolStatus, TurnId, Usage,
 };
 use serde_json::Value;
 
@@ -90,6 +90,14 @@ impl Runner {
         }
         if self.config.max_steps == 0 {
             return Err(LoopError::Config("max_steps must be at least 1".to_owned()));
+        }
+        if self.config.max_tool_calls_per_response == 0
+            || self.config.max_tool_argument_bytes_per_response == 0
+            || self.config.max_response_bytes == 0
+        {
+            return Err(LoopError::Config(
+                "per-response admission limits must be greater than zero".to_owned(),
+            ));
         }
         let loaded = self.store.load(session_id)?;
         if loaded.status == SessionStatus::Closed {
@@ -191,6 +199,7 @@ impl Runner {
             } else {
                 Materialization::default()
             };
+            let advertised_tool_names = materialization.names.clone();
 
             let mut system = self.config.system.clone();
             if !tools_enabled {
@@ -268,6 +277,7 @@ impl Runner {
             let mut accumulator = StepAccumulator::default();
             let mut cancelled = false;
             let mut stream_error: Option<String> = None;
+            let mut assembly_error: Option<ResponseAssemblyError> = None;
             loop {
                 tokio::select! {
                     () = cancel.cancelled() => {
@@ -277,7 +287,20 @@ impl Runner {
                     item = stream.next() => {
                         match item {
                             None => break,
-                            Some(Ok(event)) => accumulator.apply(event, observer),
+                            Some(Ok(event)) => {
+                                if let Err(error) = accumulator.apply(
+                                    event,
+                                    observer,
+                                    ResponseLimits {
+                                        max_tool_calls: self.config.max_tool_calls_per_response,
+                                        max_tool_argument_bytes: self.config.max_tool_argument_bytes_per_response,
+                                        max_response_bytes: self.config.max_response_bytes,
+                                    },
+                                ) {
+                                    assembly_error = Some(error);
+                                    break;
+                                }
+                            }
                             Some(Err(error)) => {
                                 stream_error = Some(error.to_string());
                                 break;
@@ -288,6 +311,7 @@ impl Runner {
             }
 
             if let Some(error) = stream_error {
+                total_usage.add_assign(accumulator.usage);
                 self.record_attempt(session_id, &turn_id, step, &error)?;
                 self.config.recorder.retry(
                     session_id,
@@ -316,9 +340,311 @@ impl Runner {
                 );
             }
 
+            if let Some(error) = assembly_error.filter(|_| !cancelled) {
+                let usage = accumulator.usage;
+                let partial_text = (!accumulator.text.is_empty()).then_some(accumulator.text);
+                total_usage.add_assign(usage);
+                self.record_response_outcome(
+                    session_id,
+                    &turn_id,
+                    step,
+                    ResponseAdmissionOutcome {
+                        outcome: "rejected",
+                        code: error.code(),
+                        limit: error.limit(),
+                        observed: error.observed(),
+                    },
+                )?;
+                self.close_step(session_id, &turn_id, step, usage, !tools_enabled, observer)?;
+                return self.finish(
+                    session_id,
+                    turn_id,
+                    TurnEndStatus::Failed,
+                    error.to_string(),
+                    partial_text,
+                    step,
+                    total_usage,
+                    observer,
+                );
+            }
+
             total_usage.add_assign(accumulator.usage);
             let step_usage = accumulator.usage;
-            let (text, calls) = accumulator.settle_calls();
+            if cancelled {
+                // Tool deltas are provisional until the provider completes the
+                // whole response. Keep only bounded partial text; never put
+                // provisional calls into the durable transcript on interrupt.
+                let text = accumulator.text;
+                let content = if text.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![ContentPart::text(text.clone())]
+                };
+                self.append(
+                    session_id,
+                    Event::payload(
+                        EventKind::AssistantMessage,
+                        &AssistantMessagePayload {
+                            turn_id: turn_id.clone(),
+                            message_id: None,
+                            content,
+                            tool_calls: Vec::new(),
+                            interrupted: true,
+                        },
+                    ),
+                )?;
+                observer.on_event(RunEvent::AssistantMessage {
+                    step: step as u64,
+                    text: text.clone(),
+                    tool_calls: Vec::new(),
+                });
+                self.close_step(
+                    session_id,
+                    &turn_id,
+                    step,
+                    step_usage,
+                    !tools_enabled,
+                    observer,
+                )?;
+                return self.finish(
+                    session_id,
+                    turn_id,
+                    TurnEndStatus::Interrupted,
+                    "interrupted during the model step".to_owned(),
+                    Some(text).filter(|text| !text.is_empty()),
+                    step,
+                    total_usage,
+                    observer,
+                );
+            }
+
+            let finish_reason = accumulator.finish_reason.clone();
+            match finish_reason.as_ref() {
+                Some(FinishReason::Length) => {
+                    let text = accumulator.text;
+                    self.record_response_outcome(
+                        session_id,
+                        &turn_id,
+                        step,
+                        ResponseAdmissionOutcome {
+                            outcome: "incomplete",
+                            code: "OUTPUT_LIMIT_REACHED",
+                            limit: None,
+                            observed: None,
+                        },
+                    )?;
+                    self.close_step(
+                        session_id,
+                        &turn_id,
+                        step,
+                        step_usage,
+                        !tools_enabled,
+                        observer,
+                    )?;
+                    return self.finish(
+                        session_id,
+                        turn_id,
+                        TurnEndStatus::Partial,
+                        "provider output limit reached; partial response retained without tool dispatch".to_owned(),
+                        Some(text).filter(|text| !text.is_empty()),
+                        step,
+                        total_usage,
+                        observer,
+                    );
+                }
+                Some(FinishReason::ContentFilter) => {
+                    let text = accumulator.text;
+                    self.record_response_outcome(
+                        session_id,
+                        &turn_id,
+                        step,
+                        ResponseAdmissionOutcome {
+                            outcome: "rejected",
+                            code: "PROVIDER_CONTENT_FILTER",
+                            limit: None,
+                            observed: None,
+                        },
+                    )?;
+                    self.close_step(
+                        session_id,
+                        &turn_id,
+                        step,
+                        step_usage,
+                        !tools_enabled,
+                        observer,
+                    )?;
+                    return self.finish(
+                        session_id,
+                        turn_id,
+                        TurnEndStatus::Failed,
+                        "provider stopped the response for a content filter".to_owned(),
+                        Some(text).filter(|text| !text.is_empty()),
+                        step,
+                        total_usage,
+                        observer,
+                    );
+                }
+                Some(FinishReason::Other(_)) | None => {
+                    let text = accumulator.text;
+                    let (code, reason) = if finish_reason.is_none() {
+                        (
+                            "MISSING_FINISH_REASON",
+                            "provider stream ended without a finish marker",
+                        )
+                    } else {
+                        (
+                            "UNSUPPORTED_FINISH_REASON",
+                            "provider returned an unsupported finish reason",
+                        )
+                    };
+                    self.record_response_outcome(
+                        session_id,
+                        &turn_id,
+                        step,
+                        ResponseAdmissionOutcome {
+                            outcome: "rejected",
+                            code,
+                            limit: None,
+                            observed: None,
+                        },
+                    )?;
+                    self.close_step(
+                        session_id,
+                        &turn_id,
+                        step,
+                        step_usage,
+                        !tools_enabled,
+                        observer,
+                    )?;
+                    return self.finish(
+                        session_id,
+                        turn_id,
+                        TurnEndStatus::Failed,
+                        reason.to_owned(),
+                        Some(text).filter(|text| !text.is_empty()),
+                        step,
+                        total_usage,
+                        observer,
+                    );
+                }
+                Some(FinishReason::Stop | FinishReason::ToolCalls) => {}
+            }
+
+            let provisional_text = accumulator.text.clone();
+            let (text, calls) = match accumulator.settle_calls() {
+                Ok(response) => response,
+                Err(error) => {
+                    self.record_response_outcome(
+                        session_id,
+                        &turn_id,
+                        step,
+                        ResponseAdmissionOutcome {
+                            outcome: "rejected",
+                            code: error.code(),
+                            limit: error.limit(),
+                            observed: error.observed(),
+                        },
+                    )?;
+                    self.close_step(
+                        session_id,
+                        &turn_id,
+                        step,
+                        step_usage,
+                        !tools_enabled,
+                        observer,
+                    )?;
+                    return self.finish(
+                        session_id,
+                        turn_id,
+                        TurnEndStatus::Failed,
+                        error.to_string(),
+                        Some(provisional_text).filter(|text| !text.is_empty()),
+                        step,
+                        total_usage,
+                        observer,
+                    );
+                }
+            };
+            let finish_matches_calls = match finish_reason {
+                Some(FinishReason::Stop) => calls.is_empty(),
+                Some(FinishReason::ToolCalls) => !calls.is_empty(),
+                _ => false,
+            };
+            let malformed_arguments = calls.iter().any(|(_, error)| error.is_some());
+            let unadvertised_tool = calls.iter().find(|(call, _)| {
+                tools_enabled && !advertised_tool_names.iter().any(|name| name == &call.name)
+            });
+            let invalid_schema_tool = if tools_enabled {
+                calls.iter().find_map(|(call, parse_error)| {
+                    if parse_error.is_some() {
+                        return None;
+                    }
+                    self.tools
+                        .validate_input(call)
+                        .err()
+                        .map(|_| call.name.clone())
+                })
+            } else {
+                None
+            };
+            let rejection = if !finish_matches_calls {
+                Some((
+                    "FINISH_CALLS_MISMATCH",
+                    "provider finish reason did not match the response tool calls".to_owned(),
+                ))
+            } else if malformed_arguments {
+                Some((
+                    "INVALID_TOOL_ARGUMENTS",
+                    "provider returned malformed tool arguments; rejecting the entire batch"
+                        .to_owned(),
+                ))
+            } else if let Some((call, _)) = unadvertised_tool {
+                Some((
+                    "UNADVERTISED_TOOL",
+                    format!(
+                        "provider returned unadvertised tool `{}`; rejecting the entire batch",
+                        call.name
+                    ),
+                ))
+            } else {
+                invalid_schema_tool.map(|name| (
+                    "TOOL_SCHEMA_VALIDATION",
+                    format!(
+                        "provider arguments fail the `{name}` input schema; rejecting the entire batch"
+                    ),
+                ))
+            };
+            if let Some((code, reason)) = rejection {
+                self.record_response_outcome(
+                    session_id,
+                    &turn_id,
+                    step,
+                    ResponseAdmissionOutcome {
+                        outcome: "rejected",
+                        code,
+                        limit: None,
+                        observed: None,
+                    },
+                )?;
+                self.close_step(
+                    session_id,
+                    &turn_id,
+                    step,
+                    step_usage,
+                    !tools_enabled,
+                    observer,
+                )?;
+                return self.finish(
+                    session_id,
+                    turn_id,
+                    TurnEndStatus::Failed,
+                    reason,
+                    Some(text).filter(|text| !text.is_empty()),
+                    step,
+                    total_usage,
+                    observer,
+                );
+            }
             // A tool result is correlated to its call by the call id, so two calls
             // that share one id in the same turn cannot be told apart — and a
             // reused id is indistinguishable from a replay of the call that
@@ -327,7 +653,17 @@ impl Runner {
             if let Err(reason) =
                 admit_call_ids(&mut used_call_ids, calls.iter().map(|(call, _)| call))
             {
-                self.record_attempt(session_id, &turn_id, step, &reason)?;
+                self.record_response_outcome(
+                    session_id,
+                    &turn_id,
+                    step,
+                    ResponseAdmissionOutcome {
+                        outcome: "rejected",
+                        code: "DUPLICATE_TOOL_CALL_ID",
+                        limit: None,
+                        observed: None,
+                    },
+                )?;
                 self.config.recorder.retry(
                     session_id,
                     &turn_id,
@@ -381,27 +717,6 @@ impl Runner {
                 text: text.clone(),
                 tool_calls: proposed.clone(),
             });
-
-            if cancelled {
-                self.close_step(
-                    session_id,
-                    &turn_id,
-                    step,
-                    step_usage,
-                    !tools_enabled,
-                    observer,
-                )?;
-                return self.finish(
-                    session_id,
-                    turn_id,
-                    TurnEndStatus::Interrupted,
-                    "interrupted during the model step".to_owned(),
-                    Some(text).filter(|text| !text.is_empty()),
-                    step,
-                    total_usage,
-                    observer,
-                );
-            }
 
             if calls.is_empty() {
                 history.push(Message::assistant(text.clone()));
@@ -493,7 +808,7 @@ impl Runner {
                 });
                 // Surface an approval request before the async authorization
                 // runs, so an interactive surface can show it (`REQ-GUARD-003`).
-                let ctx = self.tool_context(session_id, &turn_id, &gate, call);
+                let ctx = self.tool_context(session_id, &turn_id, &gate, call, &cancel);
                 if let Some(request) = self.tools.permission_request(call, &ctx)
                     && matches!(gate.classify(&request), Some(PolicyOutcome::Ask))
                 {
@@ -507,7 +822,7 @@ impl Runner {
             }
 
             let settlements = self
-                .execute_calls(session_id, &turn_id, &gate, &calls)
+                .execute_calls(session_id, &turn_id, &gate, &calls, &cancel)
                 .await;
             for event in self.config.recorder.drain_events() {
                 observer.on_event(event);
@@ -559,6 +874,7 @@ impl Runner {
         turn_id: &TurnId,
         gate: &Arc<AuditedGate>,
         call: &ToolCall,
+        cancel: &CancelToken,
     ) -> ToolContext {
         ToolContext {
             session_id: session_id.clone(),
@@ -569,6 +885,7 @@ impl Runner {
             gate: Some(gate.clone()),
             sandbox: self.config.sandbox.clone(),
             resolved: self.config.sandbox_resolved.clone(),
+            cancel: cancel.clone(),
         }
     }
 
@@ -578,6 +895,7 @@ impl Runner {
         turn_id: &TurnId,
         gate: &Arc<AuditedGate>,
         calls: &[(ToolCall, Option<String>)],
+        cancel: &CancelToken,
     ) -> Vec<Settlement> {
         let all_parallel = calls
             .iter()
@@ -599,10 +917,11 @@ impl Runner {
                     let session_id = session_id.clone();
                     let turn_id = turn_id.clone();
                     let gate = gate.clone();
+                    let cancel = cancel.clone();
                     futures.push(async move {
                         (
                             index,
-                            self.settle_one(&session_id, &turn_id, &gate, &call, error)
+                            self.settle_one(&session_id, &turn_id, &gate, &call, error, &cancel)
                                 .await,
                         )
                     });
@@ -618,7 +937,7 @@ impl Runner {
             let mut settlements = Vec::with_capacity(calls.len());
             for (call, error) in calls {
                 settlements.push(
-                    self.settle_one(session_id, turn_id, gate, call, error.clone())
+                    self.settle_one(session_id, turn_id, gate, call, error.clone(), cancel)
                         .await,
                 );
             }
@@ -633,6 +952,7 @@ impl Runner {
         gate: &Arc<AuditedGate>,
         call: &ToolCall,
         argument_error: Option<String>,
+        cancel: &CancelToken,
     ) -> Settlement {
         if let Some(error) = argument_error {
             return Settlement {
@@ -649,7 +969,7 @@ impl Runner {
                 error_code: Some("TOOL_INVALID_INPUT".to_owned()),
             };
         }
-        let ctx = self.tool_context(session_id, turn_id, gate, call);
+        let ctx = self.tool_context(session_id, turn_id, gate, call, cancel);
         self.tools
             .settle(call, &ctx, gate.as_ref(), &self.config.output_bounds)
             .await
@@ -701,6 +1021,31 @@ impl Runner {
                     "turn_id": turn_id.as_str(),
                     "step": step,
                     "error": message,
+                }),
+            ),
+        )?;
+        Ok(())
+    }
+
+    fn record_response_outcome(
+        &self,
+        session_id: &SessionId,
+        turn_id: &TurnId,
+        step: usize,
+        outcome: ResponseAdmissionOutcome,
+    ) -> Result<(), LoopError> {
+        self.append(
+            session_id,
+            Event::payload(
+                EventKind::ModelAttempt,
+                &serde_json::json!({
+                    "turn_id": turn_id.as_str(),
+                    "step": step,
+                    "phase": "response_admission",
+                    "outcome": outcome.outcome,
+                    "code": outcome.code,
+                    "limit": outcome.limit,
+                    "observed": outcome.observed,
                 }),
             ),
         )?;
@@ -889,12 +1234,100 @@ fn failure_class_of(error: &horizoncode_types::ProviderError) -> FailureClass {
     }
 }
 
-/// Accumulates one provider stream into a settled assistant message.
+/// Hard memory ceilings applied while the provider response is still streaming.
+#[derive(Clone, Copy, Debug)]
+struct ResponseLimits {
+    max_tool_calls: usize,
+    max_tool_argument_bytes: usize,
+    max_response_bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ResponseAdmissionOutcome {
+    outcome: &'static str,
+    code: &'static str,
+    limit: Option<usize>,
+    observed: Option<usize>,
+}
+
+type SettledToolCalls = Vec<(ToolCall, Option<String>)>;
+
+/// A response that cannot be admitted as one complete bounded batch.
+#[derive(Debug, thiserror::Error)]
+enum ResponseAssemblyError {
+    #[error("response tool-call count exceeds the configured limit ({limit})")]
+    ToolCallCount { limit: usize, observed: usize },
+    #[error("response tool-argument bytes exceed the configured limit ({limit})")]
+    ToolArgumentBytes { limit: usize, observed: usize },
+    #[error("retained response bytes exceed the configured limit ({limit})")]
+    ResponseBytes { limit: usize, observed: usize },
+    #[error("provider emitted response data after its finish marker")]
+    EventsAfterFinish,
+    #[error("provider emitted more than one finish marker")]
+    DuplicateFinish,
+    #[error("provider emitted conflicting tool-call identity fragments")]
+    ConflictingToolIdentity,
+    #[error("provider response omitted a tool-call id")]
+    MissingToolCallId,
+    #[error("provider response omitted a tool name")]
+    MissingToolName,
+    #[error("provider emitted an unsupported response event")]
+    UnsupportedEvent,
+}
+
+impl ResponseAssemblyError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::ToolCallCount { .. } => "TOOL_CALL_COUNT_LIMIT",
+            Self::ToolArgumentBytes { .. } => "TOOL_ARGUMENT_BYTES_LIMIT",
+            Self::ResponseBytes { .. } => "RESPONSE_BYTES_LIMIT",
+            Self::EventsAfterFinish => "EVENT_AFTER_FINISH",
+            Self::DuplicateFinish => "DUPLICATE_FINISH",
+            Self::ConflictingToolIdentity => "CONFLICTING_TOOL_IDENTITY",
+            Self::MissingToolCallId => "MISSING_TOOL_CALL_ID",
+            Self::MissingToolName => "MISSING_TOOL_NAME",
+            Self::UnsupportedEvent => "UNSUPPORTED_RESPONSE_EVENT",
+        }
+    }
+
+    fn limit(&self) -> Option<usize> {
+        match self {
+            Self::ToolCallCount { limit, .. }
+            | Self::ToolArgumentBytes { limit, .. }
+            | Self::ResponseBytes { limit, .. } => Some(*limit),
+            _ => None,
+        }
+    }
+
+    fn observed(&self) -> Option<usize> {
+        match self {
+            Self::ToolCallCount { observed, .. }
+            | Self::ToolArgumentBytes { observed, .. }
+            | Self::ResponseBytes { observed, .. } => Some(*observed),
+            _ => None,
+        }
+    }
+}
+
+impl Default for ResponseLimits {
+    fn default() -> Self {
+        Self {
+            max_tool_calls: crate::DEFAULT_MAX_TOOL_CALLS_PER_RESPONSE,
+            max_tool_argument_bytes: crate::DEFAULT_MAX_TOOL_ARGUMENT_BYTES_PER_RESPONSE,
+            max_response_bytes: crate::DEFAULT_MAX_RESPONSE_BYTES,
+        }
+    }
+}
+
+/// Accumulates one provider stream into a bounded provisional response.
 #[derive(Debug, Default)]
 struct StepAccumulator {
     text: String,
     usage: Usage,
     calls: BTreeMap<u32, PartialCall>,
+    argument_bytes: usize,
+    response_bytes: usize,
+    finish_reason: Option<FinishReason>,
 }
 
 #[derive(Debug, Default)]
@@ -905,14 +1338,25 @@ struct PartialCall {
 }
 
 impl StepAccumulator {
-    fn apply(&mut self, event: ModelEvent, observer: &mut dyn RunObserver) {
+    fn apply(
+        &mut self,
+        event: ModelEvent,
+        observer: &mut dyn RunObserver,
+        limits: ResponseLimits,
+    ) -> Result<(), ResponseAssemblyError> {
+        if self.finish_reason.is_some() && !matches!(&event, ModelEvent::Finished { .. }) {
+            return Err(ResponseAssemblyError::EventsAfterFinish);
+        }
         match event {
-            ModelEvent::Started | ModelEvent::Finished { .. } => {}
+            ModelEvent::Started => {}
             ModelEvent::TextDelta { text } => {
+                self.retain_response_bytes(text.len(), limits.max_response_bytes)?;
                 self.text.push_str(&text);
                 observer.on_event(RunEvent::TextDelta { text });
             }
-            ModelEvent::ReasoningDelta { .. } => {}
+            ModelEvent::ReasoningDelta { text } => {
+                self.retain_response_bytes(text.len(), limits.max_response_bytes)?;
+            }
             ModelEvent::Usage(usage) => self.usage = usage,
             ModelEvent::ToolCallDelta {
                 index,
@@ -920,28 +1364,80 @@ impl StepAccumulator {
                 name,
                 arguments_delta,
             } => {
-                let entry = self.calls.entry(index).or_default();
-                if id.is_some() {
-                    entry.id = id;
+                if !self.calls.contains_key(&index) && self.calls.len() >= limits.max_tool_calls {
+                    return Err(ResponseAssemblyError::ToolCallCount {
+                        limit: limits.max_tool_calls,
+                        observed: self.calls.len().saturating_add(1),
+                    });
                 }
-                if name.is_some() {
-                    entry.name = name;
+                let argument_bytes = self.argument_bytes.saturating_add(arguments_delta.len());
+                if argument_bytes > limits.max_tool_argument_bytes {
+                    return Err(ResponseAssemblyError::ToolArgumentBytes {
+                        limit: limits.max_tool_argument_bytes,
+                        observed: argument_bytes,
+                    });
+                }
+                let response_delta = id
+                    .as_ref()
+                    .map_or(0, String::len)
+                    .saturating_add(name.as_ref().map_or(0, String::len))
+                    .saturating_add(arguments_delta.len());
+                self.retain_response_bytes(response_delta, limits.max_response_bytes)?;
+                let entry = self.calls.entry(index).or_default();
+                if let Some(id) = id {
+                    if entry.id.as_ref().is_some_and(|existing| existing != &id) {
+                        return Err(ResponseAssemblyError::ConflictingToolIdentity);
+                    }
+                    entry.id = Some(id);
+                }
+                if let Some(name) = name {
+                    if entry
+                        .name
+                        .as_ref()
+                        .is_some_and(|existing| existing != &name)
+                    {
+                        return Err(ResponseAssemblyError::ConflictingToolIdentity);
+                    }
+                    entry.name = Some(name);
                 }
                 entry.arguments.push_str(&arguments_delta);
+                self.argument_bytes = argument_bytes;
             }
-            _ => {}
+            ModelEvent::Finished { reason } => {
+                if self.finish_reason.is_some() {
+                    return Err(ResponseAssemblyError::DuplicateFinish);
+                }
+                if let FinishReason::Other(value) = &reason {
+                    self.retain_response_bytes(value.len(), limits.max_response_bytes)?;
+                }
+                self.finish_reason = Some(reason);
+            }
+            _ => return Err(ResponseAssemblyError::UnsupportedEvent),
         }
+        Ok(())
     }
 
-    /// Returns the assistant text and the parsed calls (with any argument
-    /// decode error attached to the call).
-    fn settle_calls(self) -> (String, Vec<(ToolCall, Option<String>)>) {
+    fn retain_response_bytes(
+        &mut self,
+        additional: usize,
+        limit: usize,
+    ) -> Result<(), ResponseAssemblyError> {
+        let observed = self.response_bytes.saturating_add(additional);
+        if observed > limit {
+            return Err(ResponseAssemblyError::ResponseBytes { limit, observed });
+        }
+        self.response_bytes = observed;
+        Ok(())
+    }
+
+    /// Returns the assistant text and parsed calls, refusing missing identity.
+    fn settle_calls(self) -> Result<(String, SettledToolCalls), ResponseAssemblyError> {
         let mut calls = Vec::with_capacity(self.calls.len());
-        for (index, partial) in self.calls {
-            let id = partial.id.unwrap_or_else(|| format!("call_{index}"));
-            let name = partial.name.unwrap_or_default();
+        for (_index, partial) in self.calls {
+            let id = partial.id.ok_or(ResponseAssemblyError::MissingToolCallId)?;
+            let name = partial.name.ok_or(ResponseAssemblyError::MissingToolName)?;
             if name.is_empty() {
-                continue;
+                return Err(ResponseAssemblyError::MissingToolName);
             }
             let arguments = if partial.arguments.trim().is_empty() {
                 Ok(Value::Object(serde_json::Map::new()))
@@ -956,7 +1452,7 @@ impl StepAccumulator {
                 )),
             }
         }
-        (self.text, calls)
+        Ok((self.text, calls))
     }
 }
 
@@ -1004,25 +1500,31 @@ mod tests {
     fn tool_call_fragments_accumulate_in_index_order() {
         let mut observer = NullObserver;
         let mut accumulator = StepAccumulator::default();
-        accumulator.apply(
-            ModelEvent::ToolCallDelta {
-                index: 0,
-                id: Some("call_1".to_owned()),
-                name: Some("read".to_owned()),
-                arguments_delta: "{\"pa".to_owned(),
-            },
-            &mut observer,
-        );
-        accumulator.apply(
-            ModelEvent::ToolCallDelta {
-                index: 0,
-                id: None,
-                name: None,
-                arguments_delta: "th\":\"a.txt\"}".to_owned(),
-            },
-            &mut observer,
-        );
-        let (text, calls) = accumulator.settle_calls();
+        accumulator
+            .apply(
+                ModelEvent::ToolCallDelta {
+                    index: 0,
+                    id: Some("call_1".to_owned()),
+                    name: Some("read".to_owned()),
+                    arguments_delta: "{\"pa".to_owned(),
+                },
+                &mut observer,
+                ResponseLimits::default(),
+            )
+            .unwrap();
+        accumulator
+            .apply(
+                ModelEvent::ToolCallDelta {
+                    index: 0,
+                    id: None,
+                    name: None,
+                    arguments_delta: "th\":\"a.txt\"}".to_owned(),
+                },
+                &mut observer,
+                ResponseLimits::default(),
+            )
+            .unwrap();
+        let (text, calls) = accumulator.settle_calls().unwrap();
         assert!(text.is_empty());
         assert_eq!(calls.len(), 1);
         let (call, error) = &calls[0];
@@ -1036,16 +1538,19 @@ mod tests {
     fn invalid_tool_arguments_are_flagged_not_dropped() {
         let mut observer = NullObserver;
         let mut accumulator = StepAccumulator::default();
-        accumulator.apply(
-            ModelEvent::ToolCallDelta {
-                index: 0,
-                id: Some("call_9".to_owned()),
-                name: Some("read".to_owned()),
-                arguments_delta: "{not json".to_owned(),
-            },
-            &mut observer,
-        );
-        let (_, calls) = accumulator.settle_calls();
+        accumulator
+            .apply(
+                ModelEvent::ToolCallDelta {
+                    index: 0,
+                    id: Some("call_9".to_owned()),
+                    name: Some("read".to_owned()),
+                    arguments_delta: "{not json".to_owned(),
+                },
+                &mut observer,
+                ResponseLimits::default(),
+            )
+            .unwrap();
+        let (_, calls) = accumulator.settle_calls().unwrap();
         assert_eq!(calls.len(), 1);
         assert!(calls[0].1.is_some());
     }
@@ -1054,16 +1559,19 @@ mod tests {
     fn empty_arguments_default_to_an_empty_object() {
         let mut observer = NullObserver;
         let mut accumulator = StepAccumulator::default();
-        accumulator.apply(
-            ModelEvent::ToolCallDelta {
-                index: 0,
-                id: Some("call_2".to_owned()),
-                name: Some("list".to_owned()),
-                arguments_delta: String::new(),
-            },
-            &mut observer,
-        );
-        let (_, calls) = accumulator.settle_calls();
+        accumulator
+            .apply(
+                ModelEvent::ToolCallDelta {
+                    index: 0,
+                    id: Some("call_2".to_owned()),
+                    name: Some("list".to_owned()),
+                    arguments_delta: String::new(),
+                },
+                &mut observer,
+                ResponseLimits::default(),
+            )
+            .unwrap();
+        let (_, calls) = accumulator.settle_calls().unwrap();
         assert_eq!(calls[0].0.arguments, serde_json::json!({}));
     }
 }

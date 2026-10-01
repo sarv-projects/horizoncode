@@ -34,7 +34,22 @@ pub const CONFIG_FILE: &str = "config.jsonc";
 /// private to its working directory rather than writing to `/`).
 #[must_use]
 pub fn state_root() -> PathBuf {
-    state_root_from(std::env::var_os("HORIZONCODE_HOME"), dirs::home_dir())
+    state_root_from(std::env::var_os("HORIZONCODE_HOME"), home_dir())
+}
+
+/// Returns the operating system's home directory when one is available.
+///
+/// The standard-library resolver uses `HOME`/the user database on Unix and
+/// `USERPROFILE`/the native profile API on Windows. Its Windows handling was
+/// corrected in Rust 1.85, which is below this workspace's Rust 1.89 minimum.
+#[must_use]
+pub fn home_dir() -> Option<PathBuf> {
+    // Rust 1.89 still marks this long-standing API deprecated. The deprecation
+    // is removed in newer toolchains; its documented platform behavior is the
+    // cross-platform resolver required by the existing path contract.
+    #[allow(deprecated)]
+    let home = std::env::home_dir();
+    home.filter(|path| !path.as_os_str().is_empty())
 }
 
 /// The pure resolution behind [`state_root`], so every branch is testable
@@ -235,5 +250,10 @@ mod tests {
     #[test]
     fn the_state_root_has_a_last_resort_with_no_home() {
         assert_eq!(state_root_from(None, None), PathBuf::from("."));
+    }
+
+    #[test]
+    fn the_platform_home_resolver_never_returns_an_empty_path() {
+        assert!(home_dir().is_none_or(|path| !path.as_os_str().is_empty()));
     }
 }

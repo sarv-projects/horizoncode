@@ -1,7 +1,7 @@
 //! The `write` tool: create or overwrite a workspace file.
 
-use horizoncode_types::ToolDefinition;
 use async_trait::async_trait;
+use horizoncode_types::ToolDefinition;
 use serde_json::{Value, json};
 
 use crate::builtin::{
@@ -73,7 +73,11 @@ impl Tool for WriteTool {
         // anything that changes it afterwards is a concurrent change, and the
         // write is refused rather than silently overwriting it (`ARCH/10`).
         let base = std::fs::read(&resolved).unwrap_or_default();
-        check_base_pin(optional_str(&input, "expectedBaseHash").as_deref(), &resolved, &base)?;
+        check_base_pin(
+            optional_str(&input, "expectedBaseHash").as_deref(),
+            &resolved,
+            &base,
+        )?;
         assert_action(ctx, "edit", vec![raw.clone()], Vec::new()).await?;
         check_sandbox_write(ctx, &resolved)?;
         let existed = resolved.exists();

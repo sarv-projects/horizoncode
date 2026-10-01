@@ -1,0 +1,15 @@
+{
+  "packages": [
+    {
+      "name": "horizoncode-types",
+      "manifest_path": "crates/horizoncode-types/Cargo.toml",
+      "dependencies": [
+        {
+          "name": "ratatui",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "kind": null
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,157 @@
+# 26 — Core coding-agent source crosswalk
+
+Reviewed 2026-09-29. This is the explicit read-through of the five core agent notes
+the user named: [Claude Code](../../research%20docs/claude.md),
+[Codex](../../research%20docs/codex.md), [OpenCode](../../research%20docs/opencode.md),
+[Cline](../../research%20docs/cline.md), and [Aider](../../research%20docs/aider.md).
+Each note was read end to end for this crosswalk. Their pinned commits, upstream
+links and coverage limits live in the notes. This document records a design
+disposition, not a claim that every upstream file or every ARCH line was audited.
+The task-facing [source trail](SOURCE-TRACEABILITY.md) now names the concrete
+local entry points/tests and the pinned upstream files for the main patterns.
+Read those files before adapting a pattern; a crosswalk row alone is insufficient.
+Claude Code's internal implementation is not public, so its row rests on
+documented behavior. No upstream code has been copied.
+
+| Source and observed pattern | HorizonCode disposition | Exact design owner or gap |
+|---|---|---|
+| Claude Code: project instructions, skills and MCP tools load progressively | Adopt selective context and tool schema loading with provenance | `ARCH/core/CONTEXT.md`, `ARCH/product/DISCOVERY-AND-EXTENSIONS.md`, `REQ-CTX-010`; implement `AX-332`. |
+| Claude Code: auto-compaction, resumable sessions and file checkpoints | Preserve transcript and durable run records separately; distinguish file rewind from external-effect recovery | `ARCH/core/SESSION-AND-THREADS.md`, `ARCH/core/COMPRESSION.md`, `ARCH/execution/LONG-HORIZON.md`; effect journal `AX-311`. |
+| Claude Code: focused subagents, background agents and teams | Keep focused worker contexts and user steering; only recorded peer events are visible | `ARCH/execution/ORCHESTRATION.md`, `ARCH/execution/LONG-HORIZON.md`, `REQ-HORIZON-009`; adapter `AX-318`. |
+| Claude Code public subagent docs: fresh child context, explicit skill preload, optional profile-scoped memory; parent transcript and auto-memory do not implicitly transfer. `SubagentStart` may append child `additionalContext`, skips a copy still present, and re-adds it after compaction, but cannot block creation. | Build a bounded, revision-bound `ContextPacket` before dispatch; default fork/profile-memory `none`; retrieve only task-relevant accepted memory under explicit policy and bind IDs/revisions to `ContextEpoch`. Adapter hooks may deliver only an already-authorized packet; Horizon's controller owns authorization and durable replay. ACP/opaque workers may not offer equivalent controls, so negotiate or send no profile memory. | `REQ-MEM-005..007`, `DEC-072`, `ARCH/core/CONTEXT.md`, `ARCH/execution/ORCHESTRATION.md`, `ARCH/core/CONFIG.md`, `ARCH/product/MEMORY.md`, `AX-371`; public limits in `research docs/claude.md` and `research docs/claude-mem.md`. |
+| claude-mem public docs: lifecycle capture, progressive observation retrieval, and optional model-backed compression; historical Agent Teams issue reported duplicated inherited context | Reuse only the progressive retrieval and explicit source/usage accounting idea. Keep Horizon's reviewable memory candidates, isolation, freshness, and local-first policy; do not infer all processing is local from SQLite storage or generalize the historical issue to current versions. | `ARCH/product/MEMORY.md`, `DEC-067`, `DEC-072`, `AX-371`; focused public-doc/issue review only, no source tree inspected. |
+| Claude Code: settings, permissions and hooks | Keep typed effective settings and pre-effect policy; hooks cannot widen authority | `ARCH/core/CONFIG.md`, `ARCH/security/SECURITY-MODEL.md`, `REQ-UI-010`. |
+| Codex: Rust core plus app-server stable/experimental schemas | Keep one core and versioned client contracts; negotiate optional methods | `ARCH/03-SYSTEM-ARCHITECTURE.md`, `ARCH/integrations/PROTOCOLS.md`, `ARCH/product/DISCOVERY-AND-EXTENSIONS.md`; schema gate `ACC-P1-05`. |
+| Codex: shared app-server client centralizes startup/lifecycle and keeps an in-process typed transport | Reuse the typed shared boundary for attached and supervised clients; retain bounded queues, durable owner events, and explicit gap/resnapshot instead of Codex's documented unbounded local consumer queue | `ARCH/integrations/CONTROL-API.md`, `REQ-HORIZON-013`, `DEC-063`, `AX-367`; exact `app-server-client/README.md` pin in `docs/research/SOURCE-TRACEABILITY.md` `U-CX-APP-SERVER`. |
+| Codex: JSONL rollout and SQLite index; thread/turn/item separation | Separate canonical events from rebuildable projections and run/task/attempt identity | `ARCH/core/SESSION-AND-THREADS.md`, `ARCH/execution/LONG-HORIZON.md`, `AX-309`. |
+| Codex: persisted parent/child thread graph, lifecycle and budget controls | Track external IDs and usage, but require task DAG and independent evidence for completion | `ARCH/execution/ORCHESTRATION.md`, `ARCH/execution/LONG-HORIZON.md`, `AX-310`, `AX-318`. |
+| Codex: managed `NetworkPolicyController`, exact-host destination policy, per-hop route-aware redirects, response-held revocable permits, and unsupported-SDK refusal under endpoint restrictions; separate unmanaged/direct and legacy paths remain | Reuse the managed policy lifecycle and revoke-in-flight pattern as a reference. Do not assume every Codex caller uses it or that host matching proves DNS/IP binding. HorizonCode requires every outbound route to declare its level/mechanism/residual, makes required enforcement non-defaultable, and independently proves resolved-address connection behavior per tier. | `REQ-SEC-007`, `DEC-026`, `ARCH/security/SANDBOX.md`, `ARCH/security/SECURITY-MODEL.md`, `ARCH/acceptance/ACCEPTANCE-MATRIX.md` `ACC-P1-01`; pinned paths `http-client/src/network_policy.rs`, `route_aware_client_pool/execution.rs`, and `response.rs` in `U-CX-EGRESS`. |
+| Codex: local agent message board and separate remote board client, with scoped membership, channels/posts, paging/search, idempotent post IDs, body/output caps, and best-effort live notices | Adopt a bounded Run-scoped mailbox through the existing Run event stream and recipient Thread inbox; keep task truth separate, expose explicit per-recipient receipts, and do not assume delivery/read/understanding or a remote service implementation from the public client crate | `ARCH/execution/ORCHESTRATION.md`, `ARCH/execution/LONG-HORIZON.md`, `ARCH/product/AGENT-MESSAGING.md`, `REQ-HORIZON-031`, `DEC-064`, `research docs/codex.md`, `docs/research/SOURCE-TRACEABILITY.md` `U-CX-MESSAGE-BOARD`; Horizon addition is a proposed synthesis, not copied code. |
+| Codex Goals: persistent thread-scoped objective, `/goal` lifecycle commands, event-driven idle-boundary continuation, queued-input checks, budget stop, and suppression after no-tool-call continuation | Reuse explicit goal/status/budget visibility and safe-boundary scheduling; bind HorizonCode activation to exact approved digests, preserve a task graph/evidence gate, and let the deterministic controller—not prompt text—own stop state | [Current Goals guide](https://developers.openai.com/cookbook/examples/codex/using_goals_in_codex), `research docs/codex.md`, `ARCH/25`, `ARCH/27`, `DEC-039`, `DEC-042`, `DEC-047`, `DEC-048`, `AX-337`. |
+| Codex: review command, diff and Git/worktree workflow | Add exact-revision review and governed PR lifecycle | `ARCH/execution/LONG-HORIZON.md`, `REQ-DELIVERY-001`, `AX-326`. |
+| OpenCode: models.dev provider metadata separated from connectors | Use a pinned, curated catalog as data; probe real route capabilities and cost provenance | `ARCH/core/PROVIDERS.md`, `REQ-PROV-006`, `AX-324`, `AX-327`. |
+| OpenCode: typed message parts, input admission sequence and context epoch | Preserve queued/steered input order and epoch-bound prompt/tool snapshots; task truth remains separate | `ARCH/core/SESSION-AND-THREADS.md`, `ARCH/core/CONTEXT.md`, `ARCH/execution/LONG-HORIZON.md`. |
+| OpenCode TUI at `083ed266e058dc3d2d1b377ff5540859d79de110`: sparse home composer; typed active transcript and tool states; child-session navigation; blocking permission/question prompts; recent-message hydration window; theme/preferences; SSE reconnect loop | Use explicit idle/active/waiting/error states and actionable tool/approval context; keep canonical search beyond the visible transcript window; replay/resnapshot before a reattached client trusts state. Do not copy OpenCode's process-lifetime “always allow” semantics or mistake Session/UI completion for task acceptance. This is a source trace only, not a launched TUI usability result. | `ARCH/product/UI.md`, `ARCH/execution/LONG-HORIZON.md`, `ARCH/integrations/CONTROL-API.md`, `research docs/opencode.md`, `docs/research/SOURCE-TRACEABILITY.md` `U-OC-TUI`; no source code copied. |
+| OpenCode at `083ed266e058dc3d2d1b377ff5540859d79de110`: parent-linked durable Sessions; Task tool resumes a child by Session ID; process-local background registry; V2 separates admitted input from visible history and replays durable aggregate events | Reuse durable conversation/inbox/replay patterns, but do not identify HorizonCode Task with peer Session or mistake local job state for restart recovery. HorizonCode's target `ThreadId` defines the canonical conversation identity; external Session IDs are adapter bindings and `WorkerExecution` records live incarnations | `ARCH/core/SESSION-AND-THREADS.md`, `ARCH/execution/ORCHESTRATION.md`, `ARCH/execution/LONG-HORIZON.md`, `REQ-HORIZON-028`, `AX-359`, `AX-379`, `research docs/opencode.md`. |
+| OpenCode: dynamic permission-filtered tool registry and child sessions | Permission-filter before materialization; child completion does not pass parent task | `ARCH/core/TOOLS.md`, `ARCH/execution/ORCHESTRATION.md`, `REQ-TOOL-003`. |
+| OpenCode: local retry/doom-loop guard | Use its signal as one attempt fingerprint; persistent controller changes strategy across sessions | `ARCH/execution/LONG-HORIZON.md`, `AX-310`. |
+| MiMo-Code: OpenCode-derived memory, goal, task/actor workflows and response-flood recovery | Study the fork-specific deltas without counting it as an independent OpenCode peer; use bounded whole-response admission and durable recovery evidence | `ARCH/core/AGENT-LOOP.md`, `ARCH/execution/LONG-HORIZON.md`, `research docs/mimo-code.md`, `research docs/tests.md`, `AX-338`, `AX-345`. |
+| Cline v4.1.21 Hub: `HubServerTransport` defaults to in-process `LocalRuntimeHost`; the public hub-spoke document describes a topology not found in the inspected runtime paths, and `SpokeRecord` has no identified producer/consumer there | Treat this as supervisor-hosted execution evidence only. HorizonCode's detached controller, authenticated attach, durable cursor replay, and process recovery remain its own requirements; do not cite Cline as proof of remote spokes or restart recovery | Pinned Cline source and coverage note in [research docs](../../research%20docs/cline.md); `REQ-HORIZON-011`, `ARCH/execution/LONG-HORIZON.md`, `AX-331`. |
+| Cline v4.1.21: Agenda task/revision/run/claim/lease schema; Hub disables the Agenda tool, automation pump, UI and spec watcher at the inspected pin. Team has dependency edges, but its outcomes and Agenda completion are not independent acceptance evidence. | Adopt task revisions, claim fencing, and bounded admission; preserve separate task DAG and thread topology; unlock HorizonCode dependencies only after verification. | `ARCH/execution/ORCHESTRATION.md`, `ARCH/execution/LONG-HORIZON.md`, `AX-309..313`, [pinned Cline source map](../../research%20docs/cline.md). |
+| Cline: distinct team events, snapshots, dependency-aware task records, outcomes and manifests | Keep event, projection and artifact ownership explicit; reconcile cross-stream mismatch; do not equate team review/finalization with independent verification. | `ARCH/25` schema and cross-stream rule; [pinned TeamTask contract](https://github.com/cline/cline/blob/787ad1b077d8b697892dc3bfcd42e7c65b88789e/sdk/packages/shared/src/team/types.ts). |
+| Cline: local-model output-limit recovery and concurrent subagents | Probe actual model/template limits; parallelism remains bounded by leases and parent budget | `REQ-PROV-006`, `ARCH/execution/ORCHESTRATION.md`, `AX-327`. |
+| DeepSeek-Reasonix: explicit plan-first workflow, restricted research tools, structured plan evidence/assumptions/risks/acceptance, and user approval | Offer plan-first as a selectable workflow for ambiguous/high-impact requests; enforce read-only research at tool/policy boundaries; block execution if plan validation/approval fails; do not insert a planner on every task | `ARCH/02-REQUIREMENTS.md` intent/spec requirements, `ARCH/execution/ORCHESTRATION.md`, `ARCH/security/SECURITY-MODEL.md`, `ARCH/execution/LONG-HORIZON.md`, `REQ-ORCH-006`, `AX-317`, `AX-336`. |
+| DeepSeek-Reasonix: immutable prompt prefix, bounded provider context, transcript JSONL with BM25 retrieval, MCP session recreation after 404 | Keep canonical local history and compacted prompt projection separate; carry source refs and retrieval probes; retry MCP discovery only when effect completion is known, otherwise reconcile before replay | `ARCH/core/SESSION-AND-THREADS.md`, `ARCH/core/CONTEXT.md`, `ARCH/core/COMPRESSION.md`, `ARCH/product/DISCOVERY-AND-EXTENSIONS.md`, `ARCH/execution/LONG-HORIZON.md`, `AX-311`, `AX-320`, `AX-332`. |
+| DeepSeek-Reasonix: VS Code ACP extension supplies editor context, approval and session/model UI | Implement editor integration through negotiated ACP capabilities and explicit context provenance; editor contribution cannot grant policy authority or turn activity into completion evidence | `ARCH/product/UI.md`, `ARCH/integrations/PROTOCOLS.md`, `ARCH/core/CONFIG.md`, `ARCH/acceptance/ACCEPTANCE-MATRIX.md`, `AX-112`, `AX-323`. |
+| DeepSeek Harness: cache reuse depends on byte-identical routed request prefixes; cache read/write usage is separately provider-reported; cache controls vary by adapter/model | Keep prefix stability and cache controls route-specific; preserve disjoint usage fields and show unknown when unreported. Do not add universal cache markers or assume local/OpenCode providers expose DeepSeek's behavior. | `ARCH/core/CONTEXT.md`, `ARCH/core/PROVIDERS.md`, `ARCH/acceptance/ACCEPTANCE-MATRIX.md`, `AX-384`; pinned paths and coverage limits in [DeepSeek Harness review](../../research%20docs/long-horizon-repo-review.md#deepseek-harness-cache-follow-up-2026-09-29). |
+| DeepSeek Harness: some models explicitly support appending an updated system prompt in history; others require replacement | Full prompt replacement remains the safe default. Only consider append-in-history for a route with explicit model semantics, exact effective-prompt tests, and immutable route/context provenance; never infer from an OpenAI-compatible endpoint or cache support. | `ARCH/core/CONTEXT.md`, `ARCH/core/PROVIDERS.md`, `ARCH/acceptance/ACCEPTANCE-MATRIX.md`, `AX-384`; this is an optional optimization, not a provider-wide feature. |
+| DeerFlow: clarification middleware arbitrates question calls before sibling dispatch; bounded history search/read retrieves visible pre-compaction records | Preserve whole-batch question fencing. Add optional model-facing history retrieval through the planned shared Thread-history owner, without copying DeerFlow's separate archive or LLM completion authority. | `REQ-TOOL-006/007`, `ARCH/core/SESSION-AND-THREADS.md`, `ARCH/core/TOOLS.md`, `ARCH/execution/LONG-HORIZON.md`, `AX-380/385`; [pinned follow-up](../../research%20docs/long-horizon-repo-review.md#2026-09-29-clarification-and-compacted-history-follow-up). |
+| LongHorizon-Harness: supervised launch/continuation with durable run records; user-visible continue and retry have distinct lifecycle meaning | Keep durable launch intent, idempotent delivery, and continuation distinct from a fresh retry. Existing Horizon contracts already own typed Run/Task/Attempt state, bounded reservations, and independent verification; do not add the peer's agent-authored auditor as a completion authority. Sharpen crash tests around reservation→run-directory creation and process-launch→response-delivery boundaries. | `ARCH/execution/LONG-HORIZON.md`, `ARCH/acceptance/ACCEPTANCE-MATRIX.md`, `AX-337`, `AX-359`, `ACC-H1-07`; [pinned review](../../research%20docs/long-horizon-repo-review.md#longhorizon-harness). |
+| KiloCode: timeout/quarantine for CLI polling, volatile per-session cost nudge, and descendant usage aggregation | Do not add a second budget/warning owner. Horizon's durable controller policy already exceeds the volatile nudge. Add no runtime behavior from Kilo's global threshold; its timeout tiers are relevant only if a polling adapter is introduced. | `ARCH/execution/LONG-HORIZON.md`, `ARCH/product/COMMANDS-AND-SETTINGS.md`, `AX-342`; focused pinned source review in [CodeBurn note](../../research%20docs/codeburn.md#2026-09-29-quota-observation-follow-up). |
+| CodeBurn: provider-specific local usage sources and quota refresh with stale/auth/backoff states | Add a provider-owned optional read-only quota-observation contract with independent windows, refresh coalescing/backoff, retained stale state, and source references. Do not import arbitrary local transcript/account scraping or treat observed account quota as HorizonCode reservation authority. | `REQ-PROV-014`, `ARCH/core/PROVIDERS.md`, `ARCH/product/ANALYTICS.md`, `ARCH/product/COMMANDS-AND-SETTINGS.md`, `AX-386`; focused pinned source review in [CodeBurn note](../../research%20docs/codeburn.md#2026-09-29-quota-observation-follow-up). |
+| Superset/OpenHands: worker process/UI and negotiated capabilities can differ from the local adapter build; event persistence and same-host leases do not prove an external effect did not happen or provide multi-host fencing | Record local adapter build and frozen negotiated capability digest per execution; record peer version only when observed, and renegotiate after reconnect. An interrupted/unmatched action remains `UNKNOWN` until reconciliation; a local lease is not a distributed lease. The OpenHands SDK replay benchmark is a storage microbenchmark, not full server/effect recovery or SWE-task quality evidence. | `ARCH/execution/LONG-HORIZON.md`, `AX-318/359`; pinned source notes in [Superset](../../research%20docs/superset.md), [OpenHands UI](../../research%20docs/ui-runtime-tools-review.md), and [OpenHands SDK](../../research%20docs/source-audit-coverage/openhands-sdk-71612374.md). |
+| OpenHands Agent Canvas: server-owned history with latest-page/scroll catch-up, websocket resend, optimistic in-memory UI projection, typed client boundary, and localStorage backend API-key persistence | Keep UI catch-up and optimistic bubbles as replaceable projections; canonical Horizon events, effect settlement, cursor/gap recovery, and credentials stay in the runtime/store. Partial or unsupported history pagination must surface incomplete coverage and never become export/acceptance proof. Confirmation policy and client-tool annotations do not establish OS confinement; browser storage is not a secret broker. | `ARCH/product/UI.md`, `ARCH/core/SESSION-AND-THREADS.md`, `ARCH/security/SANDBOX.md`, `ARCH/security/SECURITY-MODEL.md`, `ARCH/execution/LONG-HORIZON.md`, `ARCH/integrations/CONTROL-API.md`, `AX-318/359`; targeted pin/coverage in [OpenHands Canvas audit](../../research%20docs/source-audit-coverage/openhands-94e156a8.md). |
+| Ruflo V3: in-process swarm coordinator, callback-backed agents, process-local memory backend, and simulated consensus | Do not treat swarm branding, callbacks, or a consensus vote as durable orchestration or verification. Keep Run/Task/Attempt state, budget reservations, fenced workers, and independent evidence as the sole authority; represent a peer swarm only behind an external adapter. | `ARCH/execution/ORCHESTRATION.md`, `ARCH/execution/LONG-HORIZON.md`, `AX-318`; bounded V3 source report and coverage ledger in [Ruflo audit](../../research%20docs/source-audit-coverage/ruflo-fce8e6da.md). |
+| Nanobot: semaphore-limited background subagents, process-local task registry/cancellation, JSONL session history, unbounded event queues, and explicitly network-permissive sandbox profiles | Keep durable Attempt/WorkerExecution and restart reconciliation separate from transcript persistence. Preserve bounded control/event lanes and visible gaps; record sandbox reach from the actual mechanism, not a workspace mount or confirmation flag. Channel/gateway behavior remains out of terminal-first scope. | `ARCH/security/SANDBOX.md`, `ARCH/execution/ORCHESTRATION.md`, `ARCH/execution/LONG-HORIZON.md`, `ARCH/integrations/CONTROL-API.md`, `AX-359`; [Nanobot audit](../../research%20docs/source-audit-coverage/nanobot-b7abbcd7.md). |
+| Hermes Agent: typed subagent handles with `UNKNOWN`, process-global registry, SQLite delivery-obligation ledger, profile-scoped provider registry, and at-least-once gateway delivery | Retain explicit unknown/reconcile states and bounded ambiguous-delivery evidence, but require Horizon's durable launch/effect records and independent task verification. Provider registry generations are observations, not immutable adapter capability provenance; gateway profile multiplexing is deferred. | `ARCH/core/PROVIDERS.md`, `ARCH/execution/ORCHESTRATION.md`, `ARCH/execution/LONG-HORIZON.md`, `ARCH/product/AGENT-MESSAGING.md`, `AX-318/359`; [Hermes audit](../../research%20docs/source-audit-coverage/hermes-agent-ea114c3e.md). |
+| ECC: large skill/agent/command catalog and harness-specific hooks; wshobson/agents: source-to-harness adapters, capability matrix, generated-output validation, and symlink-safe installer | Keep one HorizonCode catalog, trust review, digest-checked activation, and one effect/policy path. Use adapter capability matrices and install ownership tests only for a deliberate import/export feature; prompt hooks, generated manifests, and scores cannot grant authority or prove runtime behavior. | `ARCH/product/DISCOVERY-AND-EXTENSIONS.md`, `ARCH/security/SECURITY-MODEL.md`, `AX-373`, `AX-378`; [ECC/wshobson audit](../../research%20docs/source-audit-coverage/ecc-wshobson-agent-catalogs-20260929.md). |
+| Aider: small, graph-ranked Tree-sitter repository map | Keep a task-relevant map with source revision, symbol provenance and direct-read fallback | `ARCH/core/CONTEXT.md`, `ARCH/execution/LONG-HORIZON.md`, `REQ-REPO-001`, `AX-320`. |
+| Aider: model-specific edit formats and bounded repair feedback | Offer conformance-gated parser paths where useful; preflight all edits and keep a durable retry budget | `REQ-PROV-007`, `ARCH/execution/LONG-HORIZON.md`, `AX-333`. |
+| Aider: optional automatic lint/tests and Git commits/undo | Use fast diagnostics for repair, then independent revision-bound evidence; Git is a code checkpoint | `ARCH/execution/LONG-HORIZON.md`, `ARCH/acceptance/ACCEPTANCE-MATRIX.md`, `AX-333`. |
+
+## Cross-source conclusions
+
+The useful common core is a bounded model/tool loop, repository retrieval,
+permission-aware tools, inspectable session history and Git-aware changes.
+HorizonCode's proposed addition is a controller that persists intent, tasks,
+attempts, effects, budget and independent evidence outside the worker session.
+That addition is a design hypothesis until `ACC-H1-01..10` and the same-model,
+same-budget comparison in `AX-330` are executed.
+
+The five core notes do **not** establish an exhaustive map of every upstream schema,
+UI screen, provider adapter or platform branch. They also do not prove that
+HorizonCode already implements the proposed controller. The source/license
+ledger in `docs/research/SOURCE-LEDGER.md` remains the gate before any adapted code or dependency.
+
+## Session, task, and process identity finding
+
+These are distinct upstream choices, not a universal naming convention:
+
+| System | Durable conversation | Delegation relation | What survives process loss (evidence reviewed) |
+|---|---|---|---|
+| OpenCode at the pinned 2026-09-28 revision | `Session`, with optional `parentID` | Task tool's `task_id` resumes the child Session; new delegation creates a parent-linked Session | Session event/input data is durable in V2 design; active execution/background-job registry is process-local. V2 explicitly leaves restart ownership/continuation recovery open. |
+| Codex current public source/docs | `Thread`, turns/items and parent-child thread graph | Child thread/agent lifecycle is managed through ThreadManager/app-server surfaces | Thread history and Goal metadata persist, and Goals resume/continue subject to controller/runtime policy. This is still not a general verified task DAG. |
+| Cline public SDK/source map | Session plus separate team/task records in some flows | Team tasks and session children are related but have different persistence/usage semantics | Depends on selected session/team feature; do not collapse its agenda task, task run, team task, and session into one ID. |
+| HorizonCode target | `ThreadId` is the durable conversation identity; `CMP-session` remains the persistence component/crate name | Run → Task DAG → Attempt → one or more Threads; the Thread parent/child tree is separate from the Task DAG | Durable run/attempt and Thread behavior are target contracts with partial foundations; a durable process incarnation is currently absent and proposed by `REQ-HORIZON-028`/`AX-359`. The schema/API migration is `AX-379`. |
+
+**Disposition.** Follow accepted `DEC-069`: keep exactly one HorizonCode `ThreadId`
+for each durable conversation, with `WorkerExecution` for each live process/adapter
+incarnation. The legacy `CMP-session` component/crate and old on-disk field names may
+remain migration details; they do not define a second HorizonCode `Session` domain
+object. External OpenCode/ACP/provider session IDs are bindings to a Thread, not
+HorizonCode identity. Keep Task DAG edges separate from the conversation tree. A
+process exit, Thread close, ACP `session/close`, or child receipt remains an execution
+or conversation event, never independent Task PASS evidence.
+
+This recommendation is falsifiable: acceptance must kill/restart the controller
+around launch, heartbeat, client disconnect, peer completion and effect settlement;
+prove that one durable Thread/Attempt can be reconciled without duplicate writes;
+prove unknown peer outcomes remain blocked; and prove the integrated Task still
+requires revision-bound independent evidence. This review does not establish those
+behaviors as implemented.
+
+**Claims not carried forward without evidence.** OpenCode's `task_id` behaving as a
+child Session ID and its process-local background-job status are confirmed at the
+pinned source revision. At the Task-tool lookup site, a missing ID leads to a fresh
+child; the visible lookup does not prove parent ownership, while the surrounding
+authorization path has not been fully traced. HorizonCode must verify the full peer
+binding before resume. The detailed paths are in `research docs/opencode.md`.
+Codex's app-server/ThreadManager and persistent ThreadGoal schema are source-backed.
+Current `ThreadManager` also imports a local agent-message-board implementation, so
+the feature exists as a source subsystem. This review did not trace its full API or
+validate the earlier claim of remote subscriptions/SSE; that transport detail remains
+unconfirmed here. AgentProfile, input receipts, context epochs, event-envelope
+fields, and a task DAG are already represented in HorizonCode's target docs; they
+must not be mislabeled as absent merely because implementation remains incomplete.
+
+## Findings from this read-through
+
+- `F-26`: `ARCH/execution/LONG-HORIZON.md` said every mutating method checks an epoch and sequence,
+  while its interface sketch omitted those arguments. `MutationGuard` and
+  `RecoveryGuard` now make that precondition visible.
+- `F-27`: client detachment was implied in `DEC-030` without an attach/replay
+  contract. `REQ-HORIZON-011` and `ARCH/execution/LONG-HORIZON.md` define it.
+- `F-28`: `ARCH/product/DISCOVERY-AND-EXTENSIONS.md` discovered full MCP tool lists but did not bound model
+  schema injection. `REQ-CTX-010` pins a selected schema set per model step.
+- `F-29`: local models were capability-probed for transport/tool calls but
+  had no explicit edit-parser and diagnostics contract. `REQ-PROV-007`
+  defines a measured optional route.
+
+## Additional focused ecosystem crosswalk (2026-09-30)
+
+| Source | Observed scope | HorizonCode disposition |
+|---|---|---|
+| AutoGPT Platform | Installer-bound environment/image digest; workflow/runtime concepts | Pattern only at U-AUTOGPT-ENV; PolyForm subtree excluded from copying/adaptation. |
+| planning-with-files | Filesystem-backed working notes and explicit completion prompts | Bounded ExecutionBrief projection only; owner stores remain canonical; no copied hooks/files. |
+| LobsterAI | Desktop product/runtime separation and config translation | WorkerConfigRenderer pattern only; no OpenClaw runtime/foreign schema in core. |
+| SuperAGI | Historical toolkit/capability grouping signal | Low-confidence ecosystem input; not a parity or architecture authority. |
+| AG-UI | Bidirectional event transport between an agent backend and user frontend | Optional edge client adapter only; internal ControlService remains canonical. |
+
+Pins, license posture, and source coverage are in SRC-037..041 and
+research docs/architecture-evolution-review-2026-09.md. These rows do not grant a
+license to copy or claim feature parity.
+
+## Final crosswalk scope refinement
+
+Code structure and documented UI behavior are research observations, not launched
+usability or full peer conformance. Aider/repository-map indexing belongs to
+CMP-repo-intel (ARCH/product/CODE-INTELLIGENCE.md); CMP-context consumes its bounded results. External worker
+execution uses WorkerFabric without adopting peer task truth. Historical ACC-H1-01..10
+references retain their original scope; new feature delivery also needs the applicable
+ACC-H1-11/12 and UX acceptance. No peer comparison grants code/license clearance.
+
+## Interaction and integration reconciliation (2026-09-30)
+
+DeepSeek scheduler/PTC/prefix/compaction/Ralph observations are pinned in ARCH29 and the new research report. Adapt conservative rolling pools and optional bounded strategy recipes; reject hot capability widening and worker-complete as PASS. Antigravity performance anecdotes are research motivation, not measured Horizon benchmarks.
+
+Detailed shared contracts: [ARCH/product/INTERACTIONS.md](../../ARCH/product/INTERACTIONS.md) and [ARCH/integrations/LITEPSM.md](../../ARCH/integrations/LITEPSM.md). Status remains proposed; see TODO AX-401..410.

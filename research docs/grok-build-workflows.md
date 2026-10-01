@@ -39,7 +39,7 @@ restart-safe long-horizon execution or exactly-once effects.
 
 ## HorizonCode disposition
 
-`DEC-068` and `ARCH/27` specify a guided Workflow Builder that saves versioned,
+`DEC-068` and `ARCH/product/COMMANDS-AND-SETTINGS.md` specify a guided Workflow Builder that saves versioned,
 validated task-graph templates. Invoking a template creates an ordinary HorizonCode
 Run and goes through the existing approval, budget, guard, sandbox, audit, recovery,
 and independent-verification contracts. A workflow file is inert data; there is no

@@ -118,20 +118,6 @@ fn find_bearer(text: &str) -> Option<usize> {
     text.find("Bearer ").or_else(|| text.find("bearer "))
 }
 
-/// Truncates `text` to at most `max_bytes` bytes on a char boundary, appending
-/// an ellipsis marker when truncated.
-#[must_use]
-pub fn truncate(text: &str, max_bytes: usize) -> String {
-    if text.len() <= max_bytes {
-        return text.to_owned();
-    }
-    let mut end = max_bytes;
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &text[..end])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,12 +153,5 @@ mod tests {
         assert_eq!(value["nested"]["authorization"], "***");
         assert_eq!(value["nested"]["note"], "***");
         assert_eq!(value["model"], "m");
-    }
-
-    #[test]
-    fn truncates_on_char_boundaries() {
-        assert_eq!(truncate("hello", 10), "hello");
-        assert_eq!(truncate("hello", 4), "hell…");
-        assert_eq!(truncate("héllo", 2), "h…");
     }
 }

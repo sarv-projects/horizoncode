@@ -1,0 +1,196 @@
+{
+  "revision": "262bdb2fb8a2fef86d885a6c83ea49bae38bfcde",
+  "files": [
+    {
+      "file": "00-INDEX.md",
+      "sha256": "99a285237c2a217e57c8fdfb1bcef72a51b7cdb08c1b3b4e1a16dd9601dd4602",
+      "lines": 110
+    },
+    {
+      "file": "01-VISION.md",
+      "sha256": "409aae1726aa2d54fce6b6c877176db2dbc04f87736e3cec0e1eff4732b7d09e",
+      "lines": 87
+    },
+    {
+      "file": "02-REQUIREMENTS.md",
+      "sha256": "2e03f0d1adfbb56cebb6660aadbee2763f14efbe25f31b28ff993597e955872f",
+      "lines": 374
+    },
+    {
+      "file": "03-ARCHITECTURE.md",
+      "sha256": "7f4e6bf6af30dda8e451ca731988b1e051f4fa30056e70627175b88a3fe0b791",
+      "lines": 290
+    },
+    {
+      "file": "04-DECISIONS.md",
+      "sha256": "eacc7ce169fee6a8d71e33235461a29dc396b07920c0f642fae1678a0ddf8432",
+      "lines": 2257
+    },
+    {
+      "file": "05-SOURCE-LEDGER.md",
+      "sha256": "66a62f89fc4ea2350abb36e47056475771e8d039e86558ae0d3c95cea4122f79",
+      "lines": 201
+    },
+    {
+      "file": "06-UI.md",
+      "sha256": "4ab4c9e3fa1620d420b724a5c67ca26735549e3942a6323698fb5230d97718b1",
+      "lines": 814
+    },
+    {
+      "file": "07-SESSION.md",
+      "sha256": "6735b566241a4910634f16e1c0d15f0102d768a6767800f062ed8bd25834ba6a",
+      "lines": 965
+    },
+    {
+      "file": "08-LOOP.md",
+      "sha256": "e1bf6f50c10e6050c3f0fd791115e8908e94768cf52e5fed0297bdb3b1dd2cf6",
+      "lines": 451
+    },
+    {
+      "file": "09-CONTEXT.md",
+      "sha256": "14a15309144379d7016ff6d2be43ef847bf5c54f8231dd014f443aea4cbf1ad6",
+      "lines": 566
+    },
+    {
+      "file": "10-TOOLS.md",
+      "sha256": "4ab88730ab384baee0498f39a223e891b92623995cec692b866ba5e90dacbb2b",
+      "lines": 707
+    },
+    {
+      "file": "11-PROVIDER.md",
+      "sha256": "2de2f12a91d5398aa51a2864232282931846e41ea17375dccf0e59592681c279",
+      "lines": 457
+    },
+    {
+      "file": "12-GUARD.md",
+      "sha256": "f736326c0ae5fd0225164a8698d41a1e9723a7c948f180588de58a33e1944f6e",
+      "lines": 471
+    },
+    {
+      "file": "13-SANDBOX.md",
+      "sha256": "f28e3984a21726d22203b2e3cbc1bd43662feba6da186b351bcf206954512e11",
+      "lines": 472
+    },
+    {
+      "file": "14-AUDIT.md",
+      "sha256": "ca5c1438d1c1ad1811781ea0ef5c0122a7ec17a824831400e9d2b7cd04d35fcb",
+      "lines": 619
+    },
+    {
+      "file": "15-PROTOCOLS.md",
+      "sha256": "91d16447907c0821acdbbfd199e1c835a011c99ccd2f2d3079c529bb68ff50bb",
+      "lines": 327
+    },
+    {
+      "file": "16-ORCH.md",
+      "sha256": "ddc4c5c2eb98dec882121496c0aa040f1768fdff8ac54de74106121e93ccc53d",
+      "lines": 333
+    },
+    {
+      "file": "18-CONFIG.md",
+      "sha256": "e7c6a43257e7215adce83e419354ad3ce07a3d8d97e1212dfc7c10433aa72f05",
+      "lines": 349
+    },
+    {
+      "file": "19-COMPRESSION.md",
+      "sha256": "8c84c23f6a03b170f9440f4929efffb50f97cfa53edbdb6d6cd39aa8a7849b83",
+      "lines": 114
+    },
+    {
+      "file": "20-ANALYTICS.md",
+      "sha256": "e3210611426509d7bc22bab81fa8c29337fbb784db5fb5861e025b84e150e4e2",
+      "lines": 124
+    },
+    {
+      "file": "21-DISCOVERY.md",
+      "sha256": "b9ac4777c035d7a791d990432a708b7f080d08ae3fef8acd904f3feb0e2ffa94",
+      "lines": 405
+    },
+    {
+      "file": "22-SECURITY.md",
+      "sha256": "ba6180f9d669bea982ab789a1f1061b2731af0af78b155e5451fe6d040cd6359",
+      "lines": 730
+    },
+    {
+      "file": "23-VERIFICATION.md",
+      "sha256": "9dceaa137f8d20035c4ddd9fc4d04748405128ead06a53665ca591a4e6844fad",
+      "lines": 705
+    },
+    {
+      "file": "24-ARCHITECTURE-REVIEW.md",
+      "sha256": "01bce360053d86ebd3c512e08a53ce4441fe82f34bd8c317798469228702c2a3",
+      "lines": 249
+    },
+    {
+      "file": "25-LONG-HORIZON-CONTROL.md",
+      "sha256": "54d79b490fbeacecce606e6dd6a16b5c7c7352934a706b6ae478111715fabddf",
+      "lines": 1003
+    },
+    {
+      "file": "26-CORE-AGENT-CROSSWALK.md",
+      "sha256": "213b4c5a67cab40d261edb8a07f9d12e575d1d819a7c68fe30ef2adfd2902449",
+      "lines": 157
+    },
+    {
+      "file": "27-COMMANDS-AGENTS-SETTINGS.md",
+      "sha256": "f216616827b6c1f29162355577a7847fab781dee6d91e03feb40912014499550",
+      "lines": 826
+    },
+    {
+      "file": "28-ARTIFACT-STORE.md",
+      "sha256": "61724d40d75ad2c28fddad3e2f111e42554c6e240c5a3827185dd92d19324ac2",
+      "lines": 263
+    },
+    {
+      "file": "29-SOURCE-TRACEABILITY.md",
+      "sha256": "26ab2adf5153cfc2cf5c4e563675c7e662140bfac2c930f13c97f66e364603e8",
+      "lines": 290
+    },
+    {
+      "file": "30-DISTRIBUTION-UPDATES.md",
+      "sha256": "ce2583a153ee31937c29b33a5f7747a39c76aadb3152d7e8f3fafa7888d4a188",
+      "lines": 444
+    },
+    {
+      "file": "31-CONTROL-API-APP-SERVER.md",
+      "sha256": "f1cbfcb6a6f402bae8f3d9a9de9c2b9dc8a1abd4ebd6469883e1b736e94438d8",
+      "lines": 332
+    },
+    {
+      "file": "32-AGENT-MESSAGING.md",
+      "sha256": "208d8954fd98640f103b4414e6f6beb67007e89b5878620a69d7cfbb5e168acf",
+      "lines": 260
+    },
+    {
+      "file": "33-MEMORY.md",
+      "sha256": "a6162e2feca5cf4572e5828c9faccc350561428d2a8d624ee35b88f3ce23f245",
+      "lines": 348
+    },
+    {
+      "file": "34-MODULARITY-AND-BOUNDARIES.md",
+      "sha256": "de82d5510bdf45a063c111b77bb3dd5a8691c1fb584ce028c930ab002b543275",
+      "lines": 99
+    },
+    {
+      "file": "35-CAPABILITY-PARITY-AND-EVOLUTION.md",
+      "sha256": "10a0de33b904f155b59ddbe63194b92587bb1eb9b932c67767a05be01a578a71",
+      "lines": 70
+    },
+    {
+      "file": "36-CODE-INTELLIGENCE.md",
+      "sha256": "00058d57f3c9b61103a9499b639a77dfc8f101332d10c50caee8e7cc7b13ac79",
+      "lines": 72
+    },
+    {
+      "file": "37-INTERACTION-AND-FAST-PATH.md",
+      "sha256": "2b11bbb5610dc77532385cc371a63827794f51d12b12c54c8dff7563155dc63f",
+      "lines": 326
+    },
+    {
+      "file": "38-LITEPSM-INTEGRATION.md",
+      "sha256": "b54ebfe73114129520b773d4b9a8d84db5c587b4dbce31ba82036a4e653d0faa",
+      "lines": 162
+    }
+  ],
+  "purpose": "Byte-for-byte pre-refactor archive; original relative links and wording preserved."
+}

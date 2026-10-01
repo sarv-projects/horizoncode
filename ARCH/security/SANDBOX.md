@@ -1,0 +1,425 @@
+# Sandbox (`CMP-sandbox`)
+
+## Purpose
+
+`CMP-sandbox` is the **enforcement layer** for platform confinement and egress. Where
+`CMP-guard` decides *whether* an action may run, `CMP-sandbox` applies the requested
+reach boundary and reports the guarantee supported by its OS mechanism and acceptance
+evidence — filesystem, network, and child processes. Every tier presents **one `SandboxProvider` interface** so
+callers never branch on backend (`DEC-008`, `REQ-GUARD-004`).
+
+The module executes the confinement decision owned by `CMP-guard`; it never evaluates
+its own policy. If confinement cannot be established, the default is refusal, not
+silent unconfined execution.
+
+`CMP-sandbox` is the **sole reach authority**: `check_path` (in-process filesystem
+operations) and `spawn` (child processes) are the only two calls that can grant or
+bound reach, and every tier enforces the resolved profile through them
+(`DEC-024`, `DEC-025`, `REQ-SEC-025`). Authorization is not reach
+(`REQ-SEC-010`): a Guard `allow` is a proposal this layer is free to refuse.
+
+## Responsibilities
+
+- Resolve a requested profile into a concrete confinement plan and apply it.
+- Scope filesystem **read** and **write** access to the granted roots under policy —
+  reads are scoped on **every** tier, not only writes.
+- Apply the **network policy** at the tier's **declared guarantee level**
+  (`DEC-026`, `REQ-GUARD-004`).
+- Refuse a spawn that names an absolute path outside the granted roots, rather than
+  relying on the tool plane to have extracted it (`DEC-024`).
+- Block child-process network reach and dangerous host bridges (process inspection,
+  VM sockets, `io_uring`) only where a concrete backend mechanism can enforce and test
+  the restriction; do not describe reach isolation as denial of the `connect()` API.
+- Provision and invoke an isolation backend per tier (local / container / remote).
+- Keep protected subpaths (e.g. VCS hooks and agent-owned config) read-only even
+  inside a writable root.
+- Emit a typed result and sandbox-denial records to `CMP-audit`.
+- Fail closed when a required backend is unavailable.
+
+**Never owns:** the allow/ask/deny decision (`CMP-guard`), credential custody
+(`CMP-secrets`), tool schemas (`CMP-tools`), or provider/model transport
+(`CMP-provider`).
+
+ExecutionHost owns spawn/process tree/reap; Sandbox owns prepare/validate confinement and enforced reach. ARCH38 external daemon reach is separate and explicitly observed; no inherited sandbox guarantee. Output custody stays with tool/host/artifact owners.
+
+## Interfaces
+
+| Peer (`CMP-*`) | Direction | Contract |
+|---|---|---|
+| `CMP-guard` | inbound | resolved `ConfinementProfile` (fs scope, network policy, protected subpaths) |
+| `CMP-tools` | inbound | `run(command, cwd, env, profile, limits) -> SandboxOutcome` for shell/exec; in-process fs ops consult `check_path`. **These two calls are the only enforcement calls** — no other entry point may grant or bound reach (`DEC-024`, `REQ-SEC-025`). |
+| `CMP-runner` | inbound | cancellation handle; process trees reaped on cancel |
+| `CMP-audit` | outbound | profile-applied, apply-failed, fs-violation, net-violation records |
+| `CMP-tui` / `CMP-headless` | outbound | health/status: `ok | degraded | down` with reason |
+| `CMP-orch` | outbound | per-subagent isolated worktree scope and limits |
+
+## One `SandboxProvider` interface
+
+```rust
+trait SandboxProvider: Send + Sync {
+    fn probe(&self, host: &HostIdentity) -> Availability;
+    fn prepare(&self, profile: &ConfinementProfile, host: &HostIdentity)
+        -> Result<SandboxPlan, SandboxError>;
+    fn validate(&self, plan: &SandboxPlan, admission: &AdmissionContext)
+        -> Result<(), SandboxError>;
+    fn check_path(&self, op: FsOp, path: &Path, plan: &SandboxPlan)
+        -> Result<(), SandboxError>;
+}
+```
+
+ExecutionHost owns provision, spawn, observation, process-tree termination and reap.
+It applies the validated SandboxPlan at its single launch seam. Sandbox owns the
+confinement mechanism and its declared reach; it does not spawn a second process.
+A path precheck is defense in depth; actual filesystem access uses handle-relative
+no-follow operations and revalidation. Neither is a second policy evaluator.
+
+**Unconfined grant schema (control receipt, never project configuration).** The
+exception named by `REQ-SEC-021` is not a `ConfinementProfile` boolean. It is a
+controller-minted, one-use authorization record:
+
+```text
+UnconfinedExecutionGrant {
+  grant_id, run_id?, task_id?, attempt_id?, worker_execution_id?,
+  authenticated_principal_ref, effect_classes[], resource_scope_digest,
+  worker_boundary: DISTINCT_IDENTITY | ISOLATED_VM,
+  private_state_boundary_digest, policy_digest, preview_digest,
+  issued_at, expires_at, consumed_at?, revoked_at?, audit_receipt_ref
+}
+```
+
+The grant is minted only after the trusted UI displays the effective reach and lost
+protections and receives explicit confirmation. It is consumed atomically before
+spawn, scoped to the named work and a short expiry, and cannot be copied into project
+config or inherited by child workers. If a distinct worker identity/VM cannot keep
+the controller, credentials, canonical Run/Thread/audit stores, and operator-control
+IPC outside the worker view, unconfined execution is unavailable; same-UID process
+separation or a hidden socket path is insufficient. The grant never changes Guard
+authorization or claims an OS containment guarantee for host paths within its scope.
+
+Callers hold a resolved profile, not a backend. Backends are selected by tier:
+
+| Tier | Backend | Notes |
+|---|---|---|
+| Local (default) | Linux: bubblewrap namespaces; Landlock/seccomp are separate optional mechanisms only when linked, installed, applied, and verified · macOS: Seatbelt profile · Windows: AppContainer + restricted token/job objects only when the native backend is linked | `--network=none` is the requested policy; effective guarantee is reported per backend; workspace-write only |
+| Container | OCI runtime (Docker/Podman) | Reproducible toolchains; mount-scoped workspace |
+| Remote / cloud | Managed sandbox behind the same trait | Hostile or elastic workloads; transport is an adapter detail |
+
+`bubblewrap` is invoked as a subprocess, never linked, keeping the binary's license
+surface clean (`DEC-008`, `DEC-012`). Landlock and seccomp bindings are ordinary
+permissive dependencies used in-process. The `--network=none` default is a *request*;
+what each backend actually enforces is its declared `network_guarantee_level`
+(§Network guarantee levels, `DEC-026`).
+
+ExecutionHost owns provisioning, spawn, observation and reap. Sandbox supplies the
+resolved confinement plan and mechanisms to that single launch seam; it does not
+create a competing process lifecycle. ExecutionEnvironmentSnapshot includes
+`snapshot_id`, spec/environment digests, host identity/type, OS/architecture, runtime,
+toolchain digests, probe version/time and actual enforcement profile. Identity hashes
+exclude secret values and do not establish reproducibility by themselves.
+
+A confinement profile lists workspace write roots and explicit read-only runtime roots
+needed for executables/libraries. Arbitrary outside-root paths remain denied; runtime
+roots are not an implicit host-wide mount. Re-probe required capabilities at admission
+and on drift; no silent unconfined fallback. A full-access exception is explicitly
+scoped, bounded and audited, never inherited by children. Process capture belongs to
+the tool/host output path and immutable artifact service, not a parallel runner store.
+Local lease proof does not establish distributed host identity or remote confinement.
+
+## Data / state model
+
+```
+ConfinementProfile = {
+  tier:            local | container | remote,
+  filesystem:      read-only | workspace-write | full-access,
+  writable_roots:  [Path],
+  readable_roots:  [Path],
+  protected:       [Path],            // read-only even inside a writable root
+  deny:            [Glob],             // must be enforced by the selected backend, not assumed from config
+  network:         none | allowlist | full,
+  network_rules:   [host:port/protocol],
+  limits:          { cpu, memory, disk, wall_clock }
+}
+ResolvedProfile = { backend, applied_at, mounts[], seccomp_mode, epoch,
+                    worker_identity, worker_view_digest, private_roots_excluded,
+                    control_endpoint_unreachable, network_guarantee_level,
+                    network_mechanism, network_residual }
+SandboxOutcome  = { exit, stdout_ref, stderr_ref, denied?, violations[] }
+```
+
+- **Profiles:** `read-only` (write only to per-attempt scratch + temp; network off at
+  the tier's declared level), `workspace-write` (default; write to the assigned
+  workspace + per-attempt scratch + temp; network off at the tier's declared level),
+  `full-access` (broad access to the explicitly selected worker environment and
+  network allowed — still subject to Guard and the catastrophic gate, and still one
+  egress path). Per-attempt scratch is disposable tool output, **not** canonical
+  Thread/run state. No tool child may write Thread events, task/evidence projections,
+  audit records, credentials, budgets, policy, or operator-control state.
+- **Private controller boundary:** canonical HorizonCode state, credential material,
+  operator IPC/control capabilities, and the controller's home/config roots are never
+  mounted into tool, hook, plugin, MCP, or peer processes. The controller and provider
+  broker stay in the trusted host process; worker children receive only bounded task
+  data and narrow effect capabilities. This boundary also applies to `full-access`:
+  offer that profile only when the backend places the worker under a distinct OS
+  identity or isolated VM/container view that excludes controller-private roots and
+  credentials while exposing only the user-selected worker environment. If the tier
+  cannot prove this, refuse `full-access`; same-UID unrestricted execution does not
+  qualify. Never pass operator-control tokens through environment variables, prompt
+  context, config, or shell arguments.
+- **Protected subpaths:** VCS metadata/hooks and agent-owned configuration stay
+  read-only inside any writable root so a write grant cannot rewrite the policy or
+  install a hook that runs outside confinement.
+- **Deny globs** are enforced at the selected backend boundary for read, write, and
+  rename where supported, so a denied path cannot be read via a tool nor relocated out
+  of the deny set and read elsewhere. If a tier cannot enforce that property, it must
+  refuse the profile rather than claim kernel enforcement.
+- **Reads are scoped to the granted roots on every tier** (`REQ-SEC-025`). This is a
+  reach property enforced here, not an authorization the caller performed. Linux
+  target design materializes a mount view containing only granted roots; the macOS
+  Seatbelt profile's `file-read*` grants MUST be expressed as granted-root subpath
+  allows rather than a blanket read; Windows relies on AppContainer ACLs only when
+  that backend is linked and exercised. A spawn naming an absolute path outside the
+  granted roots is **rejected**, or masked so the target does not exist in the child's
+  view.
+- **`network_guarantee_level`** is the tier's declared level (`enforced` |
+  `capability` | `best_effort` | `none`) together with `network_mechanism` and `network_residual`;
+  all three are surfaced as `ResolvedProfile.applied` notes wherever a
+  network-restricted profile is presented, and recorded in that tier's acceptance
+  record (`DEC-026`, `REQ-GUARD-004`, `REQ-VER-014`).
+- A denied operation inside a namespace is reported as a **violation**, not a crash.
+
+## Lifecycle & flows
+
+### Probe and admission
+1. **Probe** each candidate backend for the platform and record availability.
+2. Keep the controller/provider process outside a child tool's no-network profile;
+   provider and MCP HTTP traffic needs its own mediated egress. Agent-owned file I/O
+   uses checked, handle-relative paths; untrusted tool and extension execution runs
+   in a separately confined child. A future in-process sandbox may constrain the
+   controller only if its provider/broker and dynamic-grant topology is proven.
+   Keep the controller's private state and operator-control endpoint outside the
+   child view at every tier; the worker receives a separate per-attempt scratch path.
+   A child that invokes HorizonCode CLI or scans common state paths still has only its
+   worker identity and cannot connect to the operator control API. Verify this through
+   the concrete mount/ACL/VM boundary; a hidden socket path or prompt convention alone
+   is not containment.
+3. Freeze each **child execution** profile for that process lifetime. A running
+   child cannot relax it; a later grant requires a new authorization and a new
+   child profile. Resuming a session re-resolves and proves the requested profile
+   before any new child effect (`DEC-031`).
+4. Child commands are spawned through the tier backend (for example, bubblewrap
+   constructs the namespace and filesystem view); any additional filter is represented
+   only when the selected binary and kernel actually apply it. All mechanisms derive
+   from the same frozen profile.
+
+### Per effect
+1. `CMP-tools` receives a Guard `allow` and the resolved profile.
+2. In-process fs operations call `check_path` and use a handle-relative/no-follow
+   open or rename where available; `check_path` alone is not a kernel boundary or
+   a complete TOCTOU defense. Command execution calls `spawn` with a frozen child
+   profile. A platform lacking the required safe path primitive refuses the effect.
+3. The selected backend applies only mechanisms it can establish: Linux local uses
+   bubblewrap namespaces and an isolated network namespace when configured; future
+   Landlock/seccomp checks are separate evidence-bearing layers. macOS uses a
+   Seatbelt profile. Windows reports unavailable until its native AppContainer/token
+   backend is linked. No backend inherits another platform's guarantee by interface
+   similarity.
+4. Output is bounded and persisted by `CMP-runner`; the model sees a compact view.
+5. Denials and violations append to `CMP-audit`; cancellation reaps the process tree.
+
+### Network policy
+- Default `none`: the child namespace has no usable network **to the extent the tier
+  can prove**. The mechanism differs per tier, so the level it reaches is declared,
+  never assumed (§Platform notes, `DEC-026`).
+- Network guarantees describe **network reachability**, not denial of a syscall API.
+  A Linux target may use a new network namespace to remove ordinary host interfaces
+  and routes. That does not prove every local IPC socket, VM bridge, inherited
+  descriptor, helper process, or broker is unreachable. Those are separately scoped
+  and tested. A seccomp filter may be an additional defense, but this design does not
+  claim that denying `connect`/`bind` or restricting socket families is the primary
+  proof of network isolation.
+- Windows confinement uses an availability-probed AppContainer
+  capability posture is not a shipped guarantee. macOS emits Seatbelt network rules,
+  but no stronger process-tree claim is made until host acceptance covers descendants,
+  local sockets and helper processes. Both tiers report their current availability and
+  residual; no level is inferred from the platform name.
+- **Allowlist** grants specific `host:port` + protocol through the mediated agent
+  egress. A child with network access must be forced through an unbypassable broker;
+  a broad child network namespace plus an application HTTP check is insufficient.
+  If forced mediation is unavailable, that child profile is refused.
+- **Process/child-network blocking** applies to every descendant that remains within
+  the backend's confinement boundary. Inheritance and escape behavior is a platform
+  acceptance question; record the observed descendant boundary instead of assuming
+  that a wrapper automatically confines a detached helper.
+- **A required level the tier cannot provide is refused (fail closed)**
+  (`REQ-GUARD-004`). A caller demanding `enforced` on the macOS or Windows tier gets a
+  typed refusal, never a silent downgrade to `best_effort`/`capability`.
+
+## Profile matrix
+
+| Profile | FS read | FS write | Network | Use |
+|---|---|---|---|---|
+| `read-only` | scoped to granted roots | per-attempt scratch + temp only | off at the tier's declared level | Exploration, review, untrusted analysis |
+| `workspace-write` (default) | scoped to granted roots | assigned workspace + per-attempt scratch + temp | off at the tier's declared level | Everyday repo work |
+| `full-access` | explicit worker environment; controller-private roots denied | explicit worker environment; controller-private roots denied | allowed | Explicit, audited user activation, only under isolated worker identity/VM |
+
+`full-access` widens capability but never bypasses Guard: the catastrophic gate and
+the single-egress rule still apply. It is not an unrestricted same-UID host process;
+canonical controller state and operator-control authority remain outside the worker
+view. A backend that cannot prove this boundary refuses the profile, including bare
+execution on a platform that lacks the required isolation.
+
+**"Off" is a per-tier declared level, not a universal claim** (`DEC-026`). The matrix
+row says the profile *requests* no network; §Platform notes states what each tier can
+actually enforce, and the resolved profile records the level, mechanism, and residual.
+A profile whose requested level the tier cannot provide is refused, not approximated.
+
+## Platform notes
+
+Enforcement guarantees are reported by mechanism, host capability and platform acceptance. Unsupported required profiles refuse admission.
+
+- **Linux (local default, first enforcement target).** The backend uses
+  bubblewrap namespaces, a scoped mount view, and an unshared network namespace for
+  `none`; optional Landlock/seccomp count only when applied and independently verified. Therefore network proof is a reachability test against the isolated namespace
+  plus probes for inherited descriptors, Unix sockets, host bridges, descendants, and
+  helper access. Do not claim syscall filtering. A hard allowlist needs a forced broker
+  and an unreachable direct-network path; otherwise refuse allowlist execution. If
+  bubblewrap is unavailable, the effect is denied.
+- **macOS (first enforcement target).** A Seatbelt-profile backend implements the
+  same `SandboxProvider` trait and is an acceptance target for real containment.
+  Path containment is kernel-enforced by the Seatbelt profile, and `file-read*` grants
+  MUST be issued as granted-root subpath allows rather than a blanket read, so reads
+  are scoped to the granted roots like every other tier. Seatbelt
+  emits a network-deny rule for the wrapped command, but descendant inheritance,
+  broker/socket access, and escape behavior require host acceptance before assigning a
+  stronger guarantee. Until then, expose the residual and reject callers demanding
+  stronger guarantees.
+- **Windows.** Confinement is
+  designed to use an
+  **AppContainer** boundary plus a **restricted token** and **job objects** for
+  process/child containment. Job objects alone govern process lifetime, job-wide
+  limits, and child membership — they do **not** by themselves deny filesystem paths
+  or outbound network the way Landlock + seccomp do; AppContainer capability plus
+  file/registry ACLs carry the path and network part, and those ACLs are what scope
+  reads to the granted roots on this tier. This tier therefore has its own
+  acceptance tests (`TODO.md` Windows-containment task) and its limits are stated
+  honestly rather than described as equivalent. Availability is probed; a requested
+  backend that cannot be established fails closed. WSL is an execution backend, not
+  the Windows storage root.
+
+### Network guarantee levels (`DEC-026`)
+
+Every tier **declares** the level it provides. `enforced` is a demonstrated OS-level
+denial of prohibited network reachability; `capability` means denial by absence of an
+OS network capability; `best_effort` is a scoped mechanism with a documented residual;
+`none` means no network guarantee. A tier MUST NOT claim a level stronger than it can
+prove, and a caller that requires a level the tier does not provide MUST be refused.
+`DEC-027` is the formal read-through that makes "network off" a *request* everywhere in
+the document set and never a claim about what a tier enforces.
+
+| Tier | Level | Mechanism | Residual |
+|---|---|---|---|
+| Linux (local) | `enforced` only after acceptance | unshared network namespace plus measured path/descriptor/IPC boundary; optional filter recorded separately | No assertion that `connect()` itself is denied. Probe network namespace reachability, inherited descriptors, local IPC, VM sockets, and descendants. |
+| macOS (local) | `best_effort` until acceptance | Seatbelt network rule; report actual process/descendant boundary | No child-inheritance assumption; allowlist unsupported until a forced, unbypassable broker exists. |
+| Windows (local) | `capability` only when applied and acceptance establishes it; otherwise reported `none`/unavailable | AppContainer network capabilities, restricted token and ACL scope; Job Objects govern lifecycle only | Refuse a required guarantee until native setup and outbound/descendant tests prove it. |
+| Container / remote | declared by the tier | the tier's own isolation boundary | Whatever the tier declares is recorded verbatim; the interface is not upgraded by assumption. |
+
+`enforced` is the level a caller must demand for a hard "no egress" claim. The
+`best_effort` and `capability` levels are supported, disclosed postures — not
+"unsupported" tiers — and the difference is enforced by refusing an unmeetable
+requirement rather than by downgrading it silently.
+
+## Failure modes
+
+| Failure | Behavior |
+|---|---|
+| Backend unavailable | Select another backend only if it satisfies the exact required filesystem/network/process guarantees; otherwise **deny with reason** — never silently downgrade or run unconfined by default |
+| Profile cannot be applied | Fail closed; refuse the effect; audited |
+| Deny glob cannot be materialized (no backend) | Refuse to start rather than under-enforce |
+| Symlinked policy/config path | Refuse (prevents retargeting the policy) |
+| Mount preflight unsupported (e.g. `/proc`) | Retry without the optional mount; never drop the filesystem confinement |
+| Capabilities retained after setup | Abort the spawn; audited |
+| Network denied at runtime | Typed violation returned to the tool; audited |
+| Process hang | Watchdog → interrupt/cancel; tree reaped |
+| Explicit unconfined execution | A project/agent/config flag cannot enable it. It may run only after a trusted local user grants a one-run, expiring `UnconfinedExecutionGrant` for an exact task/effect scope and isolated worker boundary. The grant cannot override hard denies, private controller/credential/audit boundaries, managed locks, or required enforcement. No same-UID confidentiality or sandbox guarantee is claimed. Refuse if a distinct worker identity/VM cannot preserve private controller state, if the caller requires any capability the backend cannot enforce, if the grant/audit receipt cannot be durably recorded, or for unattended managed work without that exact approved grant. Never the default. |
+
+## Configuration
+
+JSONC profile definitions, discovered global → project (nearest wins). A project may
+**add** profile names, never redefine a global/enterprise profile.
+
+```jsonc
+{
+  "sandbox": {
+    "profile": "workspace-write",          // read-only | workspace-write | full-access
+    "tier": "local",                        // local | container | remote
+    "workspace": { "writable": ["**"], "protected": [".git/hooks", ".horizoncode"] },
+    "deny": ["**/.env", "**/*.pem", "**/.ssh/**"],
+    "network": { "mode": "none" }           // none | allowlist | full
+  }
+}
+```
+
+## Invocation from the tool plane
+
+`CMP-tools` never calls an OS primitive directly. Every effectful tool
+(`read`, `write`, `edit`, `apply_patch`, `glob`, `grep`, `shell`) acquires a Guard
+ticket, then routes through `CMP-sandbox`: path operations through `check_path`,
+process operations through `spawn`. Egress for `webfetch`/`websearch`/provider
+traffic leaves through the single mediated egress path, which is subject to the same
+network policy.
+
+## Verification approach
+
+- **Containment tests:** a command cannot read a denied path, cannot read a path
+  outside the granted roots, cannot write outside the writable roots, and cannot
+  rename a denied path out of the deny set. A spawn naming an absolute path outside
+  the granted roots is rejected or masked, asserted per tier.
+- **Network tests, per declared level** (`DEC-026`, `ACC-P1-01(d)`): probe external,
+  loopback, DNS, IPv6, inherited socket/FD, Unix-socket, VM-socket, child-process, and
+  proxy paths. Record syscall policy separately from reachable-path evidence. An
+  allowlist passes only when a forced broker is the sole usable egress path and denied
+  targets fail under DNS-rebinding and redirect tests.
+- **Level/refusal test:** a caller requiring `enforced` on a `best_effort` or
+  `capability` tier is refused typed — the run never silently downgrades.
+- **Capability test:** after setup, effective/permitted capabilities are empty.
+- **Fail-closed tests:** with the backend removed, the effect is denied and audited,
+  not run unconfined.
+- **Escape tests:** nested namespace rearrangement, VM-socket bridges, and
+  synthetic-mount cleanup are exercised; a violation forces a non-zero outcome.
+- **Parity:** the same test suite runs against each tier that advertises support.
+
+## Requirements mapping
+
+| REQ | How this module satisfies it |
+|---|---|
+| `REQ-GUARD-004` | Sandboxed execution defaults to workspace-scoped writes and a request for no outbound network; each tier declares its `network_guarantee_level` with mechanism and residual, the level is surfaced and recorded, and a required level the tier cannot provide is refused (`DEC-026`, `DEC-027`). |
+| `REQ-TOOL-003` | Denied tools are absent via Guard; the sandbox independently confines the rest. |
+| `REQ-SEC-003` | This module is the sole path-reach enforcer: in-process operations use `check_path`; spawned tools use the selected OS boundary. The profile is refused when that boundary cannot establish required scope. |
+| `REQ-SEC-025` | Sole path-reach owner: scoped roots and deny/protected paths are checked at use and applied by the selected tier. Acceptance records name whether evidence is in-process, mount-view, or kernel policy; a tier that cannot enforce the required boundary refuses the effect (`DEC-024`, `DEC-025`). |
+| `REQ-SEC-026` | The worker view excludes canonical Run/Thread/audit state, credentials, operator-control IPC, and the trusted controller home on every profile. `full-access` requires a distinct worker identity or isolated view; otherwise it is unavailable. |
+| `REQ-LOOP-005` | Cancellation propagates to process trees; partial state stays inspectable. |
+| `REQ-ORCH-003` | Per-subagent writable scopes are non-overlapping worktrees or explicitly merged. |
+| `REQ-PERF-001` | Startup probe is bounded; the warm-cache prompt target is unaffected. |
+
+## Execution environment identity
+
+The execution host records an `ExecutionEnvironmentSnapshot` separately from the
+`ConfinementProfile`:
+
+```text
+ExecutionEnvironmentSnapshot {
+  snapshot_id, spec_digest, host_identity, host_type, os_family, architecture,
+  runtime_versions, toolchain_digests, environment_digest,
+  probe_version, observed_at, enforcement_profile, unknown_fields[]
+}
+```
+
+The normalized spec digest and available tool/runtime facts are pinned to the Attempt;
+unmeasured facts remain explicitly unknown. Never persist or publish raw environment
+values, credentials, or secret-bearing command arguments in this record; only approved
+non-secret identity fields and their bounded digests may be included. On crash resume or a long delay, re-probe
+and compare. Material drift blocks continuation until the controller records an
+approved revalidation or starts a new Attempt. An environment digest describes
+observed identity only; it does not establish reproducibility, workspace validity, or
+an OS confinement guarantee. `CMP-execution-host` provisions/lifecycles processes;
+`CMP-sandbox` applies and reports the actual enforcement tier.

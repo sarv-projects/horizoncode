@@ -25,7 +25,7 @@ This combines public long-running-agent research with HorizonCode's stated contr
 | Anthropic's [managed-agent architecture](https://www.anthropic.com/engineering/managed-agents) (2026-04) describes harness, sandbox, and append-only session history as separate primitives. | Runtime state, execution isolation, and model reasoning are separable concerns. | A complete public schema or universal production blueprint. |
 | The [ACP changelog](https://github.com/agentclientprotocol/agent-client-protocol/blob/main/CHANGELOG.md) reports schema/SDK release 1.9.1 on 2026-09-18; stable wire protocol remains v1 and v2 entries are explicitly unstable. | Negotiate wire version and exact method capabilities; keep a stable v1 path while draft v2 evolves. | The schema package's 1.9.1 is not a wire-protocol version. ACP provides no task DAG, budgets, durable run state, or verification. |
 | MiMo-Code's [README](https://github.com/XiaomiMiMo/MiMo-Code/blob/main/README.md), [v0.1.15 release](https://github.com/XiaomiMiMo/MiMo-Code/releases/tag/v0.1.15), source docs, and Sep 2026 tool-flood PRs/issues. | A direct OpenCode fork adds cross-session memory, context reconstruction, task/actor/goal workflows, and exposes concrete flood/recovery failure cases. | Its features are not an independent OpenCode comparison, README claims are not proof, issue reports are not general failure rates, and current main may differ from a released binary. |
-| HorizonCode [architecture](../ARCH/03-ARCHITECTURE.md), [session model](../ARCH/07-SESSION.md), [loop](../ARCH/08-LOOP.md), [orchestration](../ARCH/16-ORCH.md), and [verification design](../ARCH/23-VERIFICATION.md). | The design calls for durable sessions, a task graph, bounded receipts, policy separation, and evidence gates. | That each described component is implemented or accepted. |
+| HorizonCode [architecture](../ARCH/03-SYSTEM-ARCHITECTURE.md), [session model](../ARCH/core/SESSION-AND-THREADS.md), [loop](../ARCH/core/AGENT-LOOP.md), [orchestration](../ARCH/execution/ORCHESTRATION.md), and [verification design](../ARCH/acceptance/ACCEPTANCE-MATRIX.md). | The design calls for durable sessions, a task graph, bounded receipts, policy separation, and evidence gates. | That each described component is implemented or accepted. |
 
 ## Proposed high-level architecture
 
@@ -169,22 +169,22 @@ The Rust source is unchanged between the previously reviewed source baseline `1c
 
 **Strong design already present**
 
-- Durable per-session JSONL replay/checkpoints and explicit turn lifecycle in ARCH/07–08.
-- Authorization/enforcement separation and per-tier guarantees in ARCH/12–13.
-- Both ACP directions, child sessions, bounded receipts, task DAG, budgets, worktrees, and merge arbitration in ARCH/15–16.
-- Evidence-bound acceptance, determinism, repeat, and honest claims in ARCH/23.
+- Durable per-session JSONL replay/checkpoints and explicit turn lifecycle in ARCH/core/SESSION-AND-THREADS.md–08.
+- Authorization/enforcement separation and per-tier guarantees in ARCH/security/GUARD.md–13.
+- Both ACP directions, child sessions, bounded receipts, task DAG, budgets, worktrees, and merge arbitration in ARCH/integrations/PROTOCOLS.md–16.
+- Evidence-bound acceptance, determinism, repeat, and honest claims in ARCH/acceptance/ACCEPTANCE-MATRIX.md.
 - OpenCode's models.dev catalog is selected as provider/model data in DEC-021; this does not mean adopting its runtime.
 
 **Historical gaps and current status**
 
-1. **Intent, requirements and traceability.** The target design now has versioned intent/spec/decision records and explicit intent-vs-spec acceptance (`ARCH/02`, `ARCH/23`, `ARCH/25`). The implementation is still a Rust prototype without this long-horizon state service.
-2. **Task DAG and recovery state.** The architecture now names canonical task/run/attempt/effect records, state transitions, leases, event replay and projection rebuild (`ARCH/07`, `ARCH/25`). The current code does not implement the full DAG/controller.
-3. **External workers and ACP.** Profile discovery/trust/enablement is separate from ACP session control; peer capability/usage opacity, cancellation, cursor, and workspace state are explicit (`ARCH/15`, `ARCH/16`, `ARCH/25`, `ARCH/27`). ACP is wire v1; schema release numbers are distinct.
-4. **Independent verification.** The target architecture requires verifier evidence bound to current spec and integrated revision and allows `INSUFFICIENT_EVIDENCE` (`ARCH/23`, `ARCH/25`). Not yet implemented as a general controller gate.
-5. **Response flooding and retry loops.** The current design now caps complete response batches and memory/output bytes before dispatch and persists rejection/no-progress budgets (`ARCH/02`, `ARCH/08`, `ARCH/25`). Include rotating arguments, cancelled-batch retries, and pause/resume scenarios in `research docs/tests.md`.
+1. **Intent, requirements and traceability.** The target design now has versioned intent/spec/decision records and explicit intent-vs-spec acceptance (`ARCH/02-REQUIREMENTS.md`, `ARCH/acceptance/ACCEPTANCE-MATRIX.md`, `ARCH/execution/LONG-HORIZON.md`). The implementation is still a Rust prototype without this long-horizon state service.
+2. **Task DAG and recovery state.** The architecture now names canonical task/run/attempt/effect records, state transitions, leases, event replay and projection rebuild (`ARCH/core/SESSION-AND-THREADS.md`, `ARCH/execution/LONG-HORIZON.md`). The current code does not implement the full DAG/controller.
+3. **External workers and ACP.** Profile discovery/trust/enablement is separate from ACP session control; peer capability/usage opacity, cancellation, cursor, and workspace state are explicit (`ARCH/integrations/PROTOCOLS.md`, `ARCH/execution/ORCHESTRATION.md`, `ARCH/execution/LONG-HORIZON.md`, `ARCH/product/COMMANDS-AND-SETTINGS.md`). ACP is wire v1; schema release numbers are distinct.
+4. **Independent verification.** The target architecture requires verifier evidence bound to current spec and integrated revision and allows `INSUFFICIENT_EVIDENCE` (`ARCH/acceptance/ACCEPTANCE-MATRIX.md`, `ARCH/execution/LONG-HORIZON.md`). Not yet implemented as a general controller gate.
+5. **Response flooding and retry loops.** The current design now caps complete response batches and memory/output bytes before dispatch and persists rejection/no-progress budgets (`ARCH/02-REQUIREMENTS.md`, `ARCH/core/AGENT-LOOP.md`, `ARCH/execution/LONG-HORIZON.md`). Include rotating arguments, cancelled-batch retries, and pause/resume scenarios in `research docs/tests.md`.
 6. **Current tracker and source truth.** `TODO.md` and `CURRENT_RUN.md` were reconciled against Rust source baseline `53a2654` on 2026-09-27; subsequent changes in this checkout are documentation-only. The task ledger distinguishes source-present work from proposed work and names the remaining evidence. Recheck the source at the start of implementation; no tests or platform acceptance were run for this documentation pass.
-7. **Codex plan mechanics.** HorizonCode now models a self-contained living execution plan as a projection of the event/task/spec store (`ARCH/25`, `DEC-041`). It cannot become the authoritative state or change permissions.
-8. **Wait, pause and wake.** The architecture distinguishes explicit PAUSED from condition-driven WAITING and requires idle waits to consume no model inference (`ARCH/02`, `ARCH/25`). The current code does not implement that controller.
+7. **Codex plan mechanics.** HorizonCode now models a self-contained living execution plan as a projection of the event/task/spec store (`ARCH/execution/LONG-HORIZON.md`, `DEC-041`). It cannot become the authoritative state or change permissions.
+8. **Wait, pause and wake.** The architecture distinguishes explicit PAUSED from condition-driven WAITING and requires idle waits to consume no model inference (`ARCH/02-REQUIREMENTS.md`, `ARCH/execution/LONG-HORIZON.md`). The current code does not implement that controller.
 
 ## Evaluation plan
 
@@ -208,6 +208,6 @@ Inject process kills, malformed protocol events, timeouts, concurrent worktree e
 ## References
 
 - [ACP changelog](https://github.com/agentclientprotocol/agent-client-protocol/blob/main/CHANGELOG.md)
-- HorizonCode: [architecture index](../ARCH/00-INDEX.md), [requirements](../ARCH/02-REQUIREMENTS.md), [architecture](../ARCH/03-ARCHITECTURE.md), [session](../ARCH/07-SESSION.md), [loop](../ARCH/08-LOOP.md), [orchestration](../ARCH/16-ORCH.md), [verification](../ARCH/23-VERIFICATION.md)
+- HorizonCode: [architecture index](../ARCH/00-README.md), [requirements](../ARCH/02-REQUIREMENTS.md), [architecture](../ARCH/03-SYSTEM-ARCHITECTURE.md), [session](../ARCH/core/SESSION-AND-THREADS.md), [loop](../ARCH/core/AGENT-LOOP.md), [orchestration](../ARCH/execution/ORCHESTRATION.md), [verification](../ARCH/acceptance/ACCEPTANCE-MATRIX.md)
 - Source maps: [OpenCode](opencode.md), [Codex](codex.md), [Cline](cline.md), [Claude Code](claude.md), [Aider](aider.md)
 - Additional candidates and inference backends: [research landscape](research-landscape.md)

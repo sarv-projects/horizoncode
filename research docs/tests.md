@@ -1,12 +1,56 @@
 # HorizonCode test and benchmark plan
 
-Status: **plan only**. No test, build, benchmark, or acceptance suite was executed
-during this 2026-09-29 documentation pass. The checked-out Git revision is
-`1bdea2689316904d2cc6ef884202f6c35a272a48`; the working tree also contains
-uncommitted changes, so neither HEAD nor this plan alone identifies the exact source
-tree used by any earlier test result. See [`CURRENT_RUN.md`](../CURRENT_RUN.md) for the
-handoff and [`ARCH/23-VERIFICATION.md`](../ARCH/23-VERIFICATION.md) for evidence rules.
-A proposed test is not evidence that its behavior exists.
+Status: **test plan plus local evidence for AX-001, AX-003, AX-005, AX-124, and the partial AX-314 patch implementation**.
+The architecture refactor itself did not run a test, build, benchmark, or acceptance
+suite. On 2026-10-01, AX-003's direct runner response-admission implementation passed
+the focused runner, tools, provider, and CLI tests and the serial full workspace test
+command recorded in `CURRENT_RUN.md`. AX-005 now implements bounded provider response
+body/SSE-line handling and bounded redacted error previews; its focused provider tests,
+serial full workspace suite, and workspace Clippy pass locally on the dirty tree.
+These are local implementation checks only: they do not create the `ACC-LOOP-01` or
+`ACC-PROV-RAW-01` evidence bundles or prove managed-run acceptance. On the same date,
+the AX-124 helper tests and a release-mode headless diagnostic were run; that capture
+is not an `ACC-PERF-01` acceptance record. The current working tree also
+contains AX-314's all-file patch preflight/staged-publication slice, which passes
+the focused tools suite locally (33 unit, 24 mutation, 26 permission, and 24
+tool-integration tests), including injected stage/publication failures and partial
+receipts. Its platform and crash-recovery acceptance remains open. It also
+changes the Rust home-directory resolver, adds the locked dependency license policy
+and CI negative control, and removes a disallowed transitive dependency. AX-001's
+local gate/test results are recorded in `CURRENT_RUN.md`; hosted CI evidence is still
+required for `ACC-DEP-01`. The
+checked-out documentation base is
+`262bdb2fb8a2fef86d885a6c83ea49bae38bfcde` (2026-10-01); runtime source remains at the
+separately recorded source baseline in [`SOURCE-TRACEABILITY.md`](../docs/research/SOURCE-TRACEABILITY.md).
+The working tree also contains the preserved architecture migration and prior
+research changes, so earlier runtime evidence is not evidence for the refactored
+target. See
+[`CURRENT_RUN.md`](../CURRENT_RUN.md) for the exact local capture summary and
+[`ACCEPTANCE-MODEL.md`](../ARCH/acceptance/ACCEPTANCE-MODEL.md) for evidence rules. A
+proposed test is not evidence that its behavior exists.
+
+## Dependency license gate (`ACC-DEP-01`, AX-001)
+
+Plan and local execution evidence only; hosted acceptance is pending. From the
+repository root, check the exact locked, all-feature dependency graph using
+`cargo deny --manifest-path Cargo.toml --all-features --locked check licenses` and
+the version-pinned `cargo-deny` tool with `deny.toml`. Run the same command against
+`scripts/fixtures/license-deny/Cargo.toml` while retaining the root policy. The
+standalone fixture under
+Run `cargo deny --manifest-path ... --all-features --locked check licenses` from the
+repository root for each target, so cargo-deny discovers the same root `deny.toml`.
+`scripts/fixtures/license-deny/` depends on a local synthetic package whose manifest
+declares `GPL-3.0-only`, and `scripts/fixtures/license-deny/unlicensed/` depends on a
+local package with no license declaration; verify the same policy rejects both
+transitive dependencies.
+Record the tool version, command lines, workspace lock digest, result and exact
+diagnostic. Also verify the fixture is excluded from the workspace and no fixture
+package is shipped. Unknown or unparseable license metadata must fail closed or be
+resolved through reviewed, package-specific clarification; never broaden the global
+allowlist to make a check pass. A local pass and a checked-in workflow do not replace
+the hosted CI evidence required for `G-1`. The repository-wide rustfmt check has
+existing unrelated diffs under Rust 1.89, so it is not a CI gate in AX-001; the Rust
+files changed for this task pass `rustfmt +1.89.0 --edition 2024 --check` individually.
 
 ## Operator diagnostics (`REQ-UI-029`, `ACC-DIAG-01`)
 
@@ -87,9 +131,24 @@ does not imply coding-agent parity.
 
 ### Cross-feature acceptance coverage
 
-The acceptance records in `ARCH/23` map implementation work to the following
-reproducible checks. These are test-plan additions only; no implementation or test run
-is implied.
+The acceptance records in `ARCH/acceptance/ACCEPTANCE-MATRIX.md` map implementation
+work to reproducible checks. The case descriptions remain the acceptance plan; local
+checks listed below or in `CURRENT_RUN.md` are not acceptance records.
+
+- **Provider transport response bounds (`REQ-PROV-017`, `ACC-PROV-RAW-01`, AX-005):**
+  test exact and one-over boundaries for the 16 MiB post-content-decoding success-body
+  ceiling and the 1 MiB serialized SSE-line ceiling, including a line split across
+  chunks and an aggregate body with no trustworthy `Content-Length`. Exercise the
+  bounded non-stream JSON path and confirm it parses only a complete in-limit body.
+  For HTTP failures, prove the preview retains at most 8 KiB, redacts before display,
+  caps rendered text at 512 Unicode scalar values, and preserves status and
+  `Retry-After`. Overflow must be non-retryable, emit no successful finish, and never
+  parse any prefix from a violating chunk. Measure adapter-retained bytes; do not
+  claim a process RSS limit because the HTTP client may allocate its yielded chunk.
+  Local provider tests now cover unit boundaries, split lines, aggregate chunked-body
+  overflow, declared-length refusal, status/`Retry-After` preservation, redaction, and
+  response-stream drop. Explicit cancellation signaling and a retained-byte acceptance
+  artifact remain open; see `CURRENT_RUN.md` for the exact commands and status.
 
 - **Provider parity and maintenance (`ACC-PROV-SYNC-01`):** compare complete pinned
   OpenCode and Cline connector/auth inventories with HorizonCode's supported/blocked
@@ -99,6 +158,26 @@ is implied.
   changes and verify the monitor creates a reviewable candidate with exact source
   commit/files and per-file license/notice review. Verify candidate generation does
   not change installed code, active route snapshots, or execute upstream code.
+- **Provider inventory snapshot structure:** run
+  `node "research docs/scripts/check-provider-inventory-docs.mjs"` to check the
+  pinned Cline effective-table counts/uniqueness and OpenCode provider-ID table
+  structure. Pass the captured OpenCode feed path as a positional argument to also
+  verify its exact SHA-256, 225/8,339 counts, and exact provider-ID set against the
+  committed sorted OpenCode table. This check validates the
+  committed research snapshot structure only; it does not re-fetch upstream sources,
+  prove auth support, establish provider terms, verify every source row semantically,
+  or accept any HorizonCode adapter. Those remain in `ACC-PROV-SYNC-01` and AX-363.
+- **Architecture dependency gate (`G-17`, AX-399):** run
+  `cargo metadata --no-deps --format-version 1 --offline | python3 scripts/check_architecture_deps.py`
+  and `python3 scripts/check_architecture_deps.py --self-test`. The workspace check
+  covers normal path dependencies, inward layer direction, cycles, unclassified crates,
+  and the explicit denylist of known UI/workspace/provider adapter libraries in core.
+  Fixtures must reject an outward layer edge, a forbidden external package, and a
+  dependency cycle with the exact manifest path and edge; a valid graph fixture must
+  pass. Dev-dependency edges are excluded from the shipped graph and remain exercised
+  by their owning tests. This static gate does not establish runtime ownership,
+  authorization, or OS confinement. AX-412 owns contract tests for adapter failure
+  receipts/owner semantics and the sourced capability projection.
 - **Editors and concurrent edits (`ACC-EDITOR-01`, `ACC-EDIT-02`):** exercise
   terminal-wait, GUI-wait and GUI-detach profiles on every advertised OS/editor
   combination (VS Code, Vim/Neovim, Zed, Helix, and explicitly configured editors).
@@ -195,6 +274,8 @@ re-read and run against the exact revision before relying on them.
 | CLI / audit and analytics | `crates/horizoncode-cli/tests/e2e_audit_analytics.rs` | CLI surfaces and persistence |
 | CLI / headless | `crates/horizoncode-cli/tests/e2e_binary.rs`, `exit_codes.rs`, `state_root.rs` | Built-binary behavior, exit contract, state paths |
 | CLI / tools | `crates/horizoncode-cli/tests/e2e_tools.rs` | Tool path through CLI |
+| Config / skill inspection | `crates/horizoncode-config/tests/skill_inspection.rs`, `crates/horizoncode-cli/tests/commands_cli.rs` | AX-405 content-free skill metadata/body-size inspection; does not cover activation or bundles |
+| Config / discovery | `crates/horizoncode-config/tests/discovery.rs`, `instructions.rs`, `settings.rs` | Configuration discovery, hierarchical instructions and settings validation |
 | Guard | `crates/horizoncode-guard/tests/guard.rs` | Policy and approval rules |
 | Provider | `crates/horizoncode-provider/tests/mock_transport.rs` | Mocked HTTP/SSE provider transport |
 | Runner | `crates/horizoncode-runner/tests/e2e_loop.rs` | Turn loop, tool calls, limits, cancellation |
@@ -202,10 +283,98 @@ re-read and run against the exact revision before relying on them.
 | Session | `crates/horizoncode-session/tests/log.rs` | Append/replay/resume/repair |
 | Tools | `crates/horizoncode-tools/tests/mutations.rs`, `permission.rs`, `tools.rs` | Mutations, filtering, built-ins |
 
+### Native read byte-limit checks (`REQ-TOOL-010`, `ACC-TOOL-READ-01`)
+
+- A regular file of exactly 16,777,216 bytes is accepted; a declared larger size
+  fails before content is read with `TOOL_OUTPUT_LIMIT`, exposing the reported size
+  and limit and returning no partial content.
+- If the opened file grows after metadata inspection, the bounded reader consumes at
+  most 16,777,217 bytes, reports that observed lower bound with `TOOL_OUTPUT_LIMIT`,
+  and returns no partial file content.
+- A non-regular, non-directory target fails with `TOOL_UNSUPPORTED_TARGET`; directory listing stays
+  on its existing path. Preserve binary reporting, page offsets, sandbox path checks,
+  and downstream output-bound behavior.
+- Include workspace escape and symlink cases, sparse-file fixtures, exact typed
+  settlement assertions, and platform labels for fixtures not supported everywhere.
+  The file-byte ceiling is not an RSS guarantee; measure memory separately if a
+  process-memory acceptance claim is required.
+
+### Recursive search reach and error checks (`REQ-TOOL-011`, `ACC-TOOL-SEARCH-01`)
+
+- Deny a descendant directory and a matching file through the resolved
+  confinement profile. Both `glob` and `grep` must stop with a typed denial and
+  return no partial paths or matching content; a denied directory must not be
+  traversed further.
+- Inject a directory-walk error and a file-open/read error. Each must become a
+  typed `TOOL_IO_ERROR`, and no partial success may be returned. `grep` must
+  check the opened handle is regular and use the same 16 MiB plus one-byte
+  bounded reader as `read`; test exact size, oversize, post-metadata growth,
+  binary input, and symlink targets.
+- Verify recursive traversal excludes `.git`, applies only `.ignore` and
+  `.gitignore` rules beneath the selected root (including a selected root with no
+  Git marker), honors negation and directory rules, and places `.ignore` above
+  `.gitignore` across directory depth while deeper files win within the same
+  type. Parent/global Git excludes and `.git/info/exclude` must not affect
+  results. Hidden files remain searchable unless ignored or excluded by the
+  explicit `include` pattern. Ignore files must be regular, non-symlink files at
+  or below 1 MiB; combined rule contents are capped at 16 MiB. Malformed,
+  oversized, denied, and unreadable ignore files fail typed without partial
+  matches.
+- Verify the 100,000 delivered-entry filter ceiling, 64 MiB aggregate `grep`
+  input ceiling, per-file 16 MiB ceiling, and cancellation before walker advances,
+  in delivered-entry callbacks, after every 64 delivered entries, and, for `grep`,
+  after every 256 scanned lines. Use test-injected lower budgets for fast
+  exact/one-over boundary checks. The walker
+  can internally filter ignored entries before invoking its entry filter, so an
+  internal skip run can delay cancellation without a bound; the entry ceiling
+  does not establish a total traversal-work or cancellation-latency bound.
+- Inject a directory-walk error and a file-open/read error. Each must become a
+  typed `TOOL_IO_ERROR`, and no partial success may be returned. Add observable
+  instrumentation before claiming denied descendants were never visited. The
+  filesystem path-based ignore reread and normal symlink-swap race remain
+  explicit residuals; no race-free confinement claim is supported.
+
+### Native patch preflight and staged publication (`REQ-SEC-022`, `ACC-TOOL-PATCH-01`)
+
+- Assert exact/over boundaries for the 4 MiB patch-text cap, 131,072 patch-line
+  cap, 1,000,000 target-lines-per-update cap, 256-operation cap, 4,096-hunk
+  cap, 134,217,728-byte aggregate transformation/comparison-work cap, 16 MiB
+  per-file base cap, and 64 MiB aggregate base cap. Oversized metadata is refused
+  before content read; growth beyond the captured bound is detected with a
+  bounded limit-plus-one read and no target publication.
+- Submit a multi-file patch with a valid first operation and a missing, ambiguous,
+  invalid-UTF-8, unsupported-target, or missing-file later operation. Assert the
+  complete patch fails before any target file changes and returns no success receipt.
+  A hunk longer than its target returns a typed error and never panics.
+- Deny or fail confinement on a later target. Assert no target contents were read
+  and no target was published before the denial. Repeated operations and lexical
+  aliases for one resolved target must preserve the defined request order while
+  producing one final file publication.
+- Inject a stage/write/sync failure at each target index. Assert no target changed,
+  all ordinary-return staging files are removed, and newly created empty parent
+  directories are cleaned where possible. Inject target-byte and symlink changes
+  during staging; the all-target pre-publication recheck must preserve concurrent
+  bytes and publish nothing. On Unix, verify staging files are owner-only before
+  replacement bytes are written and assert the declared mode for newly added
+  targets plus basic permission-bit preservation for replacements.
+- Inject a later publication failure after one complete per-file replacement.
+  Assert the result is `TOOL_PARTIAL_EFFECT`, lists exact committed digests/removal
+  receipts and pending paths, and never reports overall success. Verify update,
+  add, and delete base checks, read-only mode refusal, permission-bit preservation,
+  replacement behavior on every advertised OS/filesystem, and temp cleanup.
+- Kill a subprocess during stage write and between file publications. Each individual
+  target must contain either its complete captured base or complete replacement,
+  never truncated bytes. The process-death patch outcome stays `UNKNOWN`; the test
+  must not infer recovery from temporary-file cleanup and remains blocked from
+  acceptance until `AX-311` durably enumerates and reconciles effect receipts.
+- Bind evidence to exact tool/spec revisions and platform. Report ACL, ownership,
+  xattr, directory-creation and non-cooperating-writer races as residuals; do not
+  claim a cross-file atomic transaction.
+
 There is no test file inventory yet for the proposed run controller, durable goal/spec
 state, task DAG, settings/command registry, UI, repository map, ACP client, MCP host,
 agent directory, plugin/skill runtime, PR lifecycle, cost reservation, or multi-hour
-recovery. Their target gates are specified below and in `ARCH/23`.
+recovery. Their target gates are specified below and in `ARCH/acceptance/ACCEPTANCE-MATRIX.md`.
 
 ## Source status at the 2026-09-28 implementation pass
 
@@ -213,7 +382,7 @@ The first implementation pass ran the baseline commands and produced, for the fi
 time, a measured failure list. `cargo clippy --workspace --all-targets -- -D warnings` and
 `cargo test --workspace --no-fail-fast` are clean except for four pre-existing failures
 that also fail at the documented baseline revision `b677443` and are therefore recorded
-as findings (`ARCH/24` `F-65`, `F-66`) rather than silently absorbed.
+as findings (`docs/history/architecture/audits/2026-09-30-review.md` `F-65`, `F-66`) rather than silently absorbed.
 `cargo fmt --all --check` also fails at the baseline, with 67 pre-existing diffs; the
 2026-09-28 pass formatted only the files it wrote and reverted unrelated reformatting, so
 this remains an open cleanup item rather than a pass:
@@ -271,7 +440,7 @@ quarantined in this pass.
 
 ## Verification layers
 
-Use the layer definitions and anti-claims in `ARCH/23`; do not promote lower-layer
+Use the layer definitions and anti-claims in `ARCH/acceptance/ACCEPTANCE-MATRIX.md`; do not promote lower-layer
 evidence into a higher-layer claim.
 
 | Layer | Run when | Required evidence |
@@ -588,50 +757,41 @@ test-data revision.
   higher-scope deny plus lower-scope allow, per-layer last-match, multi-resource
   aggregation, wildcard and relative paths, and replayed/expired approval receipts.
   Bind every assertion to the actual decision trace; do not test only a helper mock.
-- Memory lifecycle (`AX-371`): enforce the defaults in `DEC-067` (explicit saves make
-  reviewable candidates, background extraction off, auto-accept off, user-global
-  preferences separated from repository-identity project memory, no cross-project
-  retrieval, local-only). Test provenance,
-  prompt-injection framing, cross-project isolation, conflicting/stale memories,
-  inspection/export/purge, crash and corrupted-store recovery, quotas, and the
-  no-memory baseline. Verify that memory cannot grant permissions or satisfy task
-  evidence. If extraction is explicitly enabled, test leases, retry backoff, bounded
-  concurrency, cancellation, and cost budget; default startup must issue no memory
-  model calls. For every child dispatch, verify `ContextPacket` construction from the
-  approved task/spec and pinned workspace, exact source refs and byte/token budgets,
-  `fork=none` defaults, and explicit missing/excluded-context markers. Assert parent
-  transcript, sibling transcript, and parent auto-memory are never copied implicitly;
-  bounded forks include only authorized named user-visible committed references, and
-  full history is unavailable to external adapters. Exercise memory policies `none`,
-  `relevant_shared`, and `shared_and_profile` across user/managed ceilings, Run
-  consent, project/profile preference, adapter capability and egress; project settings
-  must never widen the effective policy. Verify per-profile + repository isolation,
-  no sibling leakage, accepted/current/task-relevant filtering, and exact record
-  revision/digest binding to the child's `ContextEpoch`. A child write must only create
-  a candidate with immutable provenance. Test stale/rejected/superseded/over-budget
-  records, disabled memory, missing/corrupt store (continue without memory only when
-  allowed), unsupported/unknown external capabilities, nested children, and hook or
-  retry duplicate-injection idempotency across restart/compaction. Record actual
-  per-dispatch input/cost when observed and retain `unknown` otherwise; fan-out cost
-  must multiply by each actual provider dispatch rather than being reported once for
-  shared source text. Compare completion/quality to a no-memory baseline while also
-  measuring added context tokens and latency. Exercise `ProjectIdentity` resolution
-  across Thread creation, Run admission, memory capture/retrieve/search/export/purge,
-  and worker worktrees; all paths must use the same immutable `ContextScope`. Test
-  same-repo worktrees, distinct clones, moved repositories, explicit relink, monorepo
-  subdirectories, ambiguous/missing identity, and credential-bearing Git remotes.
-  Child worktrees inherit the parent Run identity; never key by basename or persist
-  raw remote URLs. Corrupt/newer identity records, symlink substitution, unsafe file
-  modes, state backup/restore, and lost identity must fail closed without minting a new
-  ProjectId or deleting memory. Replay the same dispatch ID under the same ContextEpoch and verify
-  the packet digest/source selection is stable and context is not appended/injected a
-  second time; an explicit epoch refresh may select changed records. Assert stable
-  rendering contains no volatile timestamp that breaks provider prefix reuse. The
-  Agents panel's read-only Context view must match the exact dispatched packet digest
-  and epoch, distinguish selected/excluded/stale/unavailable/unsupported sources, and
-  show bounded observed/estimated/unknown usage without exposing secrets. Changing a
-  profile memory setting affects only future attempts; it cannot rewrite an active
-  packet or make a previous context view appear current.
+- **Memory lifecycle (`AX-371`, `ACC-MEM-02`):** Test the approved target in
+  `ARCH/product/MEMORY.md`; runtime implementation and acceptance remain open. A new
+  store uses local scoped project advisory capture, while migration preserves its prior
+  effective capture mode. Automatic global inference is off. An admitted explicit
+  `/memory remember` request saves only exact user-authorized content once in its
+  resolved scope, without second approval; model-added claims get no inherited consent,
+  and ambiguous scope is clarified. Cover explicit-only, ambient and off modes; retrieval
+  disablement is distinct from capture disablement.
+
+  Verify preferences survive source changes, while repository facts become bounded
+  revalidation leads and cannot establish current API/build/configuration truth until
+  checked. Current task instructions and code/configuration win. Forget, disable, dismiss
+  and purge advance a durable capture/retrieval generation; race pending extractors,
+  workers, queued ContextEpochs and restarts to prove old observations cannot resurrect.
+  No repeated prompt occurs merely because a source file changed.
+
+  Exercise exact ProjectIdentity through Thread creation, Run admission, worktrees,
+  search, retrieval, export and purge. Test moved/ambiguous repositories, clones,
+  monorepos, credential-bearing remotes, symlinks and backup/restore. For children,
+  require bounded source selection intersected with user/managed policy, Run consent,
+  profile settings, adapter capability and egress scope; default parent/sibling sharing
+  is none. Child capture remains advisory and cannot create user confirmation, policy,
+  task truth or evidence. Replay a dispatch and ContextEpoch idempotently; intentional
+  refresh uses a new epoch.
+
+  Test SQLite event/projection/FTS/outbox transaction boundaries, stable request IDs,
+  conflict/CAS editing, concurrent writers, bounded quotas/retrieval, expiry,
+  corruption/newer schema, crashes before/after commit, lost outbox acknowledgement,
+  redacted export, single-record forget, bulk-purge confirmation and delayed audit
+  receipts. Do not claim complete arbitrary-secret detection. `/learn` and `/analyze`
+  perform bounded read-only analysis: never run package scripts/tests or silently write
+  `.horizonrules`; export requires explicit Preview/Apply through Guard. Compare
+  no-memory, explicit-save and ambient modes for quality, false recollection, correction
+  time, context cost, latency and confidence, with participant/task limitations. Anecdotes
+  and synthetic fixtures do not establish product-market fit.
 - Audit and effect recovery (`AX-372`): verify current local keyed-MAC semantics and
   reject claims of public signature or off-box authenticity. Exercise key replacement,
   relocation, rotation, sink loss, and bundle verification under the selected proof
@@ -709,10 +869,24 @@ test-data revision.
 - For multi-file edits, fail on a later invalid hunk, symlink swap, changed base hash,
   permission loss, disk full, and process death. All files must be staged/preflighted
   or every partial effect must be durably enumerated.
-- Tool response batches must be assembled, size/count/time bounded, permission-filtered,
-  and validated before any member executes. Exercise rotated/non-adjacent calls,
-  oversized nested arguments, stream overflow, cancellation, repeated rejected batches,
-  and saved “always” approval. An over-limit batch dispatches none by default.
+- Native direct-turn response admission (`ACC-LOOP-01`, AX-003) must exercise all three
+  versioned runner ceilings (distinct-call count, aggregate streamed argument bytes,
+  retained decoded-response bytes), malformed JSON, schema-invalid mixed batches,
+  duplicate and missing call IDs, unadvertised tool names, finish/call mismatch,
+  missing finish markers, output-limit partial responses, and cancellation after a
+  provisional tool call. Every rejected or cancelled batch must have zero durable
+  `tool/call` and `tool/result` events; cancellation may retain bounded partial text.
+  Unsupported schema keywords fail closed. Run deterministic fixtures with no live
+  provider. `ACC-PROV-RAW-01` separately specifies raw post-content-decoding body and
+  SSE-line bounds; AX-005 now has local boundary/overflow and consumer-drop tests.
+  The raw-transport acceptance bundle and loopback connection-close cancellation
+  evidence remain open. Neither acceptance row claims a bound on process RSS or an
+  HTTP-client chunk allocated before the adapter receives it.
+- Managed response batches must additionally exercise rotated/non-adjacent calls,
+  oversized nested arguments, stream overflow, repeated rejected batches, and saved
+  “always” approval. An over-limit or malformed unstarted batch dispatches none by
+  default. Managed controller admission and effect reservation require their own
+  controller/effect acceptance; direct-runner tests do not substitute for them.
 - Concurrency tests: competing task claims, expired lease with stale writer, two
   controller processes, concurrent budget reservations, overlapping worktree writes,
   deterministic merge order, late peer messages, duplicate event IDs, cursor gaps, and
@@ -723,7 +897,7 @@ test-data revision.
 
 ### Audit and filesystem/network boundaries
 
-Run the audit matrix in `ARCH/23` `ACC-P1-04`: target-file byte/metadata snapshots
+Run the audit matrix in `ARCH/acceptance/ACCEPTANCE-MATRIX.md` `ACC-P1-04`: target-file byte/metadata snapshots
 around actual CLI `verify`/`replay`/`census`; corrupt/missing head; torn line; corrupt or
 missing segment; unreadable file; failed `read_dir`; iterator error; valid initialized
 empty store; same- and cross-process writers; lock timeout/loss; sequence duplication;
@@ -802,10 +976,16 @@ children both report usage; preserve currency, basis, freshness, and provenance.
 
 OpenCode provider coverage adds a snapshot-specific registry suite. Use the exact
 upstream commit and provider docs captured in
-[`opencode-provider-inventory.md`](opencode-provider-inventory.md); the 225 provider
-IDs/8,253 model records in the 2026-09-28 global-feed snapshot, 51 named documentation
-sections plus Custom, 32 core integration modules, and separate Go directory are
-independent inventories. Tests must detect newly added, removed, renamed, or
+[`opencode-provider-inventory.md`](opencode-provider-inventory.md); its 2026-09-28
+historical global-feed snapshot has 225 provider IDs/8,253 model records, while the
+2026-10-01 refresh has the same 225 IDs/8,339 models (SHA-256
+`448ae274adb22c1b8fdff113a43eaec149a5e4f6b868ac299b5d545d1d465b8d`). The current
+refresh records 51 named documentation entries plus Custom and 32 core integration
+modules; the separate Go directory remains on its dated 2026-09-28 snapshot. Cline's
+pinned source inventory contains 228 effective registrations (211 generated specs,
+17 runtime-only, 29 overlapping generated/runtime records) and 45 key-mapping rows.
+These are separate upstream inventories, not HorizonCode support claims. Tests must
+detect newly added, removed, renamed, or
 auth-changed entries and fail into review-required/unknown state; they must never
 auto-enable new integrations. Feed fixtures must cover malformed, deep, oversized,
 duplicate, unknown-version, changed-origin, hostile header/body, untrusted
@@ -902,7 +1082,7 @@ provider request. Include refresh rollback and old-snapshot/new-catalog cases.
   navigation back to chat, affected-file preview, cancel/confirm, and no claim that an
   external effect was reversed; never auto-stage or commit. These are focused-surface
   patterns only (`SRC-035`/`U-ICODE-TUI`), with HorizonCode semantics owned by
-  `ARCH/06`, `ARCH/07`, `ARCH/23`, and `AX-207`/`AX-369`/`AX-388`.
+  `ARCH/product/UI.md`, `ARCH/core/SESSION-AND-THREADS.md`, `ARCH/acceptance/ACCEPTANCE-MATRIX.md`, and `AX-207`/`AX-369`/`AX-388`.
 - Event-stream ordering tests interleave multiple tool calls, delay/fail subscribers,
   overflow bounded notification queues, and reconnect across a cursor gap. Assert
   start/progress/result ordering and exact call identity; cancellation and permission
@@ -946,17 +1126,18 @@ provider request. Include refresh rollback and old-snapshot/new-catalog cases.
   shows only concise item/type/state and primary Add/Remove/Enable/Connect actions; advanced
   provenance, scopes, capability lists, probe details, and configuration appear after
   selecting an item or entering the staged review step.
-- Federated catalog tests (AX-393, `ACC-MARKET-01`) pin a dated source snapshot and
-  prove at least 500 unique, source-resolvable, type-qualified entries for broad
-  release; report per-family/source counts and progress toward 1,000. Count invariants
-  exclude versions, duplicate source mirrors, provider offers, and embedded bundle
-  components unless separately published. Exercise MCP Registry cursor and
-  `updated_since` synchronization, restart/idempotency, tombstones, stale-source
-  indicators, source throttling, malformed/oversized metadata, URL/redirect policy,
-  Git source revision pinning, and source conflicts. Verify no package payload is
-  fetched while searching, metadata/body/secret boundaries, and that listing,
-  source-resolution, format/host compatibility, probe, review, publisher identity,
-  official status, and enablement remain separate evidence claims.
+- LitePSM catalog conformance tests (AX-393/407, ACC-MARKET-01) pin a dated
+  LitePSM release and prove at least 500 unique, source-resolvable, type-qualified
+  entries for broad release; report per-family/source counts and progress toward
+  1,000. Count invariants exclude versions, duplicate mirrors, provider offers, and
+  embedded bundle components unless separately published. Verify HorizonCode and
+  AgentCowork consume that same catalog revision through their adapters. Test bounded
+  metadata pagination, cursor restart/idempotency, deletion/stale/error visibility,
+  malformed/oversized metadata, URL/redirect policy, and provenance/compatibility
+  separation. Confirm HorizonCode does not run a second public-source crawler/publisher,
+  execute payloads during search, or turn catalog presence into trust/enablement.
+  Adapter fixtures prove conformance only; the 500-entry claim requires an actual
+  pinned LitePSM snapshot.
 - Connector lifecycle tests (AX-394, `ACC-CONNECTION-01`) distinguish a service
   listing from provider offers and per-account Connections; test multiple
   providers/accounts, secret-reference isolation, product-local auth, disconnect
@@ -1049,7 +1230,7 @@ provider request. Include refresh rollback and old-snapshot/new-catalog cases.
   are reconciled. Preference is not activation.
 
 Current target commands, argument contracts, `@` namespaces, agent panel and settings
-are in [`ARCH/27-COMMANDS-AGENTS-SETTINGS.md`](../ARCH/27-COMMANDS-AGENTS-SETTINGS.md).
+are in [`ARCH/product/COMMANDS-AND-SETTINGS.md`](../ARCH/product/COMMANDS-AND-SETTINGS.md).
 They are designs; no interactive TUI exists at the source baseline. The attach tests
 are **same-host/local-socket only**. A user-managed server may run headless; it does not
 imply SSH UI access, remote-control protocol, multi-user isolation, or HorizonCode cloud
@@ -1256,7 +1437,7 @@ without masking state.
   authorization, immutable publication, key rotation, and rollback rehearsal. A mock
   unsigned server proves parser behavior only and cannot qualify a release.
 
-Release claims follow `ARCH/23` gates. Any unsupported platform, provider, agent
+Release claims follow `ARCH/acceptance/ACCEPTANCE-MATRIX.md` gates. Any unsupported platform, provider, agent
 capability, usage amount, cost conversion, or quota is explicitly unknown or refused,
 not silently inferred. Security-relevant failure, incomplete acceptance sub-check,
 stale spec evidence, or hard-budget exhaustion blocks `accepted` status.
@@ -1268,7 +1449,7 @@ stale spec evidence, or hard-budget exhaustion blocks `accepted` status.
 - [DeepSeek-Reasonix releases](https://github.com/esengine/DeepSeek-Reasonix/releases) — checked 2026-09-27; Studio release notes report the image/event-log size and recovery problem that motivates `ACC-P1-09`. This is an upstream report, not a HorizonCode reproduction.
 - [Codex Goals in the CLI](https://developers.openai.com/cookbook/examples/codex/using_goals_in_codex) — checked 2026-09-27; available in Codex CLI 0.128.0+; documents structured goal lifecycle commands, thread-scoped state, idle-boundary continuation, queued-input checks, no-tool-call suppression, and budget-limited stopping. These are peer workflow references, not a HorizonCode implementation or proof of multi-hour reliability.
 - [Codex long-horizon task report](https://developers.openai.com/blog/run-long-horizon-tasks-with-codex) — useful empirical workflow report; not a reliability guarantee.
-- [OpenCode provider directory](https://opencode.ai/docs/providers/) and [OpenCode Go](https://opencode.ai/docs/go/) — checked 2026-09-28; the provider list, supported auth methods, model directory, prices, quotas and Go-client compatibility are volatile. Research pin and file map: [`opencode-provider-inventory.md`](opencode-provider-inventory.md).
+- [OpenCode provider directory](https://opencode.ai/docs/providers/) and [OpenCode Go](https://opencode.ai/docs/go/) — provider directory and general Models.dev feed refreshed 2026-10-01; Go counts/routes remain on the dated 2026-09-28 snapshot. The provider list, supported auth methods, model directory, prices, quotas and Go-client compatibility are volatile. Research pins and file maps: [`opencode-provider-inventory.md`](opencode-provider-inventory.md) and [`cline-provider-inventory-2026-10-01.md`](cline-provider-inventory-2026-10-01.md) for Cline commit `8eee168b80127b0c94bad849323754b5864865e7`.
 - [The Update Framework specification](https://github.com/theupdateframework/specification/blob/master/tuf-spec.md) — metadata/target verification and repository-attack model; it does not authenticate the initial installer by itself.
 - [Terminal-Bench 4.0](https://www.tbench.ai/news/terminal-bench-4-0).
 - [SWE-Bench Pro V2 leaderboard](https://labs.scale.com/leaderboard/swe_bench_pro_public_v2) and [benchmark task/method README](https://github.com/scaleapi/SWE-bench_Pro-os/blob/main/README.md).
@@ -1286,7 +1467,7 @@ Search query fixtures for AX-369 must include literal SQL/FTS wildcard character
 ## Final architecture reconciliation acceptance additions (2026-09-30)
 
 Plan only; no product tests or builds were run in this documentation audit. Follow
-DEC-090/091 and ARCH/23 ACC-UX-08. Inspect every action entry (button, key, palette,
+DEC-090/091 and ARCH/acceptance/ACCEPTANCE-MATRIX.md ACC-UX-08. Inspect every action entry (button, key, palette,
 slash) for one owner, exact target, availability reason, confirmation and durable
 receipt; test narrow/monochrome/screen-reader layouts, focus/draft retention, required
 attention without focus theft, offline/partial search, stale/duplicate responses,
@@ -1309,8 +1490,8 @@ OS confinement, filesystem durability, production signing, or authorized route e
 
 ## Artifact/composer/performance/litePSM/installer expansion (2026-09-30)
 
-Plan only; no runtime suite was executed. [ARCH37](../ARCH/37-INTERACTION-AND-FAST-PATH.md)
-and [ARCH38](../ARCH/38-LITEPSM-INTEGRATION.md) define contracts; [ARCH23](../ARCH/23-VERIFICATION.md)
+Plan only; no runtime suite was executed. [ARCH37](../ARCH/product/INTERACTIONS.md)
+and [ARCH38](../ARCH/integrations/LITEPSM.md) define contracts; [ARCH23](../ARCH/acceptance/ACCEPTANCE-MATRIX.md)
 defines ACC-UX-09..13, ACC-PERF-01, ACC-EXT-01 and ACC-INSTALL-02.
 
 Use property fixtures over UTF-8 parts/byte preservation, duplicate display chips,
@@ -1335,6 +1516,67 @@ and safe reconciliation. Installer tests run only in disposable supported-platfo
 fixtures, never change this host's PATH/profile/permissions or publish artifacts.
 Session import/branch, notebooks, side questions and feedback canaries must retain scope,
 preserve original content and prevent unintended writes/approval inheritance.
+
+## AX-124 headless diagnostic harness (2026-10-01)
+
+`crates/horizoncode-cli/tests/perf_baseline.rs` provides an ignored release-mode
+capture against the existing in-process loopback provider fixture. The fixture records
+monotonic request arrival and response-start instants. The harness launches the actual
+CLI binary, parses its NDJSON events, verifies completed text and list-tool turns, and
+records raw samples, nearest-rank p50/p95, sampled child RSS on Linux, host/build/source
+metadata, and digests for the executable Rust source tree and the performance/acceptance
+contracts.
+
+Run the deterministic helper tests with
+`cargo test -p horizoncode-cli --test perf_baseline --offline`. For a release capture,
+run
+`cargo test --release -p horizoncode-cli --test perf_baseline --offline -- --ignored --nocapture`.
+The default output is `target/perf/ax124-headless-diagnostic.json`; set
+`HORIZONCODE_PERF_OUTPUT` to select another artifact path and
+`HORIZONCODE_PERF_SAMPLES` to select 6–100 text samples (tool samples are derived from
+that count). The fixture uses a synthetic API key and does not contact a live provider.
+
+This diagnostic measures CLI process-to-turn/fixture-dispatch, first text event,
+fixture-response-start-to-CLI-event, list-tool event duration, turn completion, process
+exit, and sampled process RSS. It cannot measure key-to-paint, composer readiness,
+first-token-to-paint, frame/animation cost, terminal backpressure, interactive
+cancellation, idle UI CPU, controller queue/index costs, or managed scheduling because
+those runtime paths are not implemented in the checked-out binary. Operating-system
+page cache is uncontrolled; the first run uses a fresh HorizonCode home and later runs
+reuse the home, so the report does not label them true cold/warm OS-cache samples.
+The 2 ms procfs RSS sampler can miss brief peaks. A local fixture, WSL machine, debug
+capture, or unaccepted host cannot establish release-machine budgets. Use this harness
+to collect repeatable headless diagnostics; retain its JSON as a local/CI artifact and
+do not mark `ACC-PERF-01` passed until the complete workload runs on an accepted
+reference terminal/build with every required metric.
+
+Local run record: the ignored report at
+`target/perf/ax124-headless-diagnostic.json` contains 30 text and 10 one-tool release
+samples on Linux x86_64 / WSL2, kernel `6.18.33.2-microsoft-standard-WSL2`, Intel
+i3-1215U (4 logical CPUs), Rust 1.98.0, with a 1-minute load average of 1.23 before
+capture. CLI spawn-to-fixture-dispatch was p50 55.7 ms / p95 93.4 ms; text-only
+spawn-to-first-NDJSON-text-event was p50 57.8 ms / p95 94.5 ms; observed list-tool
+event duration was p50 48.4 ms / p95 69.1 ms; sampled RSS was p50/p95 11.4/11.7 MiB
+(text) and 11.8/12.1 MiB (tool). These tails are host-sensitive and process-inclusive;
+they are not performance-target comparisons. Source revision was
+`262bdb2fb8a2fef86d885a6c83ea49bae38bfcde` with a dirty worktree, Rust source tree
+digest `a2e2f352826aa07397c8b066310334e06cb123fe667f35817c255caa816cec91`, and release
+binary digest `5ed948dda9a0a547ab8a310b977f3067e5afb7fb046a7bb625c90aff597d3fe4`.
+The accepted reference-machine flag is false and the artifact explicitly says it is
+not an ACC-PERF-01 record.
+
+AX-411 / `ACC-UX-12` verifies that bundled artifact skills use the ordinary skill
+registry, collision-safe routing and digest rechecks. Capability output comes from
+the actual renderer/model/integration snapshot and reports unsupported or unknown
+states when evidence is absent. Diagram guidance supplies a text alternative and
+theme-aware source without activating SVG/script execution. Optional recipe runs use
+the existing controller, revision binding, budgets, cancellation and evidence
+contracts; previews and recipe output cannot create verifier `PASS`. Report actual
+tokenizer measurements only when available; otherwise label estimates and
+unobserved activation/injection counts explicitly. The pinned public authoring
+reference is `U-CLAUDE-ARTIFACT-SKILL` in
+[`SOURCE-TRACEABILITY.md`](../docs/research/SOURCE-TRACEABILITY.md#u-claude-artifact-skill); it is not
+the source of Claude Code's private bundled capabilities or diagramming skills.
 
 ## AX-405 offline skill inspection evidence (2026-09-30)
 

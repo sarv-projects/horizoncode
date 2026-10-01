@@ -7,6 +7,7 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use horizoncode_types::CancelToken;
 use serde_json::{Value, json};
@@ -18,6 +19,13 @@ use tokio::net::{TcpListener, TcpStream};
 pub enum MockTurn {
     /// Stream a text completion.
     Text(String),
+    /// Stream a text completion with a chosen provider finish reason.
+    TextWithFinish {
+        /// Assistant output.
+        text: String,
+        /// Provider finish reason; `None` models a stream with no finish reason.
+        finish_reason: Option<String>,
+    },
     /// Stream a tool call, optionally preceded by assistant text.
     ToolCall {
         /// Assistant preamble text.
@@ -42,12 +50,30 @@ pub enum MockTurn {
         /// The correlation id to emit, verbatim.
         id: String,
     },
+    /// Stream several tool calls in one response batch.
+    ToolCalls(Vec<(String, Value)>),
     /// Fail the request with a status and body.
     Error {
         /// The HTTP status.
         status: u16,
         /// The response body.
         body: String,
+        /// An optional `Retry-After` header value.
+        retry_after: Option<String>,
+    },
+    /// Return raw bytes with either a declared Content-Length or chunked transfer.
+    ///
+    /// This is for transport-bound tests, including intentionally inaccurate
+    /// lengths. `content_length: None` emits HTTP/1.1 chunked framing.
+    RawResponse {
+        /// The HTTP status.
+        status: u16,
+        /// The response Content-Type.
+        content_type: String,
+        /// The exact response bytes.
+        body: Vec<u8>,
+        /// Declared length; `None` selects chunked transfer framing.
+        content_length: Option<usize>,
         /// An optional `Retry-After` header value.
         retry_after: Option<String>,
     },
@@ -58,6 +84,15 @@ impl MockTurn {
     #[must_use]
     pub fn text(text: impl Into<String>) -> Self {
         Self::Text(text.into())
+    }
+
+    /// Builds text output with a provider finish reason.
+    #[must_use]
+    pub fn text_with_finish(text: impl Into<String>, finish_reason: Option<&str>) -> Self {
+        Self::TextWithFinish {
+            text: text.into(),
+            finish_reason: finish_reason.map(str::to_owned),
+        }
     }
 
     /// Builds a tool-call turn with no preamble.
@@ -84,12 +119,20 @@ impl MockTurn {
             id: id.into(),
         }
     }
+
+    /// Builds a response containing several calls in one provider batch.
+    #[must_use]
+    pub fn tool_calls(calls: Vec<(String, Value)>) -> Self {
+        Self::ToolCalls(calls)
+    }
 }
 
 /// A running mock provider.
 pub struct MockServer {
     base_url: String,
     requests: Arc<Mutex<Vec<Value>>>,
+    request_arrivals: Arc<Mutex<Vec<Instant>>>,
+    response_starts: Arc<Mutex<Vec<Instant>>>,
     shutdown: CancelToken,
     handle: tokio::task::JoinHandle<()>,
 }
@@ -115,9 +158,13 @@ impl MockServer {
         let addr = listener.local_addr().expect("mock provider local addr");
         let turns = Arc::new(Mutex::new(VecDeque::from(turns)));
         let requests = Arc::new(Mutex::new(Vec::new()));
+        let request_arrivals = Arc::new(Mutex::new(Vec::new()));
+        let response_starts = Arc::new(Mutex::new(Vec::new()));
         let shutdown = CancelToken::new();
         let stop = shutdown.clone();
         let recorded = requests.clone();
+        let arrivals = request_arrivals.clone();
+        let responses = response_starts.clone();
         let handle = tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -126,8 +173,10 @@ impl MockServer {
                         let Ok((stream, _)) = accepted else { break };
                         let turns = turns.clone();
                         let recorded = recorded.clone();
+                        let arrivals = arrivals.clone();
+                        let responses = responses.clone();
                         tokio::spawn(async move {
-                            let _ = handle_connection(stream, turns, recorded).await;
+                            let _ = handle_connection(stream, turns, recorded, arrivals, responses).await;
                         });
                     }
                 }
@@ -136,6 +185,8 @@ impl MockServer {
         Self {
             base_url: format!("http://{addr}/v1"),
             requests,
+            request_arrivals,
+            response_starts,
             shutdown,
             handle,
         }
@@ -164,6 +215,31 @@ impl MockServer {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len()
     }
+
+    /// Returns when each complete request body reached this local fixture.
+    ///
+    /// The values use the process-wide monotonic clock so a caller can compare
+    /// them with its own instant measurements. This measures local fixture
+    /// dispatch only; it is not provider or network latency evidence.
+    #[must_use]
+    pub fn request_arrivals(&self) -> Vec<Instant> {
+        self.request_arrivals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Returns when each scripted response began writing to the local socket.
+    ///
+    /// The values use the process-wide monotonic clock and are intended for
+    /// deterministic stream-pipeline diagnostics, not model-token latency.
+    #[must_use]
+    pub fn response_starts(&self) -> Vec<Instant> {
+        self.response_starts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
 }
 
 impl Drop for MockServer {
@@ -177,6 +253,8 @@ async fn handle_connection(
     mut stream: TcpStream,
     turns: Arc<Mutex<VecDeque<MockTurn>>>,
     recorded: Arc<Mutex<Vec<Value>>>,
+    request_arrivals: Arc<Mutex<Vec<Instant>>>,
+    response_starts: Arc<Mutex<Vec<Instant>>>,
 ) -> std::io::Result<()> {
     let mut buffer: Vec<u8> = Vec::new();
     let header_end = loop {
@@ -217,13 +295,21 @@ async fn handle_connection(
         }
         recorded.len()
     };
+    request_arrivals
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(Instant::now());
 
     let turn = turns
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .pop_front();
     let response = match turn {
-        Some(MockTurn::Text(text)) => sse_response(text_chunks(&text, "stop")),
+        Some(MockTurn::Text(text)) => sse_response(text_chunks(&text, "stop")).into_bytes(),
+        Some(MockTurn::TextWithFinish {
+            text,
+            finish_reason,
+        }) => sse_response(text_chunks_with_finish(&text, finish_reason.as_deref())).into_bytes(),
         Some(MockTurn::ToolCall {
             preamble,
             name,
@@ -233,21 +319,44 @@ async fn handle_connection(
             &name,
             &arguments,
             response_number,
-        )),
+        ))
+        .into_bytes(),
         Some(MockTurn::ToolCallWithId {
             preamble,
             name,
             arguments,
             id,
-        }) => sse_response(tool_call_chunks_with_id(&preamble, &name, &arguments, &id)),
+        }) => {
+            sse_response(tool_call_chunks_with_id(&preamble, &name, &arguments, &id)).into_bytes()
+        }
+        Some(MockTurn::ToolCalls(calls)) => {
+            sse_response(multiple_tool_call_chunks(&calls, response_number)).into_bytes()
+        }
         Some(MockTurn::Error {
             status,
             body,
             retry_after,
-        }) => error_response(status, &body, retry_after.as_deref()),
-        None => error_response(500, "mock server exhausted", None),
+        }) => error_response(status, &body, retry_after.as_deref()).into_bytes(),
+        Some(MockTurn::RawResponse {
+            status,
+            content_type,
+            body,
+            content_length,
+            retry_after,
+        }) => raw_response(
+            status,
+            &content_type,
+            &body,
+            content_length,
+            retry_after.as_deref(),
+        ),
+        None => error_response(500, "mock server exhausted", None).into_bytes(),
     };
-    stream.write_all(response.as_bytes()).await?;
+    response_starts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(Instant::now());
+    stream.write_all(&response).await?;
     stream.flush().await?;
     stream.shutdown().await?;
     Ok(())
@@ -283,6 +392,51 @@ fn sse_response(chunks: Vec<Value>) -> String {
 
 fn error_response(status: u16, body: &str, retry_after: Option<&str>) -> String {
     http_response(status, "application/json", body, retry_after)
+}
+
+fn raw_response(
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+    content_length: Option<usize>,
+    retry_after: Option<&str>,
+) -> Vec<u8> {
+    let transfer = if content_length.is_some() {
+        format!("Content-Length: {}\r\n", content_length.unwrap_or_default())
+    } else {
+        "Transfer-Encoding: chunked\r\n".to_owned()
+    };
+    let mut bytes = format!(
+        "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\n{transfer}Connection: close\r\n{}\r\n",
+        reason_phrase(status),
+        retry_after.map_or_else(String::new, |value| format!("Retry-After: {value}\r\n")),
+    )
+    .into_bytes();
+    if content_length.is_some() {
+        bytes.extend_from_slice(body);
+    } else {
+        for chunk in body.chunks(8192) {
+            bytes.extend_from_slice(format!("{:X}\r\n", chunk.len()).as_bytes());
+            bytes.extend_from_slice(chunk);
+            bytes.extend_from_slice(b"\r\n");
+        }
+        bytes.extend_from_slice(b"0\r\n\r\n");
+    }
+    bytes
+}
+
+fn reason_phrase(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        413 => "Payload Too Large",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        503 => "Service Unavailable",
+        _ => "Status",
+    }
 }
 
 fn http_response(status: u16, content_type: &str, body: &str, retry_after: Option<&str>) -> String {
@@ -341,6 +495,10 @@ fn usage_chunk(input: u64, output: u64) -> Value {
 }
 
 fn text_chunks(text: &str, finish: &str) -> Vec<Value> {
+    text_chunks_with_finish(text, Some(finish))
+}
+
+fn text_chunks_with_finish(text: &str, finish: Option<&str>) -> Vec<Value> {
     let mut chunks = vec![chunk(json!({"role": "assistant", "content": ""}), None)];
     // Split into two deltas so the decoder is exercised across chunks.
     let split = text.len() / 2;
@@ -353,9 +511,32 @@ fn text_chunks(text: &str, finish: &str) -> Vec<Value> {
             chunks.push(chunk(json!({"content": part}), None));
         }
     }
-    chunks.push(chunk(json!({}), Some(finish)));
+    if let Some(finish) = finish {
+        chunks.push(chunk(json!({}), Some(finish)));
+    }
     chunks.push(usage_chunk(10, 5));
     chunks
+}
+
+fn multiple_tool_call_chunks(calls: &[(String, Value)], response_number: usize) -> Vec<Value> {
+    let tool_calls: Vec<Value> = calls
+        .iter()
+        .enumerate()
+        .map(|(index, (name, arguments))| {
+            json!({
+                "index": index,
+                "id": format!("call_mock_{response_number}_{index}"),
+                "type": "function",
+                "function": {"name": name, "arguments": arguments.to_string()}
+            })
+        })
+        .collect();
+    vec![
+        chunk(json!({"role": "assistant", "content": ""}), None),
+        chunk(json!({"tool_calls": tool_calls}), None),
+        chunk(json!({}), Some("tool_calls")),
+        usage_chunk(20, 8),
+    ]
 }
 
 /// Builds the streamed chunks for one tool call, identified by `response_number`.

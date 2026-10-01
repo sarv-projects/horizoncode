@@ -7,6 +7,9 @@
 
 use horizoncode_types::ProviderError;
 
+/// Maximum serialized SSE line bytes, including its newline when present.
+pub(crate) const MAX_SSE_LINE_BYTES: usize = 1_048_576;
+
 /// One decoded SSE frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SseFrame {
@@ -17,9 +20,16 @@ pub enum SseFrame {
 }
 
 /// Incremental SSE line decoder.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SseBuffer {
     buffer: Vec<u8>,
+    max_line_bytes: usize,
+}
+
+impl Default for SseBuffer {
+    fn default() -> Self {
+        Self::with_max_line_bytes(MAX_SSE_LINE_BYTES)
+    }
 }
 
 impl SseBuffer {
@@ -29,23 +39,51 @@ impl SseBuffer {
         Self::default()
     }
 
+    /// Creates a decoder with a specific per-line byte ceiling.
+    #[must_use]
+    pub(crate) fn with_max_line_bytes(max_line_bytes: usize) -> Self {
+        Self {
+            buffer: Vec::new(),
+            max_line_bytes,
+        }
+    }
+
     /// Feeds a chunk and returns every complete frame it produced.
     ///
     /// # Errors
-    /// Returns a transport [`ProviderError`] when a line is not valid UTF-8.
+    /// Returns a typed provider error for invalid UTF-8 or a line over the ceiling.
     pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<SseFrame>, ProviderError> {
-        self.buffer.extend_from_slice(chunk);
         let mut frames = Vec::new();
-        while let Some(newline) = self.buffer.iter().position(|byte| *byte == b'\n') {
-            let mut line: Vec<u8> = self.buffer.drain(..=newline).collect();
-            // Drop the newline and an optional preceding carriage return.
-            line.pop();
-            if line.last() == Some(&b'\r') {
-                line.pop();
+        let mut start = 0;
+        while start < chunk.len() {
+            let newline = chunk[start..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map(|offset| start + offset);
+            let end = newline.unwrap_or(chunk.len());
+            let appended_bytes = end - start + usize::from(newline.is_some());
+            if self.buffer.len().saturating_add(appended_bytes) > self.max_line_bytes {
+                return Err(ProviderError::response_limit(format!(
+                    "provider response limit version 1: SSE line exceeds {} bytes",
+                    self.max_line_bytes
+                )));
             }
-            if let Some(frame) = decode_line(&line)? {
+            self.buffer
+                .extend_from_slice(&chunk[start..end + usize::from(newline.is_some())]);
+            let Some(_) = newline else {
+                break;
+            };
+
+            let mut line_end = self.buffer.len() - 1;
+            // Drop the newline and an optional preceding carriage return.
+            if line_end > 0 && self.buffer[line_end - 1] == b'\r' {
+                line_end -= 1;
+            }
+            if let Some(frame) = decode_line(&self.buffer[..line_end])? {
                 frames.push(frame);
             }
+            self.buffer.clear();
+            start = end + 1;
         }
         Ok(frames)
     }
@@ -127,5 +165,38 @@ mod tests {
         assert!(buffer.push(head).unwrap().is_empty());
         let frames = buffer.push(tail).unwrap();
         assert_eq!(frames, vec![SseFrame::Data("café".to_owned())]);
+    }
+
+    #[test]
+    fn accepts_a_line_at_the_ceiling_and_rejects_one_byte_over() {
+        let mut exact = SseBuffer::with_max_line_bytes(8);
+        assert_eq!(
+            exact.push(b"data:xx\n").unwrap(),
+            vec![SseFrame::Data("xx".to_owned())]
+        );
+
+        let mut over = SseBuffer::with_max_line_bytes(8);
+        let error = over.push(b"data:xxx\n").unwrap_err();
+        assert_eq!(
+            error.kind,
+            horizoncode_types::ProviderErrorKind::ResponseLimit
+        );
+        assert!(
+            over.buffer.len() <= 8,
+            "buffered {} bytes",
+            over.buffer.len()
+        );
+    }
+
+    #[test]
+    fn rejects_a_split_line_before_appending_the_over_limit_chunk() {
+        let mut buffer = SseBuffer::with_max_line_bytes(8);
+        assert!(buffer.push(b"data:").unwrap().is_empty());
+        let error = buffer.push(b"1234\n").unwrap_err();
+        assert_eq!(
+            error.kind,
+            horizoncode_types::ProviderErrorKind::ResponseLimit
+        );
+        assert_eq!(buffer.buffer, b"data:");
     }
 }

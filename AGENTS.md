@@ -8,16 +8,18 @@ verified by themselves.
 
 1. [`CURRENT_RUN.md`](CURRENT_RUN.md) for the checked-out revision, active scope, and
    handoff state.
-2. [`ARCH/00-INDEX.md`](ARCH/00-INDEX.md) for the document authority and status rules.
+2. [`ARCH/00-README.md`](ARCH/00-README.md) for authority and the complete document map.
 3. [`ARCH/01-VISION.md`](ARCH/01-VISION.md), [`ARCH/02-REQUIREMENTS.md`](ARCH/02-REQUIREMENTS.md),
-   [`ARCH/03-ARCHITECTURE.md`](ARCH/03-ARCHITECTURE.md), and relevant decisions in
-   [`ARCH/04-DECISIONS.md`](ARCH/04-DECISIONS.md).
+   [`ARCH/03-SYSTEM-ARCHITECTURE.md`](ARCH/03-SYSTEM-ARCHITECTURE.md), and
+   [`ARCH/04-DOMAIN-MODEL.md`](ARCH/04-DOMAIN-MODEL.md). Historical decision records are
+   retained under [`docs/history/architecture/decisions/`](docs/history/architecture/decisions).
 4. The owning component/feature design in `ARCH/`; use the owner listed in the matching
    [`TODO.md`](TODO.md) row. Follow that row's link to
-   [`ARCH/29-SOURCE-TRACEABILITY.md`](ARCH/29-SOURCE-TRACEABILITY.md) for current local
+   [`docs/research/SOURCE-TRACEABILITY.md`](docs/research/SOURCE-TRACEABILITY.md) for local
    entry points, tests, pinned upstream files, and explicit absences. Read
-   [`ARCH/22-SECURITY.md`](ARCH/22-SECURITY.md) and
-   [`ARCH/23-VERIFICATION.md`](ARCH/23-VERIFICATION.md) for security or evidence claims.
+   [`ARCH/security/SECURITY-MODEL.md`](ARCH/security/SECURITY-MODEL.md) and
+   [`ARCH/acceptance/ACCEPTANCE-MODEL.md`](ARCH/acceptance/ACCEPTANCE-MODEL.md) for security
+   or evidence claims.
 5. [`research docs/tests.md`](research%20docs/tests.md) for the test inventory, test
    layers, acceptance evidence, local-model matrix, and benchmark protocol.
 6. Relevant provenance notes under [`research docs/`](research%20docs/README.md) before
@@ -33,7 +35,7 @@ verified by themselves.
   **accepted** (the relevant acceptance record exists), and **blocked** (a named
   dependency or external condition prevents progress). A file, interface, worker
   report, benchmark score, or passing mock cannot promote status on its own.
-- `ARCH/` owns design; `TODO.md` owns delivery status and task dependencies;
+- `ARCH/` owns the final target design; `TODO.md` owns delivery status and task dependencies;
   `research docs/tests.md` owns the test/benchmark plan; `CURRENT_RUN.md` owns the
   current revision and session handoff. If these disagree, investigate and update the
   proper owner. Do not quietly make implementation agree by weakening a requirement.
@@ -106,7 +108,7 @@ For a substantial task:
   redaction.
 - Inspect license and source provenance before copying code, schema, tests, or assets.
   Researching behavior does not grant permission to copy implementation. Follow
-  `ARCH/05-SOURCE-LEDGER.md`, retain required notices, and do not bypass its license gate.
+  `docs/research/SOURCE-LEDGER.md`, retain required notices, and do not bypass its license gate.
 - Do not push, publish, deploy, modify production data, rewrite remote history, or make
   other external/destructive changes unless the user authorized that action. Keep a
   reviewable local diff and report any authorization boundary.
@@ -114,7 +116,7 @@ For a substantial task:
 ## Repository layout
 
 Keep top-level Markdown limited to `README.md`, `AGENTS.md`, `CURRENT_RUN.md`,
-`TODO.md`, and the generated `THIRD-PARTY-NOTICES.md` required by `ARCH/05` §4.
+`TODO.md`, and the generated `THIRD-PARTY-NOTICES.md` required by `docs/research/SOURCE-LEDGER.md` §4.
 Architecture belongs in `ARCH/`; upstream research and test strategy belong in
 `research docs/`. Keep links valid when moving documents. Keep product orientation in
 the root README; do not add a second task ledger.

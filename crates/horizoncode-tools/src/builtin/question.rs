@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use horizoncode_types::{ContentPart, ToolDefinition};
 use async_trait::async_trait;
+use horizoncode_types::{ContentPart, ToolDefinition};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 

@@ -8,6 +8,15 @@ use horizoncode_tools::OutputBounds;
 
 use crate::recorder::Recorder;
 
+/// Version of the default per-response admission ceilings.
+pub const RESPONSE_LIMITS_VERSION: u16 = 1;
+/// Default maximum tool calls in one model response.
+pub const DEFAULT_MAX_TOOL_CALLS_PER_RESPONSE: usize = 32;
+/// Default aggregate streamed tool-argument ceiling (256 KiB).
+pub const DEFAULT_MAX_TOOL_ARGUMENT_BYTES_PER_RESPONSE: usize = 256 * 1024;
+/// Default retained model-response ceiling (4 MiB).
+pub const DEFAULT_MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
 /// Configuration for one runner instance.
 #[derive(Clone, Debug)]
 pub struct RunConfig {
@@ -23,6 +32,12 @@ pub struct RunConfig {
     pub output_dir: Option<PathBuf>,
     /// The maximum number of model steps per turn (`REQ-LOOP-001`).
     pub max_steps: usize,
+    /// Maximum distinct tool calls admitted from one complete response.
+    pub max_tool_calls_per_response: usize,
+    /// Maximum aggregate streamed tool-argument bytes in one response.
+    pub max_tool_argument_bytes_per_response: usize,
+    /// Maximum aggregate retained response bytes (text, reasoning, and call data).
+    pub max_response_bytes: usize,
     /// Static system instructions.
     pub system: Vec<String>,
     /// Model-visible output bounds applied at settlement.
@@ -57,6 +72,9 @@ impl Default for RunConfig {
             workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             output_dir: None,
             max_steps: 25,
+            max_tool_calls_per_response: DEFAULT_MAX_TOOL_CALLS_PER_RESPONSE,
+            max_tool_argument_bytes_per_response: DEFAULT_MAX_TOOL_ARGUMENT_BYTES_PER_RESPONSE,
+            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
             system: Vec::new(),
             output_bounds: OutputBounds::default(),
             max_parallel_tools: 8,

@@ -74,7 +74,7 @@ found in the reviewed UI test paths.
 
 HorizonCode's previous search LLD had an under-specified sort tie-break: title hits
 have title-event sequence, whereas message hits have message sequence. Equal time/rank
-across those kinds could make pagination unstable. `ARCH/07` now defines a total order
+across those kinds could make pagination unstable. `ARCH/core/SESSION-AND-THREADS.md` now defines a total order
 including hit kind, source event sequence, and unique hit identity; cursors are keyset
 cursors bound to extractor/index/catalog generation. It also states how simultaneous
 title/body matches collapse (message hits carry title context; suppress redundant
@@ -85,6 +85,6 @@ Coverage is now explicit across both full-text indexing and global Thread enumer
 `COMPLETE` requires a stable authorized catalog snapshot, matching scope digest and
 counts, all captured committed heads indexed, and zero issues. The bounded diagnostic
 head sample is not complete-scope proof; catalog pagination/loading invalidates
-complete status and cursors. See `REQ-SESS-007`, `ARCH/07`, `ACC-P1-14`, `AX-369`, and
+complete status and cursors. See `REQ-SESS-007`, `ARCH/core/SESSION-AND-THREADS.md`, `ACC-P1-14`, `AX-369`, and
 the equal-key, replacement/edit, simultaneous title/body, initial global-load, and
 pre-purge opt-out cases in `research docs/tests.md`.

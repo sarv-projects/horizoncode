@@ -8,21 +8,26 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use horizoncode_types::{CancelToken, FinishReason, ModelEvent, ModelRequest, ProviderError, Usage};
 use bytes::Bytes;
-use futures::StreamExt;
 use futures::stream::{self, BoxStream};
+use futures::{Stream, StreamExt};
+use horizoncode_types::{
+    CancelToken, FinishReason, ModelEvent, ModelRequest, ProviderError, Usage,
+};
 use reqwest::Response;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER};
 use serde_json::{Map, Value, json};
 
 use crate::Provider;
-use crate::redact::{Redactor, truncate};
+use crate::redact::Redactor;
 use crate::retry::{RetryDecision, RetryPolicy, parse_retry_after};
 use crate::secret::SecretString;
-use crate::sse::{SseBuffer, SseFrame};
+use crate::sse::{MAX_SSE_LINE_BYTES, SseBuffer, SseFrame};
 
-const ERROR_BODY_CAP: usize = 512;
+const RESPONSE_LIMITS_VERSION: u16 = 1;
+const MAX_PROVIDER_BODY_BYTES: usize = 16_777_216;
+const MAX_ERROR_BODY_PREVIEW_BYTES: usize = 8_192;
+const MAX_ERROR_PREVIEW_SCALARS: usize = 512;
 
 /// Configuration for [`ChatCompletionsProvider`].
 ///
@@ -136,11 +141,10 @@ impl ChatCompletionsProvider {
             .get(RETRY_AFTER)
             .and_then(|value| value.to_str().ok())
             .and_then(parse_retry_after);
-        let body_hint = self.redactor.redact(&truncate(
-            &response.text().await.unwrap_or_default(),
-            ERROR_BODY_CAP,
-        ));
-        let mut error = ProviderError::from_status(status.as_u16(), &body_hint);
+        let body_preview = read_error_body_preview(response, MAX_ERROR_BODY_PREVIEW_BYTES).await;
+        let body_hint = render_error_body_preview(&body_preview, &self.redactor);
+        let mut error =
+            ProviderError::from_status(status.as_u16(), &body_hint).with_status(status.as_u16());
         if let Some(delay) = retry_after {
             error = error.with_retry_after(delay);
         }
@@ -151,20 +155,26 @@ impl ChatCompletionsProvider {
         &self,
         response: Response,
     ) -> Result<BoxStream<'static, Result<ModelEvent, ProviderError>>, ProviderError> {
+        reject_declared_oversize(response.content_length(), MAX_PROVIDER_BODY_BYTES)?;
         let is_sse = response
             .headers()
             .get(CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| value.to_ascii_lowercase().contains("text/event-stream"));
         if is_sse {
-            return Ok(sse_stream(response));
+            return Ok(sse_stream(
+                response,
+                MAX_PROVIDER_BODY_BYTES,
+                MAX_SSE_LINE_BYTES,
+            ));
         }
         // Non-streaming fallback: decode one complete chat completion.
-        let text = response
-            .text()
-            .await
-            .map_err(|error| ProviderError::transport(self.redactor.redact(&error.to_string())))?;
-        let value: Value = serde_json::from_str(&text).map_err(|error| {
+        let redactor = self.redactor.clone();
+        let chunks = response.bytes_stream().map(move |result| {
+            result.map_err(|error| ProviderError::transport(redactor.redact(&error.to_string())))
+        });
+        let body = collect_bounded_body(chunks, MAX_PROVIDER_BODY_BYTES).await?;
+        let value: Value = serde_json::from_slice(&body).map_err(|error| {
             ProviderError::unknown(format!("malformed provider response: {error}"))
         })?;
         let mut state = ChunkState::default();
@@ -175,10 +185,116 @@ impl ChatCompletionsProvider {
             events.push(Ok(ModelEvent::Usage(usage)));
         }
         events.push(Ok(ModelEvent::Finished {
-            reason: state.finish.unwrap_or(FinishReason::Stop),
+            reason: state
+                .finish
+                .unwrap_or_else(|| FinishReason::Other("missing_finish_reason".to_owned())),
         }));
         Ok(Box::pin(stream::iter(events)))
     }
+}
+
+#[derive(Debug, Default)]
+struct BodyPreview {
+    bytes: Vec<u8>,
+    capped: bool,
+}
+
+fn reject_declared_oversize(length: Option<u64>, limit: usize) -> Result<(), ProviderError> {
+    if length.is_some_and(|length| length > limit as u64) {
+        return Err(response_limit_error("response body", limit));
+    }
+    Ok(())
+}
+
+fn response_limit_error(subject: &str, limit: usize) -> ProviderError {
+    ProviderError::response_limit(format!(
+        "provider response limit version {RESPONSE_LIMITS_VERSION}: {subject} exceeds {limit} bytes"
+    ))
+}
+
+async fn collect_bounded_body<S>(chunks: S, limit: usize) -> Result<Vec<u8>, ProviderError>
+where
+    S: Stream<Item = Result<Bytes, ProviderError>>,
+{
+    futures::pin_mut!(chunks);
+    let mut body = Vec::new();
+    while let Some(chunk) = chunks.next().await {
+        let chunk = chunk?;
+        let remaining = limit.saturating_sub(body.len());
+        if chunk.len() > remaining {
+            return Err(response_limit_error("response body", limit));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+async fn read_error_body_preview(response: Response, limit: usize) -> BodyPreview {
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        return BodyPreview {
+            bytes: Vec::new(),
+            capped: true,
+        };
+    }
+    read_bounded_preview(response.bytes_stream(), limit).await
+}
+
+async fn read_bounded_preview<S, E>(chunks: S, limit: usize) -> BodyPreview
+where
+    S: Stream<Item = Result<Bytes, E>>,
+{
+    futures::pin_mut!(chunks);
+    let mut preview = BodyPreview::default();
+    while preview.bytes.len() < limit {
+        let chunk = match chunks.next().await {
+            Some(Ok(chunk)) => chunk,
+            Some(Err(_)) => {
+                preview.capped = true;
+                break;
+            }
+            None => break,
+        };
+        let remaining = limit.saturating_sub(preview.bytes.len());
+        let retained = chunk.len().min(remaining);
+        preview.bytes.extend_from_slice(&chunk[..retained]);
+        if retained < chunk.len() || preview.bytes.len() == limit {
+            preview.capped = true;
+            break;
+        }
+    }
+    if limit == 0 {
+        preview.capped = true;
+    }
+    preview
+}
+
+fn render_error_body_preview(preview: &BodyPreview, redactor: &Redactor) -> String {
+    let raw = String::from_utf8_lossy(&preview.bytes);
+    let redacted = redactor.redact(&raw);
+    let single_line = redacted
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    let needs_marker = preview.capped || single_line.chars().count() > MAX_ERROR_PREVIEW_SCALARS;
+    let content_limit = if needs_marker {
+        MAX_ERROR_PREVIEW_SCALARS.saturating_sub(1)
+    } else {
+        MAX_ERROR_PREVIEW_SCALARS
+    };
+    let mut rendered = single_line.chars().take(content_limit).collect::<String>();
+    if needs_marker {
+        rendered.push('…');
+    }
+    rendered
 }
 
 #[async_trait::async_trait]
@@ -250,13 +366,30 @@ fn map_finish_reason(reason: &str) -> FinishReason {
 // `done` is set in the terminal branch but read on the next poll, not within
 // the same call, so the compiler's unused-assignment lint is a false positive.
 #[allow(unused_assignments)]
-fn sse_stream(response: Response) -> BoxStream<'static, Result<ModelEvent, ProviderError>> {
-    let inner = response.bytes_stream();
+fn sse_stream(
+    response: Response,
+    max_body_bytes: usize,
+    max_line_bytes: usize,
+) -> BoxStream<'static, Result<ModelEvent, ProviderError>> {
+    sse_stream_from_chunks(
+        Box::pin(response.bytes_stream()),
+        max_body_bytes,
+        max_line_bytes,
+    )
+}
+
+fn sse_stream_from_chunks(
+    inner: BoxStream<'static, Result<Bytes, reqwest::Error>>,
+    max_body_bytes: usize,
+    max_line_bytes: usize,
+) -> BoxStream<'static, Result<ModelEvent, ProviderError>> {
     let initial = SseState {
-        inner: Box::pin(inner),
-        sse: SseBuffer::new(),
+        inner,
+        sse: SseBuffer::with_max_line_bytes(max_line_bytes),
         pending: VecDeque::new(),
         state: ChunkState::default(),
+        max_body_bytes,
+        body_bytes: 0,
     };
     Box::pin(stream::unfold(initial, |mut state| async move {
         loop {
@@ -293,13 +426,25 @@ fn sse_stream(response: Response) -> BoxStream<'static, Result<ModelEvent, Provi
                             "stream error: {error}"
                         ))));
                 }
-                Some(Ok(bytes)) => match state.sse.push(&bytes) {
-                    Ok(frames) => state.absorb(frames),
-                    Err(error) => {
+                Some(Ok(bytes)) => {
+                    let remaining = state.max_body_bytes.saturating_sub(state.body_bytes);
+                    if bytes.len() > remaining {
                         state.state.done = true;
-                        state.pending.push_back(Err(error));
+                        state.pending.push_back(Err(response_limit_error(
+                            "response body",
+                            state.max_body_bytes,
+                        )));
+                        continue;
                     }
-                },
+                    state.body_bytes += bytes.len();
+                    match state.sse.push(&bytes) {
+                        Ok(frames) => state.absorb(frames),
+                        Err(error) => {
+                            state.state.done = true;
+                            state.pending.push_back(Err(error));
+                        }
+                    }
+                }
             }
         }
     }))
@@ -310,6 +455,8 @@ struct SseState {
     sse: SseBuffer,
     pending: VecDeque<Result<ModelEvent, ProviderError>>,
     state: ChunkState,
+    max_body_bytes: usize,
+    body_bytes: usize,
 }
 
 impl SseState {
@@ -348,7 +495,11 @@ impl SseState {
             self.pending.push_back(Ok(ModelEvent::Usage(usage)));
         }
         self.pending.push_back(Ok(ModelEvent::Finished {
-            reason: self.state.finish.clone().unwrap_or(FinishReason::Stop),
+            reason: self
+                .state
+                .finish
+                .clone()
+                .unwrap_or_else(|| FinishReason::Other("missing_finish_reason".to_owned())),
         }));
         self.state.done = true;
     }
@@ -591,8 +742,19 @@ pub fn build_body(request: &ModelRequest, stream: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::stream;
     use horizoncode_types::{Message, ToolCall, ToolCallId, ToolChoice, ToolDefinition};
     use serde_json::json;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    struct DropSignal(Arc<AtomicBool>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
 
     #[test]
     fn body_includes_tools_and_tool_choice() {
@@ -688,5 +850,134 @@ mod tests {
     fn status_code_constant_compiles() {
         // Guards against accidental header import drift.
         assert_eq!(reqwest::StatusCode::OK.as_u16(), 200);
+    }
+
+    #[tokio::test]
+    async fn bounded_body_reader_accepts_the_ceiling_and_rejects_the_first_extra_byte() {
+        let exact = stream::iter(vec![
+            Ok::<_, ProviderError>(Bytes::from_static(b"abc")),
+            Ok(Bytes::from_static(b"de")),
+        ]);
+        assert_eq!(collect_bounded_body(exact, 5).await.unwrap(), b"abcde");
+
+        let over = stream::iter(vec![
+            Ok::<_, ProviderError>(Bytes::from_static(b"abc")),
+            Ok(Bytes::from_static(b"def")),
+        ]);
+        let error = collect_bounded_body(over, 5).await.unwrap_err();
+        assert_eq!(
+            error.kind,
+            horizoncode_types::ProviderErrorKind::ResponseLimit
+        );
+        assert!(!error.retryable);
+    }
+
+    #[tokio::test]
+    async fn sse_aggregate_limit_preserves_partial_events_without_a_finish() {
+        let first = b"data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n";
+        let inner = Box::pin(stream::iter(vec![
+            Ok(Bytes::from_static(first)),
+            Ok(Bytes::from_static(b":x\n")),
+        ]));
+        let events = sse_stream_from_chunks(inner, first.len(), 1024)
+            .collect::<Vec<_>>()
+            .await;
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            Ok(ModelEvent::TextDelta { text }) if text == "x"
+        )));
+        assert!(matches!(
+            events.last(),
+            Some(Err(error)) if error.kind == horizoncode_types::ProviderErrorKind::ResponseLimit
+        ));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, Ok(ModelEvent::Finished { .. })))
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_sse_consumer_drops_the_underlying_response_stream() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let signal = DropSignal(dropped.clone());
+        let source = stream::unfold((signal, false), |(signal, sent)| async move {
+            if sent {
+                std::future::pending().await
+            } else {
+                Some((
+                    Ok::<_, reqwest::Error>(Bytes::from_static(
+                        b"data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n",
+                    )),
+                    (signal, true),
+                ))
+            }
+        });
+        let mut response = sse_stream_from_chunks(Box::pin(source), 1024, 1024);
+
+        assert!(matches!(
+            response.next().await,
+            Some(Ok(ModelEvent::Started))
+        ));
+        drop(response);
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn error_preview_reader_stops_retaining_bytes_at_its_ceiling() {
+        let pulls = Arc::new(AtomicUsize::new(0));
+        let source_pulls = pulls.clone();
+        let chunks = stream::unfold(0, move |index| {
+            let source_pulls = source_pulls.clone();
+            async move {
+                source_pulls.fetch_add(1, Ordering::SeqCst);
+                match index {
+                    0 => Some((Ok::<_, ()>(Bytes::from_static(b"1234")), 1)),
+                    1 => Some((Ok(Bytes::from_static(b"5678")), 2)),
+                    2 => Some((Ok(Bytes::from_static(b"not-read")), 3)),
+                    _ => None,
+                }
+            }
+        });
+        let preview = read_bounded_preview(chunks, 8).await;
+        assert_eq!(preview.bytes, b"12345678");
+        assert!(preview.capped);
+        assert_eq!(pulls.load(Ordering::SeqCst), 2, "read past preview ceiling");
+    }
+
+    #[test]
+    fn error_preview_redacts_before_unicode_scalar_truncation() {
+        let raw = format!("Bearer very-secret {}", "🙂".repeat(600));
+        let preview = BodyPreview {
+            bytes: raw.into_bytes(),
+            capped: true,
+        };
+        let rendered =
+            render_error_body_preview(&preview, &Redactor::new(["very-secret".to_owned()]));
+        assert!(!rendered.contains("very-secret"));
+        assert!(rendered.ends_with('…'));
+        assert!(rendered.chars().count() <= MAX_ERROR_PREVIEW_SCALARS);
+    }
+
+    #[test]
+    fn declared_response_length_overflow_is_typed_and_fail_closed() {
+        let error = reject_declared_oversize(
+            Some(MAX_PROVIDER_BODY_BYTES as u64 + 1),
+            MAX_PROVIDER_BODY_BYTES,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.kind,
+            horizoncode_types::ProviderErrorKind::ResponseLimit
+        );
+        assert!(!error.retryable);
+        assert!(
+            reject_declared_oversize(
+                Some(MAX_PROVIDER_BODY_BYTES as u64),
+                MAX_PROVIDER_BODY_BYTES
+            )
+            .is_ok()
+        );
     }
 }

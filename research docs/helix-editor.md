@@ -19,7 +19,7 @@ allow the terminal editor to be disabled while repository navigation/chat contin
 
 ## HorizonCode disposition
 
-See `ARCH/06` §§5–8 and `ARCH/09`. The editor opens inside the left Explorer dock
+See `ARCH/product/UI.md` §§5–8 and `ARCH/core/CONTEXT.md`. The editor opens inside the left Explorer dock
 group, while chat stays central and Tasks remain a right-side verified projection.
 Do not copy Helix modal behavior or assume its editor features are needed in v1. The
 existing editor size limits, governed write path, conflict handling, and external

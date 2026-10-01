@@ -298,13 +298,25 @@ async fn a_denied_effect_is_audited_and_never_happens() {
     fs::write(
         sandbox.workspace().join(".horizoncode/config.jsonc"),
         r#"{ "guard": { "rules": [
-            { "action": "fs.write", "resource": "**", "effect": "deny" }
+            { "action": "fs.write", "resource": "blocked.txt", "effect": "deny" }
         ] } }"#,
     )
     .unwrap();
 
     let output = run(&server, sandbox.home(), sandbox.workspace(), "write it").await;
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "exit={:?} stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let request = &server.requests()[0];
+    assert!(
+        request["tools"]
+            .as_array()
+            .is_some_and(|tools| { tools.iter().any(|tool| tool["function"]["name"] == "write") }),
+        "the resource-specific deny fixture must still advertise `write`"
+    );
     assert!(
         !sandbox.workspace().join("blocked.txt").exists(),
         "a denied effect must not happen"

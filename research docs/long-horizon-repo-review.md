@@ -71,7 +71,7 @@ and Thread identity migration `AX-379`.
 
 **HorizonCode disposition:** incorporate a post-evaluation revision/input recheck,
 bounded continuation/no-progress policy, and lineage-aware checkpoint retention into
-`ARCH/25` acceptance cases. Keep independent code/task verification; DeerFlow's goal
+`ARCH/execution/LONG-HORIZON.md` acceptance cases. Keep independent code/task verification; DeerFlow's goal
 evaluation is not acceptance evidence. These are patterns, not copied code.
 
 ## LongHorizon-Harness
@@ -97,7 +97,7 @@ Terminal-Bench 2.1. Reproductions use substantial external assets/VM resources a
 take hours; README score claims are not reverified here.
 
 **HorizonCode disposition:** compare launch reservation, crash recovery, and question
-flows with `ARCH/25` and `AX-380`; add crash-at-launch and duplicate resume cases to the
+flows with `ARCH/execution/LONG-HORIZON.md` and `AX-380`; add crash-at-launch and duplicate resume cases to the
 test plan. Retain Horizon's bounded, atomic token/cost reservation and verifier-evidence
 requirements. Benchmark lanes should be optional heavyweight acceptance jobs, pinned
 to dataset/model/environment/evaluator revisions and license-checked.
@@ -123,7 +123,7 @@ cache-hit end-to-end test is gated on `DEEPSEEK_API_KEY` and exercises the DeepS
 route only. This does not demonstrate universal prompt-cache behavior. **HorizonCode
 disposition:** represent cache capability/request/usage per provider and model; preserve
 unknown when unreported; test each provider route. Keep strict projection validation,
-goal revisions, and durable input inbox patterns as candidates for `ARCH/07`/`ARCH/25`.
+goal revisions, and durable input inbox patterns as candidates for `ARCH/core/SESSION-AND-THREADS.md`/`ARCH/execution/LONG-HORIZON.md`.
 
 ### DeepSeek Harness cache follow-up (2026-09-29)
 
@@ -144,7 +144,7 @@ tests are DeepSeek-only and opt-in. Relevant pinned paths: `packages/core/agent-
 
 HorizonCode already requires deterministic provider rendering, stable prefix ordering,
 route-pinned cache capabilities, separate provider-reported usage, and unknown on
-missing evidence (`ARCH/09`, `ARCH/11`, `ARCH/19`, `ACC-P1-18`, `AX-384`). This review
+missing evidence (`ARCH/core/CONTEXT.md`, `ARCH/core/PROVIDERS.md`, `ARCH/core/COMPRESSION.md`, `ACC-P1-18`, `AX-384`). This review
 adds only a route-specific `in_history_system_prompt_update` capability. Complete
 effective-prompt replacement remains the safe default; the optimization is enabled
 only when exact request-construction tests prove the effective prompt after update,

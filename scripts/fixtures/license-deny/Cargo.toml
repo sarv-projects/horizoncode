@@ -1,0 +1,11 @@
+[package]
+name = "horizoncode-license-deny-fixture"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+unapproved-license-fixture = { path = "dependency" }
+
+[workspace]

@@ -160,7 +160,7 @@ Do not infer from a PR's test report that HorizonCode's chosen policy is superio
 
 | MiMo/OpenCode pattern | Disposition for HorizonCode | Required improvement |
 |---|---|---|
-| OpenCode provider/model/plugin/TUI base and extension surface | Study as architecture, not as a second independent baseline | Keep HorizonCode's own control-plane and adapter contracts; check every copied line against `ARCH/05-SOURCE-LEDGER.md`. |
+| OpenCode provider/model/plugin/TUI base and extension surface | Study as architecture, not as a second independent baseline | Keep HorizonCode's own control-plane and adapter contracts; check every copied line against `docs/research/SOURCE-LEDGER.md`. |
 | Human-readable memory files plus local FTS search | Adopt the split concept | Canonical versioned facts/events separate from generated summaries; provenance, source revision, age, contradiction and deletion reconciliation. |
 | Per-model context/compaction budget and token-aware status | Adopt | Probe effective route limit; reserve completion room; record compaction epochs; settings expose source/effective value; warn before stale or unverified retrieval. |
 | Background actors with cancel/status/wait | Adopt with stricter supervision | Persistent task ownership, deadline, lifecycle event stream, fenced worktree, capability/usage snapshot, cancellation reconciliation, independent acceptance. |
@@ -174,7 +174,7 @@ The project license is reported as MIT, but the README separately points to MiMo
 restrictions, hosted-service terms, and trademark policy. Those terms are not themselves
 the software license, and they do not grant rights to bundled dependencies or assets.
 Before reusing source, inspect the exact tagged files, notices, contributions and
-`ARCH/05` compatibility policy. Prefer independently written implementations from
+`docs/research/SOURCE-LEDGER.md` compatibility policy. Prefer independently written implementations from
 recorded behavior unless source reuse is deliberately approved.
 
 ## Primary sources

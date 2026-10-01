@@ -12,7 +12,6 @@ repository.workspace = true
 # the same digest as the audit chain, so it is stable across toolchain releases.
 blake3.workspace = true
 async-trait.workspace = true
-dirs.workspace = true
 horizoncode-config.workspace = true
 serde.workspace = true
 serde_json.workspace = true

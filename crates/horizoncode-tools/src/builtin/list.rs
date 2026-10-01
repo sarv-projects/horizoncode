@@ -1,7 +1,7 @@
 //! The `list` tool: a flat directory listing.
 
-use horizoncode_types::ToolDefinition;
 use async_trait::async_trait;
+use horizoncode_types::ToolDefinition;
 use serde_json::{Value, json};
 
 use crate::builtin::{

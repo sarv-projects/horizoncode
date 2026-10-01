@@ -15,5 +15,5 @@ branding, or assets were copied. Upstream behavior is evidence for the named pat
 | `awesome-ai-agents` lists | Search surfaced several different repositories with the same/similar name. | No single authoritative or canonical list was identified; list entries are volatile and claims unverified. | Do not cite a generic “awesome-ai-agents” list as parity evidence. Select and pin a specific source only for a later bounded radar pass. |
 
 All source-derived design changes are HorizonCode contracts written in
-`ARCH/34`–`ARCH/36` and owning LLDs. License status must be rechecked at the exact
-file/subtree before any future copying/adaptation; `ARCH/05` remains the gate.
+`ARCH/05-MODULARITY.md`–`ARCH/product/CODE-INTELLIGENCE.md` and owning LLDs. License status must be rechecked at the exact
+file/subtree before any future copying/adaptation; `docs/research/SOURCE-LEDGER.md` remains the gate.

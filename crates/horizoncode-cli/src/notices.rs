@@ -420,7 +420,7 @@ fn cargo_home() -> PathBuf {
     std::env::var_os("CARGO_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".cargo")))
+        .or_else(|| horizoncode_config::home_dir().map(|home| home.join(".cargo")))
         .unwrap_or_else(|| PathBuf::from(".cargo"))
 }
 

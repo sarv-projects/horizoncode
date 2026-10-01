@@ -18,7 +18,7 @@ unread). See the per-file CSVs in this directory.
   Its child roster is held in an in-memory map and bounded/pruned at runtime
   ([store, lines 115–124 and 285–326](https://github.com/superset-sh/superset/blob/f37599e2774a99dce67f21b887c88bac331da6fc/packages/host-service/src/terminal-agents/store.ts#L115-L124)). HorizonCode's durable
   `WorkerExecution`/`ExternalAttempt` model and UNKNOWN peer visibility already cover
-  this distinction (`ARCH/25`, `AX-318`, `AX-359`).
+  this distinction (`ARCH/execution/LONG-HORIZON.md`, `AX-318`, `AX-359`).
 - **A resume claim needs an outbox/receipt across process crashes.** Superset atomically
   marks the old binding `resumed` before launching; it unclaims only when a caught
   launch error returns control
@@ -50,7 +50,7 @@ unread). See the per-file CSVs in this directory.
   seeds a REST history page and anchors WebSocket replay with `after_timestamp`
   ([history and cursor setup, lines 281–395](https://github.com/OpenHands/OpenHands/blob/f174ba8465233e46e66ab2c5667b358f1d6676d6/src/contexts/conversation-websocket-context.tsx#L281-L395)).
   This is a useful UI recovery pattern, but timestamps are weaker than HorizonCode's
-  aggregate sequence/snapshot/replay contract in ARCH/31.
+  aggregate sequence/snapshot/replay contract in ARCH/integrations/CONTROL-API.md.
 - **Keep backend and runtime trust/auth origins explicit.** The OpenHands frontend
   documents separate Cloud App API history calls and per-conversation runtime calls,
   with different hosts and auth headers
@@ -70,7 +70,7 @@ OpenHands' frontend projection copies the entire retained `events` array on ever
 append, including streamed deltas ([event store, lines 92–128](https://github.com/OpenHands/OpenHands/blob/f174ba8465233e46e66ab2c5667b358f1d6676d6/src/stores/use-event-store.ts#L92-L128)).
 This is a code-path observation, not a demonstrated performance bug, and it does not
 show how their production event volume behaves. HorizonCode already specifies a bounded
-virtualized transcript and allocation/RSS measurements (`ARCH/06` § resource bounds;
+virtualized transcript and allocation/RSS measurements (`ARCH/product/UI.md` § resource bounds;
 AX-374; `research docs/tests.md` UI resource benchmark), so it does not justify a new
 architecture component. It does suggest making the AX-374 fixture explicit: preload a
 large history, stream sustained token deltas while scrolling/searching, and record
@@ -82,5 +82,5 @@ update strategy.
 Superset's pinned repository declares Elastic License 2.0 in `LICENSE.md`; this review
 uses patterns and source references only and does not copy code or propose it as a
 dependency. OpenHands/OpenHands declares MIT in `LICENSE`; no source was copied. Any
-future code, schema, fixture, or asset reuse must go through `ARCH/05-SOURCE-LEDGER.md`
+future code, schema, fixture, or asset reuse must go through `docs/research/SOURCE-LEDGER.md`
 and its notice/compatibility review.

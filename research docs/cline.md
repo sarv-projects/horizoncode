@@ -2,6 +2,8 @@
 
 > INTERNAL RESEARCH — source snapshot: Cline v4.1.21 at **787ad1b077d8b697892dc3bfcd42e7c65b88789e**, released 2026-09-24. The pinned tree has 4,116 tracked paths; this is a subsystem-focused architecture audit, not a line-by-line read of every path.
 
+> Provider catalog/auth coverage has a separate, newer source inventory at Cline commit `8eee168b80127b0c94bad849323754b5864865e7` (2026-09-30). Use [the pinned 228-entry provider inventory](cline-provider-inventory-2026-10-01.md) for provider IDs, auth evidence, mappings, and regional routes; the provider subsection in this older architecture snapshot is not the current complete catalog.
+
 The project ships independently versioned channels. The 2026-09-27 release page lists core v4.1.21, SDK 0.0.86, CLI 3.0.65, and Desktop 0.0.37; the source map below pins core v4.1.21, while desktop-only changes must be checked at their own tag. The v4.1.21/SDK 0.0.86 notes report a one-time compact-and-retry for local-model responses truncated at the remaining-context ceiling, preservation of the partial reply, and no replay of turns that produced tool calls; they also persist terminal errors across navigation/resume. Treat these as versioned release behavior, not as proof for every host or model.
 
 ## High-level architecture
@@ -193,7 +195,7 @@ Additional source-verified observations:
 - v4.1.21 retries a token/context truncation once only when there was no tool activity,
   preserves partial output if retry fails, retries transient provider failures using
   the prepared request, and propagates local provider-catalog failures instead of
-  silently returning an empty list. HorizonCode's `ARCH/08` already limits compaction
+  silently returning an empty list. HorizonCode's `ARCH/core/AGENT-LOOP.md` already limits compaction
   retry to safe pre-effect cases; provider attempts must retain partial bytes/usage and
   must not replay side effects.
 - MCP readiness has separate install/configure, credential, connection, timeout,

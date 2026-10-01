@@ -4,7 +4,7 @@ Review date: 2026-09-28. Read-only targeted inspection of implementation paths,
 schemas, and selected tests in the pinned repositories below. No tests/benchmarks were
 run and no upstream code was copied. A listed repository head/license is not evidence
 that every dependency or subtree shares that license; see the upstream license and
-`ARCH/05-SOURCE-LEDGER.md` before any implementation reuse.
+`docs/research/SOURCE-LEDGER.md` before any implementation reuse.
 
 | Repository | Commit | License observed |
 |---|---|---|
@@ -146,9 +146,9 @@ agent.
 ## Architecture and test-plan effect
 
 The current HorizonCode design already has the key ownership separations: task DAG vs
-Thread tree (`ARCH/32`), durable inbox receipts, per-run/task/attempt accounting, and
-atomic local budget reservation distinct from provider-reported quota (`ARCH/20`,
-`ARCH/25`, `REQ-ORCH-009`). No second scheduler, agent registry, or budget owner should
+Thread tree (`ARCH/product/AGENT-MESSAGING.md`), durable inbox receipts, per-run/task/attempt accounting, and
+atomic local budget reservation distinct from provider-reported quota (`ARCH/product/ANALYTICS.md`,
+`ARCH/execution/LONG-HORIZON.md`, `REQ-ORCH-009`). No second scheduler, agent registry, or budget owner should
 be introduced for these findings. The useful incremental acceptance cases are:
 
 - stale provider quota observation with expired/reset period; display as stale/unknown

@@ -1,7 +1,7 @@
 //! The `edit` tool: a unique string replacement with a bounded diff preview.
 
-use horizoncode_types::{ContentPart, ToolDefinition};
 use async_trait::async_trait;
+use horizoncode_types::{ContentPart, ToolDefinition};
 use serde_json::{Value, json};
 
 use crate::builtin::{

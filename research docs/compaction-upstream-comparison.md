@@ -3,7 +3,7 @@
 Reviewed 2026-09-30. This is a focused source comparison of compaction defaults and
 trigger/recovery ownership, not a full repository audit. No source code, schemas,
 tests, or assets were copied. Commit pins and exact files are repeated in
-[`ARCH/29` U-CTX-COMPACTION](../ARCH/29-SOURCE-TRACEABILITY.md#u-ctx-compaction).
+[`docs/research/SOURCE-TRACEABILITY.md` U-CTX-COMPACTION](../docs/research/SOURCE-TRACEABILITY.md#u-ctx-compaction).
 
 ## Findings
 
@@ -52,7 +52,7 @@ cannot fit.
 
 ## HorizonCode design owners
 
-`DEC-006`, `REQ-CTX-002`, `REQ-CTX-004`, `REQ-CTX-011`, `ARCH/08`, `ARCH/09`,
-`ARCH/11`, and `ARCH/19` own behavior. `ACC-P1-07` and the tests listed in
+`DEC-006`, `REQ-CTX-002`, `REQ-CTX-004`, `REQ-CTX-011`, `ARCH/core/AGENT-LOOP.md`, `ARCH/core/CONTEXT.md`,
+`ARCH/core/PROVIDERS.md`, and `ARCH/core/COMPRESSION.md` own behavior. `ACC-P1-07` and the tests listed in
 `research docs/tests.md` own verification. `AX-203` owns implementation. No peer
 threshold or implementation is copied.

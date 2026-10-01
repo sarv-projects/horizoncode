@@ -100,12 +100,12 @@ Runtime selection is workload-specific. Measure peak/steady memory, load time, t
 2. Compare DeepCode and Ouroboros for goal/intent persistence and recovery; trace source schemas and transactions.
 3. Compare Serena and Code Review Graph on HorizonCode's Rust tree: symbol/reference recall, stale-index behavior, write correctness, privacy, and license compatibility.
 4. Compare RTK-style output reduction with raw tool output using identical tasks and hidden checks; measure lost-information rate.
-5. Compare Superset and ARCH/06 with a multi-repo workflow; track process IDs, leases, diff ownership, and crash recovery.
+5. Compare Superset and ARCH/product/UI.md with a multi-repo workflow; track process IDs, leases, diff ownership, and crash recovery.
 6. Re-run jcode PSS/RSS tests with pinned binaries and process-tree accounting before making a RAM decision.
 7. Test local inference backends against one fixed tool-call/repository benchmark, holding model weights constant where possible.
 
 ## References and scope
 
 - Primary source maps: [OpenCode](opencode.md), [Codex](codex.md), [Cline](cline.md), [Claude Code](claude.md), [Aider](aider.md).
-- HorizonCode license/source posture: [ARCH/05-SOURCE-LEDGER.md](../ARCH/05-SOURCE-LEDGER.md). Research is not adoption; Serena's GPL component conflicts with current no-copyleft policy.
+- HorizonCode license/source posture: [docs/research/SOURCE-LEDGER.md](../docs/research/SOURCE-LEDGER.md). Research is not adoption; Serena's GPL component conflicts with current no-copyleft policy.
 - Open source is not automatically authoritative: Claude Code has no public implementation repository; a third-party clone/fork cannot establish Anthropic internals.

@@ -141,7 +141,7 @@ async fn a_deny_rule_blocks_a_write() {
     std::fs::write(
         workspace.path().join(".horizoncode/config.jsonc"),
         r#"{ "guard": { "rules": [
-            { "action": "fs.write", "resource": "**", "effect": "deny" }
+            { "action": "fs.write", "resource": "blocked.txt", "effect": "deny" }
         ] } }"#,
     )
     .unwrap();
@@ -157,7 +157,12 @@ async fn a_deny_rule_blocks_a_write() {
         ],
     )
     .await;
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "exit={:?} stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     assert!(
         !workspace.path().join("blocked.txt").exists(),
@@ -173,7 +178,7 @@ async fn a_deny_rule_blocks_a_write() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn plan_mode_refuses_a_mutating_call() {
+async fn plan_mode_rejects_an_unadvertised_mutating_call_before_dispatch() {
     let server = MockServer::start(vec![
         MockTurn::tool_call("write", json!({"path": "plan.txt", "content": "nope"})),
         MockTurn::text("Planned only."),
@@ -195,7 +200,12 @@ async fn plan_mode_refuses_a_mutating_call() {
         ],
     )
     .await;
-    assert!(output.status.success());
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "an unadvertised provider call fails the turn; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     assert!(
         !workspace.path().join("plan.txt").exists(),
@@ -208,11 +218,27 @@ async fn plan_mode_refuses_a_mutating_call() {
         !tools.iter().any(|tool| tool["function"]["name"] == "write"),
         "plan mode must not advertise the write tool: {tools:?}"
     );
-    let results = tool_results(&session_events(home.path()));
+    assert_eq!(
+        server.requests().len(),
+        1,
+        "rejected response must not retry"
+    );
+    let events = session_events(home.path());
     assert!(
-        results
-            .iter()
-            .any(|result| result["data"]["status"] == "denied"),
-        "expected a denied tool result: {results:?}"
+        !events.iter().any(|event| event["type"] == "tool/call"),
+        "an unadvertised call must not enter the durable effect path: {events:?}"
+    );
+    let results = tool_results(&events);
+    assert!(
+        results.is_empty(),
+        "a pre-dispatch response rejection must not fabricate a tool result: {results:?}"
+    );
+    assert!(
+        events.iter().any(|event| {
+            event["type"] == "model/attempt"
+                && event["data"]["phase"] == "response_admission"
+                && event["data"]["code"] == "UNADVERTISED_TOOL"
+        }),
+        "the refusal must be durably typed: {events:?}"
     );
 }

@@ -1,18 +1,16 @@
 //! The `glob` tool: filename matching within the workspace.
 
-use horizoncode_types::ToolDefinition;
-use async_trait::async_trait;
-use globset::{Glob, GlobMatcher};
-use serde_json::{Value, json};
-use walkdir::WalkDir;
-
 use crate::builtin::{
     assert_action, check_sandbox_read, display_path, object_schema, optional_str, optional_usize,
-    require_str,
+    read_only_walk, require_str,
 };
 use crate::error::ToolError;
 use crate::path::resolve_workspace_path;
 use crate::registry::{Tool, ToolContext, ToolOutput};
+use async_trait::async_trait;
+use globset::{Glob, GlobMatcher};
+use horizoncode_types::ToolDefinition;
+use serde_json::{Value, json};
 
 const DEFAULT_LIMIT: usize = 200;
 const MAX_LIMIT: usize = 5000;
@@ -67,17 +65,29 @@ impl Tool for GlobTool {
 
         let mut matches = Vec::new();
         let mut truncated = false;
-        for entry in WalkDir::new(&base)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(|entry| entry.file_name() != ".git")
-            .flatten()
-        {
-            if !entry.file_type().is_file() {
-                continue;
+        let mut visited = 0usize;
+        for entry in read_only_walk(ctx, &base)? {
+            let entry = entry?;
+            visited += 1;
+            if visited % 64 == 0 {
+                tokio::task::yield_now().await;
+                if ctx.cancel.is_cancelled() {
+                    return Err(ToolError::Aborted("glob search cancelled".to_owned()));
+                }
             }
             let relative = display_path(&ctx.workspace, entry.path());
-            if matcher.is_match(&relative) {
+            let file_type = entry.file_type().ok_or_else(|| ToolError::Io {
+                path: entry.path().to_path_buf(),
+                message: "could not determine entry type during traversal".to_owned(),
+            })?;
+            if file_type.is_dir() {
+                // Check before the next iterator step can descend into this
+                // directory. Any failure aborts the call, dropping accumulated
+                // paths rather than returning a partial success.
+                continue;
+            }
+            if file_type.is_file() && matcher.is_match(&relative) {
+                check_sandbox_read(ctx, entry.path())?;
                 matches.push(relative);
                 if matches.len() >= limit {
                     truncated = true;

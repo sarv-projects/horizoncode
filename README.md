@@ -26,8 +26,8 @@ The model provider you select receives the prompt and code context needed for th
 
 - [Product vision](ARCH/01-VISION.md)
 - [Requirements](ARCH/02-REQUIREMENTS.md)
-- [Architecture index](ARCH/00-INDEX.md)
-- [Workspace design](ARCH/06-UI.md)
-- [Security model](ARCH/22-SECURITY.md)
+- [Architecture index](ARCH/00-README.md)
+- [Workspace design](ARCH/product/UI.md)
+- [Security model](ARCH/security/SECURITY-MODEL.md)
 - [Contributing](AGENTS.md)
 - [License](LICENSE)

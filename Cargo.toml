@@ -99,10 +99,8 @@ rand = "0.8"
 # Tool implementations.
 regex = "1.11"
 globset = "0.4"
+ignore = "=0.4.33"
 walkdir = "2.5"
-
-# Home directory resolution.
-dirs = "6.0"
 
 # Protocol SDK (Agent Client Protocol), Apache-2.0. Stable v1 API only; the
 # JSON-schema feature is not needed by the server. See `crates/horizoncode-acp`.

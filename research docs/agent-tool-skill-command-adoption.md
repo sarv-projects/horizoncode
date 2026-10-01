@@ -18,9 +18,9 @@ assets were copied.
 Repository license files at the cited pins were inspected: Grok Build is Apache-2.0,
 Codex is Apache-2.0, and OpenCode is MIT. This records provenance only; the decision is
 to adapt public behavior, not copy code. The relevant source trails are `U-GROK-SKILLS`,
-`U-CX-TOOL-SEARCH`, and `U-OC-LSP` in `ARCH/29`; the source ledger records these as
+`U-CX-TOOL-SEARCH`, and `U-OC-LSP` in `docs/research/SOURCE-TRACEABILITY.md`; the source ledger records these as
 pattern-only under `SRC-031`–`SRC-033`. Any future source copying still requires the
-per-file gate in `ARCH/05` and task `AX-001`/`AX-010`.
+per-file gate in `docs/research/SOURCE-LEDGER.md` and task `AX-001`/`AX-010`.
 
 The three files were reviewed for the stated pattern only. This does not establish full
 repository behavior, compatibility, security, or HorizonCode implementation evidence.

@@ -1,9 +1,9 @@
 //! The shared governed-write path (`ARCH/10` §Mutations).
 //!
-//! `write`, `edit` and `apply_patch` all funnel through [`write_with_base_check`]
-//! so there is one implementation of the write contract: re-read the target,
-//! compare it against the base that was approved, and write only when the file
-//! is still what it was. A changed file yields a typed
+//! `write` and `edit` use [`write_with_base_check`] to re-read the target, compare
+//! it against the approved base, and write only when the file is still what it
+//! was. `apply_patch` uses a separate all-file preflight and staged per-file
+//! publication path in `builtin::patch`. A changed file yields a typed
 //! [`ToolError::Conflict`] instead of silently overwriting a concurrent change.
 //!
 //! The digest is a real one — the audit chain's `blake3` — because a base pin is

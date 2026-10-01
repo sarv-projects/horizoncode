@@ -34,7 +34,7 @@ The repo has four event-storage scripts: measured lock/write latency from real S
 
 ## Comparison against HorizonCode at repository HEAD `7e4b03d2d35d4a012827ea3980ec893b91768677`
 
-HorizonCode's design is already stricter for the user’s long-horizon goal: its segmented log/committed-head proposal and separate session/run/audit streams avoid adopting OpenHands' unbounded file-per-event layout; its effect journal and `UNKNOWN` reconciliation avoid assuming interrupted external actions failed; it already calls for crash kill matrices and multi-hour paired agent benchmarks. Relevant current owners are [`ARCH/07`](../../ARCH/07-SESSION.md), [`ARCH/25`](../../ARCH/25-LONG-HORIZON-CONTROL.md), [`AX-350`](../../TODO.md), and [multi-hour tests](../tests.md#multi-hour-reliability-and-resource-benchmarks).
+HorizonCode's design is already stricter for the user’s long-horizon goal: its segmented log/committed-head proposal and separate session/run/audit streams avoid adopting OpenHands' unbounded file-per-event layout; its effect journal and `UNKNOWN` reconciliation avoid assuming interrupted external actions failed; it already calls for crash kill matrices and multi-hour paired agent benchmarks. Relevant current owners are [`ARCH/core/SESSION-AND-THREADS.md`](../../ARCH/core/SESSION-AND-THREADS.md), [`ARCH/execution/LONG-HORIZON.md`](../../ARCH/execution/LONG-HORIZON.md), [`AX-350`](../../TODO.md), and [multi-hour tests](../tests.md#multi-hour-reliability-and-resource-benchmarks).
 
 ### Adopt / add
 
