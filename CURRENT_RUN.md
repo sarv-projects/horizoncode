@@ -2,7 +2,7 @@
 
 ## Current handoff — P0.0 repository health (2026-10-02)
 
-Working base: `02fee2b610ef6a45f68330925303e7f9c781ac0d`, branch `main`. The
+Working base: `f06cd649b1175a1d6eb41d6020c2aefc6b8ccb6c`, branch `main`. The
 architecture refactor is committed there. AX-413..419 remain design targets; no index
 daemon, coarse repository tool, ChangeReceipt runtime, skill library or hz-eval runtime
 is claimed.
@@ -13,21 +13,31 @@ failed. CI did not request submodules and Cargo excludes the path. The parent gi
 staged for removal and `/cline-probe/` is ignored. The nested Cline research checkout is
 preserved at `d7250ad39400d1485fc11011a80fdab26aeeff83` with its 4,165 user-local
 changes untouched. CI now invokes the architecture graph checker and its committed
-valid/negative fixtures. Local architecture checks, `git diff --check`, production
-cargo-deny and both license negative controls pass. A fresh-clone offline build,
-Clippy and serial full workspace test pass on the pre-repair revision. The test command
-was `cargo +1.89.0 test --workspace --locked --offline -- --test-threads=1` (exit 0;
-all executed tests passed, one manual performance capture ignored). Hosted CI, platform
-matrix and final repaired-revision clone have not run.
+valid/negative fixtures. A clean clone of repair commit `f06cd649b1175a1d6eb41d6020c2aefc6b8ccb6c`
+passes locked metadata and architecture graph/fixture checks; the superproject has no
+`cline-probe` gitlink and `git submodule status --recursive` succeeds with no entries.
+The nested checkout remains present at the same HEAD with 4,165 local changes. A clean
+clone of the immediately preceding commit passed the offline build, Clippy, production
+cargo-deny, both license negative controls, and serial full workspace tests. The test
+command was `cargo +1.89.0 test --workspace --locked --offline -- --test-threads=1`
+(exit 0; all executed tests passed, one manual performance capture ignored). The repair
+commit changes only CI, ignore metadata and the orphan gitlink; Cargo sources are
+unchanged. Hosted CI and the platform matrix remain unrun.
 
-The 163-task ledger now has 49 implemented, 112 proposed and 2 verified tasks; none
-are accepted or blocked. AX-121 moved to `implemented` because its workflow gates are
-present; hosted workflow evidence remains open. The focused tools test at source HEAD
-`7441b79191aa645ad0deda0341bb67dbd9c51b8a` remains scoped local evidence only. Next:
-verify the parent-index-only removal and nested checkout preservation, rerun
-repair-relevant checks, then reconcile exact HEAD under
-P0.1. This implementation is not yet committed. No live-provider benchmark, hosted CI,
-or push has been performed.
+The 163-task ledger has 49 implemented, 112 proposed and 2 verified tasks; none are
+accepted or blocked. AX-121 moved to `implemented` because its workflow gates are
+present; hosted workflow evidence remains open. P0.1 read-only source/status review
+found and fixed two documentation errors: AX-104 listed the closed F-65 audit-genesis
+fix as open, and AX-405's source-trail evidence link pointed at the wrong directory.
+The 400–419 range totals and mapped links matched; the 200–399 reviewer found no
+concrete status mismatch, and the 001–126 reviewer found no other concrete mismatch
+in its bounded pass. These were source/status reviews, not fresh acceptance runs or a
+complete re-execution of every task's evidence. No task status was promoted. The
+focused tools test at source HEAD `7441b79191aa645ad0deda0341bb67dbd9c51b8a` remains
+scoped local evidence only. Next implementation item: close AX-005's loopback
+connection-close assertion after cancellation, following `docs/main_agile.md` and
+`ARCH/core/PROVIDERS.md`. No live-provider benchmark, hosted CI, or push has been
+performed.
 
 Everything after this handoff is a dated historical run record. Any “current,” “active,”
 or “next” wording below describes only the checkpoint where that record was written.

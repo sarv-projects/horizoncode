@@ -296,9 +296,11 @@ checks listed below or in `CURRENT_RUN.md` are not acceptance records.
   evidence that hosted CI ran; record the workflow URL and exact commit before
   marking hosted CI verified.
   On 2026-10-02, a fresh clone at `02fee2b610ef6a45f68330925303e7f9c781ac0d` passed
-  the offline workspace build, Clippy, and serial full workspace tests. These checks
-  precede the staged gitlink removal and CI workflow edit; rerun them on the integrated
-  repair revision before using them as its evidence.
+  the offline workspace build, Clippy, and serial full workspace tests. Repair commit
+  `f06cd649b1175a1d6eb41d6020c2aefc6b8ccb6c` changes CI, ignore metadata and the
+  orphan gitlink only; it does not change Cargo sources. A fresh clone of that repair
+  commit passed locked metadata and architecture graph/fixture checks. Hosted CI still
+  must run before hosted verification is claimed.
 - **Editors and concurrent edits (`ACC-EDITOR-01`, `ACC-EDIT-02`):** exercise
   terminal-wait, GUI-wait and GUI-detach profiles on every advertised OS/editor
   combination (VS Code, Vim/Neovim, Zed, Helix, and explicitly configured editors).

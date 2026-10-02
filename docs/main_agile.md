@@ -56,10 +56,13 @@ it, and the nested checkout points to Cline upstream. A clean clone checks out, 
 `git submodule status --recursive` fails because there is no mapping. The parent
 gitlink is removed and `/cline-probe/` ignored; the local nested directory, its HEAD,
 and its user changes are preserved. The CI workflow now runs the Cargo architecture
-graph checker and its committed positive/negative fixtures. Verify fresh-clone
-checkout, dependency/license gates, build, Clippy, workspace tests, and architecture
-checks at the resulting commit. Hosted CI and unsupported platform checks must be
-reported separately; local success is not hosted evidence.
+graph checker and its committed positive/negative fixtures. A clean clone of repair
+commit `f06cd649b1175a1d6eb41d6020c2aefc6b8ccb6c` passes checkout, locked metadata,
+and architecture graph/fixture checks. The offline build, Clippy, license gate and
+serial workspace tests passed in a clean clone of the immediately preceding revision;
+the repair commit changes only CI, ignore metadata, and the orphan gitlink, not Cargo
+sources. Hosted CI and unsupported platform checks remain open and must be reported
+separately; local success is not hosted evidence.
 
 ### P0.1 — reconcile repository truth (AX-325)
 
@@ -67,7 +70,7 @@ At the exact current HEAD, reconcile TODO, CURRENT_RUN, source traceability, acc
 records, task statuses and evidence references. Inspect current source rather than
 relying on a historical summary. The previous architecture/source baseline
 `262bdb2fb8a2fef86d885a6c83ea49bae38bfcde` is historical; the planning HEAD for this
-plan is `02fee2b610ef6a45f68330925303e7f9c781ac0d` (2026-10-02). Results recorded from
+plan is `f06cd649b1175a1d6eb41d6020c2aefc6b8ccb6c` (2026-10-02). Results recorded from
 a dirty tree or an earlier revision remain explicitly historical until rerun or
 otherwise bound to the integrated revision. Do not promote statuses during a ledger
 reconciliation without current acceptance evidence.
