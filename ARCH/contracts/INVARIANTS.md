@@ -18,5 +18,8 @@
 | INV-DRAFT-001 | Folding and preview do not change exact admitted payload bytes; failed submission retains recoverable drafts. |
 | INV-MEMORY-001 | Inferred memory stays advisory; explicit user intent and validated source outrank it; deletion/disable fences prevent late resurrection. |
 | INV-UPDATE-001 | Application activation requires all Runs terminal and work/effects settled under a durable maintenance fence. |
+| INV-INDEX-001 | Repository indexes and their overlays are rebuildable derived state; a generation never replaces current source/revision validation. |
+| INV-INDEX-002 | Cached intelligence cannot disclose content excluded or denied by current read policy; policy narrowing fences queries and retained selections. |
+| INV-RECEIPT-001 | A ChangeReceipt preserves observed effects/check outcomes and cannot establish Task PASS or resolve an UNKNOWN operation. |
 
 Subsystems reference these invariants and specify scoped mechanisms and failure behavior. No passing mock substitutes for platform enforcement evidence.

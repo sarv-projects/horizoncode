@@ -64,6 +64,79 @@ effects. A warm prefix and fewer model calls are measured possibilities, not uni
 provider cache or speed guarantees. Persistent PTYs retain supervised scoped process
 state, recheck authority per command and cannot survive revocation as a bypass.
 
+## Deterministic coding pipeline
+
+After a coherent admitted edit batch, `CMP-runner` coordinates one bounded post-edit
+pipeline (`REQ-REPO-009`, `FLOW-CHANGE-001`). It consumes settled effect receipts,
+observes the exact workspace revision, submits a `FileChangeBatch` to repository
+intelligence, selects configured formatting/diagnostic/check operations, computes the
+current diff and impact, and assembles `ChangeReceiptV1`. Managed integration uses
+the same pipeline only after WorkspaceProvider accepts the candidate revision.
+
+Formatting and project checks are governed effects with their own authorization,
+confinement, budgets, prepare/terminal receipts and cancellation. Repository metadata
+cannot authorize an executable. Only known, configured, allowed bounded checks run;
+missing permission or a disabled check produces `NOT_RUN`. The pipeline does not run
+a full suite after every individual write. Independent operations may share the normal
+rolling pool; formatting mutations settle before downstream diagnostics/tests bind
+their revision. After formatting or any check that mutates source, settle its effects,
+observe the new workspace revision and submit its changed paths for another index
+generation before impact or final-revision test selection. Earlier diagnostics/tests
+remain bound to their original subject and cannot verify the new revision. If the
+final index is unavailable, report missing generation/coverage rather than pairing
+old intelligence with `final_revision`. The pipeline has a finite stage/recheck budget;
+a repeatedly source-mutating formatter/check stops with explicit unverified work,
+rather than looping indefinitely. Test selection uses build-tool metadata, explicit mappings, naming,
+source graph and prior current evidence, with its method and limitations retained.
+Selection is advisory; required verification may select additional checks.
+
+```text
+ChangeReceiptV1 {
+  schema_version: 1, receipt_id, thread_id, turn_id,
+  run_id?, task_id?, attempt_id?, task_contract_ref, spec_digest?,
+  workspace_binding, base_revision, edited_revision, final_revision,
+  effect_receipt_refs[], index_generation_before?, index_generation_after?,
+  created_paths[], changed_paths[], deleted_paths[], changed_symbol_refs[],
+  formatter_results[], diagnostic_results[], selected_tests[], check_results[],
+  diff_ref, diff_statistics, advisory_impact_ref?, evidence_refs[],
+  remaining_unverified[], coverage, limitations[], receipt_digest
+}
+```
+
+`task_contract_ref` is a required, owner-qualified reference to either the approved
+managed-task contract or the admitted direct-turn intent. `run_id`, `task_id`, and
+`attempt_id` are present only for managed work; a direct turn does not fabricate them.
+The referenced contract digest is bound into the receipt and verified against the
+same Thread/Turn and workspace revision before the receipt is consumed.
+
+Each entry in `formatter_results`, `diagnostic_results` and `check_results`
+is a `PipelineCheckResultV1`:
+
+```text
+PipelineCheckResultV1 {
+  check_id, kind: FORMATTER | DIAGNOSTICS | TEST,
+  producer_id, producer_version, command_or_profile_digest, subject_revision,
+  environment_digest, authorization_ref?, effect_receipt_ref?,
+  output_ref?, intelligence_result_refs[],
+  status: NOT_RUN | PASSED | FAILED | CANCELLED | UNKNOWN,
+  reason?, limitations[]
+}
+```
+
+Authorization/effect references are required for an executed effect; a skipped
+operation carries a reason, and unavailable diagnostics remain `NOT_RUN` or `UNKNOWN`.
+Each formatter/check result identifies command/profile digest, subject revision,
+environment, authorization/effect receipt, bounded output reference and status
+`NOT_RUN | PASSED | FAILED | CANCELLED | UNKNOWN`. Diagnostic absence is explicitly
+unavailable, never a zero-error claim. An index timeout may produce an incomplete
+receipt while preserving actual edit/effect outcomes; a new mutation invalidates
+results for the prior revision. Receipt aggregation is an observation projection of
+owner receipts, not a transaction across stores. It cannot settle unknown effects,
+create verifier evidence or mark Task PASS. `CMP-verifier` produces independent
+required Evidence; the controller validates its exact integrated revision before
+completion. Cancellation fences new stages and reconciles started effects. Acceptance
+is `ACC-REPO-PIPELINE-01`; measured model-call savings require `ACC-EVAL-01`.
+
 ## Delegation capacity and fairness
 
 **Scheduling & concurrency.**

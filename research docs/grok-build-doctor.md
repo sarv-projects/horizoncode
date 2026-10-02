@@ -6,9 +6,8 @@ Pinned revision: [`2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8`](https://github.com
 License: Apache-2.0 (`LICENSE` at the pinned repository root). No source code, tests, or schema were copied.
 
 This is a focused source review of Doctor and its direct command/probe/fix paths, not a
-claim that every line or subsystem in Grok Build was audited. The pinned checkout was
-available locally at `/tmp/horizoncode-research-grok-build`; the path is machine-local
-and is not a reproducibility claim. Source paths below link to immutable commit URLs.
+claim that every line or subsystem in Grok Build was audited. Source paths below link
+to immutable commit URLs, which are the reproducible references for this review.
 
 ## Source paths inspected
 

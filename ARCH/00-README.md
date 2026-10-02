@@ -2,6 +2,9 @@
 
 `ARCH/` is the final target blueprint for HorizonCode. It specifies the product and system the implementation is intended to become. A design contract does not claim that its feature is already implemented, verified, or accepted; delivery status belongs in [`TODO.md`](../TODO.md), executable evidence in source and verification records, and session handoff in [`CURRENT_RUN.md`](../CURRENT_RUN.md).
 
+Development follows the [dependency-ordered implementation guide](../docs/main_agile.md).
+It governs task selection and evidence gates; the delivery ledger remains `TODO.md`.
+
 ## How to read this architecture
 
 Start with the vision, requirements, system map, domain vocabulary, and module boundaries. Then follow the subsystem that owns the behavior. Shared identities, states, events, invariants, actions, flows, capabilities, and performance limits are defined once under `contracts/` and referenced elsewhere.
@@ -38,6 +41,7 @@ The architecture is edited in place. Historical snapshots and decision history a
 - [Recovery](execution/RECOVERY.md)
 - [Stopping and cancellation](execution/STOPPING.md)
 - [Verification](execution/VERIFICATION.md)
+- [Evaluation and HZBench](acceptance/EVALUATION.md)
 
 ## Security
 
@@ -94,4 +98,3 @@ The architecture is edited in place. Historical snapshots and decision history a
 8. Keep historical architecture outside `ARCH/`. Preserve original snapshots without edits and use Git history for ordinary revision history.
 9. Keep unaccepted design alternatives in `docs/design-proposals/`; merge an accepted choice into the canonical owner in place.
 10. Keep user-facing flows fast and understandable while retaining durable intent, visible blockers, exact review evidence, and responsive stop controls.
-

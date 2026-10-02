@@ -1,6 +1,6 @@
 # HorizonCode test and benchmark plan
 
-Status: **test plan plus local evidence for AX-001, AX-003, AX-005, AX-124, and the partial AX-314 patch implementation**.
+Status: **test plan plus scoped local evidence for AX-001, AX-003, AX-005, AX-124, AX-314, and AX-405**.
 The architecture refactor itself did not run a test, build, benchmark, or acceptance
 suite. On 2026-10-01, AX-003's direct runner response-admission implementation passed
 the focused runner, tools, provider, and CLI tests and the serial full workspace test
@@ -10,24 +10,47 @@ serial full workspace suite, and workspace Clippy pass locally on the dirty tree
 These are local implementation checks only: they do not create the `ACC-LOOP-01` or
 `ACC-PROV-RAW-01` evidence bundles or prove managed-run acceptance. On the same date,
 the AX-124 helper tests and a release-mode headless diagnostic were run; that capture
-is not an `ACC-PERF-01` acceptance record. The current working tree also
-contains AX-314's all-file patch preflight/staged-publication slice, which passes
-the focused tools suite locally (33 unit, 24 mutation, 26 permission, and 24
-tool-integration tests), including injected stage/publication failures and partial
-receipts. Its platform and crash-recovery acceptance remains open. It also
-changes the Rust home-directory resolver, adds the locked dependency license policy
-and CI negative control, and removes a disallowed transitive dependency. AX-001's
+is not an `ACC-PERF-01` acceptance record. The 2026-10-01 local source snapshot also
+contained AX-314's all-file patch preflight/staged-publication slice, which passed
+the focused tools suite locally, including injected stage/publication failures and
+partial receipts. Two retained summaries disagree on the historical unit-test count
+(28 in `CURRENT_RUN.md`, 33 in this plan); the raw output was not retained, so that
+historical count is unknown. Its platform and crash-recovery acceptance remains open. It also
+changed the Rust home-directory resolver, added the locked dependency license policy
+and CI negative control, and removed a disallowed transitive dependency. AX-001's
 local gate/test results are recorded in `CURRENT_RUN.md`; hosted CI evidence is still
-required for `ACC-DEP-01`. The
-checked-out documentation base is
-`262bdb2fb8a2fef86d885a6c83ea49bae38bfcde` (2026-10-01); runtime source remains at the
-separately recorded source baseline in [`SOURCE-TRACEABILITY.md`](../docs/research/SOURCE-TRACEABILITY.md).
-The working tree also contains the preserved architecture migration and prior
-research changes, so earlier runtime evidence is not evidence for the refactored
-target. See
+required for `ACC-DEP-01`. The historical documentation/source capture base was
+`262bdb2fb8a2fef86d885a6c83ea49bae38bfcde` (2026-10-01); the planning HEAD is
+`7441b79191aa645ad0deda0341bb67dbd9c51b8a` (2026-10-02). That historical working tree
+also contained the preserved architecture migration and prior research changes, so
+its runtime evidence is not evidence for the refactored target. See the revision-stamped
+[`SOURCE-TRACEABILITY.md`](../docs/research/SOURCE-TRACEABILITY.md) and
 [`CURRENT_RUN.md`](../CURRENT_RUN.md) for the exact local capture summary and
 [`ACCEPTANCE-MODEL.md`](../ARCH/acceptance/ACCEPTANCE-MODEL.md) for evidence rules. A
 proposed test is not evidence that its behavior exists.
+
+On 2026-10-02, the focused tools suite was rerun against source HEAD
+`7441b79191aa645ad0deda0341bb67dbd9c51b8a` with
+`cargo +1.89.0 test -p horizoncode-tools --locked --offline -- --test-threads=1`:
+34 unit, 24 mutation, 26 permission, and 24 tool-integration tests passed. This is
+local crate evidence only; it does not resolve the missing historical output or create
+`ACC-TOOL-PATCH-01` acceptance.
+
+### Read-only repository-health observation (2026-10-02)
+
+At repository revision `7441b79191aa645ad0deda0341bb67dbd9c51b8a`, `HEAD` tracks
+`cline-probe` as a mode-160000 gitlink to `d7250ad39400d1485fc11011a80fdab26aeeff83`,
+but the repository has no `.gitmodules` mapping. `git submodule status --recursive`
+therefore returns `fatal: no submodule mapping found in .gitmodules for path
+'cline-probe'`. The nested checkout was already dirty with 4,165 porcelain entries;
+it was preserved without edits. Static inspection of
+[`ci.yml`](../.github/workflows/ci.yml) found that `actions/checkout` does not request
+submodules, and [`Cargo.toml`](../Cargo.toml) limits workspace members to `crates/*`.
+This establishes malformed submodule metadata but does **not** establish that the
+configured CI checkout or Cargo build is blocked. A clean-clone checkout and CI
+reproduction are still required before deciding whether the gitlink should be removed
+or declared as a legitimate submodule. No clone, build, test, or network operation was
+performed for this observation or this documentation update.
 
 ## Dependency license gate (`ACC-DEP-01`, AX-001)
 
@@ -115,6 +138,95 @@ Compare default workflows as users encounter them. Record whether a product requ
 goal/plan setup, editor changes, or user-directed tests. The benchmark is a plan until
 the pinned harness, tasks, acceptance rubric, and competitor configurations are
 published and runs are executed; architecture descriptions do not count as results.
+
+## `hz-eval` and benchmark lifecycle
+
+The evaluator and run-record contract are specified in
+[`EVALUATION.md`](../ARCH/acceptance/EVALUATION.md). Until `hz-eval` is implemented and
+its acceptance row passes, all benchmark stages below are a plan, not measured
+HorizonCode performance. The run manifest must include at least:
+
+- schema version and run ID;
+- benchmark ID/version, dataset and acceptance-criteria digests, task ID, task stratum,
+  and verifier identity/version;
+- repository identity, starting revision, integrated/tested revision, and workspace
+  digest;
+- product/harness identity, exact harness revision/build digest, configuration digest,
+  prompt digest, tool-schema digest, policy/permission snapshot digest, and environment
+  digest;
+- model ID, provider, exact route/adapter and versions, reasoning setting, and known
+  model/provider capability snapshot;
+- declared wall-time, token, spend, tool-call, step/turn, concurrency, and verification
+  limits, including whether a limit is enforced or merely observed;
+- random seed/repetition where controllable and paired-run identity where applicable;
+- trajectory/artifact references and digests, protected by the normal artifact and
+  secret-handling policy; manifests store references/digests, never credentials;
+- start/end and phase timings, model-call/tool-call counts, tool categories, input/output
+  tokens, cache-read/cache-write tokens, provider-reported/estimated/unknown usage,
+  currency basis, and human interventions;
+- independent verifier result, accepted-task outcome, regressions, and terminal reason
+  including completed, failed, cancelled, timed out, provider failure, and insufficient
+  evidence. Unknown or unavailable fields stay unknown rather than zero.
+
+### Baselines and staged regressions
+
+Create `HZBench-Dev` first and capture **B0** before optimizing the harness. Use matched
+repository revisions, task and verifier, provider route, model/settings, permissions,
+network policy, environment, concurrency, and resource limits. If exact model parity or
+route readiness is missing, retain separate strata and report the confound. Candidate
+examples such as “Muse Spark 1.3” and “DeepSeek V4.1 Flash” are only examples to
+investigate; they are not claims that HorizonCode currently supports those routes, that
+they are free, or that they are currently available. OpenCode Go catalog/connector
+readiness remains pending AX-360/AX-361; the separate live route acceptance remains
+AX-364. This plan does not authorize or record a live-provider run.
+
+Keep these named comparisons as separate datasets/reports:
+
+1. **Track A — harness-controlled:** HorizonCode and a comparable peer on the same
+   exact model/provider where both routes are supported, with identical task,
+   environment, permissions, limits, and verifier. It estimates harness effects only
+   within those controlled conditions.
+2. **Track B — product ceiling:** HorizonCode, OpenCode, Claude Code, and Codex using
+   each product's explicitly recorded configuration. This is a product-level comparison,
+   not a model-independent or causal harness comparison.
+3. **Track C — HorizonCode ablation:** the same HorizonCode task/model strata with
+   progressively enabled capabilities: basic tools; repository index; high-level repo
+   tools; TaskPackage; deterministic ChangeReceipt; skills; fast tool scheduler; and
+   subagents. Preserve an identical verifier and report interactions between layers.
+
+Capture B1 after Phase 1 runtime/security foundations, B2 after durable state/effects/
+budgets, B3 after managed controller/workspace recovery, and B4 after repository
+intelligence/TaskPackage/ChangeReceipt. Each stage reruns the pinned B0 set and all
+appropriate negative controls. A stage cannot pass on speed or call-count gains if
+independently verified correctness, user-intent alignment, safety, recovery, or
+regression outcomes decline. Report each result against its exact source/build/spec
+revision; changing the task set, verifier, route, or scoring requires a new comparable
+stratum rather than overwriting the earlier result.
+
+### Development and frozen holdout
+
+`HZBench-Dev` is visible to implementation and may guide changes. `HZBench-Holdout`
+has separately versioned content and acceptance-criteria digests, access controls,
+and immutable attempt history. Implementation agents must not retrieve hidden prompts,
+solutions, or verifier details; benchmark maintainers audit access and version changes.
+Freeze the suite and scoring before a candidate run. Keep failed, cancelled, unsupported,
+provider-failed, and insufficient-evidence attempts. A holdout change creates a new
+version; it never replaces old results. Holdout evidence gates release claims and is not
+used for iterative skill, prompt, model, or threshold tuning. Public-suite contamination
+and model training exposure are residuals to disclose, not guarantees that the access
+controls eliminate.
+
+The suite registry covers QuickEdit, RepoUnderstanding, FeatureBuild, TestEngineering,
+Refactoring, TerminalOps, LongRun, CrashRecovery, Context/Compaction, Stop/NoProgress,
+MultiAgent, Permission/Security, WorkspaceConflict, ProviderFailure, PR/Verification,
+RepoScale, and ModelCallEfficiency. Every task must have pinned criteria and an
+independent verifier. Report accepted tasks per model call, per million input/output
+tokens, per tool call, and per elapsed time only alongside task count, verifier-pass
+rate, regression/safety outcomes, and uncertainty. The numerator includes only tasks
+independently accepted on the exact integrated revision; the denominator includes all
+attempted runs/calls/tokens for that declared stratum. No ratio permits dropping failed
+attempts or masking a correctness regression. `RepoScale` follows the corpus/workload
+matrix in [`PERFORMANCE.md`](../ARCH/contracts/PERFORMANCE.md).
 
 ### Competitor selection and comparability
 
@@ -306,7 +418,8 @@ re-read and run against the exact revision before relying on them.
   return no partial paths or matching content; a denied directory must not be
   traversed further.
 - Inject a directory-walk error and a file-open/read error. Each must become a
-  typed `TOOL_IO_ERROR`, and no partial success may be returned. `grep` must
+  typed `TOOL_IO_ERROR`, and no partial success may be returned. Add observable
+  instrumentation before claiming denied descendants were never visited. `grep` must
   check the opened handle is regular and use the same 16 MiB plus one-byte
   bounded reader as `read`; test exact size, oversize, post-metadata growth,
   binary input, and symlink targets.
@@ -328,10 +441,7 @@ re-read and run against the exact revision before relying on them.
   can internally filter ignored entries before invoking its entry filter, so an
   internal skip run can delay cancellation without a bound; the entry ceiling
   does not establish a total traversal-work or cancellation-latency bound.
-- Inject a directory-walk error and a file-open/read error. Each must become a
-  typed `TOOL_IO_ERROR`, and no partial success may be returned. Add observable
-  instrumentation before claiming denied descendants were never visited. The
-  filesystem path-based ignore reread and normal symlink-swap race remain
+  The filesystem path-based ignore reread and normal symlink-swap race remain
   explicit residuals; no race-free confinement claim is supported.
 
 ### Native patch preflight and staged publication (`REQ-SEC-022`, `ACC-TOOL-PATCH-01`)
@@ -399,8 +509,9 @@ requirement it claims to cover.
 
 ## Determinism, fault injection, and kill matrices
 
-The infrastructure these matrices require now exists, and is a dev-dependency of the
-test suites only (never linked into the binary):
+Deterministic fault fixtures are supplied by `horizoncode-testkit`, which test suites
+use as a dev-dependency. The production `Clock` abstraction is separate; it enables
+clock injection but is linked into the relevant production crates:
 
 | Piece | Where | What it provides |
 |---|---|---|
@@ -450,7 +561,7 @@ evidence into a higher-layer claim.
 | Integration | Every governed effect class | Real temp directories/processes/worktrees/loopback fixtures; full guard → sandbox → effect → receipt path |
 | Binary/UI E2E | Every user-visible change | Built executable or real terminal harness driven from outside the component; key input, output, exit status, setting persistence |
 | Platform acceptance | Before platform/support claim | Exact OS/build/backend, observed filesystem/network boundary, residual and host details, raw evidence |
-| Long-horizon acceptance | Before any multi-hour autonomy claim | `ACC-H1-01..10` on exact integrated revision, with restart, user-intent changes, artifact integrity, segmented-log growth, and storage-pressure recovery |
+| Long-horizon acceptance | Before any multi-hour autonomy claim | `ACC-H1-01..12` as applicable to the claimed feature set on the exact integrated revision; include restart, user-intent changes, artifact integrity, segmented-log growth, and storage-pressure recovery |
 | Comparative benchmark | Before comparative quality claim | Pinned tasks/models/versions/budgets, paired runs, raw outcomes, uncertainty and complete failure log |
 
 For Rust changes the planned local baseline is `cargo fmt --all --check`,
@@ -586,7 +697,7 @@ test-data revision.
   the specific reservation-committed/run-directory-not-yet-created window, and the
   process-launched/launch-response-not-yet-delivered window: restart must return the
   original receipt or keep the outcome `UNKNOWN`, never create a duplicate run/worker.
-  they cannot change the bound workspace/launch status; test missing hooks and child
+  Stale or forged hook events cannot change the bound workspace/launch status; test missing hooks and child
   roster after restart as `UNKNOWN`, never as “no child.” Reject symlink traversal in
   any transcript reader and keep private reasoning out of user-visible artifacts.
   Verify unsupported resume/query stays `UNKNOWN`, client disconnect leaves work
@@ -833,6 +944,15 @@ test-data revision.
   must use the same Guard/Sandbox/Audit path. Candidate LSP/web/MCP resource/prompt/
   Code Mode tools require their own security and conformance acceptance before they
   appear in a model schema.
+- First-party skill library (`AX-418`, `REQ-SKILL-006`, `ACC-SKILL-01`): activate every
+  bundled SWE/architecture/agile skill only through the existing progressive loader;
+  check metadata-only discovery, exact body/resource digest, scope, context budget,
+  source qualification, permission filtering and cancellation. Artifact capability and
+  diagramming guidance reuse the single AX-411 skill registration. Compare each skill
+  with a matched no-skill control for accepted correctness, regressions, model/tool
+  calls, tokens, latency and unsafe effects; include failures and uncertainty and
+  revise/remove a skill that does not meet predeclared usefulness criteria. Do not
+  assert usefulness from presence, activation, or model self-report.
 - OpenCode TUI comparison tests (design-derived, not peer implementation reuse):
   acceptance should cover home/empty state, normal and shell submission, active model
   and tool status, permission/question blocking, child navigation, narrow/wide
@@ -1158,6 +1278,35 @@ provider request. Include refresh rollback and old-snapshot/new-catalog cases.
   implementations, and call hierarchy. Verify read-only operations have no workspace
   writes, external paths are guarded, lexical fallback stays available, and every
   context package reports its source commit and per-file freshness.
+- **Incremental index and overlays** (`REQ-REPO-005..007`,
+  `ACC-REPO-INDEX-01`, `ACC-REPO-OVERLAY-01`): run a supervised Rust index child
+  without daemonization/network listeners; test optional-startup degradation and
+  interactive fairness. Validate exact mutation/buffer/Git/watcher hints against
+  BLAKE3 bytes, and cover exclusion/denied-path parity, credential canaries, access
+  revocation and index-cache invalidation. Inject watcher overflow, event loss, parser
+  panic, crash/restart, corrupt/incompatible schema/parser/grammar, interrupted
+  migration/rebuild, cross-store generation failure, cancellation and resource
+  pressure. Exercise immutable base plus multiple workspace overlays for add/change/
+  delete/rename, tombstones, rebase, concurrent writes, main integration and stale
+  retrieval handles. Compare overlay queries with a fresh full rebuild; missing or
+  mixed generations must be typed stale/unavailable, never silently current.
+- **High-level repository context/tools** (`REQ-REPO-008`, `ACC-REPO-TOOLS-01`): test
+  `repo_query`, `repo_context`, `repo_impact`, and `repo_expand` schema/policy through
+  one owner; batch exact-symbol, lexical, syntactic and semantic requests. Confirm
+  TaskPackage is a bounded, digest-pinned projection under ContextPacket; the raw index
+  is never inserted into context. Test handle scope/expiry/revocation/generation races,
+  omission/provenance labels, model-context bounds, inaccessible files, unavailable
+  index fallback, and stable `read`/`list`/`glob`/`grep` behavior. Count navigation
+  calls and independently accepted tasks in matched evals; call reduction alone is not
+  a quality result.
+- **Deterministic ChangeReceipt pipeline** (`REQ-REPO-009`,
+  `ACC-REPO-PIPELINE-01`): cover authorized edit finalization, index generation update,
+  formatter/diagnostic errors, affected-test selection, policy-denied/unaffordable
+  checks, and cancellation/failure/unknown effects. Bind every result to tested source
+  revision and workspace/index generations. Verify all canonical statuses
+  (`NOT_RUN`, `PASSED`, `FAILED`, `CANCELLED`, `UNKNOWN`), missing checks and partial receipts remain visible;
+  edits/checks obey Guard/Sandbox/effect journaling, and neither a receipt nor a passing
+  test can mark a Task/Run `PASS` without independent verification.
 - UI resource benchmark (AX-374) records startup/idle/active RSS and PSS, CPU, render
   latency, peak transcript/search/tree size and allocation behavior on fixed terminal
   sizes and corpus digests. Measure HorizonCode process tree separately from provider
@@ -1442,7 +1591,7 @@ capability, usage amount, cost conversion, or quota is explicitly unknown or ref
 not silently inferred. Security-relevant failure, incomplete acceptance sub-check,
 stale spec evidence, or hard-budget exhaustion blocks `accepted` status.
 
-## Sources checked for the September 2026 plan
+## Sources and dated snapshots
 
 - [Compaction upstream comparison](compaction-upstream-comparison.md) — pinned Codex, Grok Build, and OpenCode source comparison; distinct defaults do not imply a universal threshold. Historical OpenCode issues are failure reports, not source-contract evidence.
 - [Cline v4.1.21 release](https://github.com/cline/cline/releases/tag/v4.1.21) — released 2026-09-24; documents local-model remaining-context output truncation recovery and explicitly limits automatic replay to text-only turns without tool activity. Treat this as route-specific peer evidence, not a provider guarantee.
@@ -1490,9 +1639,10 @@ OS confinement, filesystem durability, production signing, or authorized route e
 
 ## Artifact/composer/performance/litePSM/installer expansion (2026-09-30)
 
-Plan only; no runtime suite was executed. [ARCH37](../ARCH/product/INTERACTIONS.md)
-and [ARCH38](../ARCH/integrations/LITEPSM.md) define contracts; [ARCH23](../ARCH/acceptance/ACCEPTANCE-MATRIX.md)
-defines ACC-UX-09..13, ACC-PERF-01, ACC-EXT-01 and ACC-INSTALL-02.
+Plan only; no runtime suite was executed. [Interactions](../ARCH/product/INTERACTIONS.md)
+and [LitePSM integration](../ARCH/integrations/LITEPSM.md) define contracts; the
+[acceptance matrix](../ARCH/acceptance/ACCEPTANCE-MATRIX.md) defines ACC-UX-09..13,
+ACC-PERF-01, ACC-EXT-01 and ACC-INSTALL-02.
 
 Use property fixtures over UTF-8 parts/byte preservation, duplicate display chips,
 grapheme editing and CAS races; crash injection around artifact/draft/owner commits;

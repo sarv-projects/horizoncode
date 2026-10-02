@@ -4,23 +4,23 @@
 
 > **In progress** — HorizonCode is under development.
 
-Use HorizonCode to understand unfamiliar code, find bugs, build features, run tests, and review changes. For a focused task, work directly in the conversation. For a larger project, start a **Managed Run**; it carries the goal, plan, tasks, decisions, and verification across steps and sessions.
+HorizonCode is being built to understand unfamiliar code, find bugs, build features, run tests, and review changes. The target product supports focused work in a conversation and larger **Managed Runs** that carry goals, plans, tasks, decisions, and verification across steps and sessions. See [`TODO.md`](TODO.md) for what is implemented and what remains.
 
 ## Your project stays in view
 
-The full-screen workspace puts the file Explorer on the left, chat in the center, and a clear task list on the right. Open a source file without leaving the conversation. Follow the task you asked for; open it when you want to inspect its changes, attempts, or checks. On a small terminal, focus on one area at a time and return to the same work.
+The planned full-screen workspace puts the file Explorer on the left, chat in the center, and a clear task list on the right. It is designed to open source files without leaving the conversation and let users inspect task changes, attempts, and checks. On a small terminal, the target layout focuses on one area at a time.
 
-Ask HorizonCode to explore code, make a plan, or edit files and run commands. Review the diff and the checks behind the result before calling the work done.
+The intended interaction is to ask HorizonCode to explore code, make a plan, edit files, and run commands. The design requires users to review the diff and evidence behind a result before calling work done.
 
 ## Built for the work that takes longer
 
-A Managed Run records the requested outcome, breaks the work into dependent tasks, and tracks progress, approvals, budgets, and checkpoints. Pause when you need to, resume later, and see what changed and what remains. HorizonCode checks the agreed result before it marks the work complete.
+The target Managed Run records the requested outcome, breaks work into dependent tasks, and tracks progress, approvals, budgets, and checkpoints. Its design supports pausing, resuming, and reviewing what changed and remains; completion requires checks against the agreed result.
 
 ## Your setup, your choice
 
-Run HorizonCode on your workstation or a server you manage. Choose a configured hosted or local model route supported by your setup. Connect compatible agents through ACP and external tools through MCP. Find skills, MCP servers, plugins, and hooks together in the Extensions manager; add or remove them from one place, with advanced settings when you need them.
+The target product can run on a workstation or a server the user manages, use configured hosted or local model routes, connect compatible agents through ACP, and connect external tools through MCP. Its planned Extensions manager brings skills, MCP servers, plugins, and hooks together. These capabilities are delivered incrementally; check [`TODO.md`](TODO.md) before relying on any specific feature.
 
-The model provider you select receives the prompt and code context needed for that route. The workspace stays on the execution host you choose, and HorizonCode shows which approvals and protections apply there.
+The target security model keeps workspace execution on the selected execution host and presents the applicable approvals and protections. The selected provider receives the prompt and code context required for its route; exact data flows and enforcement remain subject to the configured provider and verified platform capability.
 
 ## Learn more
 

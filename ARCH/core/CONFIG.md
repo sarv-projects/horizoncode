@@ -229,6 +229,27 @@ Canonical persistence keys are `session.checkpoint.cadence` and `session.log.max
 
 This document *is* the configuration surface. Key groups: `providers.*`, `models.*`, `routing.*`, `budget.*`, `permissions.*`, `instructions.*`, `skills.*`, `hooks.*`, `plugins.*`, `memory.*`, `search.*`, `mcp.servers[]`, `agents.profiles[]`, `agents.messaging.*`, `commands.custom[]`, `orch.*`, `app_server.*`, `updates.*`, `ui.theme.*`, `ui.layout.*`, `ui.keymap.*`, `ui.notifications.*`, `ui.sound`, `ui.accessibility.*`, `ui.usage_warnings[]`, `compaction.*`, `repository.*`, `verification.*`, and `delivery.*`. Every field is schema-versioned; migration notes accompany renames. A `SettingView` contains `{key, requested_value, effective_value, source_scope, source_ref, shadowed_sources[], locked_by?, validation_error?, capability_status?, apply_boundary, schema_version, effective_digest}`. `/settings` exposes theme tokens, contrast/color depth, reduced motion and screen-reader mode, layout/keymap, provider/model/agent, reasoning, local endpoint, provider metadata freshness, context limits and compaction, routing, hierarchical run/task/worker budgets, warning thresholds, approval posture, agent-message limits/enablement, search/content-index preferences and coverage, update check/channel/defer state, notification channels and sound, extension enablement/provenance, evidence retention, local supervisor status, and cost/quota display. `managed` locks win; project content cannot widen authority or change update trust/channel, app-server lifecycle, IPC ceilings, or a user's search privacy choices. Changing model/provider/agent records capability and provenance; an unavailable setting is not silently approximated (`REQ-UI-010..015`, `REQ-ORCH-007..009`, `DEC-030`, `DEC-038..040`, `ARCH/integrations/DISTRIBUTION-AND-UPDATES.md`, `ARCH/integrations/CONTROL-API.md`, `ARCH/product/AGENT-MESSAGING.md`). The slash command and mention catalogs are owned by `ARCH/product/COMMANDS-AND-SETTINGS.md`.
 
+### Repository indexing settings
+
+`repository.index.enabled`, `repository.index.exclusions[]`,
+`repository.index.parser_workers`, `repository.index.max_memory_bytes`,
+`repository.index.max_disk_bytes`, `repository.index.cpu_budget_percent`,
+`repository.index.query_timeout_ms`, `repository.index.max_result_bytes`, and
+`repository.index.embedding.enabled` belong to the existing typed config schema.
+Worker, byte, time and CPU limits have finite compiled bounds; zero is not an
+unlimited sentinel. Embedding enrichment is disabled by default and enabling it
+never grants network access or access to excluded files. Permitted roots derive
+from workspace binding and Guard, not an index-specific grant list.
+
+`SettingView` shows each effective limit and its source. Exclusion narrowing and
+policy revocation take effect before another cached result is disclosed; content,
+parser or enrichment changes publish a new generation rather than modifying a
+pinned reader. Resource changes apply at a scheduler safe point. Disabled indexing
+leaves bounded raw filesystem tools available under the same policy. `/context
+sources` and `/doctor` expose coverage, freshness, resource pressure and explicit
+bounded repair/rebuild actions; no additional index command family is required.
+The index schema is owned by [Code intelligence](../product/CODE-INTELLIGENCE.md).
+
 `app_server.detached_enabled` and `app_server.idle_shutdown_seconds` are local-user
 preferences. The supervisor endpoint is always same-host only in the initial contract;
 there is no setting for a network bind or cross-user listener. Frame, client,

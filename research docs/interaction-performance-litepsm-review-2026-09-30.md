@@ -10,12 +10,12 @@ the ARCH diff is empty, preserving the reviewed architecture snapshot.
 
 ## Findings and dispositions
 
-- Artifact catalog/version feedback and bounded viewers: ARCH37/28; immutable refs,
+- Artifact catalog/version feedback and bounded viewers: [interactions](../ARCH/product/INTERACTIONS.md) and [artifacts](../ARCH/product/ARTIFACTS.md); immutable refs,
   exact version anchors, metadata fallback, no preview completion authority.
 - Composer chips: exact bytes, Unicode maps, duplicate labels, model caps, async races,
-  draft leases/crash recovery and submission CAS; ARCH37/07/28.
+  draft leases/crash recovery and submission CAS; [interactions](../ARCH/product/INTERACTIONS.md), [sessions](../ARCH/core/SESSION-AND-THREADS.md), and [artifacts](../ARCH/product/ARTIFACTS.md).
 - User queue/recap/branches: controller claims, original cursor, separate workspace
-  choice, no copied approval or pending effects; ARCH37/27/25.
+  choice, no copied approval or pending effects; [interactions](../ARCH/product/INTERACTIONS.md), [commands](../ARCH/product/COMMANDS-AND-SETTINGS.md), and [long-horizon](../ARCH/execution/LONG-HORIZON.md).
 - Settings/theme/motion/streaming: semantic tokens, actual terminal fallback, reduced
   motion, no idle/replay animation, dirty visible regions and focus/selection retention.
 - Fast path: mandatory policy gates with optional bounded background discovery,
@@ -26,10 +26,11 @@ the ARCH diff is empty, preserving the reviewed architecture snapshot.
   implementation-status promotion and disconnected MCP availability wording.
 - Reconciled legacy runner graph mutation, context repo ownership, mandatory startup
   source handling, guard tickets/disconnect, fork open questions and quota authority.
-  Owner reconciliation sections explicitly supersede remaining historical sketches.
-- Required installer wrappers/onboarding: ARCH30; proposed only until independent
+  Final contracts are consolidated in their canonical ARCH owners; original drafts
+  remain in the dated history snapshot.
+- Required installer wrappers/onboarding: [distribution and updates](../ARCH/integrations/DISTRIBUTION-AND-UPDATES.md); proposed only until independent
   signed-bootstrap trust/platform fixtures pass. No install scripts fabricated.
-- litePSM ownership: ARCH38; portable bridge and two independent authorization domains,
+- LitePSM ownership: [LitePSM integration](../ARCH/integrations/LITEPSM.md); portable bridge and two independent authorization domains,
   no shared DB/CAS/secret custody; sibling schemas/approval/journal/IPC remain gates.
 - Ten delivery rows AX401..410 cover additions and depend on existing foundations.
   Planned acceptance expanded; no delivery status promoted.
@@ -74,7 +75,7 @@ user-provided0–24ms/CPU/idle claims are anecdotes, not Horizon acceptance meas
 [Grok README](https://github.com/xai-org/grok-build/blob/main/README.md) documents Bash/
 PowerShell installer entry points; mutable documentation is not a pinned implementation
 or platform acceptance. [Cline installation](https://docs.cline.bot/getting-started/installing-cline)
-is a public install reference. Existing ARCH30 owns Codex packaging references; no new
+is a public install reference. [Distribution and updates](../ARCH/integrations/DISTRIBUTION-AND-UPDATES.md) owns Codex packaging references; no new
 complete Codex installer-source audit is claimed.
 
 ## Remaining evidence

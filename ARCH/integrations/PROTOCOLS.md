@@ -4,7 +4,7 @@
 
 Let external editors and peer agents drive HorizonCode, let HorizonCode drive peer agents and consume external tools, and let CI run HorizonCode non-interactively — all against the same control interface used by the TUI. Every surface is a thin projection; the durable session, guard, and audit remain single-owner.
 
-ARCH38 uses only negotiated portable MCP tools; no force_legacy option is accepted under the selected released profile. Headless current flag is -p/--print; future --prompt requires an explicit compatibility alias migration. Core listing uses ThreadListResult; external protocol Session IDs stay adapter mappings. Process/stdio exit cannot settle uncertain effects as failed; reconcile UNKNOWN.
+The [LitePSM adapter](LITEPSM.md) uses only negotiated portable MCP tools; no `force_legacy` option is accepted under the selected released profile. Headless current flag is `-p`/`--print`; future `--prompt` requires an explicit compatibility alias migration. Core listing uses `ThreadListResult`; external protocol Session IDs stay adapter mappings. Process/stdio exit cannot settle uncertain effects as failed; reconcile `UNKNOWN`.
 
 ## Responsibilities
 

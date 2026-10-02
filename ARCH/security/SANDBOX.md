@@ -40,7 +40,7 @@ bound reach, and every tier enforces the resolved profile through them
 (`CMP-secrets`), tool schemas (`CMP-tools`), or provider/model transport
 (`CMP-provider`).
 
-ExecutionHost owns spawn/process tree/reap; Sandbox owns prepare/validate confinement and enforced reach. ARCH38 external daemon reach is separate and explicitly observed; no inherited sandbox guarantee. Output custody stays with tool/host/artifact owners.
+ExecutionHost owns spawn/process tree/reap; Sandbox owns prepare/validate confinement and enforced reach. External LitePSM invocation reach, defined in [LitePSM integration](../integrations/LITEPSM.md), is separately observed and carries no inherited sandbox guarantee. Output custody stays with tool/host/artifact owners.
 
 ## Interfaces
 

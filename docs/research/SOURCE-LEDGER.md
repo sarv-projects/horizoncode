@@ -2,7 +2,7 @@
 
 What HorizonCode **builds**, **depends on**, or only **studies**. Entries are organized by role; concrete upstream identities and pinned revisions live in provenance records and [`research docs/`](../../research%20docs/). Factual provider/model names may appear where needed for configuration and billing (`DEC-030`). Attribution that a license requires is generated into `THIRD-PARTY-NOTICES.md` at release and **shipped with the binary** (`TODO.md` `AX-010`).
 
-For implementation lookup, [29-SOURCE-TRACEABILITY.md](SOURCE-TRACEABILITY.md)
+For implementation lookup, [source traceability](SOURCE-TRACEABILITY.md)
 maps design owners to current local entry points and pinned peer files. A `Pattern`
 row below means research influence only. It is not a record that peer source was
 copied, adapted successfully, or verified in HorizonCode; actual adaptation requires
@@ -202,6 +202,6 @@ No upstream code, schema, tests, or assets were copied in this audit.
 
 | ID | Source | Disposition |
 |---|---|---|
-| SRC-042 | DeepSeek Harness, pin639ed015397290b3745d163aafe02ffee4aa3f84; ARCH29 U-DSH rows | Design influence from actual scheduler/PTC/compaction/workflow source; no code copied |
-| SRC-043 | OpenCode composer pin9b4882db54627f2656a6990daafa412f9f3c7c82 and official TUI/theme/keybind docs | Interaction research; no code/assets copied; exact paths in ARCH29 |
-| SRC-044 | litePSM sibling architecture snapshot in ARCH29 U-LITEPSM-ARCH | Integration design dependency, not a runtime/security/implementation endorsement |
+| SRC-042 | DeepSeek Harness, pin `639ed015397290b3745d163aafe02ffee4aa3f84`; [source traceability](SOURCE-TRACEABILITY.md), U-DSH rows | Design influence from actual scheduler/PTC/compaction/workflow source; no code copied |
+| SRC-043 | OpenCode composer pin `9b4882db54627f2656a6990daafa412f9f3c7c82` and official TUI/theme/keybind docs | Interaction research; no code/assets copied; exact paths are in the source traceability map |
+| SRC-044 | [LitePSM public repository](https://github.com/sarv-projects/LitePSM), architecture snapshot pinned in [source traceability](SOURCE-TRACEABILITY.md), U-LITEPSM-ARCH | Integration design dependency, not a runtime/security/implementation endorsement |

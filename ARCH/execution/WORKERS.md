@@ -15,6 +15,71 @@ Shared identities use [Domain model](../04-DOMAIN-MODEL.md); state vocabulary us
 | `ExternalAttempt` | `attempt_id`, `peer_identity`, `adapter_kind`, `adapter_build_digest`, `peer_software_version?`, `peer_version_status: OBSERVED | UNKNOWN`, `protocol_version`, `capabilities_digest`, `external_session_id?`, `event_cursor?`, `event_source_identity?`, `event_auth_context_digest?`, `last_event_id?`, `last_event_seq?`, `resume_mode`, `opaque_children`, `workspace_id`, `scope_digest`, `cancel_state`, `last_heartbeat`, `usage_provenance`. Auth/source/version fields are controller-derived observations, never values trusted from a peer payload. `UNKNOWN` peer version is retained honestly; reconnect must renegotiate required capabilities and may not reuse stale claims. Never infer unsupported fields. |
 | `DispatchOutbox` | `outbox_id`, `source_event_id`, `run_id`, `task_id`, `attempt_id`, `execution_id`, `launch_id`, `workspace_id`, `owner_epoch`, `idempotency_key`, `state: PENDING | CLAIMED | ACKNOWLEDGED | UNKNOWN | CANCELLED`, `claim_owner_token?`, `claim_epoch?`, `lease_until?`, `worker_receipt_ref?`, `created_at`, `updated_at`. Created only from committed `GoalActivated`/eligible task-claim events; unique on `(source_event_id, task_id, attempt_id, execution_id, launch_id)` and `idempotency_key`. Redelivery reuses the same attempt ID. A CLAIMED lease may be reacquired only by a higher fencing epoch after exact-launch reconciliation; lease expiry alone never returns it to PENDING. If the supervisor cannot establish whether launch occurred, state stays `UNKNOWN` and no replacement attempt launches until process/workspace reconciliation completes. |
 
+## Repository-intelligence binding
+
+Repository-index access for a child is a read-only, generation-pinned capability,
+not an index copy and not a new workspace or policy authority. `CMP-repo-intel`
+owns the index service and issues the binding; `CMP-context` owns the bounded
+`TaskPackageV1` projection; `CMP-orch` pins both to the child Attempt and workspace
+fence. The schema and overlay lookup rules are in
+[`Code intelligence`](../product/CODE-INTELLIGENCE.md) and
+[`Workspaces`](WORKSPACES.md).
+
+```text
+RepoIndexBindingRefV1 {
+  binding_id, workspace_id, workspace_revision,
+  base_generation?, overlay_generation?, editor_buffer_generation?,
+  manifest_digest, parser_set_digest, grammar_set_digest, read_scope_digest,
+  policy_snapshot_digest, pin_id, expires_at
+}
+```
+
+`RepoIndexBindingRefV1` is the delegated reference to a pinned
+`WorkspaceIndexBindingV1`, not a separate source view. `base_generation` maps to
+its `base_index_generation`; overlay/editor-buffer generations map by name. All
+versions identify the same exact workspace revision and read scope.
+
+The reference contains no repository contents or authority-bearing credential. It
+may be used only by a native child that can reach the parent-supervised private IPC,
+and only for the bound child, workspace, task budget, and effective read scope. An
+external adapter never receives a local index binding or private IPC handle. It may
+receive only the explicitly authorized bounded TaskPackage projection after the
+normal egress and capability checks; no local path, index database, or retrieval
+handle is forwarded as if the peer could resolve it.
+
+A refreshed index creates a new binding; the binding is not silently retargeted while a
+provider request is in flight. If the workspace, buffer, policy, or index generation
+changes, affected queries return stale/unavailable until a safe boundary refreshes the
+packet or the controller ends the child. Cancellation, terminal execution, expiry, and
+reconciliation release the pin only after outstanding queries have stopped.
+
+Each child gets the minimal task-specific package inside its existing
+`ContextPacketV1`: likely files/symbols, relevant tests, dependency neighborhood,
+current diagnostics, recent changes, useful source ranges, and generation-scoped
+retrieval handles, within the packet's existing byte/token budgets. External children
+receive no local retrieval handles. They receive selected package content only when the
+route and data-egress policy authorize those exact source classes. A child does not get
+the parent transcript, complete manifest, index database, embeddings, or sibling
+packages. A shared immutable base generation is referenced; the child's own workspace
+changes live in its per-workspace overlay. No full index is copied on spawn.
+
+Repository tools are read-only and use the ordinary `CMP-tools` → Guard → Sandbox /
+workspace access path. The index helper cannot turn an index hit into permission to
+read a denied source path, and a read permission cannot be inferred from the child
+profile or task text. A source range returned to a child is still subject to the
+current policy and revision check. If policy narrows, old cached material is
+inaccessible until the repo-intel owner invalidates or purges it.
+
+The worker `Receipt` may include bounded
+`repository_observations[] = { query_id, workspace_revision, index_generation,
+source_method, authority, freshness, source_refs[] }`. These are untrusted provenance
+claims to validate against owner records;
+they cannot upgrade a stale result, authorize an effect, prove test execution, or
+produce Task PASS. A controller-validated receipt may inform parent context. Any
+candidate workspace change must still go through `WorkspaceProvider` integration,
+main-workspace index refresh, and independent verification of the integrated
+revision.
+
 `WorkerExecution.state` normally follows `PREPARED → LAUNCHING → RUNNING → SETTLING → FINISHED | FAILED | CANCELLED`; uncertainty at any nonterminal point transitions to `UNKNOWN`. `UNKNOWN` is nonterminal: only a durable reconciliation event backed
 by an authoritative host/peer observation may move it to `RUNNING`, `SETTLING`, or a
 terminal state. If no source can establish the outcome, it stays `UNKNOWN` and
@@ -61,7 +126,10 @@ trait ExecutionHost {
 ```
 
 `LaunchRequest` carries `launch_id`, `execution_id`, Thread/turn/model-attempt identity and optional Run/task/attempt IDs, an
-optional external adapter Session ID, profile and negotiated-capability digests,
+optional external adapter Session ID, the exact `ContextPacketV1` reference/digest,
+and (for native children with repository tools) its read-only `RepoIndexBindingRefV1`;
+external adapters receive neither that local reference nor private IPC details. It
+also carries profile and negotiated-capability digests,
 workspace ID/base/fencing epoch, bounded write scope, approved budget reservation,
 secret references (never secret values),
 and the adapter's requested operation. It carries no operator credential or
@@ -142,7 +210,10 @@ ContextPacketV1: see the canonical schema and selection rules in
 ```
 
 `CMP-context` builds each packet independently from the child's task and pinned
-workspace, not by copying the parent's rendered prompt. `fork=none` is the default.
+workspace, not by copying the parent's rendered prompt. When repository intelligence
+is available, the packet includes the bounded `TaskPackageV1` projection and exact
+`RepoIndexBindingRefV1`; the packet is bound to their digests and workspace revision.
+`fork=none` is the default.
 The optional spawn-level memory policy only narrows the AgentProfile policy and the
 user/managed ceiling; it cannot enable memory on its own.
 `bounded` may carry only explicitly referenced, committed, user-visible history within
@@ -195,14 +266,14 @@ Native launch receipts include Thread/Turn/model_attempt_id and optional managed
 
 ## Delegated execution flow
 
-1. **Spawn.** Validate against depth/count/concurrency bounds → derive permission ceiling → build and persist the bounded `ContextPacket` and its digest → reserve packet and dispatch budget → create the child Thread → return `SubagentRef` immediately. A child cannot start before packet provenance, project identity, workspace revision, and policy snapshot are pinned. The stable dispatch ID makes a retried spawn return the same packet/receipt instead of injecting duplicate context; an intentional refresh creates a new ContextEpoch. Spawn is never coupled to child completion unless a bounded `await` is requested.
+1. **Spawn.** Validate against depth/count/concurrency bounds → derive permission ceiling → pin the child workspace revision and any eligible base/overlay index generation → build the bounded `TaskPackageV1` inside the `ContextPacket` → persist the packet, index binding, and digests → reserve packet and dispatch budget → create the child Thread → return `SubagentRef` immediately. A child cannot start before packet provenance, project identity, workspace revision, and policy snapshot are pinned. The stable dispatch ID makes a retried spawn return the same packet/receipt instead of injecting duplicate context; an intentional refresh creates a new ContextEpoch. Spawn is never coupled to child completion unless a bounded `await` is requested.
    Before spawning, estimate prompt/context replay, expected wall-time, verification and merge cost. If the task is not independent or its projected overhead exceeds its budget/value, run sequentially or decline delegation (`REQ-ORCH-006`).
 2. **Run.** The child runs an ordinary turn loop with its own context and tools. A background child emits typed progress; it does not steal parent focus.
 3. **Completion.** Two modes: a bounded foreground wait (park the parent on the child) or a queue-only wake at a turn boundary. Wake is suppressed unless the parent is live and the child was not cancelled. A bounded wait that overruns its budget auto-backgrounds rather than freezing the parent.
 4. **Cancellation.** Explicit native ephemeral parent-execution cancel may cancel its owned children; managed Run/task cancellation follows target-scoped ARCH/execution/LONG-HORIZON.md rules. Client detach/view close does not cancel execution. A cancelled child never wakes the parent.
 5. **Receipt intake.** Validate the receipt against schema; allow at most one bounded correction retry, then a raw-text fallback with a typed note. Roll usage up to the parent.
 6. **Workspace flow.** Create an isolated provider snapshot at the base revision → grant a write lease → run → compute a diff → merge.
-7. **Merge arbitration.** Order candidates by a stable topological order then task ID from pinned base revisions; completion timing is not an input. Apply clean patches; on conflict, stop that branch and record evidence. Reverify the combined integration revision.
+7. **Merge arbitration.** Order candidates by a stable topological order then task ID from pinned base revisions; completion timing is not an input. Apply clean patches through `WorkspaceProvider`; on conflict, stop that branch and record evidence. After the provider returns an exact integration receipt, validate and index the resulting changed paths in the main workspace overlay. Reverify the combined integration revision; neither a child receipt nor a fresh index is verification evidence.
 8. **Task graph.** Nodes become ready only when every dependency has current independent `PASS` evidence bound to the approved spec and tested revision. The graph persists and resumes after compaction or restart; a resumed node reuses an effect or result only after reconciliation.
 9. **Team run + CI.** Fan out a backlog within concurrency bounds; feed CI results back as node evidence; clean work applies, conflicts surface.
 10. **Peer coordination.** Check sender capability and recipient membership, reserve bounded event/inbox resources, append one Run message event and idempotent per-recipient outbox IDs, then admit references to eligible Thread inboxes. Promote only at a safe provider-turn boundary. Never wake or restart paused/terminal workers; a message never changes Task state. Full schema and recovery semantics are in `ARCH/product/AGENT-MESSAGING.md`.

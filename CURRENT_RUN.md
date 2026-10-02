@@ -1,5 +1,52 @@
 # CURRENT_RUN — HorizonCode
 
+## Dependency-ordered plan adoption (2026-10-02)
+
+Working base: `7441b79191aa645ad0deda0341bb67dbd9c51b8a`, branch `main`.
+This change updates the final blueprint and development procedure: `docs/main_agile.md`,
+AGENTS, TODO, repository intelligence/context/tools/pipeline/skill/evaluation owners,
+shared requirements/contracts, acceptance and test plan. AX-413..419 remain proposed;
+no index daemon, coarse repository tool, ChangeReceipt runtime, skill library or
+hz-eval implementation is claimed by these documents.
+
+Source baseline correction: prior AX-001/003/004/005/314 source slices are present
+in this HEAD. Earlier dirty-tree tests below remain historical local evidence and
+are not relabeled integrated acceptance. The existing 156 delivery rows are retained;
+seven proposed rows extend them. Implementation agents cannot mark their own work
+verified/accepted; an independent evidence review must bind the integrated subject.
+
+The `cline-probe` gitlink has no `.gitmodules` mapping. Configured CI does not request
+submodule initialization and Cargo excludes that path, so a CI checkout failure is
+unproven. Its heavily dirty nested worktree is preserved. AX-001 owns a safe diagnosis/
+repair and fresh-clone CI record. Desired OpenCode Go same-model B0 depends on a usable
+AX-360/361 route; fixtures cannot stand in for coding-quality results. Safety fixes
+continue before B0 when necessary, with optimization gated on a suitable baseline.
+
+Validation: `git diff --check` passed. Local Python documentation checks found
+1,312 local Markdown targets/anchors with no missing targets or anchors in the edited
+files; no duplicate requirement/acceptance definitions; all five new acceptance IDs
+are defined. The TODO comparison against `git show HEAD:TODO.md` retained all 156
+original task IDs and added seven proposed tasks, with 163 total: 48 implemented,
+113 proposed and 2 verified; no acceptance promotion. Numeric legacy architecture
+labels were removed from TODO links while their target URLs were preserved.
+Independent reviews found and corrected
+formatter-induced index staleness, no-index TaskPackage binding, exact/embedding
+provenance enums, diagnostic status records, and binding freshness/coverage mapping.
+A follow-up independent schema review confirmed those fixes in the requested passages.
+The delivery-plan review also required explicit Phase 4/6 task mappings and distinct
+early scheduler versus optional Code Mode evidence stages; both are now recorded.
+A final range/slash-expanded ID check maps all 163 ledger tasks into the playbook
+with no unknown or omitted IDs.
+The wider repository and runtime are not certified by these document checks.
+
+The focused tools test recorded in `research docs/tests.md` passed after the documentation
+audit; no full-workspace test, live-provider benchmark, hosted CI, commit or push has yet
+been performed for this change. Next: P0.0 fresh-clone repository-health diagnosis,
+then P0.1 evidence reconciliation; new runtime delivery remains open.
+
+Everything after this handoff is a dated historical run record. Any “current,” “active,”
+or “next” wording below describes only the checkpoint where that record was written.
+
 ## AX-004 bounded reads and recursive search confinement (2026-10-01)
 
 Implemented slices for `REQ-TOOL-010`/`011` now include the opened-handle `read`
@@ -246,8 +293,8 @@ source-key mappings. Unknown auth stays explicitly unknown. The Cline inventory 
 each entry to its pinned generated/runtime source or catalog documentation and records
 the source license/notice scan limits.
 
-`node "research docs/scripts/check-provider-inventory-docs.mjs"
-/tmp/horizoncode-opencode-models-dev.json` passed: row counts, uniqueness, snapshot
+The locally captured OpenCode Go development feed passed the provider inventory
+structure/digest check: row counts, uniqueness, snapshot
 digest and feed counts. This is a repeatable structure/digest check, not evidence of
 HorizonCode adapter support or provider acceptance. `ACC-PROV-SYNC-01`, AX-363 route
 conformance, vendor-terms review, and the separate OpenCode Go refresh remain open;
@@ -681,7 +728,7 @@ direct immutable upstream file links in the owning LLD/decision sections (`docs/
 pattern-only dispositions remain indexed in `docs/research/SOURCE-LEDGER.md`, `docs/research/SOURCE-TRACEABILITY.md`, and `research docs/`.
 No upstream code was copied. These tasks remain proposed; `git diff --check` passed.
 
-## Active handoff — architecture audit continuation (2026-09-29)
+## Historical checkpoint — architecture audit continuation (2026-09-29)
 
 ### AX-370 guard fix (2026-09-29)
 
@@ -727,7 +774,7 @@ horizoncode-guard -p horizoncode-tools --check` fails on formatting deltas in un
 sections of touched crates and other existing files; no broad reformat was applied.
 `git diff --check` passes.
 
-### Current product priority after the requirements revision
+### Product priority at the requirements-revision checkpoint
 
 The active product direction now prioritizes AX-362 (complete pinned OpenCode/Cline
 provider and auth inventories), followed by AX-363 (HorizonCode-owned route parity and
@@ -834,7 +881,7 @@ that it does not by itself prove an egress bypass. The claimed zero-peer schedul
 novelty was rejected because the existing DeepCode note describes durable scheduling;
 exact equivalence against LongHorizon Harness remains unverified.
 
-### Current architecture/source reconciliation
+### Architecture/source reconciliation at the 2026-09-30 checkpoint
 
 The complete active architecture set (`ARCH/00-README.md–33`, with 17 intentionally unused) was
 read in three non-overlapping line-by-line reviews and reconciled with requirements,
@@ -1281,7 +1328,7 @@ subsystems exist today: no TUI/LSP/tree-sitter/WASM/MCP dependency, no artifact 
 no settings module, no notices bundle. The breadth vocabulary exists only as guard
 policy words (`mcp.call`, `skill.install`).
 
-## Where the work stopped
+## Historical checkpoint — where implementation stood on 2026-09-28
 
 Starting point: Git `53a2654`/`b677443` (docs-only, Rust unchanged since `1c7a1c6`).
 The Rust source has now been changed; the exact revision is the commit this handoff
@@ -1492,8 +1539,8 @@ physical reserve, and the session/run integration.
 **Source changes.**
 
 - `crates/horizoncode-types/src/clock.rs` (new): the injectable `Clock` trait,
-  `SystemClock`, and `system_clock()`. Production code no longer reads the host clock
-  directly; the session store takes an `Arc<dyn Clock>`.
+  `SystemClock`, and `system_clock()`. The session store takes an `Arc<dyn Clock>`;
+  other host-clock reads remain and are listed in `research docs/tests.md`.
 - `crates/horizoncode-testkit` (new crate, dev-only): `TestClock`, `ScriptedFaults`/
   `FaultOp`, `StoreSnapshot` (byte-level before/after proof) and the kill-point
   environment contract. It is a dev-dependency of test suites and is never linked into
@@ -1714,7 +1761,8 @@ so its body notes the MSRV move that commit 4's OS-backed lock depends on.
 The user-owned untracked `uipics/` and `.code-intelligence/` are preserved and were not
 staged. No remote was touched, nothing was pushed, published, or deployed, and no
 production data was changed. Two temporary baseline worktrees were created under
-`/tmp/opencode` for the failure comparison and were removed.
+temporary OpenCode checkout for the failure comparison; temporary clones were
+removed after the review.
 
 ## Product requirements and provider-maintenance revision (2026-09-29)
 

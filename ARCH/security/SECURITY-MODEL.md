@@ -588,4 +588,23 @@ legitimate owner transitions.
 
 ## Interaction and external-manager boundaries
 
-ARCH37 protects chip payload identity, draft retention, bounded renderers, streamed control-sequence handling and Code Mode nesting. ARCH38 names external daemon reach, forged approval, schema drift and unknown effect replay threats. Local previews/side questions never mint grants. New acceptance must preserve all earlier forbidden outcomes.
+[Interactions](../product/INTERACTIONS.md) protects chip payload identity, draft retention, bounded renderers, streamed control-sequence handling and Code Mode nesting. [LitePSM integration](../integrations/LITEPSM.md) names external daemon reach, forged approval, schema drift and unknown effect replay threats. Local previews/side questions never mint grants. New acceptance must preserve all earlier forbidden outcomes.
+
+## Repository-index trust boundary
+
+Indexing is another read path under Guard and confinement, not permission to scan
+otherwise denied content. Cached snippets, lexical entries, graph edges and opaque
+handles must be filtered using the current workspace/policy before disclosure;
+revocation prevents subsequent retrieval even from a previously published generation.
+Protected files and denied external/symlink targets never enter searchable derived
+state. Rebuild/delete operates only within the owned cache root.
+
+The supervised child uses authenticated same-user private IPC with bounded frames,
+queries and queues. A query cannot choose an arbitrary source path, widen roots or
+launch tools. Native parser grammars require pinned provenance and platform support;
+malformed source or parser crashes produce bounded failure/coverage observations.
+Watcher overflow marks freshness stale until reconciliation; stale or approximate
+index output cannot authorize effects or satisfy verifier evidence. Test cached-read
+revocation, cross-worktree handles, denied-path indexing, corrupt generations,
+parser failure and IPC flooding under `ACC-REPO-INDEX-01`, `ACC-REPO-OVERLAY-01`
+and `ACC-REPO-TOOLS-01`.

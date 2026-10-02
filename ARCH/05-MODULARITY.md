@@ -20,6 +20,27 @@
 
 Shared durable concepts use [Domain model](04-DOMAIN-MODEL.md) and [Ownership](contracts/OWNERSHIP.md). CMP-agent-directory owns profile registration/trust; CMP-worker negotiates/renders/routes adapters; CMP-orch alone schedules and commits execution lifecycle. ExecutionHost performs launch/reap, Sandbox enforces reach, WorkspaceProvider owns source-state operations. Host placement and workspace implementation cannot prove OS confinement. Vendor-specific fields remain adapter metadata.
 
+## Language boundary
+
+HorizonCode is Rust-first, not Rust-exclusive (`REQ-MOD-001`). Runner, controller,
+schedulers, Guard, Sandbox, effect settlement, canonical state, workspace operations,
+native tools, repository-index runtime and TUI are Rust-owned implementations.
+Language choice cannot move their authority into an adapter.
+
+| Edge | Permitted language and boundary |
+|---|---|
+| Evaluation and statistics | Python may orchestrate isolated benchmark fixtures and analysis through versioned contracts. It cannot bypass production authority. |
+| Web/browser surfaces and SDKs | TypeScript may implement clients of the Control API and typed SDKs. Business state and policy remain in their canonical owners. |
+| Installation/bootstrap | Bash and PowerShell are thin launchers for the authenticated installation service; they do not implement alternative update or signature policy. |
+| Extensions | WASM modules use the mediated extension port and declared capabilities. They receive no ambient host authority. |
+
+Cross-language boundaries use finite, versioned IPC/API or WASM contracts with typed
+failure, cancellation and resource bounds. Arbitrary FFI chains and a second agent
+runtime are excluded. An additional runtime language or native grammar dependency
+requires an explicit boundary decision, pinned supply chain, support matrix and
+failure/conformance evidence before adoption. Rust bindings to pinned Tree-sitter
+grammars are a parsing adapter boundary, not an exemption for unrestricted native code.
+
 ## Dependency direction
 
 ```text

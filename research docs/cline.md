@@ -170,8 +170,9 @@ The source was fetched into a separate temporary checkout at the documented exac
 v4.1.20 at `254f40c4b592d1e662b84f2ba06fe45dca77cab3`. The v4.1.21 pin had 4,116 Git
 paths, 4,105 materialized files, and 3,521 source/config candidates totaling 1,040,878
 lines under the reviewer's extension filter. Sixteen code files were fully read, eight
-partially read, and 3,497 candidates remained unread in full. The per-file ledger was
-`/tmp/cline-v421-read-ledger.tsv` during this audit session; this is a scoped deep-dive,
+partially read, and 3,497 candidates remained unread in full. The committed
+[per-file coverage ledger](source-audit-coverage/cline-787ad1b.tsv) records the review;
+this is a scoped deep-dive,
 not an exhaustive source read. Full reads covered `ClineCore.ts`, the session manifest,
 Agenda and team stores/types, team and runtime spawn tools, MCP timeout/policy, the
 session FTS search service, provider Go test, subagent UI row, and usage projection;

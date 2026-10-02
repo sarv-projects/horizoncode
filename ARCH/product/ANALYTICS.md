@@ -82,7 +82,7 @@ Metric definitions:
 
 ## Requirements mapping
 
-`REQ-ANALYTICS-001..008`.
+`REQ-ANALYTICS-001..009`.
 
 ## analytics boundary 
 
@@ -96,5 +96,4 @@ paginated with cursor and source coverage, never an unbounded rows[] allocation.
 
 ## Integration boundaries
 
-ARCH37 timing observations separate interaction, fsync, queue, model, network, tool and repaint latency. Skill usage/cost is scoped estimated or observed; no effectiveness inference. Quota facts originate provider observations and budgets originate controller; analytics is a downstream projection.
-
+Timing records use the metric definitions in [Performance](../contracts/PERFORMANCE.md), which separates interaction, fsync, queue, model, network, tool and repaint latency. Skill usage/cost is scoped estimated or observed; no effectiveness inference. Quota facts originate provider observations and budgets originate controller; analytics is a downstream projection.

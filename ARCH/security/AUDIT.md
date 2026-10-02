@@ -58,7 +58,7 @@ with operational events. Audit reads and exports are themselves access-controlle
 (`CMP-tools`/persistence), policy evaluation (`CMP-guard`), or credential custody
 (`CMP-secrets`). The local audit authenticator is owned by CMP-audit, with protected key storage, versioned key IDs and explicit rotation/revocation records. Provider credentials remain exclusively in CMP-secrets. Portable proof trust roots and signing authority are separately authenticated; a local MAC key never substitutes for them.
 
-Actual effect settlement is logged as it happens; ordered model observations cannot delay audit receipts. Audit verification accesses use the separate bounded access stream, without recursive audit appends. External litePSM invocation receipts are correlated under ARCH38, never accepted as task-verification authority.
+Actual effect settlement is logged as it happens; ordered model observations cannot delay audit receipts. Audit verification accesses use the separate bounded access stream, without recursive audit appends. External LitePSM invocation receipts are correlated under [LitePSM integration](../integrations/LITEPSM.md), never accepted as task-verification authority.
 
 ## Interfaces
 

@@ -42,6 +42,22 @@ before execution, and then install the `hzcode` executable. Until that gate is p
 the curl path is documented as unavailable rather than presenting HTTPS as signature
 verification.
 
+## Supervised helper packaging
+
+`horizon-indexd` is the logical name of the repository-index service, not a separately
+distributed executable. The supervisor starts the private index-worker mode of the
+same signed `hzcode` binary resolved from its verified install record; it never
+searches `PATH` for a helper or downloads one independently. Parent and child therefore
+share the release version and executable digest, and the child protocol/schema versions
+are pinned by that release. The supervisor authenticates the child over the private
+bounded IPC channel and refuses a mismatched executable, protocol, workspace scope, or
+policy snapshot. During update, the maintenance fence settles or stops supervised
+children before executable activation; rollback restores the single prior executable
+and its compatible index schema. If process supervision, IPC authentication, or
+required confinement is unavailable on a platform, repository indexing reports
+unavailable and authorized direct-read/lexical paths remain available. No platform is
+advertised as index-capable without its own acceptance evidence.
+
 ## HLD and ownership
 
 ```text

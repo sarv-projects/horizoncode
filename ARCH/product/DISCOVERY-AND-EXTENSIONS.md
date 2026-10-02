@@ -255,6 +255,41 @@ registration or the guard (`REQ-CTX-010`).
 
 ## Skills (`CMP-config`)
 
+### First-party standard library
+
+Release-owned skills use the existing loader, registry, digest checks and progressive
+disclosure (`REQ-SKILL-006`). Discovery exposes small metadata; bodies/resources load
+only when selected under the context budget. Bundling does not create tools, enable
+scripts, grant permissions or replace the controller/verifier.
+
+The initial content catalog is `horizon/swe-feature`, `horizon/swe-debugging`,
+`horizon/swe-refactor`, `horizon/swe-testing`, `horizon/swe-code-review`,
+`horizon/software-architecture`, `horizon/change-impact`, `horizon/repo-navigation`,
+`horizon/security-review`, `horizon/performance-analysis`,
+`horizon/dependency-upgrade`, `horizon/release-engineering`,
+`horizon/agile-planning`, `horizon/evidence-before-done` and
+`horizon/no-progress-recovery`. The existing artifact packages
+`horizon/artifact-capabilities` and `horizon/artifact-diagramming` share this catalog
+and remain delivered under AX-411; AX-418 delivers the general library without a
+duplicate artifact implementation. Catalog IDs are source-qualified package identities;
+the source namespace is `horizon`, while each SKILL.md name and package directory
+use the lowercase kebab name after the slash (for example `swe-feature`). Invocable
+names follow the existing collision-safe command contract.
+
+Each package is first-party authored, versioned, digest-pinned, reviewed and scoped to
+its task. Deterministic software performs indexing, scheduling, formatting, bookkeeping
+and evidence collection; skills guide reasoning and use those capabilities. Skill advice
+cannot override explicit user intent, protected context, authority or required evidence.
+An agile skill proposes task decomposition; it does not commit canonical tasks or PASS.
+
+Evaluate each body on development tasks with and without activation, recording outcome,
+context cost, model/tool calls, correction burden and failures. Rewrite or remove a
+body that increases cost without a demonstrated useful outcome. Release gates use
+the frozen evaluation protocol; holdout feedback is not fed into skill tuning. Users
+can inspect package/source/version, disable activation, and see measured or explicitly
+estimated cost through the ordinary Skills surface. `ACC-SKILL-01`, `ACC-UX-12` and
+`ACC-EVAL-01` govern the library.
+
 **Format.** A skill is a directory containing `SKILL.md` with frontmatter (`name`, `description`, and optional `license`, `metadata`, and gating fields) plus an instructional body and optional `scripts/`, `references/`, `assets/`. Name must be lowercase kebab-case and match the directory.
 
 **Discovery.** Support canonical `<root>/<name>/SKILL.md` packages. Preserve legacy sibling `<root>/<name>.md` frontmatter through versioned migration with compatibility fixtures. Discovery is lazy and digest-bound; watch-based reload must satisfy generation and in-flight identity contracts.

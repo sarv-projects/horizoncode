@@ -16,7 +16,9 @@
 | Immutable artifact bytes and lifetime leases | CMP-artifact | Logical artifact versions/feedback stay with Thread/Run owner |
 | Verification observations and bounded verifier execution | CMP-verifier | CMP-orch validates evidence binding and commits Task verdict |
 | Memory content, revisions, capture and deletion generations | CMP-memory | Configuration owns settings; context consumes eligible selections |
-| Repository indexes, LSP/SCIP generations and sourced intelligence | CMP-repo-intel | Context ranks results; no duplicate semantic index |
+| Repository manifests, base/overlay index generations, LSP/SCIP and sourced intelligence | CMP-repo-intel | Supervised indexd implements this owner; WorkspaceProvider supplies source revisions; cache cannot grant read access |
+| RepoBrief and TaskPackage context selection | CMP-context | Bounded projections within ContextPacket; source facts retain their owners |
+| ChangeReceipt aggregation | CMP-runner | Joins effect/workspace/index/check receipts; verifier alone produces independent verification observations |
 | Provider catalog, route capabilities and transport observations | CMP-provider | Analytics records usage; controller owns retry/spend policy |
 | Usage/cost observation ledger | CMP-analytics | Estimates never increase hard ceilings |
 | Effective configuration and provenance | CMP-config | Does not store memory or run tools |

@@ -325,7 +325,9 @@ and unsaved-buffer views are explicit, revision-bound inputs)
 The Explorer project-path scanner consumes the same CMP-repo-intel source owner. It performs bounded asynchronous lookup,
 coalesces/cancels superseded queries, binds results to the active workspace root and
 query generation, and refuses to publish results after either changes. Truncated,
-stale, cancelled, or unavailable scans are distinguishable from an empty result. ### Symbol intelligence
+stale, cancelled, or unavailable scans are distinguishable from an empty result.
+
+### Symbol intelligence
 
 - **LSP bridge:** one `CMP-repo-intel` owner exposes read-only definitions,
   references, hover, diagnostics, document/workspace symbols, implementation
@@ -342,6 +344,56 @@ stale, cancelled, or unavailable scans are distinguishable from an empty result.
   indexer is ingested into the per-workspace store to supply precise,
   compiler-grade edges where a live server or compile step is unavailable.
 - Diagnostics are a typed context item and may be injected under budget.
+
+### Repository task projections
+
+`RepoBriefV1` is a bounded repository overview and `TaskPackageV1` is its task-specific
+selection (`REQ-REPO-008`). Both are rebuildable projections of the single
+repository-intelligence owner. `CMP-context` performs ranking, budget selection and
+serialization; neither record creates a second index or canonical task store.
+
+```text
+RepoBriefV1 {
+  schema_version: 1, brief_id, project_id, workspace_revision,
+  index_binding: WorkspaceIndexBindingV1,
+  policy_digest, source_methods[], overview_refs[], coverage,
+  freshness, limitations[], omitted_context[], projection_digest
+}
+TaskPackageV1 {
+  schema_version: 1, package_id, task_contract_ref, spec_digest?,
+  repo_brief_ref, workspace_revision, index_binding, policy_digest,
+  likely_files[], likely_symbols[], useful_ranges[], relevant_test_refs[],
+  dependency_neighborhood[], diagnostic_refs[], recent_change_refs[],
+  retrieval_handles[], byte_budget, token_budget, omitted_context[],
+  freshness, coverage, limitations[], projection_digest
+}
+```
+
+`WorkspaceIndexBindingV1` is defined once by [Workspaces](../execution/WORKSPACES.md).
+Its absent generations represent no-index/direct or lexical fallback; they never
+fabricate a READY generation. `ContextPacketV1.task_package_ref` pins the package
+identity/digest, while selected package payload is serialized as ordinary ContextItems.
+The full index or a second packet is never embedded.
+
+Each selected entry retains exact source revision/range/digest and method; inferred
+test relationships and syntactic edges remain advisory. The task contract may be a
+direct-turn intent reference; a direct turn never fabricates a managed Task. The
+projection is pinned to a `ContextEpoch`, linked by `task_package_ref` in the
+existing `ContextPacketV1`, and selected into its ordinary ContextItems. It does not replace that packet's instructions, authority,
+task contract, memory scope or budget.
+
+Before a model step, deterministic prefetch may prepare a bounded overview, likely
+files/symbols, diagnostics, changes and nearby tests from fresh available sources.
+It cannot block interaction while an optional full index is loading. Unavailable or
+stale sources produce explicit omissions and guarded raw search/read fallback.
+Freshness validation and the ordinary pre-send fit gate still apply. The entire index
+never enters model context. Detail grows progressively from overview/signatures to
+exact ranges and task-relevant dependencies/tests through `repo_expand`.
+
+A generation or policy change invalidates affected selections/handles and requires
+refresh at a safe context epoch. Replaying an unchanged dispatch reuses the pinned
+projection digest. Cached sharing between children does not imply provider cache
+credit or free input usage. Acceptance is `ACC-REPO-TOOLS-01`.
 
 ### Selection before embeddings
 
@@ -391,6 +443,7 @@ ContextPacketV1 {
   memory_refs: MemoryRef[],
   permission_snapshot_digest: Digest,
   workspace_revision?: RevisionRef,
+  task_package_ref?: TaskPackageRef,
   byte_budget: BoundedInt,
   token_budget: BoundedInt,
   omitted_context: OmissionRecord[],

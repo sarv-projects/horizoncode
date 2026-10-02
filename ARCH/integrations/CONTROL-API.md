@@ -45,7 +45,7 @@ session close semantics remain distinct from UI detach. A future remote transpor
 can be added only as an explicit authenticated adapter, not by binding the local
 socket to a network interface.
 
-ARCH37 artifact/draft/queue/branch/settings actions pass this single dispatcher with authenticated scope, operation IDs, CAS, bounded pages and replay cursors. ARCH38 is an outgoing local adapter, not a new unauthenticated listener. Unknown external schemas/methods refuse typed.
+Artifact, draft, queue, branch and settings actions defined by [Interactions](../product/INTERACTIONS.md) pass this single dispatcher with authenticated scope, operation IDs, CAS, bounded pages and replay cursors. The outgoing [LitePSM adapter](LITEPSM.md) is not a new unauthenticated listener. Unknown external schemas/methods are refused with typed errors.
 
 ## Logical schema
 
@@ -298,7 +298,7 @@ enabling mutations. UI event fields cannot mint operator scopes or approvals.
 | threads.recap/branch/fork/open | Committed visible cursor/scope, explicit workspace binding, create/open receipt; no permission/effect inheritance |
 | settings.preview/apply/reset | Expected config revision, scope, effective policy; atomic persistence and apply-boundary reporting |
 | skills.inspect_cost/set_visibility | Qualified source/digest, tokenizer/measurement scope; future generation only |
-| extensions.probe/search/prepare/execute/observe/cancel | ARCH38 normalized refs, externally bound plan/channel and horizon operation/effect IDs |
+| extensions.probe/search/prepare/execute/observe/cancel | [LitePSM](LITEPSM.md) normalized refs, externally bound plan/channel and HorizonCode operation/effect IDs |
 
 Names are versioned typed in-process methods; JSON-RPC wire names require versioned
 schema publication and golden fixtures before exposure. One finite action descriptor

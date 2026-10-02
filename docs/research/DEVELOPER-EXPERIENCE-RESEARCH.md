@@ -120,4 +120,4 @@ These are recommended blueprint additions, not completed usability studies.
 | Slow environment | UI remains responsive under indexing and child load; diagnostics distinguish local framework delay from provider delay. No fabricated benchmark superiority claim appears. |
 | Terminal accessibility | All primary actions work by keyboard; color is redundant with labels/glyphs; reduced motion suppresses transitions; clipboard failures have explicit fallbacks. |
 
-The acceptance owner should assign stable ACC identifiers to these scenarios and link them to the owning subsystem during consolidation. Research recommendations do not create a second state owner, scheduler, memory store or permission engine.
+These scenarios are represented by `ACC-PRODUCT-01..15` in the canonical [acceptance matrix](../../ARCH/acceptance/ACCEPTANCE-MATRIX.md), with subsystem links there. Research recommendations do not create a second state owner, scheduler, memory store or permission engine.

@@ -578,6 +578,7 @@ is a view/controller over it. In addition to existing `ARCH/core/CONFIG.md` fiel
 | Warnings | threshold levels, resource kinds, channels, dedupe/reset window | Soft alert cannot override hard limit; unknown/stale clearly rendered |
 | Approval posture | plan/ask/eligible-auto-approve preference; reduced-approval activation scope and expiry | Persistent preference may be set, but high-risk activation is per-run acknowledged; hard deny/catastrophic/OS boundaries cannot be bypassed |
 | Context | context budget, compaction mode/threshold/keep-tail, output retention, repo-map budget | New context epoch; canonical task/effect/evidence state is never compacted away |
+| Repository intelligence | index enablement, permitted roots/exclusions, parser workers, RAM/disk/CPU budgets, query/result ceilings, enrichment and embedding preference | Finite schema limits; new index generation for content/schema changes; immediate policy narrowing invalidates access; project config cannot widen roots or enable network/model enrichment; health and governed rebuild through `/context sources` and `/doctor` |
 | Extensions | MCP servers, skills, plugins and command/panel contributions, provenance pins, enable state | Separate lifecycle and capability grants; no auto-enable from project config |
 | Notifications | event categories, terminal bell/sound, system notification, quiet hours, rate limit, background completion | User may mute sound and non-critical channels; durable events and required in-client approval/status remain visible |
 | Privacy/retention | analytics detail, transcript/export retention, research cache, redaction mode, search enablement and displayable-content indexing | Local-only defaults; export is explicit, redacted preview, and guarded; search is user-scoped and project content cannot enable indexing |
@@ -696,7 +697,7 @@ revokes/restarts it. The CLI review contract does not accept digest flags as app
 
 ## Integration boundaries
 
-ARCH37 adds commands/actions to this single catalog; no separate dispatcher. Quota observations are provider-owned; budget authority is controller-owned. WorkerBindingSnapshot uses provider-qualified workspace_revision and dirty manifest, not mandatory base_commit. A --spec-digest selector never approves a Run. Settings and context selections use versioned CAS; user-facing labels hide internal IDs until Details.
+The [interactions contract](INTERACTIONS.md) adds commands and actions to this single catalog; no separate dispatcher. Quota observations are provider-owned; budget authority is controller-owned. WorkerBindingSnapshot uses provider-qualified workspace_revision and dirty manifest, not mandatory base_commit. A `--spec-digest` selector never approves a Run. Settings and context selections use versioned CAS; user-facing labels hide internal IDs until Details.
 
 
 ## Artifact and conversation actions
@@ -712,7 +713,7 @@ ARCH37 adds commands/actions to this single catalog; no separate dispatcher. Quo
 | `/litepsm` | Existing Extensions overlay, explicit selected manager | Navigation only |
 | `/btw <question>` | Bounded side Thread | Read-only side budget, explicit Attach answer |
 
-All visible buttons listed in ARCH37/38 require ActionDescriptor entries with typed
+All visible buttons listed in [Interactions](INTERACTIONS.md) and [LitePSM integration](../integrations/LITEPSM.md) require ActionDescriptor entries with typed
 target, expected revision, availability reason, method, receipt/event/result view,
 confirmation and keybinding. F3 exposes them; Enter activates focused enabled control;
 Escape returns focus without cancelling unrelated work. No effect gets an implicit

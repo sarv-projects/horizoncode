@@ -20,9 +20,12 @@ verified by themselves.
    [`ARCH/security/SECURITY-MODEL.md`](ARCH/security/SECURITY-MODEL.md) and
    [`ARCH/acceptance/ACCEPTANCE-MODEL.md`](ARCH/acceptance/ACCEPTANCE-MODEL.md) for security
    or evidence claims.
-5. [`research docs/tests.md`](research%20docs/tests.md) for the test inventory, test
+5. [`docs/main_agile.md`](docs/main_agile.md) for dependency-ordered delivery,
+   benchmark gates, the work-item lifecycle, and the phase map. It is a process guide,
+   not a second task ledger; use [`TODO.md`](TODO.md) for task IDs/status/dependencies.
+6. [`research docs/tests.md`](research%20docs/tests.md) for the test inventory, test
    layers, acceptance evidence, local-model matrix, and benchmark protocol.
-6. Relevant provenance notes under [`research docs/`](research%20docs/README.md) before
+7. Relevant provenance notes under [`research docs/`](research%20docs/README.md) before
    adopting an external implementation or dependency.
 
 ## Source-of-truth and status
@@ -60,7 +63,10 @@ For a substantial task:
    crosses features, state the shared contract and update each affected owner.
 3. Before editing, write down intended behavior, affected interfaces/data/schema,
    user-visible settings and flows, negative/failure cases, security effects, and exact
-   acceptance checks. For a genuinely missing design, amend `ARCH/` first.
+   acceptance checks. For a genuinely missing design, amend `ARCH/` first. Follow the
+   work-item lifecycle in [`docs/main_agile.md`](docs/main_agile.md): design,
+   implementation, focused tests, failure-path tests, integration tests,
+   benchmark/regression, independent evidence, then status reconciliation.
 4. Implement one authoritative path. Avoid duplicate policy engines, schedulers,
    catalogs, persistence sources, or UI state owners. Preserve compatibility or provide
    an explicit versioned migration.

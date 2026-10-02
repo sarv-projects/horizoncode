@@ -13,5 +13,7 @@
 | FLOW-ARTIFACT-001 | Inspect result | Scoped artifact query → bounded immutable version → preview/attach/open/export → exact-version feedback |
 | FLOW-MEMORY-001 | Save/correct memory | Validated user save or advisory capture → owner transaction → passive receipt → scoped use → edit/forget generation fence |
 | FLOW-INSTALL-001 | Install/onboard | Detect target → verified release metadata/bytes → user-scoped atomic activation → optional PATH setup → skippable route/workspace onboarding |
+| FLOW-INDEX-001 | Update/query repository intelligence | Governed source view → change hint/digest validation → incremental base/overlay update → atomic generation publication → scoped bounded query → freshness/policy validation → context projection |
+| FLOW-CHANGE-001 | Inspect coherent edits | Settle edit effects → observe revision → index delta → allowed formatter/diagnostics/checks → final diff/impact → ChangeReceipt → independent required verification |
 
 Detailed normal, failure and recovery sequences live with the subsystem owner. This registry supplies identities and cross-owner boundaries rather than a second implementation of each flow.

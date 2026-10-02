@@ -219,12 +219,42 @@ guard, sandbox, audit, budget, and output store.
 
 | Capability group | Target built-ins | Boundary |
 |---|---|---|
-| Repository | `read`, `list`, `glob`, `grep`, `search`, `symbol`, `references`, `diagnostics`, `git_status`, `git_diff`, `git_log` | Symbol operations use one revision-aware repository-intelligence service; mutations remain `edit`/`write`/`apply_patch`. |
+| Repository | `repo_query`, `repo_context`, `repo_impact`, `repo_expand`; raw `read`, `list`, `glob`, `grep`; `git_status`, `git_diff`, `git_log` | Coarse queries call the single repository-intelligence owner. Definitions, references, symbols and diagnostics remain internal provider primitives and UI operations; mutations use `edit`/`write`/`apply_patch`. |
 | Change/execution | `write`, `edit`, `apply_patch`, `bash`, `test`, `todo`, `question` | `test` is a safe command-profile wrapper over governed process execution, not a bypass around shell policy. |
 | Web | `websearch`, `webfetch` | Search and fetch are distinct; results carry URL, retrieval time, redirects, provider, and content digest. All egress uses the one mediated network boundary. |
 | Agent/workflow | `task` (controller-owned delegation), `skill` (progressive instruction activation), `workflow` (validated saved workflow invocation) | A call returns a typed durable receipt; it does not self-verify or change permission. |
 | Media | image input/attachment references and image metadata inspection | Treat media as bounded artifacts with declared MIME, size, digest, and model-route capability; no raw base64 in transcript/context. |
 | Optional integrations | MCP tools/resources/prompts, plugins, and Code Mode | Catalogs are selected/lazy; each nested capability uses the same policy and resource ceilings. Code Mode is enabled only for a supported isolated runtime under the same nested-call controls. |
+
+### Repository intelligence tools
+
+These four tools batch useful repository work without another index, LSP manager or
+permission evaluator (`REQ-REPO-008`). `CMP-tools` owns their schemas/materialization;
+`CMP-repo-intel` executes retrieval, and `CMP-context` budgets the resulting projection.
+
+| Tool | Input and result contract |
+|---|---|
+| `repo_query` | A bounded ordered list of typed questions: exact text/path/symbol, definition, references, diagnostics, dependency neighborhood or conceptual retrieval. Returns one result per question with source method, coverage and limitations; a failed question is never an empty successful answer. |
+| `repo_context` | Bounded hints plus a controller-approved task or direct-turn intent reference, permitted scope and byte/token/result limits. Builds the bounded `RepoBriefV1`/`TaskPackageV1` projection defined in [Context](CONTEXT.md#repository-task-projections), preserving exclusions and explicit omissions. |
+| `repo_impact` | Exact changeset/base/current revision references and bounded expansion limits. Returns advisory callers/interfaces/configs/tests and unresolved edges. It cannot establish required verification or authorize writes. |
+| `repo_expand` | An opaque retrieval handle, requested detail level and limits. Resolves only within the originating workspace, source view, policy and pinned generation; stale/expired handles return refresh/unavailable status, never silently resolve into another revision. |
+
+Every request includes a controller-supplied workspace binding, expected source/index
+generation, cancellation and deadline. Model arguments cannot select another actor,
+permission snapshot or unauthorized root. Finite limits cover question count, search
+work, result count, encoded bytes, range bytes and expansion depth; resolved configuration
+provides exact ceilings and the server enforces them before allocation. Results carry
+workspace/revision/buffer identity, index generation, source ranges/digests, retrieval
+method, freshness, coverage, limitations and optional continuation handles. Handles
+are scoped references, never authority. Retrieval rechecks current read authorization,
+including policy narrowing after indexing; cached content cannot bypass a denied read.
+
+Raw file tools remain available for unsupported languages, unindexed/dirty paths and
+direct source validation. A model need not issue a separate call for every internal
+definition/reference lookup. Query planning chooses the cheapest sufficient permitted
+source; vector retrieval is optional. Whole-response admission, question boundaries,
+ordered observations and cancellation apply identically to these tools. Acceptance is
+`ACC-REPO-TOOLS-01` alongside `ACC-REPO-01` and `ACC-TOOL-DISCOVERY-01`.
 
 Do not add a second-purpose `fixer` tool, hidden browsing browser, local shell escape,
 or overlapping semantic index. A built-in persona is a profile/role recipe using this

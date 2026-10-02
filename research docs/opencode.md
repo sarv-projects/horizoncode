@@ -318,8 +318,9 @@ and [V2 session lifecycle/deferred work](https://github.com/anomalyco/opencode/b
 At the same pinned OpenCode commit, the source inventory matched 3,630 code-like
 files, 730,816 lines, and 28,280,753 bytes for the declared extension set. The
 reviewer ledger recorded 14 full-file reads, 10 partial-file reads, and 3,606 files
-unread. This is not a literal all-code-file review. The complete per-file ledger was
-kept at `/tmp/opencode-audit-083-coverage.csv` for this audit session; the full-read
+unread. This is not a literal all-code-file review. The committed
+[per-file coverage ledger](source-audit-coverage/opencode-083ed266.csv) records the
+review; the full-read
 paths were `packages/app/src/pages/home/home-session-search-controller.ts`,
 `packages/app/src/pages/home/home-sessions-controller.tsx`,
 `packages/core/src/models-dev.ts`, `packages/core/src/plugin/models-dev.ts`,

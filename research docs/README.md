@@ -54,7 +54,6 @@ on a volatile implementation detail.
 - [Grok Build Extensions UI](grok-build-extensions.md) — pinned source review of the shared category modal and slash-command routing; no code copied.
 - [Grok Build Doctor](grok-build-doctor.md) — focused pinned-source review of typed diagnostics, CLI/TUI projections, bounded probes, and named repair plans; no code copied.
 - [Agent tool, skill, and command adoption](agent-tool-skill-command-adoption.md) — focused pinned Codex deferred-tool-search, OpenCode LSP, and Grok skill-collision/create patterns; no code copied.
-- [`ignore` crate review](ignore-crate-review-2026-10-01.md) — pinned walker/ignore-file behavior and error handling used by AX-004; no source copied.
 - [iCode TUI and interaction-pattern review](icode-ui-review.md) — pinned source-guided review of composer, commands, path scanning, task/workflow inspection, extension configuration, and explicit non-adoptions.
 - [Extension marketplace and connector strategy](extension-marketplace-review.md) — official Codex, Claude Code, Grok Build, MCP Registry, and Agent Skills source review; catalog count definition, connector/provider/connection distinction, source adapters, and product-local runtime boundary.
 - [Architecture evolution source review](architecture-evolution-review-2026-09.md) — pinned AutoGPT Platform, planning-with-files, LobsterAI, SuperAGI, and AG-UI patterns; license/scope limits and explicit non-adoptions.

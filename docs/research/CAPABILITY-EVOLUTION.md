@@ -1,7 +1,9 @@
-# 35 — Capability Registry, Parity Radar, and Evolution Protocol
+# Capability registry and parity research notes (2026-09-30)
 
-**Status:** proposed architecture contract. No continuous competitor monitor,
-capability registry, or automated parity claim is implemented.
+**Status:** dated research snapshot, not a normative contract. The canonical
+capability record, ownership, and evidence rules are defined in
+[`ARCH/contracts/CAPABILITIES.md`](../../ARCH/contracts/CAPABILITIES.md). No continuous
+competitor monitor or automated parity claim is implemented.
 
 ## Capability records
 
@@ -39,9 +41,12 @@ meaning. This is a testable modularity goal, not a guarantee that every implemen
 can be swapped without configuration, migration, or capability loss.
 
 Related owners: `CMP-worker`, `CMP-provider`, `CMP-tools`, `CMP-workspace`,
-`CMP-repo-intel`; `ARCH/product/DISCOVERY-AND-EXTENSIONS.md` owns package discovery and installation trust, while this
-document owns capability semantics and evidence classifications. See `ARCH/05-MODULARITY.md` for
-dependency rules and `ARCH/acceptance/ACCEPTANCE-MATRIX.md` for acceptance evidence.
+`CMP-repo-intel`; `ARCH/product/DISCOVERY-AND-EXTENSIONS.md` owns package discovery
+and installation trust. Current capability semantics and evidence classifications
+remain in [`ARCH/contracts/CAPABILITIES.md`](../../ARCH/contracts/CAPABILITIES.md).
+See [`ARCH/05-MODULARITY.md`](../../ARCH/05-MODULARITY.md) for dependency rules and
+[`ARCH/acceptance/ACCEPTANCE-MATRIX.md`](../../ARCH/acceptance/ACCEPTANCE-MATRIX.md)
+for acceptance evidence.
 
 ## Ecosystem radar scope
 
@@ -51,7 +56,7 @@ unqualified awesome-list repository as evidence. Search surfaced multiple distin
 lists sharing similar names; none was selected as canonical. Every adopted claim needs
 an exact product/version/source and bounded review scope under REQ-RESEARCH-001.
 
-## Final capability classification clarification
+## Classification notes retained from the 2026-09-30 review
 
 Use a versioned CapabilityRecord with stable key, owner, subject/build/platform,
 dependencies, configuration/trust snapshot, observed_at, evidence refs and limits.
@@ -63,8 +68,8 @@ remain authoritative; DISCOVERED/AVAILABLE are not substitute acceptance statuse
 Radar refresh is explicit or a separately authorized bounded metadata job; it cannot
 install code, send repository data, or start costly probes in the background.
 
-## Interaction and integration reconciliation (2026-09-30)
+## Dated interaction notes (2026-09-30)
 
 Artifact renderers, clipboard support, optional Code Mode and litePSM methods declare actual availability and evidence independently. Supplied competitor menus are hypotheses until pinned primary checks; no parity status promotion from a command label.
 
-Detailed shared contracts: [ARCH/product/INTERACTIONS.md](../../ARCH/product/INTERACTIONS.md) and [ARCH/integrations/LITEPSM.md](../../ARCH/integrations/LITEPSM.md). Status remains proposed; see TODO AX-401..410.
+Detailed target contracts: [interactions](../../ARCH/product/INTERACTIONS.md) and [LitePSM integration](../../ARCH/integrations/LITEPSM.md). Delivery status remains in [TODO.md](../../TODO.md), including AX-401..410.

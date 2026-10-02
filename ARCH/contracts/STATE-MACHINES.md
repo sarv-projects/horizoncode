@@ -6,7 +6,7 @@ This registry owns lifecycle vocabulary and permitted transition semantics. Subs
 
 **Run:** `DISCOVERING → SPECIFYING → READY → EXECUTING → INTEGRATING → VERIFYING → AWAITING_ACCEPTANCE → COMPLETED`. Active states may transition to `RECOVERING`, condition-driven `WAITING`, user-driven `PAUSED`, hard-bound `STOPPED`, or `CANCELLING → CANCELLED`. A cancellation with unresolved process/effect state remains `CANCELLING` with a `RECONCILING` cancel receipt; it is not terminal. `WAITING` may wake only on its recorded condition; `PAUSED` requires explicit user resume and cannot auto-wake; `STOPPED`, `CANCELLED`, and `COMPLETED` are terminal and distinct. A terminal run may be forked into a new run with provenance, but is never silently reopened. An independent task may continue only when a wait does not block its dependency or shared resource.
 
-**RunGoal:** `DRAFT → ACTIVE → PAUSED | BLOCKED | BUDGET_LIMITED → ACTIVE`; `COMPLETE` is terminal and requires the owning run's current completion evidence. Only a committed `GoalActivated` event can move a draft to `ACTIVE`. Clearing an `ActiveGoalPointer` changes no `RunGoal` or `Run` state.
+**RunGoal:** `DRAFT → ACTIVE` or `DRAFT → CANCELLED`; `ACTIVE → PAUSED | BLOCKED | BUDGET_LIMITED → ACTIVE`, or to terminal `STOPPED`, `CANCELLED`, or `COMPLETE`. Only a committed `GoalActivated` event can move a draft to `ACTIVE`. Stop/cancel requires the owning Run's durable fence and reconciliation of affected workers/effects; it never implies successful completion. `COMPLETE` requires the owning Run's current completion evidence. `STOPPED`, `CANCELLED`, and `COMPLETE` are distinct terminal states; resuming terminal work requires a new Run/goal with provenance. Clearing an `ActiveGoalPointer` changes no `RunGoal` or `Run` state.
 
 **GoalApprovalChallenge:** `PENDING → ACCEPTED → CONSUMED`; alternatives are
 `DECLINED`, `CANCELLED`, `EXPIRED`, or `INVALIDATED`. `ACCEPTED` means the trusted
@@ -67,4 +67,4 @@ claim success solely because a signal was sent.
 | WorkAdmissionPermit | ACTIVE, UNKNOWN, SETTLED; unknown blocks executable maintenance |
 | ToolBatch | COLLECTING, ADMITTED, SUSPENDED_FOR_INPUT, REJECTED, SETTLING, SETTLED; full-response admission precedes sibling dispatch |
 
-RunGoal additionally records STOPPED and CANCELLED distinctly from COMPLETE. Attempt UNKNOWN can return to ACTIVE/SETTLING or a proven terminal state only after exact process/effect reconciliation; it is not a successful terminal marker. A failed required task prevents Run completion until a new bounded attempt or approved specification change resolves its criterion.
+Attempt UNKNOWN can return to ACTIVE/SETTLING or a proven terminal state only after exact process/effect reconciliation; it is not a successful terminal marker. A failed required task prevents Run completion until a new bounded attempt or approved specification change resolves its criterion.

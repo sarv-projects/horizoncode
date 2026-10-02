@@ -41,7 +41,7 @@ Provide passive Saved/Used indicators, Edit/Forget/Dismiss actions, searchable s
 
 The user-authorized target is recorded in [DEC-096](../history/architecture/decisions/DEC-096-MEMORY-CAPTURE.md) and specified in the canonical [Memory design](../../ARCH/product/MEMORY.md), [requirements](../../ARCH/02-REQUIREMENTS.md), settings/commands, context packet, and `ACC-MEM-02`. It distinguishes advisory observations from confirmed facts, saves exact explicitly requested content without redundant approval, keeps child observations scoped advisory, and distinguishes new-install defaults from upgrade migration. DEC-067/072 remain unchanged as historical decisions.
 
-The authored target in `/tmp/hz-refactor-memory.md` includes HLD, ownership, contracts, V2 records/receipts, transitions, user/ambient/retrieval/correction flows, profile/privacy rules, finite bounds, UI, failure recovery and acceptance. It contains no runtime-status or reconciliation sections. Root integration owns canonical placement and cross-document changes.
+The authored target is specified in the canonical [Memory design](../../ARCH/product/MEMORY.md), with requirements and acceptance links above. Temporary working artifacts are not a source of truth.
 
 ## Product validation
 

@@ -28,6 +28,14 @@ Authorized deterministic commands, file completion and fresh intelligence querie
 
 Measure 100k-message paged history, 10k-line paste, Unicode/IME, resize, slow terminal, concurrent output, delayed optional initialization, control saturation, memory extraction, index invalidation and remote/stub backpressure. Record CPU/RSS, frame time, lag, queue wait, fsync, first byte, model/tool rounds and replay time. Include correctness, stale-result prevention and verified task success; a faster incorrect result fails acceptance. Replay does not replay animations, and reduced-motion/monochrome fallbacks preserve status and control.
 
+### Repository-scale indexing and interactive-load matrix
+
+Run the same pinned, access-reviewed corpus families at 10K, 100K, 1M, 5M, and 10M+ lines of code (LOC). LOC is a workload descriptor, not a target or a claim that every corpus is supported. Keep languages, generated/vendor content, file-size distribution, ignore/exclusion manifests, workspace revision, disk/cache state, and corpus digest with every result. Do not silently drop the largest case: record unsupported/resource-exhausted/cancelled outcomes and the exact reason.
+
+For every corpus size, record initial indexing and recovery/reconciliation after restart; one-file and 100-file content changes; a very large checkout and branch transition; symbol, lexical, and hybrid query modes; and relevant generation/freshness behavior. Measure elapsed time and queue delay, CPU, RSS/PSS where available, disk I/O and index size, parser/query work, cancellation response, generation lag, stale-result count, and correctness against a freshly rebuilt reference index. Record cold/warm conditions separately. Include watcher overflow and dropped-event recovery plus parser crash, corrupted/incompatible schema, and interrupted rebuild cases. These workloads add measurement coverage only; they introduce no numerical budgets beyond this registry.
+
+At 5M LOC, run background indexing while a user types and model output is actively streaming through the TUI. Capture input-to-feedback, stream-event-to-paint, frame work, dropped/coalesced UI events, queue fairness, CPU/RSS, and cancellation/approval responsiveness while reporting the same values in an idle/no-index control. The indexer fails the existing performance contract if it makes input, streaming, cancellation, or approvals unresponsive, even when indexing throughput improves.
+
 Additional deterministic workloads use these targets on a named release-build reference machine, with sample counts and cold/warm conditions recorded:
 
 | Measurement | Target and workload |

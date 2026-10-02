@@ -1,6 +1,11 @@
-# Contract choices to evaluate
+# Historical contract-choice extraction (2026-10-02)
 
-Extracted questions include resolved historical questions. Each must be classified during semantic audit; none overrides the blueprint.
+This is a dated audit inventory, not an active proposal list. It intentionally
+preserves questions and dispositions captured from earlier architecture drafts,
+including items since resolved or superseded by the canonical blueprint. Do not use
+it to infer an open implementation decision. `ARCH/` owns the target contract;
+`TODO.md` owns delivery status and concrete remaining work. Individual lines below
+are retained as historical source material and are not normative.
 
 ## 07-SESSION.md: Open questions
 

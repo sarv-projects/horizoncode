@@ -35,3 +35,20 @@ State vocabulary uses [State machines](contracts/STATE-MACHINES.md).
 `Effect` is one prepared governed operation, owned by its initiating Thread/Run owner for intent/outcome, with independent CMP-audit prepare/terminal receipts joined by a stable effect ID. `Artifact = { scoped_namespace, digest, size, media_type, retention_owner_refs[], redaction_status }` identifies immutable bytes; CMP-artifact owns ingestion, bounded readers and lifecycle. `Completion` is a controller-derived result supported by current required Evidence, never an agent phrase or process exit.
 
 Every globally unique identity is never reused. Events include schema version, aggregate ID, monotonic owner-local sequence, actor, causation/correlation IDs and payload/previous/event digests. Newer unsupported event versions are refused before partial replay.
+
+## Repository and execution projections
+
+`IndexGeneration` identifies an immutable published derived repository view; a binding
+may join an immutable base generation and a workspace overlay generation. Source files
+and WorkspaceProvider revision identity remain truth. The index schema, generation
+publication and overlay records are defined in [Code intelligence](product/CODE-INTELLIGENCE.md).
+
+`RepoBriefV1` and `TaskPackageV1` are bounded context selections from that view, defined
+once in [Context](core/CONTEXT.md#repository-task-projections). A task package is a
+projection/reference within `ContextPacketV1`, not another canonical task or packet
+store. Direct-turn packages refer to admitted intent without fabricating a Task.
+
+`ChangeReceiptV1` is the runner's composite observation of settled edits, index updates,
+formatting, diagnostics, selected checks, diff and impact, defined once in
+[Scheduling](execution/SCHEDULING.md#deterministic-coding-pipeline). Its constituent
+facts retain their original owners. It does not imply independent verification PASS.

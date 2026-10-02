@@ -10,7 +10,7 @@ A standalone, ACP-native, **long-horizon** command-line coding agent.
 
 ## Status
 
-**Architecture under review; P0 slice implemented, P1 in progress.** The design set lives in
+**The architecture is the final target blueprint; implementation status varies by task.** The design set lives in
 `ARCH/`. The Rust workspace at `crates/` implements the P0 vertical slice (session log,
 one provider transport, the read-only and mutating tool plane, the step loop, the ACP
 stdio server, and the headless `-p` mode) plus the first half of P1 (the policy guard
@@ -18,8 +18,10 @@ and the local sandbox backends). Audit and analytics crates are present.
 
 Honest labelling, per `ARCH/acceptance/ACCEPTANCE-MATRIX.md`: this is **implemented and test-covered, not accepted.**
 No `ACC-P1-*` acceptance record exists, so no containment, audit, or readiness claim is
-verified. See `TODO.md` for per-task status
-and the open-defect list.
+verified. See [`TODO.md`](../TODO.md) for per-task status and the open-defect list.
+The full-screen TUI, managed Run controller, repository intelligence, extension
+lifecycle, and installer/update experience remain delivery work; the architecture
+describes their target behavior.
 
 ## Documentation map
 
@@ -49,7 +51,7 @@ and the open-defect list.
 | `ARCH/security/SECURITY-MODEL.md` | Consolidated threat model, residual-risk register |
 | `ARCH/acceptance/ACCEPTANCE-MATRIX.md` | Evidence layers, acceptance matrix, release gates |
 | `docs/history/architecture/audits/2026-09-30-review.md` | Dated findings and migration order |
-| `ARCH/execution/LONG-HORIZON.md` | Proposed durable run, task, evidence and recovery contracts |
+| `ARCH/execution/LONG-HORIZON.md` | Target durable run, task, evidence and recovery contracts |
 | `docs/research/CORE-AGENT-CROSSWALK.md` | Claude Code, Codex, OpenCode, Cline and Aider pattern disposition |
 | `TODO.md` | Delivery tracker: status, evidence, open defects |
 | `CURRENT_RUN.md` | Handover state for the next session |
