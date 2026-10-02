@@ -8,6 +8,8 @@ use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
+pub mod fixture;
+
 /// Maximum accepted serialized run record. Trajectories are separate artifacts.
 pub const MAX_RECORD_BYTES: usize = 1_048_576;
 
@@ -93,6 +95,16 @@ pub struct Trajectory {
     pub redaction: Redaction,
     /// Explicit gaps in the event stream.
     pub event_gaps: Vec<String>,
+}
+
+/// Opaque immutable artifact reference whose bytes are retained separately.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactReference {
+    /// Opaque local artifact ID.
+    pub reference: String,
+    /// Digest of the exact retained bytes.
+    pub digest: String,
 }
 
 /// Trajectory completeness.
@@ -461,6 +473,13 @@ pub struct EvaluationRunV1 {
     pub schema_version: u32,
     /// Stable unique run ID.
     pub evaluation_id: String,
+    /// Stable logical group shared by retries/repetitions of one task.
+    pub evaluation_group_id: String,
+    /// One-based immutable attempt number within the group.
+    pub attempt_number: u32,
+    /// Previous immutable attempt ID for a retry, if this is not the first.
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub retry_of: Option<String>,
     /// Benchmark suite ID.
     pub benchmark_id: String,
     /// Benchmark suite version.
@@ -489,6 +508,8 @@ pub struct EvaluationRunV1 {
     pub initial_workspace_digest: String,
     /// Final workspace digest or explicit unknown state.
     pub final_workspace_digest: Measured<String>,
+    /// Retrievable final workspace snapshot, retained separately from the record.
+    pub workspace_snapshot: ArtifactReference,
     /// Product or harness ID.
     pub harness_id: String,
     /// Exact harness source revision.
@@ -591,6 +612,7 @@ impl EvaluationRunV1 {
         }
         for value in [
             &self.evaluation_id,
+            &self.evaluation_group_id,
             &self.benchmark_id,
             &self.benchmark_version,
             &self.task_id,
@@ -605,6 +627,18 @@ impl EvaluationRunV1 {
         }
         validate_repository_identity(&self.repository_identity)?;
         validate_code(&self.evaluation_id)?;
+        if self.attempt_number == 0
+            || (self.attempt_number == 1 && self.retry_of.is_some())
+            || (self.attempt_number > 1 && self.retry_of.is_none())
+        {
+            return Err(RecordError::Invalid);
+        }
+        if let Some(retry_of) = self.retry_of.as_deref() {
+            validate_code(retry_of)?;
+            if retry_of == self.evaluation_id {
+                return Err(RecordError::Invalid);
+            }
+        }
         if self
             .paired_run_id
             .as_deref()
@@ -625,6 +659,7 @@ impl EvaluationRunV1 {
             &self.environment_digest,
             &self.network_policy_digest,
             &self.trajectory.digest,
+            &self.workspace_snapshot.digest,
         ] {
             validate_digest(digest)?;
         }
@@ -669,6 +704,10 @@ impl EvaluationRunV1 {
         }
         self.timing.validate()?;
         validate_artifact_reference(&self.trajectory.reference)?;
+        validate_artifact_reference(&self.workspace_snapshot.reference)?;
+        if self.trajectory.reference == self.workspace_snapshot.reference {
+            return Err(RecordError::Invalid);
+        }
         let verifier_fields = [
             self.verifier_id.as_deref(),
             self.verifier_version.as_deref(),
@@ -705,6 +744,8 @@ impl EvaluationRunV1 {
                 .any(|limit| validate_code(&limit.name).is_err())
             || (self.trajectory.completeness == Completeness::Complete
                 && !self.trajectory.event_gaps.is_empty())
+            || (self.trajectory.completeness == Completeness::Incomplete
+                && self.trajectory.event_gaps.is_empty())
         {
             return Err(RecordError::Invalid);
         }
@@ -1151,6 +1192,9 @@ mod tests {
         json!({
             "schema_version": 1,
             "evaluation_id": "eval-smoke-001",
+            "evaluation_group_id": "group-smoke-001",
+            "attempt_number": 1,
+            "retry_of": null,
             "benchmark_id": "HZBench-Dev",
             "benchmark_version": "1",
             "dataset_digest": format!("sha256:{}", "a".repeat(64)),
@@ -1165,6 +1209,7 @@ mod tests {
             "tested_revision": "fixture-rev-1",
             "initial_workspace_digest": format!("blake3:{}", "d".repeat(64)),
             "final_workspace_digest": {"state":"reported", "value":format!("blake3:{}", "d".repeat(64))},
+            "workspace_snapshot": {"reference":"artifact:workspace-1", "digest":format!("blake3:{}", "9".repeat(64))},
             "harness_id": "horizoncode",
             "harness_revision": "fixture-build-1",
             "binary_digest": format!("blake3:{}", "e".repeat(64)),
@@ -1325,6 +1370,16 @@ mod tests {
             reference["trajectory"]["reference"] = json!(unsafe_reference);
             assert!(seal_value(&mut reference).is_err(), "{unsafe_reference}");
         }
+    }
+
+    #[test]
+    fn incomplete_trajectory_requires_an_explicit_capture_gap() {
+        let mut record = valid_record();
+        record["trajectory"]["completeness"] = json!("incomplete");
+        assert!(seal_value(&mut record).is_err());
+
+        record["trajectory"]["event_gaps"] = json!(["trajectory_capture_limit"]);
+        assert!(seal_value(&mut record).is_ok());
     }
 
     #[test]
@@ -1576,5 +1631,19 @@ mod tests {
         identified["usage"]["context"]["tokenizer_id"] =
             json!({"state":"reported","value":"model-tokenizer-v1"});
         assert!(seal_value(&mut identified).is_ok());
+    }
+
+    #[test]
+    fn attempt_lineage_and_separate_snapshot_reference_are_required() {
+        let mut record = valid_record();
+        assert!(record.get("workspace_snapshot").is_some());
+
+        let mut retry_without_parent = record.clone();
+        retry_without_parent["attempt_number"] = Value::from(2);
+        assert!(seal_value(&mut retry_without_parent).is_err());
+
+        record["attempt_number"] = Value::from(2);
+        record["retry_of"] = Value::String("eval-prior-001".to_owned());
+        assert!(seal_value(&mut record).is_ok());
     }
 }

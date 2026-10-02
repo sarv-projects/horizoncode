@@ -42,6 +42,25 @@ prerequisites, bounded resources, cancellation and independent review. Keep sour
 truth and evidence tied to the exact revision; never merge stale baseline claims into a
 newer HEAD without reinspection.
 
+### Backlog and defect hygiene
+
+`TODO.md` is the complete delivery backlog, including feature work, bugs, edge cases,
+security findings, research gaps, test gaps, operational risks, and technical debt.
+Record a discovered item there as soon as it is concrete enough to act on; do not leave
+it only in chat, a subagent report, a commit message, or a test failure. Give it a
+stable ID, type, severity/priority, owner, dependencies, architecture/source-trail
+links, and observable closure evidence. A bug entry also records reproduction steps,
+expected versus actual behavior, affected revision/platform, and a regression check.
+An edge case records the triggering boundary and expected terminal behavior. If an
+item is subsumed by an existing task, add it to that task's explicit checklist rather
+than creating duplicate work; preserve its evidence and acceptance condition. Closing
+or deferring an item requires a reason and evidence or a named dependency. A green
+focused test closes only the behavior it exercises, never adjacent unchecked cases.
+
+Before ending an implementation increment, reconcile newly found defects and edge
+cases against the ledger, tests inventory, owning ARCH contract, and CURRENT_RUN. Keep
+unresolved items visible as open; do not erase them to make a phase look complete.
+
 ## Phase 0 — truth, feasibility and product-fit gates
 
 Complete the gates in this order. They establish reliable starting evidence; they do
@@ -90,9 +109,12 @@ create a second TaskPackage or repository-index owner.
 
 ### P0.3 — build the evaluation harness (AX-419)
 
-The first implementation slice adds a bounded strict V1 record validator and
-`hz-eval validate`; it does not execute tasks or satisfy this gate. Continue AX-419
-before tuning repository intelligence or the fast scheduler. The completed evaluator
+The implemented slices currently include a bounded strict V1 record validator,
+`hz-eval validate`, and a fixed offline `hz-eval run --fixture smoke` path through
+the production Runner with a scripted in-process provider. The smoke path is limited
+to harness mechanics; it is not a benchmark-quality or coding-quality result, and it
+does not satisfy this gate. Continue AX-419 before tuning repository intelligence or
+the fast scheduler. The completed evaluator
 must capture benchmark/task/repository revision, harness revision, model/provider/
 reasoning settings, prompt and tool-schema digests, environment digest, limits,
 trajectory reference, timings, tokens/tool/model call counts, verifier result, outcome,
@@ -100,9 +122,10 @@ and limitations. Development cases are visible during iteration; holdout cases a
 versioned and frozen, access-controlled, and never tuned against. Keep raw failures and
 uncertainty in reports. Harness semantics and `ACC-EVAL-01` are already in the canonical
 evaluation owner; implement against them and amend that contract only if source
-inspection finds a specific gap. Track the validator as `implemented` partial source
-only; do not claim measured B0 until supported same-model routes and authorized
-execution exist.
+inspection finds a specific gap. Keep AX-419 `implemented` partial until independent
+verification, holdout controls, comparison/reporting, telemetry and acceptance exist;
+do not claim measured B0 until supported same-model routes and authorized execution
+exist.
 
 ### P0.4 — record B0 before optimization
 

@@ -147,9 +147,10 @@ published and runs are executed; architecture descriptions do not count as resul
 
 The evaluator and run-record contract are specified in
 [`EVALUATION.md`](../ARCH/acceptance/EVALUATION.md). The current `hz-eval` source has
-only the initial V1 record-validation slice; until run execution, independent
-verification, holdout controls and `ACC-EVAL-01` pass, all benchmark stages below are a
-plan, not measured HorizonCode performance. The run manifest must include at least:
+bounded V1 record validation and a fixed offline Runner mechanics fixture. Until
+independent verification, holdout controls and `ACC-EVAL-01` pass, benchmark stages
+below remain a plan, not measured HorizonCode coding performance. The run manifest
+must include at least:
 
 V1 uses a strict, versioned schema. `Measured<T>` is explicitly `reported`,
 `estimated` (with stable provenance), or `unknown` (with a stable reason code); zero is
@@ -163,8 +164,9 @@ tool counts reconcile with reported totals. A verifier may be absent only with t
 explicit `not_run` state; accepted/failed verifier outcomes bind a reported final
 workspace digest and a separate result artifact digest. Timing, context,
 tokenizer, CPU, memory and disk metrics have explicit units; unavailable values remain
-unknown. The current slice is schema validation only: it creates no trajectory,
-executes no task, enforces no holdout policy, and verifies no result independently.
+unknown. The validator itself is schema validation only. The separate fixed fixture
+creates a bounded trajectory and runs one deterministic task, but does not enforce
+holdout policy or verify a result independently.
 
 Validation regression command and current local evidence:
 
@@ -173,8 +175,76 @@ cargo +1.89.0 test -p horizoncode-eval --locked --offline
 cargo +1.89.0 clippy -p horizoncode-eval --all-targets --locked --offline -- -D warnings
 ```
 
+#### Fixed Runner fixture (development-only)
+
+The first execution path is the fixed `hz-eval run --fixture smoke` fixture. It calls
+the production `Runner` with an in-process scripted `Provider`, a fresh temporary
+workspace/session store, fixed prompts/tool calls/expected output, and a
+workspace-scoped tool registry. It has no network provider or network-capable tool;
+this does not claim OS-level network/process confinement. It accepts no arbitrary
+prompt, repository path, shell command, model, provider, route, or split override and
+always records `split=dev`. Its bounded trajectory, exact workspace snapshot and
+sealed run record are separate immutable artifacts. `evaluation_id` is unique per
+attempt; retries use a distinct ID, increasing attempt number and optional `retry_of`
+link. Non-Git revisions use an explicit content-tree digest identity.
+Trajectory completeness is scoped to the versioned `RunObserver` event boundary and
+does not claim hidden reasoning, full model request bodies, or internal Runner state.
+
+The fixture is harness-mechanics evidence only. It does not establish coding quality,
+live-model latency, actual provider token/cost usage, or `ACC-EVAL-01` acceptance. The
+independent-verifier fields remain `not_run` until a separately scoped verifier reads
+the retained final workspace snapshot and predeclared criteria. Text deltas are not
+token-boundary evidence; first-model-token timing stays unknown. A tool proposal before
+authorization is not a successful first action; first-action timing means elapsed time
+from Runner start until the first successful settled effect, not the duration of that
+tool call. Model/provider/resource/token/cost metrics stay unknown unless measured by
+the named actual source. The fixed smoke command emits a first attempt only; durable
+retry-group linkage remains unimplemented and open in TODO.
+
+Focused and failure-path coverage for this slice:
+
+- successful bounded scripted turn writes only the declared workspace file, captures
+  ordered complete Runner events, and produces a record accepted by `hz-eval validate`;
+- path escape and undeclared tool are denied before outside-workspace mutation and are
+  not counted as successful execution; a denied call may be `started` (authorization
+  dispatch) but is never `completed`;
+- scripted provider failure is sealed with its typed outcome; pre-cancellation and a
+  one-step limit produce interrupted/insufficient-evidence outcomes rather than a false
+  task completion;
+- a forced attempt-directory collision preserves existing bytes; CLI tests reject
+  symlinked output roots, unknown fixture IDs and unsupported arbitrary prompt/path/
+  command/model/provider/split arguments;
+- current Unix smoke execution verifies three distinct artifacts and validates the
+  sealed record; non-Unix refusal is represented by a cfg-gated test but is not executed
+  by the current Unix test run; the selected output filesystem is probed for private
+  modes, hard-link publication, no-replace behavior and directory sync before the
+  attempt directory is created. This is point-in-time path-based evidence and does not
+  cover concurrent output-root/parent replacement or remount races;
+- timeout behavior, partial artifact writes,
+  disk-full/sync failures, digest-mismatch injection, root-replacement races, and
+  parent-directory crash durability remain unproven and are tracked in TODO;
+- unit and end-to-end fixture tests force observer trajectory overflow; the sealed
+  record retains the bounded prefix, explicit gap and `insufficient_evidence` outcome.
+  Workspace metadata expansion tests verify a bounded/incomplete snapshot. Runtime
+  timeout and artifact-store failure injection remain open;
+- separate attempts must preserve prior failures and bind exact predecessor identity
+  once retry execution is implemented; the fixed smoke fixture currently creates only
+  attempt 1 and does not exercise retry linkage;
+- repeated execution preserves task, trajectory-event, workspace-result and verifier
+  semantics; generated IDs and timestamps may vary;
+- source inspection and fixture tests show the execution path uses an in-process
+  scripted provider and advertises no network-capable tool. They do not prove the
+  process cannot open sockets; a dedicated network-denial regression and OS-level
+  network-confinement acceptance remain open in TODO.
+
+Record focused commands and exact revision in `CURRENT_RUN.md`. Passing fixture tests
+are local evidence for the fixed mechanics only, not independent verification or
+holdout evidence. Keep crash/restart attempt recovery, independent verification, and
+holdout access policy as open AX-419 backlog until each has separate evidence.
+
 The current validator test suite covers required fields, record tampering, unknown and
-estimated metrics, unknown/credential fields, duplicate keys, key-order-independent
+estimated metrics, unknown/credential fields, duplicate keys, explicit gap reasons for
+incomplete trajectories, key-order-independent
 digest validation with a fixed BLAKE3 vector, deep nesting, exact 1 MiB and one-byte-over input, artifact path traversal,
 timestamps, count/outcome consistency, required wall limit and negative cost. The CLI
 tests also prove untrusted invalid JSON is not echoed and its input read is capped.

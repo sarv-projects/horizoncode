@@ -24,20 +24,128 @@ only the benchmark's declared task rubric on its exact subject; product acceptan
 still requires the relevant acceptance record.
 
 The target command interface provides `hz-eval validate`, `run`, `verify`, `compare`
-and `report`. The implemented initial slice currently provides only `hz-eval validate`
-for bounded V1 records; it does not execute tasks, verify outcomes, enforce holdout
-access, compare runs, or report benchmark results. Dataset/task/config IDs are validated
+and `report`. Implemented slices provide `hz-eval validate` for bounded V1 records and
+the fixed `hz-eval run --fixture smoke` mechanics fixture described below. General
+task execution, independent verification, holdout access enforcement, run comparison
+and benchmark reporting remain unimplemented. Dataset/task/config IDs are validated
 references, never arbitrary shell arguments. A future run path cannot publish results,
 acquire credentials or contact a live provider implicitly. Fixture subprocesses use
 isolated roots, finite ceilings and explicit network policy. Required external
 accounts/services remain authorization-gated.
 
+The first execution increment is `hz-eval run --fixture smoke`. It is a fixed,
+development-only harness-mechanics fixture, not a general task runner or a benchmark
+quality claim. The command accepts no user-supplied prompt, repository path, shell
+command, model, provider, route, or split. It requires an explicit `--output-dir` for
+evaluation artifacts, which is distinct from and cannot select the temporary task
+workspace. It always records `split=dev`, selects a scripted in-process provider,
+uses a newly-created temporary workspace and session store, and has no provider
+transport or network-capable tool in its advertised or authorized fixture tool set.
+The materialized built-in tool set is pinned by the fixture manifest to
+`apply_patch`, `edit`, `glob`, `grep`, `list`, `read`, `todo`, and `write`; `bash` is
+explicitly denied and absent from the provider-visible schema.
+The fixture task, prompts, tool calls, tool schemas, and expected output are versioned
+with the fixture implementation. Every fixture execution has finite step, input,
+response, event, workspace-content, serialized-snapshot, and wall-time ceilings.
+For the smoke fixture these are four Runner steps, one tool call and 1 KiB total tool
+arguments per response, 2 KiB model response, 256 KiB serialized trajectory, 256
+observer events, 64 KiB captured file content, 4 MiB serialized workspace snapshot,
+2 MiB conservative serialized workspace metadata, and a five-second total Runner
+deadline. A ceiling hit, Runner error,
+provider stream error, cancellation, or confinement refusal is retained as a typed
+terminal run outcome; the command must not silently omit a failed attempt.
+
+The trajectory and final workspace snapshot are bounded immutable artifacts stored
+separately from the run record. The workspace snapshot preserves the exact testable
+files (with declared exclusions and content digests), not merely a digest that cannot
+be retrieved by a verifier. Both artifacts and the record are written without
+overwriting an existing attempt; write/flush/rename failure leaves no record that
+refers to a missing or partial artifact. The record binds the fixture version,
+binary/source revision, task and criteria digests, tool-schema and policy digests,
+initial/final workspace digests, workspace-snapshot reference/digest,
+trajectory digest/completeness, and execution outcome. A non-Git fixture tree uses an
+explicit `tree-digest:<blake3>` revision identity; it never fabricates a Git commit.
+`harness_revision` identifies the source/build revision and is separate from
+`binary_digest`; the executable digest must never be substituted for a source revision.
+If the exact source revision is unavailable, use the literal `unknown` with a limitation and
+exclude that attempt from source-revision-paired quality comparisons.
+Fixture trajectory completeness is defined at a versioned `RunObserver` event-stream
+boundary: complete means every event delivered at that boundary was retained in order
+within the declared bounds. It does not imply capture of hidden reasoning, full model
+request bodies, or internal Runner state that the observer does not expose.
+The scripted fixture does not measure real model latency, token usage, cost, or process
+resource use; these fields remain `unknown` unless the fixture collects the named
+metric through an actual measurement source. A scripted token or clock counter is not
+provider telemetry. `first_model_token_ms` remains unknown when the provider interface
+exposes only text deltas rather than token boundaries. First useful action is measured
+only from a successfully settled local effect, never from the pre-authorization
+`ToolStarted` observer event.
+
+`evaluation_id` identifies one immutable execution attempt, not a retryable logical
+task. V1 also records a stable `evaluation_group_id`, one-based `attempt_number`, and
+optional `retry_of` attempt ID. A retry creates a new attempt record and never replaces
+or edits its predecessor. Attempts for one logical task remain independently
+addressable even when paired or repeated. `--output-dir` receives a newly-created
+attempt subdirectory; the output root must already exist, be a directory and not be a
+symlink. The command canonicalizes the root, uses an exclusive create for the attempt
+directory and create-new semantics for artifact files, and refuses collisions rather
+than overwriting prior evidence. The record is staged and atomically published last
+without replacing an existing record, only after the distinct trajectory and workspace
+snapshot artifacts are completely written and their digests verified. An I/O failure
+may leave visibly unreferenced artifacts, but never a record that references partial
+or missing bytes. On platforms without a verified private-artifact and no-replace
+publication mechanism, the command fails before creating artifacts; platform support
+must be reported explicitly rather than inferred from filesystem API availability.
+Before creating evidence artifacts, the implementation must verify that the selected
+output filesystem supports the required private permissions and no-replace publication
+primitive; a Unix target alone is not proof that a mounted filesystem provides them.
+The fixture's probe is point-in-time and path-based; it does not protect against a
+concurrent output-root/parent replacement or remount between probing and publication.
+Such races require a pinned-handle publication design and remain separately tracked.
+
+The fixture's confinement claim is limited to the production tool path's resolved
+workspace scope and the absence of advertised/authorized shell or network-capable
+tools and the absence of a network provider.
+A resolved profile alone is not evidence that an OS sandbox backend was applied; the
+fixture must not claim OS-level network or process confinement. Source and fixture
+tests establish that the execution path uses an in-process scripted provider and
+advertises no network-capable tool; they do not prove that the process cannot open a
+socket. A dedicated network-denial regression and OS-level network confinement
+acceptance remain separate work.
+
+Trajectory and workspace capture enforce byte, event, entry, depth, and conservative
+serialized-metadata ceilings while collecting data. A trajectory cap retains the
+bounded event prefix, marks its completeness false, records the omitted-event reason,
+and produces `insufficient_evidence`. Workspace metadata overflow similarly retains a
+bounded incomplete snapshot and gap reason; content bytes are separately capped at
+64 KiB. The 4 MiB serialized artifact limit remains a final assertion after bounded
+capture, not the mechanism that controls allocation.
+
+Until a separately scoped verifier consumes the retained final workspace bytes and
+predeclared criteria, the record uses `verifier_outcome=not_run` with null verifier
+metadata. Runner completion, expected fixture output observed by the command itself,
+and record validity do not establish benchmark task acceptance. Fixture execution is
+restricted to HZBench-Dev; there is no command-line path to choose Holdout. These
+constraints do not implement holdout custody, independent verification, crash-safe
+attempt retention, or general `run` execution, which remain separate AX-419 work.
+
+`hz-eval verify` emits an immutable `VerificationResultV1` artifact, never edits a
+sealed run record. It binds the attempt ID, workspace-snapshot reference and digest,
+task/criteria digests, verifier binary/version/environment, result and limitations.
+Comparison/report joins that artifact to the attempt and requires every identity and
+digest to match. A stale, missing, inaccessible or mismatched snapshot produces
+`insufficient_evidence`; it cannot become a pass. If verification runs before the
+initial run record is sealed, its identity may also be summarized in that record, but
+the separate result artifact remains authoritative.
+
 ```text
 EvaluationRunV1 {
-  schema_version: 1, evaluation_id, benchmark_id, benchmark_version,
+  schema_version: 1, evaluation_id, evaluation_group_id, attempt_number, retry_of?,
+  benchmark_id, benchmark_version,
   dataset_digest, criteria_digest, split: DEV | HOLDOUT, task_id, task_digest,
   task_stratum, repository_identity, start_revision, integrated_revision,
   tested_revision, initial_workspace_digest, final_workspace_digest,
+  workspace_snapshot: {reference: opaque artifact ID, digest},
   harness_id, harness_revision, binary_digest, harness_config_digest,
   model_id, provider_id, route_id, route_version, reasoning_setting,
   model_capability_snapshot, prompt_digest, tool_schema_digest,
@@ -53,11 +161,20 @@ EvaluationRunV1 {
   model_call_counts, tool_counts, tool_counts_by_category, file_read_counts,
   repeat_read_counts, search_counts, failed_tool_counts, patch_retry_counts,
   check_counts, human_interventions[],
-  verifier_id?, verifier_version?, verifier_environment_digest?,
+verifier_id?, verifier_version?, verifier_environment_digest?,
   verifier_result_ref?, verifier_result_digest?, verifier_outcome, regressions[], outcome, terminal_reason,
   limitations[], record_digest
 }
 ```
+
+Tool lifecycle counts have these exact boundaries: `attempted` is a complete model
+response's admitted tool proposal; `started` is dispatch into the runner's
+authorization/execution pipeline; `completed` is a successful settled result; `failed`
+is a non-cancelled unsuccessful settlement, including denial; and `cancelled` is a
+call explicitly settled as cancelled. Since `started` precedes the actual effect,
+it does not prove that a tool ran or changed state. If an adapter cannot observe one
+boundary reliably, that field remains unknown rather than being inferred from another
+event.
 
 The serialized field names above are required unless a field is explicitly defined as
 nullable by the versioned schema. A nullable `Measured<T>` uses

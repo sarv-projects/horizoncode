@@ -1,31 +1,39 @@
 # CURRENT_RUN — HorizonCode
 
-## Current handoff — AX-419 validator slice (2026-10-02)
+## Current handoff — AX-419 fixed Runner fixture (2026-10-02)
 
-Source revision: `2919e26` (`feat(eval): add strict evaluation record validator`), branch
-`main`, working tree clean after the commit. `hz-eval` now builds a strict,
-bounded V1 run-record parser/sealer and `hz-eval validate`; this is a partial
-implementation, not a benchmark runner. Record validation enforces required identity
-and revision fields, recursive key-sorted BLAKE3 canonicalization, duplicate-key
-rejection, exact 1 MiB input bound, explicit reported/estimated/unknown metrics,
-timing/context/resource units, required wall limit, lifecycle/outcome consistency and
-opaque artifact IDs, per-category tool-count reconciliation, and nullable no-verifier
-states. The CLI does not echo rejected record content. Remaining AX-419 work is tracked
-in TODO.md and includes production Runner fixture execution, trajectory capture,
-independent verifier, retained attempts/failures, holdout access/freeze, comparison/
-report, an independent-language digest vector, data/collectors, B0 and HZBench.
+Working base: `ff79130b9a6b40511cd3e370c567681a6f746a07` on `main`; the AX-419 fixture
+increment is currently uncommitted. `hz-eval` now has bounded strict V1 record
+validation plus a fixed `hz-eval run --fixture smoke` path. The latter runs the
+production Runner with a scripted in-process provider, an isolated temporary workspace
+and session, and a fixed development-only task. It persists a bounded Runner-observer
+trajectory, exact final workspace snapshot, and sealed run record as separate
+create-new artifacts under an explicit existing real output directory. It uses no
+provider transport or advertised network/shell tool and makes no OS sandbox guarantee.
+The verifier remains `not_run`; this is harness-mechanics evidence, not coding-quality
+or benchmark acceptance. The fixture emits attempt 1 only.
 
-Focused local checks on this worktree pass: 16 `horizoncode-eval` library tests, 3 CLI
-tests, targeted Clippy with `-D warnings`, architecture graph check (17 packages/42
-edges), 1 valid + 3 violating architecture fixtures, crate-only rustfmt and `git diff
---check`. These checks are local scoped evidence on `2919e26`, not independent
-verification or `ACC-EVAL-01` evidence. No live provider, network benchmark,
-holdout, or release test was run. AX-419 is `implemented` for this narrow source slice;
-it is not verified or accepted. The ledger is 163 tasks: 50 implemented, 111 proposed,
-2 verified, 0 accepted, 0 blocked. Next: resolve independent review findings, bind and
-commit the focused slice, then implement isolated deterministic Runner execution and
-independent verification as the next AX-419 increment. Do not start B0 until route
-support and authorization are established.
+Local checks on the dirty worktree pass: `cargo +1.89.0 test -p horizoncode-eval
+--locked --offline` (34 library, 7 CLI, 5 Runner-fixture tests), targeted Clippy with
+`-D warnings`, package-scoped rustfmt check, `git diff --check`, the Cargo
+architecture graph (17 packages/49 internal edges), and its fixtures (1 valid, 3
+violating). These are scoped local checks, not independent verification or
+`ACC-EVAL-01` acceptance. No live provider, network benchmark, holdout, or release test
+was run. AX-419 remains `implemented`, not `verified` or `accepted`; independent
+verification, holdout controls, compare/report, cross-language digest execution, B0,
+and HZBench remain open.
+
+Capture-bound trajectory and workspace metadata now retain bounded incomplete evidence;
+tests cover workspace byte/metadata limits and sealed trajectory-overflow outcomes. A
+temporary probe checks the selected output filesystem's private modes, hard-link
+publication, no-replace behavior, and directory sync before the attempt directory is
+created. Open fixture gaps are tracked in TODO.md: artifact I/O and crash recovery
+injection, output path TOCTOU and parent-directory durability, cross-platform publication
+evidence, timeout/task-failure cases, and retries. Fixture tests do not establish
+OS-level confinement or real-provider telemetry. Ledger remains 163 tasks: 50
+implemented, 111 proposed, 2 verified, 0 accepted, 0 blocked. Independent review is
+checking the final source/docs state; B0 remains gated on comparable routes and
+authorization.
 
 Earlier workspace-wide formatting-only changes to unrelated Rust files were reverted.
 The nested `cline-probe` research checkout and user changes remain preserved.

@@ -24,11 +24,11 @@ checks described as running on a dirty tree or an earlier revision remain histor
 until independently rerun/bound to the integrated revision. A clean-clone/CI gate is
 also required before treating checkout or hosted CI as healthy.
 
-Delivery ledger snapshot at the AX-419 validator worktree: **163 tasks total: 50
+Delivery ledger snapshot at the AX-419 fixture-run worktree: **163 tasks total: 50
 implemented (relevant source exists wholly or partly, with remaining gaps named in each
 row), 111 proposed (no relevant implementation identified), 2 verified, 0 accepted,
-and 0 blocked.** AX-419 now has an initial record-validation implementation; AX-413..418
-remain proposed design work. AX-121 moved from proposed to
+and 0 blocked.** AX-419 has bounded record validation and a fixed offline Runner fixture
+implementation in progress; AX-413..418 remain proposed design work. AX-121 moved from proposed to
 implemented because its workflow gates are now present; hosted evidence remains open.
 These counts describe TODO classifications, not a feature-completion
 percentage or a current-HEAD source audit. “Implemented” is a source-presence signal,
@@ -40,7 +40,7 @@ service still have material delivery gaps. Architecture history remains under
 `docs/history/architecture/`; source URLs and pinned references remain under
 `docs/research/`.
 
-For every row, acceptance means the owning requirement and test plan pass at the exact integrated revision. A source file, interface, test file, peer completion message, checkbox, or model claim is not acceptance evidence. AX-413..418 remain `proposed`; AX-419 is `implemented` for its initial bounded V1 record validator only, with the full evaluation system and acceptance evidence still open. Links to planned source-trail anchors are navigation targets, not evidence.
+For every row, acceptance means the owning requirement and test plan pass at the exact integrated revision. A source file, interface, test file, peer completion message, checkbox, or model claim is not acceptance evidence. AX-413..418 remain `proposed`; AX-419 is `implemented` for bounded V1 record validation and the fixed offline Runner fixture only, with independent verification and the full evaluation system still open. Links to planned source-trail anchors are navigation targets, not evidence.
 
 ## Ordered implementation roadmap
 
@@ -379,30 +379,84 @@ contract and acceptance ID are normative.
 | AX-416 | Coarse repository-intelligence tools and revision-pinned TaskPackage | proposed | [Tools](ARCH/core/TOOLS.md), [Context](ARCH/core/CONTEXT.md), [Code intelligence](ARCH/product/CODE-INTELLIGENCE.md) | [source trail](docs/research/SOURCE-TRACEABILITY.md#ax416) | Extends AX-320/375/400 and reuses the canonical `ContextPacket`/TaskPackage; no second package/index owner. Add `repo_query`, `repo_context`, `repo_impact`, `repo_expand` through the existing registry, Guard, budget and artifact path while retaining raw `read/list/glob/grep`. Batch common questions, bound/revision-pin payloads and handles, mark source method/authority/freshness/coverage, fail closed on stale index, and disclose missing coverage. Pass `ACC-REPO-TOOLS-01` for exact/natural-language relevance, batching, bounds, freshness, authorization, cancellation, prompt-size limits and no index-as-context leakage. |
 | AX-417 | Deterministic coding pipeline and ChangeReceipt | proposed | [Scheduling](ARCH/execution/SCHEDULING.md), [Tools](ARCH/core/TOOLS.md), [Code intelligence](ARCH/product/CODE-INTELLIGENCE.md), [workspaces](ARCH/execution/WORKSPACES.md) | [source trail](docs/research/SOURCE-TRACEABILITY.md#ax417) | Depends on AX-311 effect settling, AX-395/313 workspace revisions/fences, and AX-414/415 freshness. After an authorized coherent edit, settle effects, apply exact index delta, format, collect diagnostics, select advisory affected tests, run only allowed checks, compute diff/impact and return a bounded revision-bound `ChangeReceipt`. A receipt/test-selection/formatter result never means Task PASS; required verification can expand. Pass `ACC-REPO-PIPELINE-01` for ordered events, failures/partial/unknown effects, stale-generation refusal, cancellation, exact changed-file/diff binding, advisory-test limits and independent verification separation. |
 | AX-418 | First-party progressive SWE, architecture and agile skill library | proposed | [Discovery and extensions](ARCH/product/DISCOVERY-AND-EXTENSIONS.md), [Context](ARCH/core/CONTEXT.md), [skill acceptance](ARCH/acceptance/ACCEPTANCE-MATRIX.md) | [source trail](docs/research/SOURCE-TRACEABILITY.md#ax418) | Depends on AX-110/308/373 skill discovery, activation, lifecycle and deferred loading. Add versioned HorizonCode-owned skills for feature work, debugging, refactoring, testing, review, software architecture, change impact, repo navigation, security, performance, dependency upgrade, release engineering, agile planning, evidence-before-done and no-progress recovery. Progressive metadata only until selected. `artifact-capabilities` and `artifact-diagramming` remain AX-411; reference them, do not duplicate their implementation. Extend `ACC-SKILL-01` for provenance/digest, collisions, context cost, activation/revocation, hostile content, offline behavior and measurable task-quality/call-cost benefit. |
-| AX-419 | `hz-eval`, HZBench development/holdout and controlled harness comparisons | implemented | [Evaluation](ARCH/acceptance/EVALUATION.md), [performance](ARCH/contracts/PERFORMANCE.md), [test inventory](research%20docs/tests.md) | [source trail](docs/research/SOURCE-TRACEABILITY.md#ax419) | Implemented slice at `2919e26`: strict bounded V1 record parsing/sealing/validation and `hz-eval validate`; unknown/estimated/reported metrics, explicit timing/context/resource units, duplicate-key rejection, digest binding and semantic consistency checks. Focused tests and Clippy pass on this exact revision; this is not independent verification or full feature acceptance. Remaining: production Runner fixture execution and trajectory capture; independent verifier; immutable attempt/failure retention; dev dataset and fake-provider fixture; frozen holdout custody/access enforcement; compare/report; cross-implementation canonical digest test; broader valid CLI coverage; full outcome/count matrix; compatible route controls; B0 and HZBench; no live provider authorization. Pass `ACC-EVAL-01` across determinism, provenance, holdout access/freeze, metric integrity, failed-run retention, route equivalence, budgets, independent verification and no correctness regression. |
+| AX-419 | `hz-eval`, HZBench development/holdout and controlled harness comparisons | implemented | [Evaluation](ARCH/acceptance/EVALUATION.md), [performance](ARCH/contracts/PERFORMANCE.md), [test inventory](research%20docs/tests.md) | [source trail](docs/research/SOURCE-TRACEABILITY.md#ax419) | Implemented partial slices: bounded strict V1 validation (`2919e26`) plus fixed `hz-eval run --fixture smoke` on the dirty worktree based at `ff79130`; fixture drives the production Runner with a scripted in-process provider, persists separate trajectory/workspace snapshot/record artifacts, and exercises provider failure, cancellation, step limit, workspace escape refusal, output-root symlink rejection, output collision, byte/metadata bounds, and sealed trajectory-overflow evidence. Focused tests/Clippy pass; exact integrated-revision evidence is pending; no independent verification or acceptance. Remaining: partial artifact-write/sync failures and crash recovery may leave unreferenced artifacts without a record; path TOCTOU and cross-platform filesystem/publication evidence; timeout/task-failure cases; retry/group execution; independent verifier; dev dataset and fake-provider fixtures beyond smoke; frozen holdout custody/access enforcement; compare/report; cross-language digest execution; broader outcome/count matrix; compatible route controls; full telemetry; B0 and HZBench; no live-provider authorization. Pass `ACC-EVAL-01` across determinism, provenance, holdout access/freeze, metric integrity, failed-run retention, route equivalence, budgets, independent verification and no correctness regression. |
 
 ### AX-419 follow-up and edge-case backlog
 
-These remain part of AX-419 and its `ACC-EVAL-01` gate; the validator's focused test
-pass does not close them:
+These remain part of AX-419 and its `ACC-EVAL-01` gate; passing the validator and
+fixed mechanics fixture does not close them:
 
-- [ ] Execute the production Runner only through an isolated deterministic fixture;
-      capture its complete bounded trajectory and preserve setup/provider/cancel/timeout
-      outcomes without live network or provider access.
-- [ ] Run independent verification in a separately scoped process/context and bind its
-      result to exact criteria, environment and tested revision.
-- [ ] Enforce HZBench-Holdout custody, frozen dataset/evaluator digests, attempt limits,
+- [x] AX-419-E01 — Execute the production Runner only through an isolated deterministic fixture;
+      focused tests cover provider failure, pre-cancellation, and step-bound behavior.
+      This is mechanics evidence only: it does not prove OS-level network confinement,
+      task quality, or independent verification.
+- [x] AX-419-E02 — Reject unknown fixture IDs, split overrides, prompts, repository/task
+      paths, shell commands, model/provider/route overrides, and missing/invalid output
+      roots. CLI tests cover the rejection paths without starting the fixture.
+- [x] AX-419-E03 — Persist attempt record, trajectory and exact final workspace snapshot as three
+      distinct create-new artifacts; verify successful smoke artifacts are separately
+      addressable and within declared bounds, reject symlink output roots, and prove a
+      forced attempt-directory collision preserves existing bytes.
+- [ ] AX-419-B01 — Inject partial write/flush/sync, digest mismatch and crash recovery; prove no
+      record references incomplete artifacts and retain a typed failure when safe
+      bounded evidence can still be written. Trajectory/workspace capture-bound
+      regressions are separately tracked under AX-419-B06/B07.
+- [ ] AX-419-E04 — Probe and independently verify private artifact permissions and no-replace
+      record publication on each supported OS and output filesystem; a Unix target alone
+      is insufficient. Unsupported mechanisms must refuse before evidence artifacts are
+      created and expose their status instead of claiming parity. The fixture now probes
+      the selected filesystem before the attempt directory; cross-OS/filesystem evidence
+      remains open.
+- [ ] AX-419-B02 — Persist typed setup failures where the output root is writable; distinguish
+      output-root/artifact-store failures that prevent any durable record. Inject temp
+      directory/session creation failure, ENOSPC, short writes, flush/sync failure,
+      crash before record publication, and crash after publication; reconcile orphaned
+      staging/artifact files without editing sealed attempts.
+- [x] AX-419-B03 — Enforce the workspace snapshot byte limit while reading, before
+      unbounded file allocation; the over-limit fixture verifies truncation at the
+      declared bound and records the snapshot as incomplete. The forced
+      attempt-directory collision test preserves pre-existing bytes; neither check
+      establishes crash-safe publication or path-race resistance.
+- [ ] AX-419-B04 — Audit output-root and parent-directory replacement races, symlink/handle swaps,
+      and directory-entry durability after artifact and record publication on each
+      supported platform; add crash/race fixtures or retain these as documented
+      platform limitations until the publication primitive closes them.
+- [ ] AX-419-B06 — Add an end-to-end fixture seam that forces Runner observer overflow; prove the
+      bounded event prefix, explicit gap, `insufficient_evidence` outcome, and sealed
+      record survive publication. The regression now retains the first event, validates
+      its ordered bytes/digest and record, and checks all artifacts; keep open until the
+      final integrated revision has repeatable evidence recorded.
+- [x] AX-419-B07 — Bound workspace path/link/entry metadata expansion during traversal before
+      serializing the snapshot; test metadata overflow produces an incomplete bounded
+      snapshot with a typed gap. Current fixture tests enforce a 2 MiB conservative
+      metadata budget and a 4 MiB final serialized-artifact ceiling.
+- [ ] AX-419-E05 — Add unique attempt identity, stable evaluation-group identity, one-based attempt
+      number and optional `retry_of`; prove retry failures remain retained and no
+      earlier attempt is overwritten.
+- [ ] AX-419-E06 — Run independent verification in a separately scoped process/context and bind its
+      result to exact criteria, environment, tested revision and retrievable workspace
+      snapshot; a sealed run record is never mutated by later verification.
+- [ ] AX-419-E07 — Enforce HZBench-Holdout custody, frozen dataset/evaluator digests, attempt limits,
       access audit and anti-feedback policy; retain every attempt and failure.
-- [ ] Implement controlled `compare`/`report` with paired route identity, limit parity,
+- [ ] AX-419-E08 — Implement controlled `compare`/`report` with paired route identity, limit parity,
       currency/rate-basis comparability, uncertainty and no cherry-picking.
-- [ ] Add a second-language canonical-digest fixture and compatibility vectors for
+- [ ] AX-419-E09 — Add a second-language canonical-digest fixture and compatibility vectors for
       numeric/string serialization; retain reordered-input and duplicate-key regressions.
-- [ ] Expand semantic coverage for every outcome/verifier pair, partial unknown
+- [ ] AX-419-E10 — Expand semantic coverage for every outcome/verifier pair, partial unknown
       lifecycle counts, unsupported attempts, large hostile records, nested duplicate
       keys, exact malformed artifact IDs, and terminal rendering safety.
-- [ ] Define when currency codes are checked against a pinned registry and how rate
+- [ ] AX-419-B05 — Verify timeout accounting: distinguish the five-second Runner deadline from
+      bounded cancellation settlement/cleanup time, and ensure the reported wall limit
+      matches the enforced total command/runtime bound.
+- [ ] AX-419-E11 — Define when currency codes are checked against a pinned registry and how rate
       basis is normalized; V1 currently checks only uppercase three-letter syntax.
-- [ ] Measure end-to-end first action/token, context, CPU, RSS/PSS and disk through the
-      production harness; the record schema can represent unknowns but no collector exists.
-- [ ] Capture a real same-model/provider B0 only after both harness routes are available,
+- [ ] AX-419-E12 — Extend telemetry beyond the fixture's measured Runner wall duration and first
+      successful settled-action latency. First-token, context, CPU, RSS/PSS and disk
+      collectors remain absent; the record schema represents unavailable measurements
+      as explicit unknowns. Require source-bound collection tests before reporting them.
+- [ ] AX-419-E13 — Capture a real same-model/provider B0 only after both harness routes are available,
       conformance tested and explicitly authorized.
+- [ ] AX-419-E14 — Add an isolated regression that observes/denies attempted network access by
+      the fixed fixture process. Current source/tests establish that no provider
+      transport is constructed and no network-capable tool is advertised; they do not
+      prove the process cannot open sockets. Do not claim OS-level network confinement.

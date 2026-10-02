@@ -12,14 +12,25 @@ name = "hz-eval"
 path = "src/main.rs"
 
 [dependencies]
+async-trait.workspace = true
 blake3.workspace = true
 clap.workspace = true
+futures.workspace = true
+horizoncode-provider.workspace = true
+horizoncode-config.workspace = true
+horizoncode-runner.workspace = true
+horizoncode-sandbox.workspace = true
+horizoncode-session.workspace = true
+horizoncode-tools.workspace = true
+horizoncode-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+chrono = "0.4"
 
 [dev-dependencies]
-tempfile.workspace = true
 
 [lints]
 workspace = true
