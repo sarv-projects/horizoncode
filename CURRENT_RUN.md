@@ -2,8 +2,8 @@
 
 ## Current handoff — AX-419 fixed Runner fixture (2026-10-02)
 
-Working base: `ff79130b9a6b40511cd3e370c567681a6f746a07` on `main`; the AX-419 fixture
-increment is currently uncommitted. `hz-eval` now has bounded strict V1 record
+The AX-419 fixture implementation is committed at `e4c1030c0313b0fab5f833fe233168d1aab7c751`
+on `main`, based on `ff79130b9a6b40511cd3e370c567681a6f746a07`. `hz-eval` now has bounded strict V1 record
 validation plus a fixed `hz-eval run --fixture smoke` path. The latter runs the
 production Runner with a scripted in-process provider, an isolated temporary workspace
 and session, and a fixed development-only task. It persists a bounded Runner-observer
@@ -13,7 +13,7 @@ provider transport or advertised network/shell tool and makes no OS sandbox guar
 The verifier remains `not_run`; this is harness-mechanics evidence, not coding-quality
 or benchmark acceptance. The fixture emits attempt 1 only.
 
-Local checks on the dirty worktree pass: `cargo +1.89.0 test -p horizoncode-eval
+Checks rerun on the exact implementation revision pass: `cargo +1.89.0 test -p horizoncode-eval
 --locked --offline` (34 library, 7 CLI, 5 Runner-fixture tests), targeted Clippy with
 `-D warnings`, package-scoped rustfmt check, `git diff --check`, the Cargo
 architecture graph (17 packages/49 internal edges), and its fixtures (1 valid, 3
@@ -23,7 +23,7 @@ was run. AX-419 remains `implemented`, not `verified` or `accepted`; independent
 verification, holdout controls, compare/report, cross-language digest execution, B0,
 and HZBench remain open.
 
-Capture-bound trajectory and workspace metadata now retain bounded incomplete evidence;
+Capture-bound trajectory and workspace metadata retain bounded incomplete evidence;
 tests cover workspace byte/metadata limits and sealed trajectory-overflow outcomes. A
 temporary probe checks the selected output filesystem's private modes, hard-link
 publication, no-replace behavior, and directory sync before the attempt directory is
