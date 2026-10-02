@@ -12,6 +12,8 @@ use horizoncode_provider::{ChatCompletionsProvider, Provider, ProviderConfig};
 use horizoncode_types::{CancelToken, ModelEvent, ModelRequest, ProviderErrorKind};
 use serde_json::json;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
 fn provider(server: &MockServer) -> ChatCompletionsProvider {
     ChatCompletionsProvider::new(ProviderConfig::new(
@@ -217,6 +219,95 @@ async fn chunked_sse_body_overflow_ends_without_a_successful_finish() {
             .iter()
             .any(|event| matches!(event, Ok(ModelEvent::Finished { .. })))
     );
+}
+
+#[tokio::test]
+async fn dropping_sse_stream_on_cancellation_closes_loopback_connection() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        let (header_end, content_length) = loop {
+            let count = socket.read(&mut buffer).await.unwrap();
+            assert_ne!(count, 0, "client closed before sending an HTTP request");
+            request.extend_from_slice(&buffer[..count]);
+            if let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                    })
+                    .expect("provider request has a content length");
+                break (header_end, content_length);
+            }
+        };
+        let request_end = header_end + 4 + content_length;
+        while request.len() < request_end {
+            let count = socket.read(&mut buffer).await.unwrap();
+            assert_ne!(count, 0, "client closed before completing the HTTP request");
+            request.extend_from_slice(&buffer[..count]);
+        }
+
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: keep-alive\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let event = b"data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n";
+        socket
+            .write_all(format!("{:X}\r\n", event.len()).as_bytes())
+            .await
+            .unwrap();
+        socket.write_all(event).await.unwrap();
+        socket.write_all(b"\r\n").await.unwrap();
+        socket.flush().await.unwrap();
+
+        let closed = match socket.read(&mut buffer[..1]).await {
+            Ok(0) => true,
+            Ok(_) => false,
+            Err(error) => matches!(
+                error.kind(),
+                std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+            ),
+        };
+        let _ = closed_tx.send(closed);
+    });
+
+    let cancel = CancelToken::new();
+    let provider = ChatCompletionsProvider::new(ProviderConfig::new(
+        "mock",
+        format!("http://{address}/v1"),
+        "test-key",
+        "mock-model",
+    ))
+    .unwrap();
+    let mut stream = provider
+        .stream(ModelRequest::new("mock-model"), cancel.clone())
+        .await
+        .unwrap();
+
+    assert!(matches!(stream.next().await, Some(Ok(ModelEvent::Started))));
+    assert!(matches!(
+        stream.next().await,
+        Some(Ok(ModelEvent::TextDelta { text })) if text == "x"
+    ));
+    cancel.cancel();
+    drop(stream);
+
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), closed_rx)
+            .await
+            .expect("provider kept the socket open after cancellation")
+            .expect("loopback server dropped the disconnect signal")
+    );
+    server.await.unwrap();
 }
 
 #[tokio::test]
