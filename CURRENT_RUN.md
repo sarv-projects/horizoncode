@@ -2,8 +2,8 @@
 
 ## Current handoff — AX-419 validator slice (2026-10-02)
 
-Working base: `6f0b7b0bcd1abfe477a8aed930eff163a2c3fc60`, branch `main`, with an
-uncommitted AX-419 implementation/documentation diff. `hz-eval` now builds a strict,
+Source revision: `2919e26` (`feat(eval): add strict evaluation record validator`), branch
+`main`, working tree clean after the commit. `hz-eval` now builds a strict,
 bounded V1 run-record parser/sealer and `hz-eval validate`; this is a partial
 implementation, not a benchmark runner. Record validation enforces required identity
 and revision fields, recursive key-sorted BLAKE3 canonicalization, duplicate-key
@@ -18,8 +18,8 @@ report, an independent-language digest vector, data/collectors, B0 and HZBench.
 Focused local checks on this worktree pass: 16 `horizoncode-eval` library tests, 3 CLI
 tests, targeted Clippy with `-D warnings`, architecture graph check (17 packages/42
 edges), 1 valid + 3 violating architecture fixtures, crate-only rustfmt and `git diff
---check`. These are not independent
-integrated-revision or `ACC-EVAL-01` evidence. No live provider, network benchmark,
+--check`. These checks are local scoped evidence on `2919e26`, not independent
+verification or `ACC-EVAL-01` evidence. No live provider, network benchmark,
 holdout, or release test was run. AX-419 is `implemented` for this narrow source slice;
 it is not verified or accepted. The ledger is 163 tasks: 50 implemented, 111 proposed,
 2 verified, 0 accepted, 0 blocked. Next: resolve independent review findings, bind and

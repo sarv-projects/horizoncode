@@ -178,9 +178,9 @@ estimated metrics, unknown/credential fields, duplicate keys, key-order-independ
 digest validation with a fixed BLAKE3 vector, deep nesting, exact 1 MiB and one-byte-over input, artifact path traversal,
 timestamps, count/outcome consistency, required wall limit and negative cost. The CLI
 tests also prove untrusted invalid JSON is not echoed and its input read is capped.
-These are local focused checks on the in-progress AX-419 worktree, not an integrated
-revision acceptance record. Add tests for the execution/holdout/reporting lifecycle as
-those slices are implemented.
+These are local focused checks on source revision `2919e26`, not independent
+`ACC-EVAL-01` verification or a full evaluation-run acceptance record. Add tests for the
+execution/holdout/reporting lifecycle as those slices are implemented.
 
 - schema version and run ID;
 - benchmark ID/version, dataset and acceptance-criteria digests, task ID, task stratum,
