@@ -1,5 +1,6 @@
 archives/
 target/
 node_modules/
+/cline-probe/
 .DS_Store
 *.log

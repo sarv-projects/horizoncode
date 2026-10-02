@@ -1,48 +1,33 @@
 # CURRENT_RUN — HorizonCode
 
-## Dependency-ordered plan adoption (2026-10-02)
+## Current handoff — P0.0 repository health (2026-10-02)
 
-Working base: `7441b79191aa645ad0deda0341bb67dbd9c51b8a`, branch `main`.
-This change updates the final blueprint and development procedure: `docs/main_agile.md`,
-AGENTS, TODO, repository intelligence/context/tools/pipeline/skill/evaluation owners,
-shared requirements/contracts, acceptance and test plan. AX-413..419 remain proposed;
-no index daemon, coarse repository tool, ChangeReceipt runtime, skill library or
-hz-eval implementation is claimed by these documents.
+Working base: `02fee2b610ef6a45f68330925303e7f9c781ac0d`, branch `main`. The
+architecture refactor is committed there. AX-413..419 remain design targets; no index
+daemon, coarse repository tool, ChangeReceipt runtime, skill library or hz-eval runtime
+is claimed.
 
-Source baseline correction: prior AX-001/003/004/005/314 source slices are present
-in this HEAD. Earlier dirty-tree tests below remain historical local evidence and
-are not relabeled integrated acceptance. The existing 156 delivery rows are retained;
-seven proposed rows extend them. Implementation agents cannot mark their own work
-verified/accepted; an independent evidence review must bind the integrated subject.
+Fresh-clone diagnosis on that exact revision: clone and checkout succeeded; the
+`cline-probe` gitlink had no `.gitmodules` mapping, and `git submodule status --recursive`
+failed. CI did not request submodules and Cargo excludes the path. The parent gitlink is
+staged for removal and `/cline-probe/` is ignored. The nested Cline research checkout is
+preserved at `d7250ad39400d1485fc11011a80fdab26aeeff83` with its 4,165 user-local
+changes untouched. CI now invokes the architecture graph checker and its committed
+valid/negative fixtures. Local architecture checks, `git diff --check`, production
+cargo-deny and both license negative controls pass. A fresh-clone offline build,
+Clippy and serial full workspace test pass on the pre-repair revision. The test command
+was `cargo +1.89.0 test --workspace --locked --offline -- --test-threads=1` (exit 0;
+all executed tests passed, one manual performance capture ignored). Hosted CI, platform
+matrix and final repaired-revision clone have not run.
 
-The `cline-probe` gitlink has no `.gitmodules` mapping. Configured CI does not request
-submodule initialization and Cargo excludes that path, so a CI checkout failure is
-unproven. Its heavily dirty nested worktree is preserved. AX-001 owns a safe diagnosis/
-repair and fresh-clone CI record. Desired OpenCode Go same-model B0 depends on a usable
-AX-360/361 route; fixtures cannot stand in for coding-quality results. Safety fixes
-continue before B0 when necessary, with optimization gated on a suitable baseline.
-
-Validation: `git diff --check` passed. Local Python documentation checks found
-1,312 local Markdown targets/anchors with no missing targets or anchors in the edited
-files; no duplicate requirement/acceptance definitions; all five new acceptance IDs
-are defined. The TODO comparison against `git show HEAD:TODO.md` retained all 156
-original task IDs and added seven proposed tasks, with 163 total: 48 implemented,
-113 proposed and 2 verified; no acceptance promotion. Numeric legacy architecture
-labels were removed from TODO links while their target URLs were preserved.
-Independent reviews found and corrected
-formatter-induced index staleness, no-index TaskPackage binding, exact/embedding
-provenance enums, diagnostic status records, and binding freshness/coverage mapping.
-A follow-up independent schema review confirmed those fixes in the requested passages.
-The delivery-plan review also required explicit Phase 4/6 task mappings and distinct
-early scheduler versus optional Code Mode evidence stages; both are now recorded.
-A final range/slash-expanded ID check maps all 163 ledger tasks into the playbook
-with no unknown or omitted IDs.
-The wider repository and runtime are not certified by these document checks.
-
-The focused tools test recorded in `research docs/tests.md` passed after the documentation
-audit; no full-workspace test, live-provider benchmark, hosted CI, commit or push has yet
-been performed for this change. Next: P0.0 fresh-clone repository-health diagnosis,
-then P0.1 evidence reconciliation; new runtime delivery remains open.
+The 163-task ledger now has 49 implemented, 112 proposed and 2 verified tasks; none
+are accepted or blocked. AX-121 moved to `implemented` because its workflow gates are
+present; hosted workflow evidence remains open. The focused tools test at source HEAD
+`7441b79191aa645ad0deda0341bb67dbd9c51b8a` remains scoped local evidence only. Next:
+verify the parent-index-only removal and nested checkout preservation, rerun
+repair-relevant checks, then reconcile exact HEAD under
+P0.1. This implementation is not yet committed. No live-provider benchmark, hosted CI,
+or push has been performed.
 
 Everything after this handoff is a dated historical run record. Any “current,” “active,”
 or “next” wording below describes only the checkpoint where that record was written.

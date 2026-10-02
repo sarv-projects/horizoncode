@@ -290,6 +290,15 @@ checks listed below or in `CURRENT_RUN.md` are not acceptance records.
   by their owning tests. This static gate does not establish runtime ownership,
   authorization, or OS confinement. AX-412 owns contract tests for adapter failure
   receipts/owner semantics and the sourced capability projection.
+  The CI Rust job runs both commands after installing Rust 1.89.0. The independent
+  dependency-license job runs the pinned cargo-deny production check and requires
+  rejection of its GPL and missing-license fixture manifests. A local pass is not
+  evidence that hosted CI ran; record the workflow URL and exact commit before
+  marking hosted CI verified.
+  On 2026-10-02, a fresh clone at `02fee2b610ef6a45f68330925303e7f9c781ac0d` passed
+  the offline workspace build, Clippy, and serial full workspace tests. These checks
+  precede the staged gitlink removal and CI workflow edit; rerun them on the integrated
+  repair revision before using them as its evidence.
 - **Editors and concurrent edits (`ACC-EDITOR-01`, `ACC-EDIT-02`):** exercise
   terminal-wait, GUI-wait and GUI-detach profiles on every advertised OS/editor
   combination (VS Code, Vim/Neovim, Zed, Helix, and explicitly configured editors).

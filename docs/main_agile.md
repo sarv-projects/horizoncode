@@ -49,16 +49,17 @@ not delay urgent safety repairs in Phase 1.
 
 ### P0.0 — clean-clone and CI health (AX-001, AX-121, AX-399)
 
-Inspect the checked-in tree and CI from a fresh clone. The current index contains a
-`cline-probe` gitlink (mode `160000`) and no `.gitmodules`; the nested checkout is
-dirty. Treat its intended role as unknown until repository history, CI references and
-a fresh-clone check establish it. Do **not** claim it breaks checkout or CI without
-that evidence. Do not modify, reset, or remove the nested checkout during diagnosis.
-If the gitlink is intentional, add reproducible source metadata without touching the
-nested work; if accidental, remove only the superproject gitlink while preserving the
-working directory. Then prove a fresh clone reaches checkout, dependency policy,
-build, Clippy, tests, and architecture checks. Record the exact revision and all
-skipped platform/hosted checks.
+The fresh-clone audit of `02fee2b610ef6a45f68330925303e7f9c781ac0d` established
+that the `cline-probe` mode-`160000` entry is an orphaned research checkout: the
+root commit introduced it without `.gitmodules`, no product, Cargo, or CI path uses
+it, and the nested checkout points to Cline upstream. A clean clone checks out, but
+`git submodule status --recursive` fails because there is no mapping. The parent
+gitlink is removed and `/cline-probe/` ignored; the local nested directory, its HEAD,
+and its user changes are preserved. The CI workflow now runs the Cargo architecture
+graph checker and its committed positive/negative fixtures. Verify fresh-clone
+checkout, dependency/license gates, build, Clippy, workspace tests, and architecture
+checks at the resulting commit. Hosted CI and unsupported platform checks must be
+reported separately; local success is not hosted evidence.
 
 ### P0.1 — reconcile repository truth (AX-325)
 
@@ -66,7 +67,7 @@ At the exact current HEAD, reconcile TODO, CURRENT_RUN, source traceability, acc
 records, task statuses and evidence references. Inspect current source rather than
 relying on a historical summary. The previous architecture/source baseline
 `262bdb2fb8a2fef86d885a6c83ea49bae38bfcde` is historical; the planning HEAD for this
-plan is `7441b79191aa645ad0deda0341bb67dbd9c51b8a` (2026-10-02). Results recorded from
+plan is `02fee2b610ef6a45f68330925303e7f9c781ac0d` (2026-10-02). Results recorded from
 a dirty tree or an earlier revision remain explicitly historical until rerun or
 otherwise bound to the integrated revision. Do not promote statuses during a ledger
 reconciliation without current acceptance evidence.

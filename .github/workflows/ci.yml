@@ -26,6 +26,12 @@ jobs:
       - name: Install the declared minimum Rust toolchain
         run: rustup toolchain install 1.89.0 --profile minimal --component clippy
 
+      - name: Check Cargo architecture dependency boundaries
+        run: cargo +1.89.0 metadata --no-deps --format-version 1 --offline | python3 scripts/check_architecture_deps.py
+
+      - name: Check architecture dependency boundary fixtures
+        run: python3 scripts/check_architecture_deps.py --self-test
+
       - name: Run Clippy
         run: cargo +1.89.0 clippy --workspace --all-targets --locked -- -D warnings
 
