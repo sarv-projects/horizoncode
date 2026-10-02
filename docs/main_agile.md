@@ -133,9 +133,9 @@ competitor features form hypotheses, not product-market-fit evidence.
 
 ## Phase 1 — shared runtime and safety foundations
 
-Keep the urgent AX-314 patch-preflight safety interleave before the remaining AX-005
-transport-cancellation assertion, as recorded in TODO. Do not hold correctness or
-security fixes behind B0. Finish the existing AX-001/003/004/005/006/007/008/010,
+AX-314 staged patch publication and AX-005 loopback cancellation-close assertions
+have implementation slices, but their acceptance gaps remain open in TODO. Do not
+hold urgent correctness or security fixes behind B0. Finish the existing AX-001/003/004/005/006/007/008/010,
 AX-101..105, AX-113..118, AX-121/122/125/126, AX-314..316, AX-328/329/334/338/339,
 AX-346/351/352/354..358, AX-370 and AX-405 tasks against their owners. Prove whole
 response admission, typed schema and duplicate-ID rejection, cancellation, bounded

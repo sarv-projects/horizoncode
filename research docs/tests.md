@@ -6,8 +6,10 @@ suite. On 2026-10-01, AX-003's direct runner response-admission implementation p
 the focused runner, tools, provider, and CLI tests and the serial full workspace test
 command recorded in `CURRENT_RUN.md`. AX-005 now implements bounded provider response
 body/SSE-line handling and bounded redacted error previews; its focused provider tests,
-serial full workspace suite, and workspace Clippy pass locally on the dirty tree.
-These are local implementation checks only: they do not create the `ACC-LOOP-01` or
+and serial full workspace suite pass at source revision
+`fd7c2bdabcfca4cac58dcbedf4c627a49bfcb336`; workspace Clippy passed on an earlier
+dirty source snapshot and was not rerun at that revision. These are local implementation
+checks only: they do not create the `ACC-LOOP-01` or
 `ACC-PROV-RAW-01` evidence bundles or prove managed-run acceptance. On the same date,
 the AX-124 helper tests and a release-mode headless diagnostic were run; that capture
 is not an `ACC-PERF-01` acceptance record. The 2026-10-01 local source snapshot also
@@ -20,8 +22,10 @@ changed the Rust home-directory resolver, added the locked dependency license po
 and CI negative control, and removed a disallowed transitive dependency. AX-001's
 local gate/test results are recorded in `CURRENT_RUN.md`; hosted CI evidence is still
 required for `ACC-DEP-01`. The historical documentation/source capture base was
-`262bdb2fb8a2fef86d885a6c83ea49bae38bfcde` (2026-10-01); the planning HEAD is
-`7441b79191aa645ad0deda0341bb67dbd9c51b8a` (2026-10-02). That historical working tree
+`262bdb2fb8a2fef86d885a6c83ea49bae38bfcde` (2026-10-01); the architecture/status
+reconciliation baseline is `f06cd649b1175a1d6eb41d6020c2aefc6b8ccb6c` (2026-10-02).
+AX-005 loopback evidence is bound to source revision
+`fd7c2bdabcfca4cac58dcbedf4c627a49bfcb336`. That historical working tree
 also contained the preserved architecture migration and prior research changes, so
 its runtime evidence is not evidence for the refactored target. See the revision-stamped
 [`SOURCE-TRACEABILITY.md`](../docs/research/SOURCE-TRACEABILITY.md) and
@@ -259,8 +263,11 @@ checks listed below or in `CURRENT_RUN.md` are not acceptance records.
   claim a process RSS limit because the HTTP client may allocate its yielded chunk.
   Local provider tests now cover unit boundaries, split lines, aggregate chunked-body
   overflow, declared-length refusal, status/`Retry-After` preservation, redaction, and
-  response-stream drop. Explicit cancellation signaling and a retained-byte acceptance
-  artifact remain open; see `CURRENT_RUN.md` for the exact commands and status.
+  response-stream drop. A loopback test at `fd7c2bdabcfca4cac58dcbedf4c627a49bfcb336`
+  also cancels and drops an active SSE consumer, then asserts the server observes TCP
+  EOF/reset. It does not exercise the Runner cancellation select end-to-end. The raw
+  transport acceptance bundle and retained-byte acceptance artifact remain open; see
+  `CURRENT_RUN.md` for the exact commands and status.
 
 - **Provider parity and maintenance (`ACC-PROV-SYNC-01`):** compare complete pinned
   OpenCode and Cline connector/auth inventories with HorizonCode's supported/blocked
@@ -1009,9 +1016,9 @@ test-data revision.
   `tool/call` and `tool/result` events; cancellation may retain bounded partial text.
   Unsupported schema keywords fail closed. Run deterministic fixtures with no live
   provider. `ACC-PROV-RAW-01` separately specifies raw post-content-decoding body and
-  SSE-line bounds; AX-005 now has local boundary/overflow and consumer-drop tests.
-  The raw-transport acceptance bundle and loopback connection-close cancellation
-  evidence remain open. Neither acceptance row claims a bound on process RSS or an
+  SSE-line bounds; AX-005 now has local boundary/overflow, consumer-drop, and
+  loopback connection-close tests. The raw-transport acceptance bundle remains open.
+  Neither acceptance row claims a bound on process RSS or an
   HTTP-client chunk allocated before the adapter receives it.
 - Managed response batches must additionally exercise rotated/non-adjacent calls,
   oversized nested arguments, stream overflow, repeated rejected batches, and saved

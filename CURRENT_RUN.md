@@ -1,16 +1,17 @@
 # CURRENT_RUN — HorizonCode
 
-## Current handoff — P0.0 repository health (2026-10-02)
+## Current handoff — Agile implementation progress (2026-10-02)
 
-Working base: `f06cd649b1175a1d6eb41d6020c2aefc6b8ccb6c`, branch `main`. The
-architecture refactor is committed there. AX-413..419 remain design targets; no index
-daemon, coarse repository tool, ChangeReceipt runtime, skill library or hz-eval runtime
-is claimed.
+Working base: `fd7c2bdabcfca4cac58dcbedf4c627a49bfcb336`, branch `main`. P0.0's
+orphan-gitlink/CI repair is committed at `f06cd649b1175a1d6eb41d6020c2aefc6b8ccb6c`;
+the AX-005 loopback cancellation regression is committed at this working base.
+AX-413..419 remain design targets; no index daemon, coarse repository tool,
+ChangeReceipt runtime, skill library or hz-eval runtime is claimed.
 
 Fresh-clone diagnosis on that exact revision: clone and checkout succeeded; the
 `cline-probe` gitlink had no `.gitmodules` mapping, and `git submodule status --recursive`
 failed. CI did not request submodules and Cargo excludes the path. The parent gitlink is
-staged for removal and `/cline-probe/` is ignored. The nested Cline research checkout is
+removed and `/cline-probe/` is ignored. The nested Cline research checkout is
 preserved at `d7250ad39400d1485fc11011a80fdab26aeeff83` with its 4,165 user-local
 changes untouched. CI now invokes the architecture graph checker and its committed
 valid/negative fixtures. A clean clone of repair commit `f06cd649b1175a1d6eb41d6020c2aefc6b8ccb6c`
@@ -34,10 +35,17 @@ concrete status mismatch, and the 001–126 reviewer found no other concrete mis
 in its bounded pass. These were source/status reviews, not fresh acceptance runs or a
 complete re-execution of every task's evidence. No task status was promoted. The
 focused tools test at source HEAD `7441b79191aa645ad0deda0341bb67dbd9c51b8a` remains
-scoped local evidence only. Next implementation item: close AX-005's loopback
-connection-close assertion after cancellation, following `docs/main_agile.md` and
-`ARCH/core/PROVIDERS.md`. No live-provider benchmark, hosted CI, or push has been
-performed.
+scoped local evidence only. AX-005's provider tests pass at `fd7c2bd` (27 unit and 9
+loopback integration tests), including a fixture that cancels and drops the active SSE
+consumer and observes server-side EOF/reset. The full serial workspace test command
+passed at the same revision; one manual performance capture is ignored. The changed
+test file passes rustfmt and `git diff --check`. Workspace-wide `cargo fmt --all --check`
+fails on existing formatting diffs in unrelated files; none were changed. The loopback
+fixture does not exercise Runner cancellation selection end-to-end, and AX-005 remains
+implemented with `ACC-PROV-RAW-01` open. Next per Agile dependency order: start AX-419's
+evaluation harness before any model-call or fast-path optimization; safety repairs can
+still proceed when their evidence establishes urgency. Hosted CI, live-provider
+benchmarks, and push have not been performed by this run.
 
 Everything after this handoff is a dated historical run record. Any “current,” “active,”
 or “next” wording below describes only the checkpoint where that record was written.
