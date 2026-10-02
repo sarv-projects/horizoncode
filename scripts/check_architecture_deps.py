@@ -49,7 +49,7 @@ LAYERS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     ("application-control", ("horizoncode-runner",)),
-    ("surfaces", ("horizoncode-acp", "horizoncode-cli")),
+    ("surfaces", ("horizoncode-acp", "horizoncode-cli", "horizoncode-eval")),
 )
 PACKAGE_LAYER = {
     package: (index, layer)
@@ -93,6 +93,7 @@ ADAPTER_OR_SURFACE_PACKAGES = {
     "horizoncode-sandbox",
     "horizoncode-acp",
     "horizoncode-cli",
+    "horizoncode-eval",
 }
 
 

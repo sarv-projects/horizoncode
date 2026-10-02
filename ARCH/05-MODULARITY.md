@@ -29,7 +29,7 @@ Language choice cannot move their authority into an adapter.
 
 | Edge | Permitted language and boundary |
 |---|---|
-| Evaluation and statistics | Python may orchestrate isolated benchmark fixtures and analysis through versioned contracts. It cannot bypass production authority. |
+| Evaluation and statistics | The `hz-eval` CLI is a Rust surface over isolated fixtures and versioned evaluation records. Python may support offline statistics through versioned files; it cannot bypass production authority. |
 | Web/browser surfaces and SDKs | TypeScript may implement clients of the Control API and typed SDKs. Business state and policy remain in their canonical owners. |
 | Installation/bootstrap | Bash and PowerShell are thin launchers for the authenticated installation service; they do not implement alternative update or signature policy. |
 | Extensions | WASM modules use the mediated extension port and declared capabilities. They receive no ambient host authority. |

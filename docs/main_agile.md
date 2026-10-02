@@ -90,15 +90,19 @@ create a second TaskPackage or repository-index owner.
 
 ### P0.3 — build the evaluation harness (AX-419)
 
-Implement `hz-eval` and the HZBench development/holdout split before tuning the
-intelligence or fast scheduler. Every evaluation captures benchmark/task/repository
-revision, harness revision, model/provider/reasoning settings, prompt and tool-schema
-digests, environment digest, limits, trajectory reference, timings, tokens/tool/model
-call counts, verifier result, outcome, and limitations. Development cases are visible
-during iteration; holdout cases are versioned and frozen, access-controlled, and never
-tuned against. Keep raw failures and uncertainty in reports. Harness semantics and
-`ACC-EVAL-01` are already in the canonical evaluation owner; implement against them
-and amend that contract only if source inspection finds a specific gap.
+The first implementation slice adds a bounded strict V1 record validator and
+`hz-eval validate`; it does not execute tasks or satisfy this gate. Continue AX-419
+before tuning repository intelligence or the fast scheduler. The completed evaluator
+must capture benchmark/task/repository revision, harness revision, model/provider/
+reasoning settings, prompt and tool-schema digests, environment digest, limits,
+trajectory reference, timings, tokens/tool/model call counts, verifier result, outcome,
+and limitations. Development cases are visible during iteration; holdout cases are
+versioned and frozen, access-controlled, and never tuned against. Keep raw failures and
+uncertainty in reports. Harness semantics and `ACC-EVAL-01` are already in the canonical
+evaluation owner; implement against them and amend that contract only if source
+inspection finds a specific gap. Track the validator as `implemented` partial source
+only; do not claim measured B0 until supported same-model routes and authorized
+execution exist.
 
 ### P0.4 — record B0 before optimization
 

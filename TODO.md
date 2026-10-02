@@ -24,10 +24,11 @@ checks described as running on a dirty tree or an earlier revision remain histor
 until independently rerun/bound to the integrated revision. A clean-clone/CI gate is
 also required before treating checkout or hosted CI as healthy.
 
-Delivery ledger snapshot after the P0.0 workflow update: **163 tasks total: 49 implemented
-(relevant source exists wholly or partly, with remaining gaps named in each row), 112
-proposed (no relevant implementation identified), 2 verified, 0 accepted, and 0
-blocked.** AX-413..AX-419 remain proposed design work. AX-121 moved from proposed to
+Delivery ledger snapshot at the AX-419 validator worktree: **163 tasks total: 50
+implemented (relevant source exists wholly or partly, with remaining gaps named in each
+row), 111 proposed (no relevant implementation identified), 2 verified, 0 accepted,
+and 0 blocked.** AX-419 now has an initial record-validation implementation; AX-413..418
+remain proposed design work. AX-121 moved from proposed to
 implemented because its workflow gates are now present; hosted evidence remains open.
 These counts describe TODO classifications, not a feature-completion
 percentage or a current-HEAD source audit. “Implemented” is a source-presence signal,
@@ -39,7 +40,7 @@ service still have material delivery gaps. Architecture history remains under
 `docs/history/architecture/`; source URLs and pinned references remain under
 `docs/research/`.
 
-For every row, acceptance means the owning requirement and test plan pass at the exact integrated revision. A source file, interface, test file, peer completion message, checkbox, or model claim is not acceptance evidence. The new AX-413..419 rows remain `proposed` until their architecture, implementation and acceptance evidence are independently reconciled; links to planned source-trail anchors are navigation targets, not evidence.
+For every row, acceptance means the owning requirement and test plan pass at the exact integrated revision. A source file, interface, test file, peer completion message, checkbox, or model claim is not acceptance evidence. AX-413..418 remain `proposed`; AX-419 is `implemented` for its initial bounded V1 record validator only, with the full evaluation system and acceptance evidence still open. Links to planned source-trail anchors are navigation targets, not evidence.
 
 ## Ordered implementation roadmap
 
@@ -83,11 +84,10 @@ Retain all these tasks in their existing single TODO rows.
 
 #### Phase 1. Finish and verify shared runtime and safety foundations
 
-Safety interleave: AX-314 is being pulled forward ahead of the remaining AX-005
-transport-cancellation assertion because the existing multi-file patch path could
-publish earlier files before a later hunk failed. AX-314 relies on the existing
-AX-101 patch tool. After this preflight/staging slice, resume AX-005 acceptance
-follow-up; neither task is `verified` or `accepted` until its evidence bundle passes.
+Safety interleave: AX-314's staged-publication and AX-005's loopback
+cancellation-close implementation slices are present. Their independent acceptance
+gaps remain open; see the task rows and acceptance owners. AX-314 relies on AX-101's
+patch tool. Neither task is `verified` or `accepted` until its evidence bundle passes.
 
 - AX-001 — Rust workspace, crates, CI, license allowlist; AX-003 — Bounded turn loop and continuation; AX-004 — Read-only repo tools; AX-314 — All-file patch preflight or crash-safe partial-effect journal; AX-005 — HTTP provider, SSE, retries
 - AX-006 — ACP stdio server; AX-007 — Headless CLI and structured output; AX-008 — Layered config and AGENTS.md context discovery; AX-010 — Third-party notices and provenance bundle
@@ -365,9 +365,10 @@ market fit.
 
 ## Repository-intelligence and evaluation additions
 
-These seven proposed rows are additive. They extend existing owners and acceptance
-without deleting or replacing any of the original 156 tasks. Each `#axNNN` URL is the
-required source-trail anchor for its future source/evidence entry; the owning ARCH
+AX-413..419 were added as additive work items extending existing owners and acceptance
+without deleting or replacing any of the original 156 tasks. AX-413..418 remain
+proposed; AX-419 now has the partial implementation recorded below. Each `#axNNN` URL
+is the required source-trail anchor for its source/evidence entry; the owning ARCH
 contract and acceptance ID are normative.
 
 | ID | Task | Status | Architecture owner | Source trail | Dependencies and observable acceptance |
@@ -378,4 +379,30 @@ contract and acceptance ID are normative.
 | AX-416 | Coarse repository-intelligence tools and revision-pinned TaskPackage | proposed | [Tools](ARCH/core/TOOLS.md), [Context](ARCH/core/CONTEXT.md), [Code intelligence](ARCH/product/CODE-INTELLIGENCE.md) | [source trail](docs/research/SOURCE-TRACEABILITY.md#ax416) | Extends AX-320/375/400 and reuses the canonical `ContextPacket`/TaskPackage; no second package/index owner. Add `repo_query`, `repo_context`, `repo_impact`, `repo_expand` through the existing registry, Guard, budget and artifact path while retaining raw `read/list/glob/grep`. Batch common questions, bound/revision-pin payloads and handles, mark source method/authority/freshness/coverage, fail closed on stale index, and disclose missing coverage. Pass `ACC-REPO-TOOLS-01` for exact/natural-language relevance, batching, bounds, freshness, authorization, cancellation, prompt-size limits and no index-as-context leakage. |
 | AX-417 | Deterministic coding pipeline and ChangeReceipt | proposed | [Scheduling](ARCH/execution/SCHEDULING.md), [Tools](ARCH/core/TOOLS.md), [Code intelligence](ARCH/product/CODE-INTELLIGENCE.md), [workspaces](ARCH/execution/WORKSPACES.md) | [source trail](docs/research/SOURCE-TRACEABILITY.md#ax417) | Depends on AX-311 effect settling, AX-395/313 workspace revisions/fences, and AX-414/415 freshness. After an authorized coherent edit, settle effects, apply exact index delta, format, collect diagnostics, select advisory affected tests, run only allowed checks, compute diff/impact and return a bounded revision-bound `ChangeReceipt`. A receipt/test-selection/formatter result never means Task PASS; required verification can expand. Pass `ACC-REPO-PIPELINE-01` for ordered events, failures/partial/unknown effects, stale-generation refusal, cancellation, exact changed-file/diff binding, advisory-test limits and independent verification separation. |
 | AX-418 | First-party progressive SWE, architecture and agile skill library | proposed | [Discovery and extensions](ARCH/product/DISCOVERY-AND-EXTENSIONS.md), [Context](ARCH/core/CONTEXT.md), [skill acceptance](ARCH/acceptance/ACCEPTANCE-MATRIX.md) | [source trail](docs/research/SOURCE-TRACEABILITY.md#ax418) | Depends on AX-110/308/373 skill discovery, activation, lifecycle and deferred loading. Add versioned HorizonCode-owned skills for feature work, debugging, refactoring, testing, review, software architecture, change impact, repo navigation, security, performance, dependency upgrade, release engineering, agile planning, evidence-before-done and no-progress recovery. Progressive metadata only until selected. `artifact-capabilities` and `artifact-diagramming` remain AX-411; reference them, do not duplicate their implementation. Extend `ACC-SKILL-01` for provenance/digest, collisions, context cost, activation/revocation, hostile content, offline behavior and measurable task-quality/call-cost benefit. |
-| AX-419 | `hz-eval`, HZBench development/holdout and controlled harness comparisons | proposed | [Evaluation](ARCH/acceptance/EVALUATION.md), [performance](ARCH/contracts/PERFORMANCE.md), [test inventory](research%20docs/tests.md) | [source trail](docs/research/SOURCE-TRACEABILITY.md#ax419) | Complements, does not replace, AX-124/307/330/387 and ACC-PERF/PRODUCT. Depends on reproducible task/env/source manifests; build paired controls and B0 before Phase 4 optimization. Record benchmark/task/repo/harness revisions, model/provider/reasoning, prompt/tool schema/env digests, limits, trajectory, timings, tokens, calls, verifier and outcomes. Keep HZBench-Dev iterable and HZBench-Holdout frozen/unseen during tuning; preserve failures/uncertainty and compare identical routes where available. Pass `ACC-EVAL-01` for determinism, provenance, holdout access/freeze, metric integrity, failed-run retention, route equivalence, budget controls and no correctness regression. |
+| AX-419 | `hz-eval`, HZBench development/holdout and controlled harness comparisons | implemented | [Evaluation](ARCH/acceptance/EVALUATION.md), [performance](ARCH/contracts/PERFORMANCE.md), [test inventory](research%20docs/tests.md) | [source trail](docs/research/SOURCE-TRACEABILITY.md#ax419) | Implemented slice: strict bounded V1 record parsing/sealing/validation and `hz-eval validate`; unknown/estimated/reported metrics, explicit timing/context/resource units, duplicate-key rejection, digest binding and semantic consistency checks. Focused tests and Clippy pass on the in-progress worktree; not integrated/release evidence. Remaining: production Runner fixture execution and trajectory capture; independent verifier; immutable attempt/failure retention; dev dataset and fake-provider fixture; frozen holdout custody/access enforcement; compare/report; cross-implementation canonical digest test; broader valid CLI coverage; full outcome/count matrix; compatible route controls; B0 and HZBench; no live provider authorization. Pass `ACC-EVAL-01` across determinism, provenance, holdout access/freeze, metric integrity, failed-run retention, route equivalence, budgets, independent verification and no correctness regression. |
+
+### AX-419 follow-up and edge-case backlog
+
+These remain part of AX-419 and its `ACC-EVAL-01` gate; the validator's focused test
+pass does not close them:
+
+- [ ] Execute the production Runner only through an isolated deterministic fixture;
+      capture its complete bounded trajectory and preserve setup/provider/cancel/timeout
+      outcomes without live network or provider access.
+- [ ] Run independent verification in a separately scoped process/context and bind its
+      result to exact criteria, environment and tested revision.
+- [ ] Enforce HZBench-Holdout custody, frozen dataset/evaluator digests, attempt limits,
+      access audit and anti-feedback policy; retain every attempt and failure.
+- [ ] Implement controlled `compare`/`report` with paired route identity, limit parity,
+      currency/rate-basis comparability, uncertainty and no cherry-picking.
+- [ ] Add a second-language canonical-digest fixture and compatibility vectors for
+      numeric/string serialization; retain reordered-input and duplicate-key regressions.
+- [ ] Expand semantic coverage for every outcome/verifier pair, partial unknown
+      lifecycle counts, unsupported attempts, large hostile records, nested duplicate
+      keys, exact malformed artifact IDs, and terminal rendering safety.
+- [ ] Define when currency codes are checked against a pinned registry and how rate
+      basis is normalized; V1 currently checks only uppercase three-letter syntax.
+- [ ] Measure end-to-end first action/token, context, CPU, RSS/PSS and disk through the
+      production harness; the record schema can represent unknowns but no collector exists.
+- [ ] Capture a real same-model/provider B0 only after both harness routes are available,
+      conformance tested and explicitly authorized.

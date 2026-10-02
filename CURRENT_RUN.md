@@ -1,6 +1,38 @@
 # CURRENT_RUN — HorizonCode
 
-## Current handoff — Agile implementation progress (2026-10-02)
+## Current handoff — AX-419 validator slice (2026-10-02)
+
+Working base: `6f0b7b0bcd1abfe477a8aed930eff163a2c3fc60`, branch `main`, with an
+uncommitted AX-419 implementation/documentation diff. `hz-eval` now builds a strict,
+bounded V1 run-record parser/sealer and `hz-eval validate`; this is a partial
+implementation, not a benchmark runner. Record validation enforces required identity
+and revision fields, recursive key-sorted BLAKE3 canonicalization, duplicate-key
+rejection, exact 1 MiB input bound, explicit reported/estimated/unknown metrics,
+timing/context/resource units, required wall limit, lifecycle/outcome consistency and
+opaque artifact IDs, per-category tool-count reconciliation, and nullable no-verifier
+states. The CLI does not echo rejected record content. Remaining AX-419 work is tracked
+in TODO.md and includes production Runner fixture execution, trajectory capture,
+independent verifier, retained attempts/failures, holdout access/freeze, comparison/
+report, an independent-language digest vector, data/collectors, B0 and HZBench.
+
+Focused local checks on this worktree pass: 16 `horizoncode-eval` library tests, 3 CLI
+tests, targeted Clippy with `-D warnings`, architecture graph check (17 packages/42
+edges), 1 valid + 3 violating architecture fixtures, crate-only rustfmt and `git diff
+--check`. These are not independent
+integrated-revision or `ACC-EVAL-01` evidence. No live provider, network benchmark,
+holdout, or release test was run. AX-419 is `implemented` for this narrow source slice;
+it is not verified or accepted. The ledger is 163 tasks: 50 implemented, 111 proposed,
+2 verified, 0 accepted, 0 blocked. Next: resolve independent review findings, bind and
+commit the focused slice, then implement isolated deterministic Runner execution and
+independent verification as the next AX-419 increment. Do not start B0 until route
+support and authorization are established.
+
+Earlier workspace-wide formatting-only changes to unrelated Rust files were reverted.
+The nested `cline-probe` research checkout and user changes remain preserved.
+
+---
+
+## Historical handoff — Agile implementation progress (2026-10-02)
 
 Working base: `fd7c2bdabcfca4cac58dcbedf4c627a49bfcb336`, branch `main`. P0.0's
 orphan-gitlink/CI repair is committed at `f06cd649b1175a1d6eb41d6020c2aefc6b8ccb6c`;

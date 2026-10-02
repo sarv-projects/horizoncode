@@ -146,9 +146,41 @@ published and runs are executed; architecture descriptions do not count as resul
 ## `hz-eval` and benchmark lifecycle
 
 The evaluator and run-record contract are specified in
-[`EVALUATION.md`](../ARCH/acceptance/EVALUATION.md). Until `hz-eval` is implemented and
-its acceptance row passes, all benchmark stages below are a plan, not measured
-HorizonCode performance. The run manifest must include at least:
+[`EVALUATION.md`](../ARCH/acceptance/EVALUATION.md). The current `hz-eval` source has
+only the initial V1 record-validation slice; until run execution, independent
+verification, holdout controls and `ACC-EVAL-01` pass, all benchmark stages below are a
+plan, not measured HorizonCode performance. The run manifest must include at least:
+
+V1 uses a strict, versioned schema. `Measured<T>` is explicitly `reported`,
+`estimated` (with stable provenance), or `unknown` (with a stable reason code); zero is
+a known value.
+Unknown fields and duplicate JSON object keys are rejected. The record digest is BLAKE3
+over compact typed V1 JSON with the digest omitted, object keys sorted recursively and
+array order preserved. Validation rejects unsafe artifact IDs, malformed UTC timestamps,
+inconsistent reported lifecycle counts, terminal-reason/outcome contradictions,
+negative costs, empty limits, or a missing `wall_time_ms` ceiling. Per-category reported
+tool counts reconcile with reported totals. A verifier may be absent only with the
+explicit `not_run` state; accepted/failed verifier outcomes bind a reported final
+workspace digest and a separate result artifact digest. Timing, context,
+tokenizer, CPU, memory and disk metrics have explicit units; unavailable values remain
+unknown. The current slice is schema validation only: it creates no trajectory,
+executes no task, enforces no holdout policy, and verifies no result independently.
+
+Validation regression command and current local evidence:
+
+```sh
+cargo +1.89.0 test -p horizoncode-eval --locked --offline
+cargo +1.89.0 clippy -p horizoncode-eval --all-targets --locked --offline -- -D warnings
+```
+
+The current validator test suite covers required fields, record tampering, unknown and
+estimated metrics, unknown/credential fields, duplicate keys, key-order-independent
+digest validation with a fixed BLAKE3 vector, deep nesting, exact 1 MiB and one-byte-over input, artifact path traversal,
+timestamps, count/outcome consistency, required wall limit and negative cost. The CLI
+tests also prove untrusted invalid JSON is not echoed and its input read is capped.
+These are local focused checks on the in-progress AX-419 worktree, not an integrated
+revision acceptance record. Add tests for the execution/holdout/reporting lifecycle as
+those slices are implemented.
 
 - schema version and run ID;
 - benchmark ID/version, dataset and acceptance-criteria digests, task ID, task stratum,
@@ -168,9 +200,10 @@ HorizonCode performance. The run manifest must include at least:
 - start/end and phase timings, model-call/tool-call counts, tool categories, input/output
   tokens, cache-read/cache-write tokens, provider-reported/estimated/unknown usage,
   currency basis, and human interventions;
-- independent verifier result, accepted-task outcome, regressions, and terminal reason
-  including completed, failed, cancelled, timed out, provider failure, and insufficient
-  evidence. Unknown or unavailable fields stay unknown rather than zero.
+- independent verifier result reference and digest, accepted-task outcome, regressions, and terminal reason
+  including completed, task failure, harness failure, cancelled, timed out, provider
+  failure, setup failure, unsupported, and insufficient evidence. Unknown or unavailable fields stay unknown
+  rather than zero.
 
 ### Baselines and staged regressions
 
