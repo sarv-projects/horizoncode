@@ -43,7 +43,7 @@
 | in | `CMP-acp`, `CMP-headless`, `CMP-tui`, `CMP-control-api` | `prompt(thread_id, input)` · `steer(thread_id, input)` · `interrupt(thread_id)` · `cancel(run_id)` | `thread_id` is HorizonCode's durable conversation identity; ACP/provider session IDs are external bindings. Surfaces are thin clients of one control interface (`REQ-PROTO-005`). |
 | out | `CMP-session` | `admit` · `append` · `loadForRunner` · `contextEpoch` · `resume/wake/interrupt` | The runner submits typed events through the Thread-store append owner. |
 | out | `CMP-context` | `assemble(step, budget)` · `compactIfNeeded` · `compactAfterOverflow` | Context decides; the runner requests and acts on the result. |
-| out | `CMP-provider` | `resolveRoute(policy)` · `stream(request)` | Route selection and transport retries live here (`REQ-PROV-003`, `REQ-PROV-005`). |
+| out | `CMP-provider` | `resolveRoute(policy)` · `stream(request)` | Route selection and transport retries live here (`REQ-PROV-003`, `REQ-PROV-005`). The active turn token covers provider stream acquisition; a typed `cancelled` result closes the step as an interrupted turn, not a provider failure (`REQ-PROV-018`). |
 | out | `CMP-tools` | `materialize(permissions)` · `settle(call)` | Materialization is permission-filtered; denied tools are absent (`REQ-TOOL-003`). |
 | out | `CMP-guard` / `CMP-sandbox` / `CMP-audit` | authorize → reserve/prepare durably → confine/execute → settle/audit | Every effect follows one governed path; no loop shortcut. |
 | out | `CMP-orch` | `spawn(options)` · `await/receipt` | Receipts are untrusted data, never trusted transcripts (`REQ-ORCH-001`). |

@@ -51,6 +51,25 @@ when the stream is rejected. These ceilings therefore do not assert a whole-proc
 RSS bound or a kernel/socket buffering bound. `CMP-runner` separately enforces its
 decoded-response and tool-argument admission ceilings (`ACC-LOOP-01`).
 
+## Cancellation during provider I/O
+
+The active `CancelToken` covers request acquisition and every bounded body read,
+including non-success diagnostic previews and non-streaming JSON fallback. The
+adapter races those asynchronous operations against cancellation; when cancellation
+wins, dropping the pending `reqwest` future/response body releases the in-flight
+request and the adapter returns the non-retryable typed
+`ProviderErrorKind::Cancelled` (`cancelled`). It does not retry or select a fallback
+route for cancellation. If no cancellation is requested, HTTP status classification,
+`Retry-After`, redaction and response-byte limits keep their normal behavior.
+
+For SSE, `stream()` returns after response headers; the consumer owns cancellation
+while polling the returned stream and must drop it when cancelled. The provider
+does not convert an SSE stream drop into a provider error. If cancellation wins
+while `stream()` is still acquiring/decoding the response, `CMP-runner` closes the
+step and records the turn as `Interrupted`, retaining any already committed partial
+work and never treating cancellation as provider failure. Cancellation is
+cooperative at async suspension points and cannot preempt synchronous work.
+
 ## Interfaces
 
 **Depends on.**
@@ -404,6 +423,7 @@ QuotaObservation {
 | `REQ-PROV-008..012` | Immutable route and fallback snapshots, native Go request identity, complete provider/auth coverage states, bounded refresh, and capability-gated provider cache semantics |
 | `REQ-PROV-014` | Documented, opt-in read-only quota observation with bounded refresh, retained freshness, and no authority over local reservations |
 | `REQ-PROV-017` | Versioned bounded response bodies, SSE lines, and redacted HTTP error previews; acceptance is `ACC-PROV-RAW-01` |
+| `REQ-PROV-018` | Cancellation races request acquisition and bounded body reads; typed cancellation is non-retryable/no-fallback and maps to an interrupted Runner turn |
 | `REQ-HORIZON-003` | Token/cost ceilings evaluated pre-send and fail closed |
 | `REQ-ANALYTICS-007` | Preserve source currency and amount basis; mixed-currency totals are bucketed or explicitly converted with provenance |
 | `REQ-CTX-004` | Overflow surfaced as a terminal typed flag so the context engine performs exactly one compact-and-retry |

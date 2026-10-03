@@ -1,6 +1,46 @@
 # CURRENT_RUN — HorizonCode
 
-## Current handoff — AX-419-B05 Runner timeout accounting (2026-10-03)
+## Current handoff — AX-005-B01 provider I/O cancellation (2026-10-03)
+
+Implementation is committed at `7c41bbbd4342e624832039151333f46ba967e5b2` on `main`.
+The provider now races the active cancellation token against request acquisition,
+bounded non-success previews, non-streaming response-body reads, and retry backoff.
+Cancellation is a typed non-retryable `ProviderErrorKind::Cancelled`; pending I/O is
+dropped and no retry/fallback is selected. The Runner independently races cancellation
+against provider stream acquisition and stream polling, gives user cancellation
+precedence over a concurrent provider error, closes as `Interrupted`, and does not log
+stream-acquisition cancellation as a failed model attempt. SSE stream cancellation
+continues to be consumer-owned: the Runner drops the returned stream.
+
+At `7c41bbb`, the scoped suite passed: 29 provider unit + 13 loopback integration tests,
+5 Runner unit + 19 Runner E2E + 2 permission-audit tests, and 15 type tests. Targeted
+Clippy (`-D warnings`), package-scoped rustfmt, and `git diff --check` passed. Controlled
+pending-stream tests prove each bounded body reader exits while awaiting the next chunk;
+loopback peers confirm connection closure for stalled response phases and no retry
+during backoff. Runner E2E drops a provider future that ignores cancellation. An
+independent read-only review found no remaining provider/runtime defect; it noted the
+downstream compatibility impact of adding a variant to the public serialized error
+enum, tracked as AX-005-B02 before a stable external API release.
+
+The workspace-wide test run exposed two repository issues. First, the bundled
+`THIRD-PARTY-NOTICES.md` digest was stale; regeneration changed only its lockfile digest,
+and the shipped-bundle test now passes. The rerun then stopped at the existing
+`horizoncode-config/tests/instructions.rs::without_a_project_marker...` test: this host
+has an empty `/tmp/.git`, which the discovery code treats as an ancestor project marker
+and so imports `/tmp/.../above/AGENTS.md`. The reproducible failure is tracked as
+AX-008-B01; the full workspace suite is therefore not green yet. AX-005-B01 is marked
+implemented, but `ACC-PROV-RAW-01` and `ACC-LOOP-01` remain unaccepted pending integrated
+evidence bundles. No live provider, deployment, push, or release test was run.
+
+Next safe action: resolve AX-008-B01's project-root marker contract and make the
+instruction-discovery tests independent of ambient temp-root markers, then rerun the
+full workspace tests and continue dependency order with AX-419-B08 or another ready
+tracked slice. Keep AX-005-B02's API-versioning review and artifact crash/recovery and
+output-path race cases in the backlog.
+
+---
+
+## Historical handoff — AX-419-B05 Runner timeout accounting (2026-10-03)
 
 The AX-419-B05 implementation is committed at `012212d2e0279444d83bab0fabdf57e05308334a`
 on `main`, based on the AX-419 fixture/docs handoff at `cfbbd857a8ecf9ed7914a394a0131bae4763a1d9`.

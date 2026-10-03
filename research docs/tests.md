@@ -1,15 +1,16 @@
 # HorizonCode test and benchmark plan
 
-Status: **test plan plus scoped local evidence for AX-001, AX-003, AX-005, AX-124, AX-314, and AX-405**.
+Status: **test plan plus scoped local evidence for AX-001, AX-003, AX-005, AX-124, AX-314, and AX-405**. The latest serial full-workspace rerun on 2026-10-03 is incomplete: it stops at `horizoncode-config/tests/instructions.rs::without_a_project_marker_nothing_above_the_working_directory_is_read`, tracked as AX-008-B01. Earlier workspace-pass claims below are revision-bound historical results, not current green status.
 The architecture refactor itself did not run a test, build, benchmark, or acceptance
 suite. On 2026-10-01, AX-003's direct runner response-admission implementation passed
 the focused runner, tools, provider, and CLI tests and the serial full workspace test
-command recorded in `CURRENT_RUN.md`. AX-005 now implements bounded provider response
-body/SSE-line handling and bounded redacted error previews; its focused provider tests,
-and serial full workspace suite pass at source revision
+command recorded in `CURRENT_RUN.md`. AX-005's earlier bounded-response implementation
+passed focused provider tests and the serial full workspace suite at source revision
 `fd7c2bdabcfca4cac58dcbedf4c627a49bfcb336`; workspace Clippy passed on an earlier
-dirty source snapshot and was not rerun at that revision. These are local implementation
-checks only: they do not create the `ACC-LOOP-01` or
+dirty source snapshot and was not rerun at that revision. The later AX-005 cancellation
+slice has scoped passing tests at `7c41bbb`, while the latest full-workspace rerun is
+incomplete at AX-008-B01 as stated above. These are local implementation checks only:
+they do not create the `ACC-LOOP-01` or
 `ACC-PROV-RAW-01` evidence bundles or prove managed-run acceptance. On the same date,
 the AX-124 helper tests and a release-mode headless diagnostic were run; that capture
 is not an `ACC-PERF-01` acceptance record. The 2026-10-01 local source snapshot also
@@ -372,6 +373,21 @@ checks listed below or in `CURRENT_RUN.md` are not acceptance records.
   EOF/reset. It does not exercise the Runner cancellation select end-to-end. The raw
   transport acceptance bundle and retained-byte acceptance artifact remain open; see
   `CURRENT_RUN.md` for the exact commands and status.
+
+- **Provider I/O cancellation (`REQ-PROV-018`, AX-005-B01):** loopback peers must stall
+  before response headers, after a partial non-success error body, and after a partial
+  successful non-streaming JSON body. Require prompt typed non-retryable `cancelled`,
+  peer-observed connection close, no second request, and no fallback. Controlled
+  pending-stream unit fixtures must separately signal that the error-preview and JSON
+  body readers have consumed an initial chunk and are waiting for another before
+  cancellation; this proves the cancellation branch in each reader. Exercise the
+  Runner with a provider that leaves `stream()` pending; cancellation must drop that
+  future and close the step as `Interrupted`, even if the provider itself is not
+  cancellation-aware. Keep these checks local; do not contact a live provider.
+  Existing active SSE-stream cancellation remains a separate consumer-drop case.
+  Cancellation precedence must hold when the token is already cancelled as the provider
+  result becomes ready. At `7c41bbb`, the local implementation slice covers these cases,
+  but integrated `ACC-PROV-RAW-01` and `ACC-LOOP-01` evidence records remain pending.
 
   Timeout regression (`AX-419-B05`): inject a short private Runner deadline and
   cancellation grace using controlled Tokio time; a provider that waits 25 ms after
