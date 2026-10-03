@@ -737,7 +737,10 @@ impl EvaluationRunV1 {
             return Err(RecordError::Invalid);
         }
         if self.limits.is_empty()
-            || !self.limits.iter().any(|limit| limit.name == "wall_time_ms")
+            || !self
+                .limits
+                .iter()
+                .any(|limit| matches!(limit.name.as_str(), "wall_time_ms" | "runner_wall_time_ms"))
             || self
                 .limits
                 .iter()
@@ -1494,10 +1497,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_wall_limit_inconsistent_timing_and_negative_cost() {
+    fn requires_scoped_time_limit_and_rejects_inconsistent_timing_and_negative_cost() {
         let mut no_wall_limit = valid_record();
-        no_wall_limit["limits"] = json!([]);
+        no_wall_limit["limits"] = json!([{
+            "name":"model_calls",
+            "value":10,
+            "enforcement":"enforced"
+        }]);
         assert!(seal_value(&mut no_wall_limit).is_err());
+
+        let mut runner_scoped_limit = valid_record();
+        runner_scoped_limit["limits"][0]["name"] = json!("runner_wall_time_ms");
+        assert!(seal_value(&mut runner_scoped_limit).is_ok());
 
         let mut timing = valid_record();
         timing["timing"]["first_action_ms"] = json!({"state":"reported","value":2});

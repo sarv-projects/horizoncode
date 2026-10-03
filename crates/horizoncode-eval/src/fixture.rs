@@ -37,8 +37,32 @@ pub const MAX_WORKSPACE_SNAPSHOT_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum conservative JSON expansion budget for workspace paths, link targets,
 /// entry metadata, and digests. File byte arrays have their own 64 KiB cap.
 pub const MAX_WORKSPACE_METADATA_BYTES: usize = 2 * 1024 * 1024;
-/// Hard wall-clock ceiling for the fixed fixture.
+/// Runner timeout budget. Cancellation is cooperative and may overrun while Runner
+/// work is synchronously polling without yielding to Tokio.
 pub const FIXTURE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Time reserved inside the Runner deadline for cooperative cancellation to settle.
+pub const FIXTURE_CANCELLATION_GRACE: Duration = Duration::from_millis(250);
+#[derive(Clone, Copy, Debug)]
+struct RunnerDeadline {
+    timeout: Duration,
+    cancellation_grace: Duration,
+}
+
+const FIXTURE_RUNNER_DEADLINE: RunnerDeadline = RunnerDeadline {
+    timeout: FIXTURE_TIMEOUT,
+    cancellation_grace: FIXTURE_CANCELLATION_GRACE,
+};
+
+#[derive(Clone, Copy, Debug)]
+struct CaptureLimits {
+    trajectory_bytes: usize,
+    trajectory_events: usize,
+}
+
+const FIXTURE_CAPTURE_LIMITS: CaptureLimits = CaptureLimits {
+    trajectory_bytes: MAX_TRAJECTORY_BYTES,
+    trajectory_events: MAX_TRAJECTORY_EVENTS,
+};
 /// Fixed production loop step cap; it includes a bounded final response.
 pub const FIXTURE_MAX_STEPS: usize = 4;
 const TASK_PROMPT: &str =
@@ -116,6 +140,10 @@ pub struct FixtureExecution {
     pub ended_at: String,
     /// Monotonic duration around the production Runner.
     pub total_duration_ms: u64,
+    /// Configured Runner timeout budget, excluding setup and artifact publication.
+    pub runner_deadline_ms: u64,
+    /// Observed Runner duration beyond the timeout budget, in milliseconds.
+    pub runner_deadline_overrun_ms: u64,
     /// Elapsed Runner latency to the first successfully settled tool action.
     pub first_action_ms: Option<u64>,
     /// Digest of exact executable bytes.
@@ -218,7 +246,14 @@ fn fixture_manifest() -> FixtureManifest<'static> {
 /// Executes the sole public fixture through the production Runner.
 pub async fn execute_smoke() -> Result<FixtureExecution, FixtureError> {
     let id = evaluation_id();
-    execute_with(ProviderMode::Smoke, FIXTURE_MAX_STEPS, false, id).await
+    execute_with_deadline(
+        ProviderMode::Smoke,
+        FIXTURE_MAX_STEPS,
+        false,
+        id,
+        FIXTURE_RUNNER_DEADLINE,
+    )
+    .await
 }
 
 /// Executes the fixed smoke fixture and retains the three independent artifacts.
@@ -264,6 +299,30 @@ async fn run_mode_to_id_with_capture_limits(
     trajectory_byte_limit: usize,
     trajectory_event_limit: usize,
 ) -> Result<FixtureReport, FixtureError> {
+    run_mode_to_id_with_deadlines(
+        output_dir,
+        mode,
+        max_steps,
+        pre_cancel,
+        id,
+        CaptureLimits {
+            trajectory_bytes: trajectory_byte_limit,
+            trajectory_events: trajectory_event_limit,
+        },
+        FIXTURE_RUNNER_DEADLINE,
+    )
+    .await
+}
+
+async fn run_mode_to_id_with_deadlines(
+    output_dir: &std::path::Path,
+    mode: ProviderMode,
+    max_steps: usize,
+    pre_cancel: bool,
+    id: String,
+    capture_limits: CaptureLimits,
+    runner_deadline: RunnerDeadline,
+) -> Result<FixtureReport, FixtureError> {
     if !cfg!(unix) {
         return Err(FixtureError::UnsupportedPlatform);
     }
@@ -276,13 +335,13 @@ async fn run_mode_to_id_with_capture_limits(
         horizoncode_config::state_fs::OwnerOnly::Directory,
     )
     .map_err(|_| FixtureError::Output)?;
-    let execution = match execute_with_capture_limits(
+    let execution = match execute_with_deadline_and_capture_limits(
         mode,
         max_steps,
         pre_cancel,
         id,
-        trajectory_byte_limit,
-        trajectory_event_limit,
+        capture_limits,
+        runner_deadline,
     )
     .await
     {
@@ -623,7 +682,7 @@ fn smoke_record(
         "policy_snapshot_digest": execution.policy_snapshot_digest,
         "environment_digest": digest_text(format!("{}:{}:eval-crate-{}", std::env::consts::OS, std::env::consts::ARCH, env!("CARGO_PKG_VERSION")).as_bytes()),
         "limits": [
-            {"name":"wall_time_ms", "value":FIXTURE_TIMEOUT.as_millis(), "enforcement":"enforced"},
+            {"name":"runner_wall_time_ms", "value":execution.runner_deadline_ms, "enforcement":"enforced"},
             {"name":"model_steps", "value":FIXTURE_MAX_STEPS, "enforcement":"enforced"},
             {"name":"tool_calls_per_response", "value":1, "enforcement":"enforced"},
             {"name":"trajectory_bytes", "value":MAX_TRAJECTORY_BYTES, "enforcement":"enforced"},
@@ -650,7 +709,10 @@ fn smoke_record(
             "first_model_token_ms": unknown("provider_interface_has_no_token_boundary"),
             "pre_model_overhead_ms": unknown("not_measured"),
             "total_duration_ms": elapsed,
-            "durations_ms": {"runner": elapsed}
+            "durations_ms": {
+                "runner": elapsed,
+                "runner_deadline_overrun": reported(json!(execution.runner_deadline_overrun_ms))
+            }
         },
         "usage": {
             "input_tokens": unknown("provider_usage_not_reported"),
@@ -735,6 +797,9 @@ enum ProviderMode {
     ProviderFailure,
     EscapeWrite,
     Pending,
+    GraceDelay,
+    DeadlineBoundary,
+    Unresponsive,
     UnexpectedFile,
     WorkspaceOverflow,
     WorkspaceSymlink,
@@ -759,11 +824,22 @@ impl Provider for ScriptedProvider {
     async fn stream(
         &self,
         _request: ModelRequest,
-        _cancel: CancelToken,
+        cancel: CancelToken,
     ) -> Result<ModelStream, ProviderError> {
         use std::sync::atomic::Ordering;
 
         let call = self.calls.fetch_add(1, Ordering::Relaxed);
+        if matches!(self.mode, ProviderMode::Unresponsive) {
+            return std::future::pending::<Result<ModelStream, ProviderError>>().await;
+        }
+        if matches!(self.mode, ProviderMode::DeadlineBoundary) && call == 0 {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+        if matches!(self.mode, ProviderMode::GraceDelay) {
+            cancel.cancelled().await;
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            return Ok(stream::pending().boxed());
+        }
         if matches!(self.mode, ProviderMode::ProviderFailure) {
             return Ok(stream::iter(vec![Err(ProviderError::provider_internal(
                 "fixed fixture provider failure",
@@ -871,6 +947,7 @@ impl RunObserver for BoundedObserver {
     }
 }
 
+#[cfg(test)]
 async fn execute_with(
     mode: ProviderMode,
     max_steps: usize,
@@ -888,6 +965,7 @@ async fn execute_with(
     .await
 }
 
+#[cfg(test)]
 async fn execute_with_capture_limits(
     mode: ProviderMode,
     max_steps: usize,
@@ -896,6 +974,52 @@ async fn execute_with_capture_limits(
     trajectory_byte_limit: usize,
     trajectory_event_limit: usize,
 ) -> Result<FixtureExecution, FixtureError> {
+    execute_with_deadline_and_capture_limits(
+        mode,
+        max_steps,
+        pre_cancel,
+        evaluation_id,
+        CaptureLimits {
+            trajectory_bytes: trajectory_byte_limit,
+            trajectory_events: trajectory_event_limit,
+        },
+        FIXTURE_RUNNER_DEADLINE,
+    )
+    .await
+}
+
+async fn execute_with_deadline(
+    mode: ProviderMode,
+    max_steps: usize,
+    pre_cancel: bool,
+    evaluation_id: String,
+    runner_deadline: RunnerDeadline,
+) -> Result<FixtureExecution, FixtureError> {
+    execute_with_deadline_and_capture_limits(
+        mode,
+        max_steps,
+        pre_cancel,
+        evaluation_id,
+        FIXTURE_CAPTURE_LIMITS,
+        runner_deadline,
+    )
+    .await
+}
+
+async fn execute_with_deadline_and_capture_limits(
+    mode: ProviderMode,
+    max_steps: usize,
+    pre_cancel: bool,
+    evaluation_id: String,
+    capture_limits: CaptureLimits,
+    runner_deadline: RunnerDeadline,
+) -> Result<FixtureExecution, FixtureError> {
+    if runner_deadline.timeout.is_zero()
+        || runner_deadline.timeout.as_millis() == 0
+        || runner_deadline.cancellation_grace >= runner_deadline.timeout
+    {
+        return Err(FixtureError::Runner);
+    }
     let root = tempfile::tempdir().map_err(|_| FixtureError::Setup)?;
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).map_err(|_| FixtureError::Setup)?;
@@ -936,7 +1060,7 @@ async fn execute_with_capture_limits(
     let requested = ConfinementProfile::workspace_write(&workspace)
         .with_network(NetworkPolicy::None)
         .with_limits(horizoncode_sandbox::Limits {
-            wall_clock_ms: Some(FIXTURE_TIMEOUT.as_millis() as u64),
+            wall_clock_ms: Some(runner_deadline.timeout.as_millis() as u64),
             max_output_bytes: 64 * 1024,
         });
     let resolved = ResolvedProfile {
@@ -981,40 +1105,50 @@ async fn execute_with_capture_limits(
         cancel.cancel();
     }
     let started_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+    let runner_clock_started = tokio::time::Instant::now();
+    let deadline = runner_clock_started + runner_deadline.timeout;
+    let cancellation_deadline = deadline - runner_deadline.cancellation_grace;
     let run_started = Instant::now();
     let mut observer = BoundedObserver {
-        max_bytes: trajectory_byte_limit,
-        max_events: trajectory_event_limit,
+        max_bytes: capture_limits.trajectory_bytes,
+        max_events: capture_limits.trajectory_events,
         run_started: Some(run_started),
         ..BoundedObserver::default()
     };
-    let (run_result, timed_out) = {
+    let (run_result, timeout_requested) = {
         let run_future = runner.run_turn(&session.id, TASK_PROMPT, cancel.clone(), &mut observer);
         tokio::pin!(run_future);
-        let deadline = tokio::time::Instant::now() + FIXTURE_TIMEOUT;
-        let cancellation_deadline = deadline - Duration::from_millis(250);
         tokio::select! {
+            biased;
             result = &mut run_future => (Some(result), false),
             () = tokio::time::sleep_until(cancellation_deadline) => {
                 cancel.cancel();
-                let terminal = tokio::time::timeout_at(deadline, &mut run_future).await.ok();
+                let terminal = tokio::select! {
+                    biased;
+                    result = &mut run_future => Some(result),
+                    () = tokio::time::sleep_until(deadline) => None,
+                };
                 (terminal, true)
             }
         }
     };
-    let total_duration_ms = u64::try_from(run_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let runner_settled = run_result.is_some();
+    let runner_elapsed = runner_clock_started.elapsed();
+    let total_duration_ms = u64::try_from(runner_elapsed.as_millis()).unwrap_or(u64::MAX);
+    let deadline_overrun = runner_elapsed.saturating_sub(runner_deadline.timeout);
+    let overrun_ms = deadline_overrun.as_millis();
+    let runner_deadline_overrun_ms =
+        u64::try_from(overrun_ms + u128::from(deadline_overrun.subsec_nanos() % 1_000_000 != 0))
+            .unwrap_or(u64::MAX);
     let ended_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
-    let (status, mut outcome_kind, mut terminal_reason, steps) = if timed_out {
-        (
+    let (status, mut outcome_kind, mut terminal_reason, steps) = match run_result {
+        None => (
             TurnEndStatus::Interrupted,
             Outcome::TimedOut,
             TerminalReason::Timeout,
-            run_result
-                .and_then(Result::ok)
-                .map_or(0, |outcome| outcome.steps),
-        )
-    } else {
-        match run_result.expect("non-timeout branch returns a Runner result") {
+            0,
+        ),
+        Some(result) => match result {
             Ok(outcome) => {
                 let (kind, reason) = match (mode, outcome.status) {
                     (ProviderMode::ProviderFailure, _) => {
@@ -1025,6 +1159,9 @@ async fn execute_with_capture_limits(
                     }
                     (_, TurnEndStatus::Failed | TurnEndStatus::Declined) => {
                         (Outcome::Failed, TerminalReason::TaskFailed)
+                    }
+                    (_, TurnEndStatus::Interrupted) if timeout_requested => {
+                        (Outcome::TimedOut, TerminalReason::Timeout)
                     }
                     (_, TurnEndStatus::Interrupted) => {
                         (Outcome::Cancelled, TerminalReason::Cancelled)
@@ -1042,9 +1179,9 @@ async fn execute_with_capture_limits(
                 TerminalReason::HarnessFailure,
                 0,
             ),
-        }
+        },
     };
-    if observer.overflow {
+    if observer.overflow && outcome_kind == Outcome::Completed {
         outcome_kind = Outcome::InsufficientEvidence;
         terminal_reason = TerminalReason::InsufficientEvidence;
     }
@@ -1081,49 +1218,54 @@ async fn execute_with_capture_limits(
         && workspace_capture.entries.len() == 1
         && workspace_capture.entries[0].path == EXPECTED_FILE
         && workspace_capture.entries[0].bytes == EXPECTED_CONTENT.as_bytes();
-    let (outcome_kind, terminal_reason) = if !workspace_capture.complete {
-        (
-            Outcome::InsufficientEvidence,
-            TerminalReason::InsufficientEvidence,
-        )
-    } else if matches!(
-        mode,
-        ProviderMode::Smoke
-            | ProviderMode::UnexpectedFile
-            | ProviderMode::WorkspaceOverflow
-            | ProviderMode::WorkspaceSymlink
-    ) && max_steps == FIXTURE_MAX_STEPS
-        && !smoke_result_ok
-    {
-        (Outcome::Failed, TerminalReason::TaskFailed)
-    } else {
-        (outcome_kind, terminal_reason)
-    };
+    let (outcome_kind, terminal_reason) =
+        if outcome_kind == Outcome::Completed && !workspace_capture.complete {
+            (
+                Outcome::InsufficientEvidence,
+                TerminalReason::InsufficientEvidence,
+            )
+        } else if outcome_kind == Outcome::Completed
+            && matches!(
+                mode,
+                ProviderMode::Smoke
+                    | ProviderMode::DeadlineBoundary
+                    | ProviderMode::UnexpectedFile
+                    | ProviderMode::WorkspaceOverflow
+                    | ProviderMode::WorkspaceSymlink
+            )
+            && max_steps == FIXTURE_MAX_STEPS
+            && !smoke_result_ok
+        {
+            (Outcome::Failed, TerminalReason::TaskFailed)
+        } else {
+            (outcome_kind, terminal_reason)
+        };
     let outside_target_created = root.path().join("outside.txt").exists();
     let initial_workspace_digest = tree_digest(&initial_capture)?;
     let final_workspace_digest = tree_digest(&workspace_capture)?;
     let binary_digest = executable_digest()?;
+    let terminal_observed = observer
+        .events
+        .last()
+        .is_some_and(|event| matches!(event, RunEvent::TurnFinished { .. }));
+    let mut trajectory_gaps = Vec::new();
+    if observer.overflow {
+        trajectory_gaps.push("trajectory_capture_limit".to_owned());
+    }
+    if !terminal_observed {
+        if !runner_settled {
+            trajectory_gaps.push("runner_cancelled_at_deadline".to_owned());
+        } else if !observer.overflow {
+            trajectory_gaps.push("runner_terminal_not_observed".to_owned());
+        }
+    }
     Ok(FixtureExecution {
         evaluation_id,
         status,
         outcome: outcome_kind,
         terminal_reason,
-        trajectory_complete: observer
-            .events
-            .last()
-            .is_some_and(|event| matches!(event, RunEvent::TurnFinished { .. }))
-            && !observer.overflow,
-        trajectory_gaps: if observer.overflow {
-            vec!["trajectory_capture_limit".to_owned()]
-        } else if observer
-            .events
-            .last()
-            .is_some_and(|event| matches!(event, RunEvent::TurnFinished { .. }))
-        {
-            Vec::new()
-        } else {
-            vec!["runner_terminal_not_observed".to_owned()]
-        },
+        trajectory_complete: terminal_observed && !observer.overflow,
+        trajectory_gaps,
         steps,
         trajectory: observer.events,
         trajectory_bytes,
@@ -1137,6 +1279,8 @@ async fn execute_with_capture_limits(
         started_at,
         ended_at,
         total_duration_ms,
+        runner_deadline_ms: u64::try_from(runner_deadline.timeout.as_millis()).unwrap_or(u64::MAX),
+        runner_deadline_overrun_ms,
         first_action_ms: observer.first_action_ms,
         binary_digest,
         tool_schema_digest,
@@ -1340,7 +1484,7 @@ fn capture_workspace_tree(root: &std::path::Path) -> WorkspaceCapture {
 mod tests {
     use super::{
         BoundedObserver, ProviderMode, execute_with, probe_output_publication, run_mode_to,
-        run_mode_to_id, run_mode_to_id_with_capture_limits,
+        run_mode_to_id, run_mode_to_id_with_capture_limits, run_mode_to_id_with_deadlines,
     };
     use horizoncode_runner::{RunEvent, RunObserver};
     use horizoncode_session::TurnEndStatus;
@@ -1414,6 +1558,227 @@ mod tests {
             super::blake3_digest(&trajectory_bytes)
         );
         assert!(attempt.join("workspace.snapshot.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn runner_timeout_cancels_pending_provider_and_seals_scoped_timeout_evidence() {
+        let output = tempfile::tempdir().unwrap();
+        let deadline = std::time::Duration::from_millis(200);
+        let grace = std::time::Duration::from_millis(50);
+        let report = run_mode_to_id_with_deadlines(
+            output.path(),
+            ProviderMode::GraceDelay,
+            2,
+            false,
+            super::evaluation_id(),
+            super::FIXTURE_CAPTURE_LIMITS,
+            super::RunnerDeadline {
+                timeout: deadline,
+                cancellation_grace: grace,
+            },
+        )
+        .await
+        .unwrap();
+
+        let attempt = output.path().join(report.attempt_directory);
+        let record =
+            crate::validate_bytes(&std::fs::read(attempt.join("record.json")).unwrap()).unwrap();
+        assert_eq!(record.outcome, crate::Outcome::TimedOut);
+        assert_eq!(record.terminal_reason, crate::TerminalReason::Timeout);
+        assert_eq!(record.limits[0].name, "runner_wall_time_ms");
+        assert_eq!(record.limits[0].value, 200);
+        assert_eq!(record.limits[0].enforcement, crate::Enforcement::Enforced);
+        let runner_duration_ms = match &record.timing.total_duration_ms {
+            crate::Measured::Reported { value } => *value,
+            other => panic!("Runner duration must be measured, got {other:?}"),
+        };
+        assert_eq!(runner_duration_ms, 175);
+        assert!(matches!(
+            record.timing.durations_ms.get("runner"),
+            Some(crate::Measured::Reported { value }) if *value == runner_duration_ms
+        ));
+        assert!(matches!(
+            record.timing.durations_ms.get("runner_deadline_overrun"),
+            Some(crate::Measured::Reported { value }) if *value == 0
+        ));
+        assert_eq!(
+            record.trajectory.completeness,
+            crate::Completeness::Complete
+        );
+
+        let trajectory: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(attempt.join("trajectory.json")).unwrap())
+                .unwrap();
+        assert!(matches!(
+            trajectory.as_array().and_then(|events| events.last()),
+            Some(event)
+                if event["type"] == "turn_finished"
+                    && event["status"] == "interrupted"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn completed_runner_wins_when_completion_and_cancel_deadline_are_ready_together() {
+        let output = tempfile::tempdir().unwrap();
+        let report = run_mode_to_id_with_deadlines(
+            output.path(),
+            ProviderMode::DeadlineBoundary,
+            super::FIXTURE_MAX_STEPS,
+            false,
+            super::evaluation_id(),
+            super::FIXTURE_CAPTURE_LIMITS,
+            super::RunnerDeadline {
+                timeout: std::time::Duration::from_millis(200),
+                cancellation_grace: std::time::Duration::from_millis(50),
+            },
+        )
+        .await
+        .unwrap();
+
+        let attempt = output.path().join(report.attempt_directory);
+        let record =
+            crate::validate_bytes(&std::fs::read(attempt.join("record.json")).unwrap()).unwrap();
+        assert_eq!(record.outcome, crate::Outcome::Completed);
+        assert_eq!(record.terminal_reason, crate::TerminalReason::Completed);
+        assert_eq!(
+            record.trajectory.completeness,
+            crate::Completeness::Complete
+        );
+        assert!(matches!(
+            record.timing.total_duration_ms,
+            crate::Measured::Reported { value: 150 }
+        ));
+        let trajectory: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(attempt.join("trajectory.json")).unwrap())
+                .unwrap();
+        assert!(matches!(
+            trajectory.as_array().and_then(|events| events.last()),
+            Some(event)
+                if event["type"] == "turn_finished"
+                    && event["status"] == "completed"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn runner_timeout_drops_unresponsive_provider_and_retains_incomplete_record() {
+        let output = tempfile::tempdir().unwrap();
+        let deadline = std::time::Duration::from_millis(200);
+        let grace = std::time::Duration::from_millis(50);
+        let report = run_mode_to_id_with_deadlines(
+            output.path(),
+            ProviderMode::Unresponsive,
+            2,
+            false,
+            super::evaluation_id(),
+            super::FIXTURE_CAPTURE_LIMITS,
+            super::RunnerDeadline {
+                timeout: deadline,
+                cancellation_grace: grace,
+            },
+        )
+        .await
+        .unwrap();
+
+        let attempt = output.path().join(report.attempt_directory);
+        let record =
+            crate::validate_bytes(&std::fs::read(attempt.join("record.json")).unwrap()).unwrap();
+        assert_eq!(record.outcome, crate::Outcome::TimedOut);
+        assert_eq!(record.terminal_reason, crate::TerminalReason::Timeout);
+        assert_eq!(record.limits[0].name, "runner_wall_time_ms");
+        assert_eq!(record.limits[0].value, 200);
+        assert!(matches!(
+            record.timing.total_duration_ms,
+            crate::Measured::Reported { value: 200 }
+        ));
+        assert_eq!(
+            record.trajectory.completeness,
+            crate::Completeness::Incomplete
+        );
+        assert_eq!(
+            record.trajectory.event_gaps,
+            vec!["runner_cancelled_at_deadline".to_owned()]
+        );
+        let trajectory: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(attempt.join("trajectory.json")).unwrap())
+                .unwrap();
+        assert!(
+            !trajectory
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| { event["type"] == "turn_finished" })
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn trajectory_overflow_does_not_replace_timeout_outcome() {
+        let output = tempfile::tempdir().unwrap();
+        let report = run_mode_to_id_with_deadlines(
+            output.path(),
+            ProviderMode::Unresponsive,
+            2,
+            false,
+            super::evaluation_id(),
+            super::CaptureLimits {
+                trajectory_bytes: super::MAX_TRAJECTORY_BYTES,
+                trajectory_events: 0,
+            },
+            super::RunnerDeadline {
+                timeout: std::time::Duration::from_millis(200),
+                cancellation_grace: std::time::Duration::from_millis(50),
+            },
+        )
+        .await
+        .unwrap();
+
+        let attempt = output.path().join(report.attempt_directory);
+        let record =
+            crate::validate_bytes(&std::fs::read(attempt.join("record.json")).unwrap()).unwrap();
+        assert_eq!(record.outcome, crate::Outcome::TimedOut);
+        assert_eq!(record.terminal_reason, crate::TerminalReason::Timeout);
+        assert_eq!(
+            record.trajectory.completeness,
+            crate::Completeness::Incomplete
+        );
+        assert_eq!(
+            record.trajectory.event_gaps,
+            vec![
+                "trajectory_capture_limit".to_owned(),
+                "runner_cancelled_at_deadline".to_owned()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_runner_deadline_is_rejected_before_fixture_setup() {
+        for runner_deadline in [
+            super::RunnerDeadline {
+                timeout: std::time::Duration::ZERO,
+                cancellation_grace: std::time::Duration::ZERO,
+            },
+            super::RunnerDeadline {
+                timeout: std::time::Duration::from_micros(500),
+                cancellation_grace: std::time::Duration::ZERO,
+            },
+            super::RunnerDeadline {
+                timeout: std::time::Duration::from_millis(50),
+                cancellation_grace: std::time::Duration::from_millis(50),
+            },
+        ] {
+            let result = super::execute_with_deadline(
+                ProviderMode::Smoke,
+                2,
+                false,
+                super::evaluation_id(),
+                runner_deadline,
+            )
+            .await;
+            assert!(matches!(result, Err(super::FixtureError::Runner)));
+        }
     }
 
     #[cfg(unix)]
