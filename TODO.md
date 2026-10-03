@@ -24,11 +24,11 @@ checks described as running on a dirty tree or an earlier revision remain histor
 until independently rerun/bound to the integrated revision. A clean-clone/CI gate is
 also required before treating checkout or hosted CI as healthy.
 
-Delivery ledger snapshot at AX-419 source revision `e4c1030`: **163 tasks total: 50
+Delivery ledger snapshot at AX-419 source revision `012212d`: **163 tasks total: 50
 implemented (relevant source exists wholly or partly, with remaining gaps named in each
 row), 111 proposed (no relevant implementation identified), 2 verified, 0 accepted,
 and 0 blocked.** AX-419 has bounded record validation and a fixed offline Runner fixture
-implemented; its independent verifier, holdout and benchmark program remain open.
+implemented partial; its independent verifier, holdout and benchmark program remain open.
 AX-413..418 remain proposed design work. AX-121 moved from proposed to
 implemented because its workflow gates are now present; hosted evidence remains open.
 These counts describe TODO classifications, not a feature-completion
@@ -41,7 +41,7 @@ service still have material delivery gaps. Architecture history remains under
 `docs/history/architecture/`; source URLs and pinned references remain under
 `docs/research/`.
 
-For every row, acceptance means the owning requirement and test plan pass at the exact integrated revision. A source file, interface, test file, peer completion message, checkbox, or model claim is not acceptance evidence. AX-413..418 remain `proposed`; AX-419 is `implemented` for bounded V1 record validation and the fixed offline Runner fixture only, with independent verification and the full evaluation system still open. Links to planned source-trail anchors are navigation targets, not evidence.
+For every row, acceptance means the owning requirement and test plan pass at the exact integrated revision. A source file, interface, test file, peer completion message, checkbox, or model claim is not acceptance evidence. AX-413..418 remain `proposed`; AX-419 is `implemented` for bounded V1 record validation, the fixed offline Runner fixture, and scoped timeout accounting only, with independent verification and the full evaluation system still open. Links to planned source-trail anchors are navigation targets, not evidence.
 
 ## Ordered implementation roadmap
 
@@ -380,7 +380,7 @@ contract and acceptance ID are normative.
 | AX-416 | Coarse repository-intelligence tools and revision-pinned TaskPackage | proposed | [Tools](ARCH/core/TOOLS.md), [Context](ARCH/core/CONTEXT.md), [Code intelligence](ARCH/product/CODE-INTELLIGENCE.md) | [source trail](docs/research/SOURCE-TRACEABILITY.md#ax416) | Extends AX-320/375/400 and reuses the canonical `ContextPacket`/TaskPackage; no second package/index owner. Add `repo_query`, `repo_context`, `repo_impact`, `repo_expand` through the existing registry, Guard, budget and artifact path while retaining raw `read/list/glob/grep`. Batch common questions, bound/revision-pin payloads and handles, mark source method/authority/freshness/coverage, fail closed on stale index, and disclose missing coverage. Pass `ACC-REPO-TOOLS-01` for exact/natural-language relevance, batching, bounds, freshness, authorization, cancellation, prompt-size limits and no index-as-context leakage. |
 | AX-417 | Deterministic coding pipeline and ChangeReceipt | proposed | [Scheduling](ARCH/execution/SCHEDULING.md), [Tools](ARCH/core/TOOLS.md), [Code intelligence](ARCH/product/CODE-INTELLIGENCE.md), [workspaces](ARCH/execution/WORKSPACES.md) | [source trail](docs/research/SOURCE-TRACEABILITY.md#ax417) | Depends on AX-311 effect settling, AX-395/313 workspace revisions/fences, and AX-414/415 freshness. After an authorized coherent edit, settle effects, apply exact index delta, format, collect diagnostics, select advisory affected tests, run only allowed checks, compute diff/impact and return a bounded revision-bound `ChangeReceipt`. A receipt/test-selection/formatter result never means Task PASS; required verification can expand. Pass `ACC-REPO-PIPELINE-01` for ordered events, failures/partial/unknown effects, stale-generation refusal, cancellation, exact changed-file/diff binding, advisory-test limits and independent verification separation. |
 | AX-418 | First-party progressive SWE, architecture and agile skill library | proposed | [Discovery and extensions](ARCH/product/DISCOVERY-AND-EXTENSIONS.md), [Context](ARCH/core/CONTEXT.md), [skill acceptance](ARCH/acceptance/ACCEPTANCE-MATRIX.md) | [source trail](docs/research/SOURCE-TRACEABILITY.md#ax418) | Depends on AX-110/308/373 skill discovery, activation, lifecycle and deferred loading. Add versioned HorizonCode-owned skills for feature work, debugging, refactoring, testing, review, software architecture, change impact, repo navigation, security, performance, dependency upgrade, release engineering, agile planning, evidence-before-done and no-progress recovery. Progressive metadata only until selected. `artifact-capabilities` and `artifact-diagramming` remain AX-411; reference them, do not duplicate their implementation. Extend `ACC-SKILL-01` for provenance/digest, collisions, context cost, activation/revocation, hostile content, offline behavior and measurable task-quality/call-cost benefit. |
-| AX-419 | `hz-eval`, HZBench development/holdout and controlled harness comparisons | implemented | [Evaluation](ARCH/acceptance/EVALUATION.md), [performance](ARCH/contracts/PERFORMANCE.md), [test inventory](research%20docs/tests.md) | [source trail](docs/research/SOURCE-TRACEABILITY.md#ax419) | Implemented partial slices: bounded strict V1 validation (`2919e26`) plus fixed `hz-eval run --fixture smoke` in `e4c1030`; fixture drives the production Runner with a scripted in-process provider, persists separate trajectory/workspace snapshot/record artifacts, and exercises provider failure, cancellation, step limit, workspace escape refusal, output-root symlink rejection, output collision, byte/metadata bounds, and sealed trajectory-overflow evidence. Exact source-revision evidence: 34 library, 7 CLI and 5 Runner-fixture tests pass; targeted Clippy and package rustfmt pass. This is not independent verification or acceptance. Remaining: partial artifact-write/sync failures and crash recovery may leave unreferenced artifacts without a record; path TOCTOU and cross-platform filesystem/publication evidence; timeout/task-failure cases; retry/group execution; independent verifier; dev dataset and fake-provider fixtures beyond smoke; frozen holdout custody/access enforcement; compare/report; cross-language digest execution; broader outcome/count matrix; compatible route controls; full telemetry; B0 and HZBench; no live-provider authorization. Pass `ACC-EVAL-01` across determinism, provenance, holdout access/freeze, metric integrity, failed-run retention, route equivalence, budgets, independent verification and no correctness regression. |
+| AX-419 | `hz-eval`, HZBench development/holdout and controlled harness comparisons | implemented | [Evaluation](ARCH/acceptance/EVALUATION.md), [performance](ARCH/contracts/PERFORMANCE.md), [test inventory](research%20docs/tests.md) | [source trail](docs/research/SOURCE-TRACEABILITY.md#ax419) | Implemented partial slices: bounded strict V1 validation (`2919e26`), fixed offline Runner fixture (`e4c1030`), and scoped Runner timeout accounting (`012212d`). Fixture persists separate trajectory/workspace snapshot/record artifacts; tests cover provider failure, pre-cancel, step limit, workspace escape refusal, output-root symlink/collision cases, size bounds, trajectory overflow, delayed cooperative cancellation, deadline future drop, simultaneous completion/deadline readiness, and combined trajectory-gap causes. Exact `012212d` local evidence: 39 library, 7 CLI and 5 Runner-fixture tests pass; targeted Clippy with `-D warnings`, package rustfmt and `git diff --check` pass. A separate read-only reviewer checked timeout outcome/trajectory consistency and grace/gap regressions; this is not `ACC-EVAL-01` acceptance. Remaining: partial artifact-write/sync failures and crash recovery may leave unreferenced artifacts without a record; path TOCTOU and cross-platform filesystem/publication evidence; retry/group execution; independent verifier; dev dataset and fake-provider fixtures beyond smoke; frozen holdout custody/access enforcement; compare/report; cross-language digest execution; broader outcome/count matrix; compatible route controls; full telemetry; B0 and HZBench; no live-provider authorization. Pass `ACC-EVAL-01` across determinism, provenance, holdout access/freeze, metric integrity, failed-run retention, route equivalence, budgets, independent verification and no correctness regression. |
 
 ### AX-419 follow-up and edge-case backlog
 
@@ -445,9 +445,17 @@ fixed mechanics fixture does not close them:
 - [ ] AX-419-E10 — Expand semantic coverage for every outcome/verifier pair, partial unknown
       lifecycle counts, unsupported attempts, large hostile records, nested duplicate
       keys, exact malformed artifact IDs, and terminal rendering safety.
-- [ ] AX-419-B05 — Verify timeout accounting: distinguish the five-second Runner deadline from
-      bounded cancellation settlement/cleanup time, and ensure the reported wall limit
-      matches the enforced total command/runtime bound.
+- [x] AX-419-B05 — Verify timeout accounting: private controlled-time tests prove delayed
+      cancellation settlement at 175 ms within a 200 ms Runner budget, future drop at the
+      async deadline with an explicit trajectory gap when settlement fails, sealed typed
+      timeout evidence, an exact `runner_wall_time_ms` scope, and measured overrun
+      reporting. They also cover completion winning when it is ready at the cancellation
+      boundary and preserve both capture-limit and dropped-Runner gaps. The public fixture
+      remains five seconds. Tokio cancellation is cooperative and cannot preempt
+      synchronous work or guarantee process termination; setup and artifact I/O remain
+      outside this Runner-only budget. Source `012212d`; independent read-only review and
+      `cargo +1.89.0 test -p horizoncode-eval --locked --offline -- --test-threads=1`
+      (39 library, 7 CLI, 5 integration tests), scoped Clippy, fmt and diff checks pass.
 - [ ] AX-419-E11 — Define when currency codes are checked against a pinned registry and how rate
       basis is normalized; V1 currently checks only uppercase three-letter syntax.
 - [ ] AX-419-E12 — Extend telemetry beyond the fixture's measured Runner wall duration and first
@@ -460,3 +468,23 @@ fixed mechanics fixture does not close them:
       the fixed fixture process. Current source/tests establish that no provider
       transport is constructed and no network-capable tool is advertised; they do not
       prove the process cannot open sockets. Do not claim OS-level network confinement.
+
+### Cross-cutting bugs and edge cases found during implementation
+
+- [ ] AX-419-B08 — Decide and implement an outer `hz-eval run` wall-time bound that
+      covers setup, Runner execution, workspace capture, and artifact publication, or
+      keep those phases explicitly unbounded in wall time. The current five-second
+      `runner_wall_time_ms` deadline covers Runner execution only; filesystem hashing
+      and artifact writes run synchronously outside Tokio's timer and are not preempted.
+      Add slow/stalled filesystem failure injection before claiming an end-to-end
+      command bound. Owner: [evaluation architecture](ARCH/acceptance/EVALUATION.md),
+      [evaluation test plan](research%20docs/tests.md).
+- [ ] AX-005-B01 — Provider cancellation is checked before request dispatch and during
+      retry backoff, but request acquisition (`send().await`), bounded HTTP-error-body
+      preview reads, and non-streaming JSON-body collection are not raced against the
+      cancellation token. A peer that accepts the socket and stalls before headers (or
+      mid-body) can delay `interrupt` until the request timeout; the Runner may record
+      `failed` rather than `interrupted`. Add typed cancellation handling, no-retry/no-
+      fallback assertions, and loopback regressions for stalled headers and bodies.
+      Owners: [Provider](ARCH/core/PROVIDERS.md), [Agent loop](ARCH/core/AGENT-LOOP.md);
+      acceptance: `ACC-PROV-RAW-01` and `ACC-LOOP-01`.

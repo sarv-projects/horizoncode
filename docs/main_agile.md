@@ -127,6 +127,14 @@ verification, holdout controls, comparison/reporting, telemetry and acceptance e
 do not claim measured B0 until supported same-model routes and authorized execution
 exist.
 
+AX-419-B05 acceptance requires an injected short Runner-only deadline and evidence for
+cooperative cancellation, delayed settlement inside the reserved grace, deadline
+handling, typed outcome, trajectory completeness, exact scoped limit reporting, and
+observed overrun. The Tokio timeout is cooperative; synchronous work may overrun.
+Provider-transport cancellation remains a separate tracked bug and is not implied by
+this fixture-level check. Keep the public fixture at five seconds; setup and artifact
+I/O remain outside this limit.
+
 ### P0.4 — record B0 before optimization
 
 Capture paired baseline runs using the same task, model, provider, reasoning settings,

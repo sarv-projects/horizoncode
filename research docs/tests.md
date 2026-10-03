@@ -159,7 +159,8 @@ Unknown fields and duplicate JSON object keys are rejected. The record digest is
 over compact typed V1 JSON with the digest omitted, object keys sorted recursively and
 array order preserved. Validation rejects unsafe artifact IDs, malformed UTC timestamps,
 inconsistent reported lifecycle counts, terminal-reason/outcome contradictions,
-negative costs, empty limits, or a missing `wall_time_ms` ceiling. Per-category reported
+negative costs, empty limits, or a missing scoped deadline (`wall_time_ms` or
+`runner_wall_time_ms`). Per-category reported
 tool counts reconcile with reported totals. A verifier may be absent only with the
 explicit `not_run` state; accepted/failed verifier outcomes bind a reported final
 workspace digest and a separate result artifact digest. Timing, context,
@@ -371,6 +372,19 @@ checks listed below or in `CURRENT_RUN.md` are not acceptance records.
   EOF/reset. It does not exercise the Runner cancellation select end-to-end. The raw
   transport acceptance bundle and retained-byte acceptance artifact remain open; see
   `CURRENT_RUN.md` for the exact commands and status.
+
+  Timeout regression (`AX-419-B05`): inject a short private Runner deadline and
+  cancellation grace using controlled Tokio time; a provider that waits 25 ms after
+  cancellation must settle inside the 50 ms grace, producing a measured 175 ms Runner
+  duration for the 200 ms budget. Prove this case fails when grace reservation is
+  removed. It must have a typed timeout outcome and complete terminal trajectory. A
+  never-settling provider must be dropped at the
+  deadline, retain a typed timeout record, and mark the trajectory incomplete with an
+  explicit cancellation gap. Check the exact `runner_wall_time_ms` scope and measured
+  `runner_deadline_overrun` field; do not assert a strict real-clock duration below the
+  budget. Tokio deadlines cannot preempt synchronous work, so overrun is reported and
+  no process-level wall-time guarantee is claimed. Setup and artifact publication are
+  outside the Runner-only limit; no overall CLI wall-time claim is valid.
 
 - **Provider parity and maintenance (`ACC-PROV-SYNC-01`):** compare complete pinned
   OpenCode and Cline connector/auth inventories with HorizonCode's supported/blocked

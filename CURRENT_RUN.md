@@ -1,6 +1,39 @@
 # CURRENT_RUN — HorizonCode
 
-## Current handoff — AX-419 fixed Runner fixture (2026-10-02)
+## Current handoff — AX-419-B05 Runner timeout accounting (2026-10-03)
+
+The AX-419-B05 implementation is committed at `012212d2e0279444d83bab0fabdf57e05308334a`
+on `main`, based on the AX-419 fixture/docs handoff at `cfbbd857a8ecf9ed7914a394a0131bae4763a1d9`.
+`hz-eval` records its five-second Runner-only budget as `runner_wall_time_ms`, requests
+cooperative cancellation 250 ms before the deadline, gives the Runner the reserved
+grace, and drops a still-pending future at the deadline. It records monotonic Runner
+duration and deadline overrun. The record preserves the Runner terminal result when it
+settles at a deadline boundary, and timeout/capture-limit causes remain separate
+trajectory gaps. Tokio cancellation is cooperative: synchronous polling can overrun and
+cannot be preempted. Setup, workspace capture, and artifact I/O remain outside the
+Runner budget; no total process wall-time guarantee is claimed.
+
+Fresh exact-source checks at `012212d`: `cargo +1.89.0 test -p horizoncode-eval
+--locked --offline -- --test-threads=1` passed 39 library, 7 CLI, and 5 Runner-fixture
+tests; `cargo +1.89.0 clippy -p horizoncode-eval --all-targets --locked --offline --
+-D warnings`, package rustfmt check, and `git diff --check` passed. Regression tests
+cover settlement after a 25 ms post-cancel delay (175 ms of a 200 ms budget), completion
+and cancellation becoming ready together, an unresponsive provider dropped at deadline,
+and simultaneous trajectory-capture/drop gaps. A mutation check removing the reserved
+grace failed at the expected 200 ms measurement; restoring grace returned the 175 ms
+result. An independent read-only reviewer rechecked the timeout edge cases. These are
+local slice checks, not independent `ACC-EVAL-01` acceptance.
+
+TODO.md and the AX-419 source trail now record B05 evidence. AX-419 remains `implemented`
+partial; `ACC-EVAL-01`, independent evaluation verification, holdout controls, broader
+metrics, B0/HZBench and release claims remain open. Known next items include AX-005-B01
+(provider request/body cancellation), AX-419-B08 (outer CLI deadline decision), and the
+remaining artifact crash/recovery and output-path race cases. No live provider, network
+benchmark, holdout, deployment, push, or release test was run.
+
+---
+
+## Historical handoff — AX-419 fixed Runner fixture (2026-10-02)
 
 The AX-419 fixture implementation is committed at `e4c1030c0313b0fab5f833fe233168d1aab7c751`
 on `main`, based on `ff79130b9a6b40511cd3e370c567681a6f746a07`. `hz-eval` now has bounded strict V1 record

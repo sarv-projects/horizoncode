@@ -50,10 +50,23 @@ response, event, workspace-content, serialized-snapshot, and wall-time ceilings.
 For the smoke fixture these are four Runner steps, one tool call and 1 KiB total tool
 arguments per response, 2 KiB model response, 256 KiB serialized trajectory, 256
 observer events, 64 KiB captured file content, 4 MiB serialized workspace snapshot,
-2 MiB conservative serialized workspace metadata, and a five-second total Runner
-deadline. A ceiling hit, Runner error,
-provider stream error, cancellation, or confinement refusal is retained as a typed
-terminal run outcome; the command must not silently omit a failed attempt.
+2 MiB conservative serialized workspace metadata, and a five-second Runner deadline.
+The fixture requests cooperative cancellation 250 ms before that deadline and waits
+through the reserved grace; if the Runner does not settle, the future is dropped at the
+deadline and its trajectory is marked incomplete. This is an async deadline, not an OS
+preemption guarantee: Tokio can observe it only when Runner yields, so synchronous work
+or scheduler delay can overrun the budget. The record names the budget
+`runner_wall_time_ms`, reports the measured interval under `durations_ms.runner`, and
+reports any observed excess under `durations_ms.runner_deadline_overrun`. A blocked
+synchronous operation can prevent both cancellation and an overrun record until it
+returns; the fixture makes no hard process-runtime guarantee.
+Setup, post-Runner workspace capture, artifact serialization/publication, and total CLI
+runtime are outside this deadline and have no declared wall-time bound. Their byte and
+path limits remain separately enforced. A ceiling hit, Runner error, provider stream
+error, cancellation, or confinement refusal is retained as a typed terminal run
+outcome when the evidence store remains writable; the command must not silently omit a
+failed attempt. A timeout record is sealed after the Runner interval, so artifact
+publication may complete after the declared Runner limit.
 
 The trajectory and final workspace snapshot are bounded immutable artifacts stored
 separately from the run record. The workspace snapshot preserves the exact testable
@@ -214,7 +227,10 @@ fields from being silently retained.
 The record binds the repository start, integrated and tested revisions separately;
 they may be equal but must not be inferred to be equal.
 
-Every record has a declared `wall_time_ms` ceiling. Timing values are monotonic
+Every record has a declared time ceiling whose name states its scope (`wall_time_ms`
+for an overall evaluated operation or `runner_wall_time_ms` for Runner-only timing).
+The smoke fixture reports only its Runner deadline; it does not claim an overall CLI
+deadline. Timing values are monotonic
 durations in milliseconds; start/end are UTC RFC3339 timestamps. Known first-action,
 first-token and pre-model durations cannot exceed a known total duration. Context bytes
 and token counts are separate measurements; a known token count requires a known
