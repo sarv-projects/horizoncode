@@ -114,7 +114,11 @@ impl ChatCompletionsProvider {
         self.config.chat_endpoint()
     }
 
-    async fn open(&self, request: &ModelRequest) -> Result<Response, ProviderError> {
+    async fn open(
+        &self,
+        request: &ModelRequest,
+        cancel: &CancelToken,
+    ) -> Result<Response, ProviderError> {
         let body = build_body(request, true);
         let mut builder = self
             .client
@@ -127,10 +131,14 @@ impl ChatCompletionsProvider {
         for (name, value) in &self.config.headers {
             builder = builder.header(name.as_str(), value.as_str());
         }
-        let response =
-            builder.json(&body).send().await.map_err(|error| {
+        let send = builder.json(&body).send();
+        let response = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(ProviderError::cancelled()),
+            result = send => result.map_err(|error| {
                 ProviderError::transport(self.redactor.redact(&error.to_string()))
-            })?;
+            })?,
+        };
 
         let status = response.status();
         if status.is_success() {
@@ -141,7 +149,8 @@ impl ChatCompletionsProvider {
             .get(RETRY_AFTER)
             .and_then(|value| value.to_str().ok())
             .and_then(parse_retry_after);
-        let body_preview = read_error_body_preview(response, MAX_ERROR_BODY_PREVIEW_BYTES).await;
+        let body_preview =
+            read_error_body_preview(response, MAX_ERROR_BODY_PREVIEW_BYTES, cancel).await?;
         let body_hint = render_error_body_preview(&body_preview, &self.redactor);
         let mut error =
             ProviderError::from_status(status.as_u16(), &body_hint).with_status(status.as_u16());
@@ -154,6 +163,7 @@ impl ChatCompletionsProvider {
     async fn decode(
         &self,
         response: Response,
+        cancel: &CancelToken,
     ) -> Result<BoxStream<'static, Result<ModelEvent, ProviderError>>, ProviderError> {
         reject_declared_oversize(response.content_length(), MAX_PROVIDER_BODY_BYTES)?;
         let is_sse = response
@@ -173,7 +183,8 @@ impl ChatCompletionsProvider {
         let chunks = response.bytes_stream().map(move |result| {
             result.map_err(|error| ProviderError::transport(redactor.redact(&error.to_string())))
         });
-        let body = collect_bounded_body(chunks, MAX_PROVIDER_BODY_BYTES).await?;
+        let body =
+            collect_bounded_body_cancellable(chunks, MAX_PROVIDER_BODY_BYTES, cancel).await?;
         let value: Value = serde_json::from_slice(&body).map_err(|error| {
             ProviderError::unknown(format!("malformed provider response: {error}"))
         })?;
@@ -212,6 +223,7 @@ fn response_limit_error(subject: &str, limit: usize) -> ProviderError {
     ))
 }
 
+#[cfg(test)]
 async fn collect_bounded_body<S>(chunks: S, limit: usize) -> Result<Vec<u8>, ProviderError>
 where
     S: Stream<Item = Result<Bytes, ProviderError>>,
@@ -229,19 +241,89 @@ where
     Ok(body)
 }
 
-async fn read_error_body_preview(response: Response, limit: usize) -> BodyPreview {
+async fn collect_bounded_body_cancellable<S>(
+    chunks: S,
+    limit: usize,
+    cancel: &CancelToken,
+) -> Result<Vec<u8>, ProviderError>
+where
+    S: Stream<Item = Result<Bytes, ProviderError>>,
+{
+    futures::pin_mut!(chunks);
+    let mut body = Vec::new();
+    loop {
+        let next = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(ProviderError::cancelled()),
+            next = chunks.next() => next,
+        };
+        let Some(chunk) = next else { break };
+        let chunk = chunk?;
+        let remaining = limit.saturating_sub(body.len());
+        if chunk.len() > remaining {
+            return Err(response_limit_error("response body", limit));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+async fn read_error_body_preview(
+    response: Response,
+    limit: usize,
+    cancel: &CancelToken,
+) -> Result<BodyPreview, ProviderError> {
     if response
         .content_length()
         .is_some_and(|length| length > limit as u64)
     {
-        return BodyPreview {
+        return Ok(BodyPreview {
             bytes: Vec::new(),
             capped: true,
-        };
+        });
     }
-    read_bounded_preview(response.bytes_stream(), limit).await
+    read_bounded_preview_cancellable(response.bytes_stream(), limit, cancel).await
 }
 
+async fn read_bounded_preview_cancellable<S, E>(
+    chunks: S,
+    limit: usize,
+    cancel: &CancelToken,
+) -> Result<BodyPreview, ProviderError>
+where
+    S: Stream<Item = Result<Bytes, E>>,
+{
+    futures::pin_mut!(chunks);
+    let mut preview = BodyPreview::default();
+    while preview.bytes.len() < limit {
+        let next = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(ProviderError::cancelled()),
+            next = chunks.next() => next,
+        };
+        let chunk = match next {
+            Some(Ok(chunk)) => chunk,
+            Some(Err(_)) => {
+                preview.capped = true;
+                break;
+            }
+            None => break,
+        };
+        let remaining = limit.saturating_sub(preview.bytes.len());
+        let retained = chunk.len().min(remaining);
+        preview.bytes.extend_from_slice(&chunk[..retained]);
+        if retained < chunk.len() || preview.bytes.len() == limit {
+            preview.capped = true;
+            break;
+        }
+    }
+    if limit == 0 {
+        preview.capped = true;
+    }
+    Ok(preview)
+}
+
+#[cfg(test)]
 async fn read_bounded_preview<S, E>(chunks: S, limit: usize) -> BodyPreview
 where
     S: Stream<Item = Result<Bytes, E>>,
@@ -315,10 +397,10 @@ impl Provider for ChatCompletionsProvider {
         let mut attempt: u32 = 0;
         loop {
             if cancel.is_cancelled() {
-                return Err(ProviderError::transport("request cancelled"));
+                return Err(ProviderError::cancelled());
             }
-            match self.open(&request).await {
-                Ok(response) => return self.decode(response).await,
+            match self.open(&request, &cancel).await {
+                Ok(response) => return self.decode(response, &cancel).await,
                 Err(error) => {
                     if !error.retryable {
                         return Err(error);
@@ -332,7 +414,7 @@ impl Provider for ChatCompletionsProvider {
                                 tokio::select! {
                                     () = tokio::time::sleep(delay) => {}
                                     () = cancel.cancelled() => {
-                                        return Err(ProviderError::transport("request cancelled"));
+                                        return Err(ProviderError::cancelled());
                                     }
                                 }
                             }
@@ -869,6 +951,70 @@ mod tests {
             error.kind,
             horizoncode_types::ProviderErrorKind::ResponseLimit
         );
+        assert!(!error.retryable);
+    }
+
+    #[tokio::test]
+    async fn bounded_body_reader_returns_cancelled_while_waiting_for_another_chunk() {
+        let (waiting_tx, waiting_rx) = tokio::sync::oneshot::channel();
+        let mut waiting_tx = Some(waiting_tx);
+        let mut first = true;
+        let chunks = stream::poll_fn(move |_| {
+            if first {
+                first = false;
+                std::task::Poll::Ready(Some(Ok::<_, ProviderError>(Bytes::from_static(b"{"))))
+            } else {
+                if let Some(tx) = waiting_tx.take() {
+                    let _ = tx.send(());
+                }
+                std::task::Poll::Pending
+            }
+        });
+        let cancel = CancelToken::new();
+        let reader_cancel = cancel.clone();
+        let reader = tokio::spawn(async move {
+            collect_bounded_body_cancellable(chunks, 100, &reader_cancel).await
+        });
+        waiting_rx.await.unwrap();
+        cancel.cancel();
+        let error = tokio::time::timeout(Duration::from_millis(100), reader)
+            .await
+            .expect("body reader ignored cancellation")
+            .expect("body reader task panicked")
+            .unwrap_err();
+        assert_eq!(error.kind, horizoncode_types::ProviderErrorKind::Cancelled);
+        assert!(!error.retryable);
+    }
+
+    #[tokio::test]
+    async fn error_preview_reader_returns_cancelled_while_waiting_for_another_chunk() {
+        let (waiting_tx, waiting_rx) = tokio::sync::oneshot::channel();
+        let mut waiting_tx = Some(waiting_tx);
+        let mut first = true;
+        let chunks = stream::poll_fn(move |_| {
+            if first {
+                first = false;
+                std::task::Poll::Ready(Some(Ok::<_, ()>(Bytes::from_static(b"error prefix"))))
+            } else {
+                if let Some(tx) = waiting_tx.take() {
+                    let _ = tx.send(());
+                }
+                std::task::Poll::Pending
+            }
+        });
+        let cancel = CancelToken::new();
+        let reader_cancel = cancel.clone();
+        let reader = tokio::spawn(async move {
+            read_bounded_preview_cancellable(chunks, 8_192, &reader_cancel).await
+        });
+        waiting_rx.await.unwrap();
+        cancel.cancel();
+        let error = tokio::time::timeout(Duration::from_millis(100), reader)
+            .await
+            .expect("preview reader ignored cancellation")
+            .expect("preview reader task panicked")
+            .unwrap_err();
+        assert_eq!(error.kind, horizoncode_types::ProviderErrorKind::Cancelled);
         assert!(!error.retryable);
     }
 

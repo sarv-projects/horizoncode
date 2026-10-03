@@ -28,8 +28,8 @@ pub use retry::{RetryDecision, RetryPolicy, parse_retry_after};
 pub use secret::SecretString;
 pub use sse::SseBuffer;
 
-use horizoncode_types::{CancelToken, ModelEvent, ModelRequest, ProviderError};
 use futures::stream::BoxStream;
+use horizoncode_types::{CancelToken, ModelEvent, ModelRequest, ProviderError};
 
 /// A streaming model provider.
 ///

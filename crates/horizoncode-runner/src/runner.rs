@@ -16,7 +16,7 @@ use horizoncode_tools::{
 };
 use horizoncode_types::{
     CancelToken, ContentPart, Event, EventKind, FinishReason, Message, ModelEvent, ModelRequest,
-    SessionId, ToolCall, ToolChoice, ToolStatus, TurnId, Usage,
+    ProviderErrorKind, SessionId, ToolCall, ToolChoice, ToolStatus, TurnId, Usage,
 };
 use serde_json::Value;
 
@@ -242,9 +242,35 @@ impl Runner {
                 ),
             )?;
 
-            let mut stream = match self.provider.stream(request, cancel.clone()).await {
+            let opening = self.provider.stream(request, cancel.clone());
+            let stream_result = tokio::select! {
+                biased;
+                () = cancel.cancelled() => Err(horizoncode_types::ProviderError::cancelled()),
+                result = opening => result,
+            };
+            let mut stream = match stream_result {
                 Ok(stream) => stream,
                 Err(error) => {
+                    if cancel.is_cancelled() || error.kind == ProviderErrorKind::Cancelled {
+                        self.close_step(
+                            session_id,
+                            &turn_id,
+                            step,
+                            Usage::default(),
+                            false,
+                            observer,
+                        )?;
+                        return self.finish(
+                            session_id,
+                            turn_id,
+                            TurnEndStatus::Interrupted,
+                            "interrupted while acquiring the provider stream".to_owned(),
+                            last_text,
+                            step,
+                            total_usage,
+                            observer,
+                        );
+                    }
                     self.record_attempt(session_id, &turn_id, step, &error.to_string())?;
                     self.config.recorder.retry(
                         session_id,
@@ -280,6 +306,7 @@ impl Runner {
             let mut assembly_error: Option<ResponseAssemblyError> = None;
             loop {
                 tokio::select! {
+                    biased;
                     () = cancel.cancelled() => {
                         cancelled = true;
                         break;
@@ -302,6 +329,10 @@ impl Runner {
                                 }
                             }
                             Some(Err(error)) => {
+                                if cancel.is_cancelled() || error.kind == ProviderErrorKind::Cancelled {
+                                    cancelled = true;
+                                    break;
+                                }
                                 stream_error = Some(error.to_string());
                                 break;
                             }
@@ -311,33 +342,37 @@ impl Runner {
             }
 
             if let Some(error) = stream_error {
-                total_usage.add_assign(accumulator.usage);
-                self.record_attempt(session_id, &turn_id, step, &error)?;
-                self.config.recorder.retry(
-                    session_id,
-                    &turn_id,
-                    step as u64,
-                    1,
-                    FailureClass::Timeout,
-                )?;
-                self.close_step(
-                    session_id,
-                    &turn_id,
-                    step,
-                    accumulator.usage,
-                    !tools_enabled,
-                    observer,
-                )?;
-                return self.finish(
-                    session_id,
-                    turn_id,
-                    TurnEndStatus::Failed,
-                    format!("model stream failed: {error}"),
-                    Some(accumulator.text).filter(|text| !text.is_empty()),
-                    step,
-                    total_usage,
-                    observer,
-                );
+                if cancel.is_cancelled() {
+                    cancelled = true;
+                } else {
+                    total_usage.add_assign(accumulator.usage);
+                    self.record_attempt(session_id, &turn_id, step, &error)?;
+                    self.config.recorder.retry(
+                        session_id,
+                        &turn_id,
+                        step as u64,
+                        1,
+                        FailureClass::Timeout,
+                    )?;
+                    self.close_step(
+                        session_id,
+                        &turn_id,
+                        step,
+                        accumulator.usage,
+                        !tools_enabled,
+                        observer,
+                    )?;
+                    return self.finish(
+                        session_id,
+                        turn_id,
+                        TurnEndStatus::Failed,
+                        format!("model stream failed: {error}"),
+                        Some(accumulator.text).filter(|text| !text.is_empty()),
+                        step,
+                        total_usage,
+                        observer,
+                    );
+                }
             }
 
             if let Some(error) = assembly_error.filter(|_| !cancelled) {

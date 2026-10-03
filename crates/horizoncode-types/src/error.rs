@@ -26,6 +26,8 @@ pub enum ProviderErrorKind {
     ProviderInternal,
     /// Network, timeout or idle-watchdog failure.
     Transport,
+    /// The caller cancelled the pending provider operation.
+    Cancelled,
     /// The provider response exceeded a local adapter body/frame ceiling.
     ResponseLimit,
     /// Any unclassified failure.
@@ -44,6 +46,7 @@ impl ProviderErrorKind {
             Self::ContextOverflow => "context_overflow",
             Self::ProviderInternal => "provider_internal",
             Self::Transport => "transport",
+            Self::Cancelled => "cancelled",
             Self::ResponseLimit => "response_limit",
             Self::Unknown => "unknown",
         }
@@ -129,6 +132,12 @@ impl ProviderError {
         Self::build(ProviderErrorKind::Transport, message)
     }
 
+    /// Builds a non-retryable caller-cancellation outcome.
+    #[must_use]
+    pub fn cancelled() -> Self {
+        Self::build(ProviderErrorKind::Cancelled, "request cancelled")
+    }
+
     /// Builds a non-retryable local provider-response ceiling failure.
     #[must_use]
     pub fn response_limit(message: impl Into<String>) -> Self {
@@ -206,5 +215,13 @@ mod tests {
         assert_eq!(error.kind.as_str(), "response_limit");
         assert!(!error.retryable);
         assert_eq!(error.kind, ProviderErrorKind::ResponseLimit);
+    }
+
+    #[test]
+    fn cancellation_is_a_stable_non_retryable_kind() {
+        let error = ProviderError::cancelled();
+        assert_eq!(error.kind.as_str(), "cancelled");
+        assert!(!error.retryable);
+        assert_eq!(error.kind, ProviderErrorKind::Cancelled);
     }
 }

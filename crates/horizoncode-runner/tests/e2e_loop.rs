@@ -123,6 +123,34 @@ struct ScriptedProvider {
     leave_stream_open: bool,
 }
 
+#[derive(Debug)]
+struct UnresponsiveWhileOpeningProvider {
+    started: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+#[async_trait::async_trait]
+impl Provider for UnresponsiveWhileOpeningProvider {
+    fn name(&self) -> &str {
+        "mock"
+    }
+
+    fn model(&self) -> &str {
+        "mock-model"
+    }
+
+    async fn stream(
+        &self,
+        _request: ModelRequest,
+        cancel: CancelToken,
+    ) -> Result<ModelStream, ProviderError> {
+        if let Some(started) = self.started.lock().await.take() {
+            let _ = started.send(());
+        }
+        let _ = cancel;
+        futures::future::pending().await
+    }
+}
+
 #[async_trait::async_trait]
 impl Provider for ScriptedProvider {
     fn name(&self) -> &str {
@@ -820,6 +848,54 @@ async fn loop_terminates_interrupted_when_cancelled() {
     let loaded = harness.store.load(&harness.session_id).unwrap();
     assert_eq!(loaded.last_turn_status(), Some(TurnEndStatus::Interrupted));
     assert_eq!(loaded.open_turn(), None);
+    assert!(
+        !loaded
+            .events
+            .iter()
+            .any(|event| event.kind == EventKind::ModelAttempt),
+        "cancellation must not be recorded as a failed/retryable provider attempt"
+    );
+}
+
+#[tokio::test]
+async fn cancellation_during_provider_stream_acquisition_is_interrupted() {
+    let harness = harness();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let provider: Arc<dyn Provider> = Arc::new(UnresponsiveWhileOpeningProvider {
+        started: tokio::sync::Mutex::new(Some(started_tx)),
+    });
+    let runner = build_runner_with_provider(&harness, provider, RunConfig::default());
+    let cancel = CancelToken::new();
+    let request_cancel = cancel.clone();
+    let session_id = harness.session_id.clone();
+    let run = tokio::spawn(async move {
+        let mut observer = RecordingObserver::new();
+        runner
+            .run_turn(&session_id, "hello", request_cancel, &mut observer)
+            .await
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), started_rx)
+        .await
+        .expect("provider stream acquisition did not start")
+        .expect("provider dropped its start signal");
+    cancel.cancel();
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), run)
+        .await
+        .expect("runner did not finish after provider cancellation")
+        .expect("runner task panicked")
+        .unwrap();
+    assert_eq!(outcome.status, TurnEndStatus::Interrupted);
+    let loaded = harness.store.load(&harness.session_id).unwrap();
+    assert_eq!(loaded.last_turn_status(), Some(TurnEndStatus::Interrupted));
+    assert_eq!(loaded.open_turn(), None);
+    assert!(
+        !loaded
+            .events
+            .iter()
+            .any(|event| event.kind == EventKind::ModelAttempt),
+        "cancellation must not be recorded as a failed/retryable provider attempt"
+    );
 }
 
 #[tokio::test]

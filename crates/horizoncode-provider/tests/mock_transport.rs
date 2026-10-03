@@ -25,6 +25,128 @@ fn provider(server: &MockServer) -> ChatCompletionsProvider {
     .unwrap()
 }
 
+async fn stalled_response(
+    prefix: &'static [u8],
+) -> (
+    std::net::SocketAddr,
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Receiver<bool>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        let (header_end, content_length) = loop {
+            let count = socket.read(&mut buffer).await.unwrap();
+            assert_ne!(count, 0, "client closed before sending an HTTP request");
+            request.extend_from_slice(&buffer[..count]);
+            if let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                    })
+                    .expect("provider request has a content length");
+                break (header_end, content_length);
+            }
+        };
+        let request_end = header_end + 4 + content_length;
+        while request.len() < request_end {
+            let count = socket.read(&mut buffer).await.unwrap();
+            assert_ne!(count, 0, "client closed before completing the HTTP request");
+            request.extend_from_slice(&buffer[..count]);
+        }
+        if !prefix.is_empty() {
+            socket.write_all(prefix).await.unwrap();
+            socket.flush().await.unwrap();
+        }
+        let _ = started_tx.send(());
+        let closed = match socket.read(&mut buffer[..1]).await {
+            Ok(0) => true,
+            Ok(_) => false,
+            Err(error) => matches!(
+                error.kind(),
+                std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+            ),
+        };
+        let no_retry = tokio::time::timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err();
+        let _ = closed_tx.send(closed && no_retry);
+    });
+    (address, started_rx, closed_rx, server)
+}
+
+async fn assert_cancel_during_stalled_response(prefix: &'static [u8]) {
+    let (address, started, closed, server) = stalled_response(prefix).await;
+    let mut config = ProviderConfig::new(
+        "mock",
+        format!("http://{address}/v1"),
+        "test-key",
+        "mock-model",
+    );
+    config.timeout = Duration::from_secs(30);
+    let provider = ChatCompletionsProvider::new(config).unwrap();
+    let cancel = CancelToken::new();
+    let request_cancel = cancel.clone();
+    let request = tokio::spawn(async move {
+        provider
+            .stream(ModelRequest::new("mock-model"), request_cancel)
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), started)
+        .await
+        .expect("server did not receive the request")
+        .expect("server dropped the request-start signal");
+    cancel.cancel();
+    let result = tokio::time::timeout(Duration::from_millis(500), request)
+        .await
+        .expect("provider did not promptly return after cancellation")
+        .expect("provider task panicked");
+    let error = match result {
+        Ok(_) => panic!("cancelled provider request unexpectedly returned a stream"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, ProviderErrorKind::Cancelled);
+    assert!(!error.retryable);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), closed)
+            .await
+            .expect("provider kept the socket open after cancellation")
+            .expect("loopback server dropped the close signal")
+    );
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn cancellation_drops_request_stalled_before_response_headers() {
+    assert_cancel_during_stalled_response(b"").await;
+}
+
+#[tokio::test]
+async fn cancellation_closes_connection_after_partial_non_success_response() {
+    assert_cancel_during_stalled_response(
+        b"HTTP/1.1 503 Service Unavailable\r\ncontent-type: application/json\r\ncontent-length: 100\r\nconnection: keep-alive\r\n\r\n{\"error\":",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn cancellation_closes_connection_after_partial_non_streaming_response() {
+    assert_cancel_during_stalled_response(
+        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 100\r\nconnection: keep-alive\r\n\r\n{\"choices\":",
+    )
+    .await;
+}
+
 async fn collect(stream: horizoncode_provider::ModelStream) -> Vec<ModelEvent> {
     stream
         .filter_map(|item| async move { item.ok() })
@@ -159,6 +281,44 @@ async fn rate_limit_is_retried() {
         .collect();
     assert_eq!(text, "recovered");
     assert_eq!(server.request_count(), 2);
+}
+
+#[tokio::test]
+async fn cancellation_during_retry_backoff_is_typed_and_does_not_retry() {
+    let server = MockServer::start(vec![MockTurn::Error {
+        status: 429,
+        body: "slow down".to_owned(),
+        retry_after: Some("30".to_owned()),
+    }])
+    .await;
+    let provider = provider(&server);
+    let cancel = CancelToken::new();
+    let request_cancel = cancel.clone();
+    let request = tokio::spawn(async move {
+        provider
+            .stream(ModelRequest::new("mock-model"), request_cancel)
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while server.request_count() == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("provider did not dispatch its first request");
+    cancel.cancel();
+    let result = tokio::time::timeout(Duration::from_millis(500), request)
+        .await
+        .expect("provider did not leave retry backoff after cancellation")
+        .expect("provider task panicked");
+    let error = match result {
+        Ok(_) => panic!("cancelled retry unexpectedly returned a stream"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, ProviderErrorKind::Cancelled);
+    assert!(!error.retryable);
+    assert_eq!(server.request_count(), 1);
 }
 
 #[tokio::test]
