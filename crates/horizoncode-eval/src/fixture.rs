@@ -5,6 +5,9 @@
 //! or run an independent verifier. The returned workspace bytes are evidence
 //! material for a caller to retain as a separate immutable artifact.
 
+use std::future::Future;
+#[cfg(test)]
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -803,6 +806,32 @@ enum ProviderMode {
     UnexpectedFile,
     WorkspaceOverflow,
     WorkspaceSymlink,
+    #[cfg(test)]
+    OuterDeadlineFallback,
+}
+
+/// Runs a Runner future until completion or its outer deadline, requesting
+/// cooperative cancellation at the earlier cancellation boundary.
+async fn run_until_deadline<F: Future>(
+    run_future: F,
+    cancel: &CancelToken,
+    cancellation_deadline: tokio::time::Instant,
+    deadline: tokio::time::Instant,
+) -> (Option<F::Output>, bool) {
+    tokio::pin!(run_future);
+    tokio::select! {
+        biased;
+        result = &mut run_future => (Some(result), false),
+        () = tokio::time::sleep_until(cancellation_deadline) => {
+            cancel.cancel();
+            let terminal = tokio::select! {
+                biased;
+                result = &mut run_future => Some(result),
+                () = tokio::time::sleep_until(deadline) => None,
+            };
+            (terminal, true)
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1115,23 +1144,22 @@ async fn execute_with_deadline_and_capture_limits(
         run_started: Some(run_started),
         ..BoundedObserver::default()
     };
-    let (run_result, timeout_requested) = {
-        let run_future = runner.run_turn(&session.id, TASK_PROMPT, cancel.clone(), &mut observer);
-        tokio::pin!(run_future);
-        tokio::select! {
-            biased;
-            result = &mut run_future => (Some(result), false),
-            () = tokio::time::sleep_until(cancellation_deadline) => {
-                cancel.cancel();
-                let terminal = tokio::select! {
-                    biased;
-                    result = &mut run_future => Some(result),
-                    () = tokio::time::sleep_until(deadline) => None,
-                };
-                (terminal, true)
-            }
-        }
+    #[cfg(test)]
+    let run_future: Pin<
+        Box<
+            dyn Future<
+                    Output = Result<horizoncode_runner::RunOutcome, horizoncode_runner::LoopError>,
+                > + '_,
+        >,
+    > = if matches!(mode, ProviderMode::OuterDeadlineFallback) {
+        Box::pin(std::future::pending())
+    } else {
+        Box::pin(runner.run_turn(&session.id, TASK_PROMPT, cancel.clone(), &mut observer))
     };
+    #[cfg(not(test))]
+    let run_future = runner.run_turn(&session.id, TASK_PROMPT, cancel.clone(), &mut observer);
+    let (run_result, timeout_requested) =
+        run_until_deadline(run_future, &cancel, cancellation_deadline, deadline).await;
     let runner_settled = run_result.is_some();
     let runner_elapsed = runner_clock_started.elapsed();
     let total_duration_ms = u64::try_from(runner_elapsed.as_millis()).unwrap_or(u64::MAX);
@@ -1485,9 +1513,41 @@ mod tests {
     use super::{
         BoundedObserver, ProviderMode, execute_with, probe_output_publication, run_mode_to,
         run_mode_to_id, run_mode_to_id_with_capture_limits, run_mode_to_id_with_deadlines,
+        run_until_deadline,
     };
     use horizoncode_runner::{RunEvent, RunObserver};
     use horizoncode_session::TurnEndStatus;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[tokio::test(start_paused = true)]
+    async fn deadline_wrapper_drops_a_future_that_ignores_cancellation() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct DropFlag(Arc<AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let cancel = horizoncode_types::CancelToken::new();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let drop_flag = DropFlag(dropped.clone());
+        let pending = async move {
+            let _drop_flag = drop_flag;
+            std::future::pending::<()>().await;
+        };
+        let started = tokio::time::Instant::now();
+        let cancellation_deadline = started + Duration::from_millis(150);
+        let deadline = started + Duration::from_millis(200);
+
+        let result = run_until_deadline(pending, &cancel, cancellation_deadline, deadline).await;
+
+        assert_eq!(result, (None, true));
+        assert!(cancel.is_cancelled());
+        assert!(dropped.load(Ordering::SeqCst));
+    }
 
     #[cfg(unix)]
     #[test]
@@ -1709,6 +1769,55 @@ mod tests {
                 if event["type"] == "turn_finished"
                     && event["status"] == "interrupted"
         ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn outer_deadline_fallback_seals_typed_timeout_with_incomplete_trajectory() {
+        let output = tempfile::tempdir().unwrap();
+        let report = run_mode_to_id_with_deadlines(
+            output.path(),
+            ProviderMode::OuterDeadlineFallback,
+            2,
+            false,
+            super::evaluation_id(),
+            super::FIXTURE_CAPTURE_LIMITS,
+            super::RunnerDeadline {
+                timeout: Duration::from_millis(200),
+                cancellation_grace: Duration::from_millis(50),
+            },
+        )
+        .await
+        .unwrap();
+
+        let attempt = output.path().join(report.attempt_directory);
+        let record =
+            crate::validate_bytes(&std::fs::read(attempt.join("record.json")).unwrap()).unwrap();
+        assert_eq!(record.outcome, crate::Outcome::TimedOut);
+        assert_eq!(record.terminal_reason, crate::TerminalReason::Timeout);
+        assert!(matches!(
+            record.timing.total_duration_ms,
+            crate::Measured::Reported { value: 200 }
+        ));
+        assert_eq!(
+            record.trajectory.completeness,
+            crate::Completeness::Incomplete
+        );
+        assert_eq!(
+            record.trajectory.event_gaps,
+            vec!["runner_cancelled_at_deadline".to_owned()]
+        );
+
+        let trajectory: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(attempt.join("trajectory.json")).unwrap())
+                .unwrap();
+        assert!(
+            !trajectory
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| event["type"] == "turn_finished")
+        );
     }
 
     #[cfg(unix)]
