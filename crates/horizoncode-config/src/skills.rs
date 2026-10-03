@@ -487,7 +487,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
         let repo = dir.path().join("repo");
-        fs::create_dir_all(repo.join(".git")).unwrap();
+        write(&repo.join(".git/HEAD"), "ref: refs/heads/main\n");
         write(
             &home.join("skills/review/SKILL.md"),
             &skill("review", "global review", "GLOBAL BODY\n"),

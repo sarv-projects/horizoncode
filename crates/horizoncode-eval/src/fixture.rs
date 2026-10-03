@@ -1562,7 +1562,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test(start_paused = true)]
-    async fn runner_timeout_cancels_pending_provider_and_seals_scoped_timeout_evidence() {
+    async fn runner_timeout_cancels_pending_provider_at_the_grace_boundary() {
         let output = tempfile::tempdir().unwrap();
         let deadline = std::time::Duration::from_millis(200);
         let grace = std::time::Duration::from_millis(50);
@@ -1593,7 +1593,9 @@ mod tests {
             crate::Measured::Reported { value } => *value,
             other => panic!("Runner duration must be measured, got {other:?}"),
         };
-        assert_eq!(runner_duration_ms, 175);
+        // The Runner now races cancellation against stream acquisition and
+        // drops the provider future immediately at the cancellation boundary.
+        assert_eq!(runner_duration_ms, 150);
         assert!(matches!(
             record.timing.durations_ms.get("runner"),
             Some(crate::Measured::Reported { value }) if *value == runner_duration_ms
@@ -1663,7 +1665,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test(start_paused = true)]
-    async fn runner_timeout_drops_unresponsive_provider_and_retains_incomplete_record() {
+    async fn runner_interrupts_an_unresponsive_provider_before_the_outer_deadline() {
         let output = tempfile::tempdir().unwrap();
         let deadline = std::time::Duration::from_millis(200);
         let grace = std::time::Duration::from_millis(50);
@@ -1691,26 +1693,22 @@ mod tests {
         assert_eq!(record.limits[0].value, 200);
         assert!(matches!(
             record.timing.total_duration_ms,
-            crate::Measured::Reported { value: 200 }
+            crate::Measured::Reported { value: 150 }
         ));
         assert_eq!(
             record.trajectory.completeness,
-            crate::Completeness::Incomplete
+            crate::Completeness::Complete
         );
-        assert_eq!(
-            record.trajectory.event_gaps,
-            vec!["runner_cancelled_at_deadline".to_owned()]
-        );
+        assert!(record.trajectory.event_gaps.is_empty());
         let trajectory: serde_json::Value =
             serde_json::from_slice(&std::fs::read(attempt.join("trajectory.json")).unwrap())
                 .unwrap();
-        assert!(
-            !trajectory
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|event| { event["type"] == "turn_finished" })
-        );
+        assert!(matches!(
+            trajectory.as_array().and_then(|events| events.last()),
+            Some(event)
+                if event["type"] == "turn_finished"
+                    && event["status"] == "interrupted"
+        ));
     }
 
     #[cfg(unix)]
@@ -1746,10 +1744,7 @@ mod tests {
         );
         assert_eq!(
             record.trajectory.event_gaps,
-            vec![
-                "trajectory_capture_limit".to_owned(),
-                "runner_cancelled_at_deadline".to_owned()
-            ]
+            vec!["trajectory_capture_limit".to_owned()]
         );
     }
 

@@ -286,6 +286,11 @@ baseline/update/replacement semantics under `REQ-CTX-005`:
 
 If a discovered project file cannot be read, `CMP-config` reports `Unavailable`
 and initialization is blocked (fail closed); a missing global file is absent.
+The project boundary is the nearest valid `.horizoncode` or Git marker as defined
+in `ARCH/core/CONFIG.md`; an invalid `.git` entry does not stop the walk, while an
+existing but uncheckable marker conservatively does. Without a valid or
+uncheckable marker, the working directory is the boundary and parent instruction
+files are excluded.
 When instructions change, the update line states that the new set
 *replaces* all previously loaded ambient instructions, and removal states that
 the prior instructions no longer apply — the renderer never appends a partial

@@ -10,6 +10,12 @@ Every required sub-check must pass on its declared layer and platform, bound to 
 
 ## Core safety and persistence
 
+### Context instruction discovery
+
+| ID | Item | What is proven (sub-checks) | Method | Pass criterion | Evidence artifact |
+|---|---|---|---|---|---|
+| `ACC-CONTEXT-01` | **Project instruction discovery boundary** | Global instructions are followed by project instructions from the nearest marker through the working directory. Markers are defined in `ARCH/core/CONFIG.md`; an existing but operationally uncheckable marker conservatively forms a boundary. Invalid marker text does not. No marker means the working directory is the root. | L2 deterministic filesystem fixtures using synthetic/minimal Git marker metadata (not a test of Git repository usability), including normal and long symbolic refs, 40/64-hex detached `HEAD`, linked-worktree pointer files (relative and absolute targets, including paths with spaces and CRLF), bounded oversized/malformed/dangling/symlink markers, malformed Git ref names, `.horizoncode`, unreadable markers where the platform permits a deterministic permission-denied fixture, and an empty invalid `.git` directory at an ancestor; assert exact instruction and skill discovery boundaries without invoking Git or another subprocess. Include unreadable and duplicate instruction files. | Only instructions and skills within the nearest marker are loaded; invalid markers do not truncate discovery, and with no valid marker no parent instructions or skills are read. Ordering, typed unreadable behavior, and path/content de-duplication remain intact. | `acceptance/context-instructions/<build-id>.json` with fixture identities, discovered paths, source/spec digests, platform, and command output. |
+
 ### Provider transport bounds
 
 | ID | Item | What is proven (sub-checks) | Method | Pass criterion | Evidence artifact |

@@ -109,6 +109,26 @@ The effective value retains a `(layer, file)` record for every key so precedence
 
 **Instruction source.** A typed record `{path, scope, digest, content}` injected into context; each canonical path is included once, byte-identical content is digest-deduplicated, and distinct scope files are assembled outer-to-inner; a matching filename does not erase outer-scope instructions.
 
+The repository walk stops at the nearest project marker. `.horizoncode` counts
+only when it is a non-symlink directory. Git metadata counts when `.git` is a
+non-symlink directory or non-symlink regular pointer file. A Git directory must
+contain a non-symlink regular `HEAD` no larger than 65,536 bytes with one
+Git-format symbolic-ref line (`ref: refs/...`) or a 40/64-hex detached object ID.
+The bounded symbolic-ref parser rejects Git's forbidden ref-name forms. Invalid
+text (including non-UTF-8 marker contents) is a malformed marker, not an I/O
+failure. A pointer
+file is limited to 8,192 bytes and contains exactly one `gitdir: <path>` line;
+relative targets resolve against the pointer's parent, and the target must be a
+non-symlink directory with a valid `HEAD`. Empty, malformed, symlinked, or
+dangling `.git` entries are invalid markers and the walk continues toward the
+nearest valid ancestor. If an existing marker cannot be checked because of an
+operational I/O error (other than absence or invalid text), it conservatively
+forms the boundary so parent instructions are not loaded. Without a valid or
+uncheckable marker, the working directory is its own boundary and no parent
+`AGENTS.md` is read. Detection is filesystem-only and MUST
+NOT launch Git or another subprocess. This is a bounded project-boundary check,
+not validation of repository object integrity or Git usability.
+
 **Skill record.** `{name, description, slash?, location, content, digest}` parsed from frontmatter. **Description routing:** only `{name, description}` enters the always-on skill summary; the body loads only on activation, bounded by `CMP-context`. A skill whose declared requirements are unavailable activates in guidance mode naming the gap; activation never grants permissions.
 
 **Hook record.** `{name, event, matcher, handler_ref, order}`.
