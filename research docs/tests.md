@@ -1,6 +1,6 @@
 # HorizonCode test and benchmark plan
 
-Status: **test plan plus scoped local evidence for AX-001, AX-003, AX-005, AX-124, AX-314, and AX-405**. The latest serial full-workspace rerun on 2026-10-03 is incomplete: it stops at `horizoncode-config/tests/instructions.rs::without_a_project_marker_nothing_above_the_working_directory_is_read`, tracked as AX-008-B01. Earlier workspace-pass claims below are revision-bound historical results, not current green status.
+Status: **test plan plus scoped local evidence for AX-001, AX-003, AX-005, AX-008, AX-124, AX-314, AX-405, and AX-419**. The serial locked/offline full-workspace suite passes on source commit `594eb0b94e65a30aaad696e3d04df13f08c05a38` (2026-10-03), after fixing AX-008-B01. This is local test evidence, not an acceptance record. Earlier workspace claims below are revision-bound historical results.
 The architecture refactor itself did not run a test, build, benchmark, or acceptance
 suite. On 2026-10-01, AX-003's direct runner response-admission implementation passed
 the focused runner, tools, provider, and CLI tests and the serial full workspace test
@@ -8,8 +8,8 @@ command recorded in `CURRENT_RUN.md`. AX-005's earlier bounded-response implemen
 passed focused provider tests and the serial full workspace suite at source revision
 `fd7c2bdabcfca4cac58dcbedf4c627a49bfcb336`; workspace Clippy passed on an earlier
 dirty source snapshot and was not rerun at that revision. The later AX-005 cancellation
-slice has scoped passing tests at `7c41bbb`, while the latest full-workspace rerun is
-incomplete at AX-008-B01 as stated above. These are local implementation checks only:
+slice has scoped passing tests at `7c41bbb`; AX-008's marker correction and a full
+workspace rerun pass at `594eb0b`. These are local implementation checks only:
 they do not create the `ACC-LOOP-01` or
 `ACC-PROV-RAW-01` evidence bundles or prove managed-run acceptance. On the same date,
 the AX-124 helper tests and a release-mode headless diagnostic were run; that capture
@@ -390,13 +390,14 @@ checks listed below or in `CURRENT_RUN.md` are not acceptance records.
   but integrated `ACC-PROV-RAW-01` and `ACC-LOOP-01` evidence records remain pending.
 
   Timeout regression (`AX-419-B05`): inject a short private Runner deadline and
-  cancellation grace using controlled Tokio time; a provider that waits 25 ms after
-  cancellation must settle inside the 50 ms grace, producing a measured 175 ms Runner
-  duration for the 200 ms budget. Prove this case fails when grace reservation is
-  removed. It must have a typed timeout outcome and complete terminal trajectory. A
-  never-settling provider must be dropped at the
-  deadline, retain a typed timeout record, and mark the trajectory incomplete with an
-  explicit cancellation gap. Check the exact `runner_wall_time_ms` scope and measured
+  cancellation grace using controlled Tokio time. Current AX-005 cancellation makes a
+  pending provider-acquisition future settle as `Interrupted` at the 150 ms cancellation
+  boundary of a 200 ms budget; the eval record remains a typed timeout with a complete
+  terminal trajectory. Completion ready at that same boundary wins. AX-419-B09 covers
+  these current semantics. B05 remains open until a separate fixture proves that a
+  Runner future which does not settle cooperatively is dropped at the outer deadline,
+  retains a typed timeout record, and marks the trajectory incomplete with an explicit
+  cancellation gap. Check the exact `runner_wall_time_ms` scope and measured
   `runner_deadline_overrun` field; do not assert a strict real-clock duration below the
   budget. Tokio deadlines cannot preempt synchronous work, so overrun is reported and
   no process-level wall-time guarantee is claimed. Setup and artifact publication are

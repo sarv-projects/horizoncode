@@ -1,42 +1,39 @@
 # CURRENT_RUN — HorizonCode
 
-## Current handoff — AX-005-B01 provider I/O cancellation (2026-10-03)
+## Current handoff — AX-008-B01 project marker correction (2026-10-03)
 
-Implementation is committed at `7c41bbbd4342e624832039151333f46ba967e5b2` on `main`.
-The provider now races the active cancellation token against request acquisition,
-bounded non-success previews, non-streaming response-body reads, and retry backoff.
-Cancellation is a typed non-retryable `ProviderErrorKind::Cancelled`; pending I/O is
-dropped and no retry/fallback is selected. The Runner independently races cancellation
-against provider stream acquisition and stream polling, gives user cancellation
-precedence over a concurrent provider error, closes as `Interrupted`, and does not log
-stream-acquisition cancellation as a failed model attempt. SSE stream cancellation
-continues to be consumer-owned: the Runner drops the returned stream.
+Implementation is committed at `594eb0b94e65a30aaad696e3d04df13f08c05a38` on `main`.
+`horizoncode-config` now treats a `.git` entry as a project boundary only when it is a
+valid non-symlink Git directory with a bounded, syntactically valid `HEAD`, or a bounded
+regular `.git` pointer to such a directory. Empty, malformed, invalid-text, dangling,
+and symlinked markers do not stop discovery. Operational I/O failures for existing
+markers conservatively form the boundary. `.horizoncode` must be a non-symlink
+directory. Instructions and skill discovery share the same root function, and no Git
+subprocess is invoked. A read-only review checked the marker contract; its initial
+concern about `refs/heads/foo./bar` was corrected against `git check-ref-format`, and
+the implementation retains that valid ref while rejecting forbidden names and NUL
+pointer paths.
 
-At `7c41bbb`, the scoped suite passed: 29 provider unit + 13 loopback integration tests,
-5 Runner unit + 19 Runner E2E + 2 permission-audit tests, and 15 type tests. Targeted
-Clippy (`-D warnings`), package-scoped rustfmt, and `git diff --check` passed. Controlled
-pending-stream tests prove each bounded body reader exits while awaiting the next chunk;
-loopback peers confirm connection closure for stalled response phases and no retry
-during backoff. Runner E2E drops a provider future that ignores cancellation. An
-independent read-only review found no remaining provider/runtime defect; it noted the
-downstream compatibility impact of adding a variant to the public serialized error
-enum, tracked as AX-005-B02 before a stable external API release.
+On this source revision, the full serial locked/offline workspace suite passed. Focused
+config results: 20 unit, 5 discovery, 17 instruction, 11 settings, and 4 skill-inspection
+tests. The 39-test `horizoncode-eval` library suite also passed after AX-005 cancellation
+changed the Runner's timeout behavior; tests now assert cancellation at the reserved
+grace boundary (150 ms of a 200 ms budget), a typed timeout with a complete terminal
+`Interrupted` trajectory, completion precedence, and capture-limit-only gaps. Config
+Clippy (`-D warnings`), changed-file rustfmt, architecture dependency check, and
+`git diff --check` passed. Workspace-wide `cargo fmt --check` still reports existing
+formatting differences in unrelated crates; those files were not changed.
 
-The workspace-wide test run exposed two repository issues. First, the bundled
-`THIRD-PARTY-NOTICES.md` digest was stale; regeneration changed only its lockfile digest,
-and the shipped-bundle test now passes. The rerun then stopped at the existing
-`horizoncode-config/tests/instructions.rs::without_a_project_marker...` test: this host
-has an empty `/tmp/.git`, which the discovery code treats as an ancestor project marker
-and so imports `/tmp/.../above/AGENTS.md`. The reproducible failure is tracked as
-AX-008-B01; the full workspace suite is therefore not green yet. AX-005-B01 is marked
-implemented, but `ACC-PROV-RAW-01` and `ACC-LOOP-01` remain unaccepted pending integrated
-evidence bundles. No live provider, deployment, push, or release test was run.
+AX-008 remains `implemented`; `ACC-CONTEXT-01` is not accepted. AX-419 remains partial:
+AX-419-B09 reconciles the timeout fixtures, while AX-419-B05 is open because the current
+suite no longer exercises the outer-deadline future-drop/cancellation-gap path.
+AX-005's `ACC-PROV-RAW-01` and `ACC-LOOP-01` acceptance bundles remain open, and
+AX-005-B02 tracks downstream serialized-enum compatibility before a stable external
+API release. No live provider, deployment, push, or release test was run.
 
-Next safe action: resolve AX-008-B01's project-root marker contract and make the
-instruction-discovery tests independent of ambient temp-root markers, then rerun the
-full workspace tests and continue dependency order with AX-419-B08 or another ready
-tracked slice. Keep AX-005-B02's API-versioning review and artifact crash/recovery and
-output-path race cases in the backlog.
+Next safe action: continue from the dependency-ordered TODO with the next ready
+evaluation/runtime slice after checking its prerequisites; retain AX-419-B05, AX-419-B08,
+AX-005-B02, and artifact crash/recovery/output-path race work as explicit backlog.
 
 ---
 
