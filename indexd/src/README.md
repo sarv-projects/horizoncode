@@ -11,9 +11,20 @@ authority.
 - Immutable base generations built only from caller-supplied file snapshots.
 - Deterministic BLAKE3 content and generation digests over sorted paths and opaque
   caller pins.
+- Identical snapshots with identical pins reproduce a generation digest; changing a
+  snapshot path or its bytes changes that digest. This is the library's implemented
+  identity behavior, not a declaration of the architecture-level canonical digest
+  preimage.
 - Strict normalized relative-path checks; paths are preserved as UTF-8 and compared
   byte-for-byte (no case folding or Unicode normalization).
 - Bounded, deterministic, line-oriented lexical search with generation provenance.
+- Stable path-then-line cursor pagination. A bounded versioned token binds the exact
+  query digest, base-generation digest, optional overlay digest, and last returned
+  match. Malformed, cross-query, stale-generation/overlay, and non-matching anchors
+  fail explicitly. A next cursor is returned only when the result cap truncates a page;
+  work-limited results do not imply that more results are safely reachable. The result
+  cap is per-page and may change between continuation calls; the path/line anchor keeps
+  the ordered result stream contiguous without binding the cursor to a page size.
 - A separate immutable unsaved-buffer overlay pinned to an exact local base-generation
   digest and opaque editor version. It can replace bytes only for paths already in
   that base and never mutates the base. Per-file replacement and clearing produce a new
@@ -43,12 +54,19 @@ These are implementation defaults, not policy-controlled limits:
 | One opaque pin/editor version | 4,096 bytes |
 | Query | 256 UTF-8 bytes, non-empty, one line |
 | Results | 1–100 matching lines |
+| Serialized search cursor | 2,400 bytes |
 | Search work | 4,194,304 counted byte/comparison steps per query |
 
 Search scans files in path order and stops visibly when the work or result bound is
 reached. The work meter charges line-boundary inspection and KMP byte comparisons;
 the query/prefix-table size and number/path length of files are independently bounded
 above. A `PARTIAL` result is not evidence that the caller supplied every readable file.
+Continuation replays the same deterministic scan from the beginning to verify its
+anchor, so earlier matches consume the same per-request work budget. If that bounded
+scan reaches its work limit before the anchor, continuation fails explicitly rather
+than returning a page that might skip or duplicate results. Cursor checksums detect
+malformed/corrupted tokens; cursors are not authenticated and must never be used as an
+authorization or scope proof.
 
 ## Integration gaps
 
