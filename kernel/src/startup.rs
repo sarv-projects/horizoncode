@@ -9,6 +9,8 @@
 use std::fmt;
 use std::num::NonZeroU64;
 
+use crate::protocol::{KernelStartupStatusV1, TypedErrorV1};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartupPhase {
     AwaitingPeerAuthentication,
@@ -29,6 +31,9 @@ pub enum StartupTransitionError {
         actual: StartupPhase,
     },
     InvalidOwnerEpoch,
+    ApplicationRpcBeforeReady {
+        actual: StartupPhase,
+    },
 }
 
 impl fmt::Display for StartupTransitionError {
@@ -41,6 +46,12 @@ impl fmt::Display for StartupTransitionError {
                 )
             }
             Self::InvalidOwnerEpoch => formatter.write_str("owner epoch must be nonzero"),
+            Self::ApplicationRpcBeforeReady { actual } => {
+                write!(
+                    formatter,
+                    "application RPC rejected while kernel is {actual:?}"
+                )
+            }
         }
     }
 }
@@ -51,6 +62,7 @@ impl std::error::Error for StartupTransitionError {}
 pub struct StartupGate {
     phase: StartupPhase,
     owner_epoch: Option<NonZeroU64>,
+    failure: Option<TypedErrorV1>,
 }
 
 impl Default for StartupGate {
@@ -64,6 +76,7 @@ impl StartupGate {
         Self {
             phase: StartupPhase::AwaitingPeerAuthentication,
             owner_epoch: None,
+            failure: None,
         }
     }
 
@@ -82,6 +95,28 @@ impl StartupGate {
 
     pub const fn admits_managed_work(&self) -> bool {
         matches!(self.phase, StartupPhase::Ready)
+    }
+
+    /// Returns the wire status for the latest startup milestone.
+    pub fn status(&self) -> KernelStartupStatusV1 {
+        match self.phase {
+            StartupPhase::Ready => KernelStartupStatusV1::Ready,
+            StartupPhase::Failed | StartupPhase::Fenced => KernelStartupStatusV1::Failed(Box::new(
+                self.failure
+                    .clone()
+                    .expect("failed startup gate always records a typed error"),
+            )),
+            _ => KernelStartupStatusV1::Starting,
+        }
+    }
+
+    /// Rejects application requests until all startup milestones are complete.
+    pub fn admit_application_rpc(&self) -> Result<(), StartupTransitionError> {
+        if self.admits_managed_work() {
+            Ok(())
+        } else {
+            Err(StartupTransitionError::ApplicationRpcBeforeReady { actual: self.phase })
+        }
     }
 
     /// Record only after the OS transport has authenticated this exact channel peer.
@@ -133,15 +168,17 @@ impl StartupGate {
     }
 
     /// Permanently closes this startup instance after ownership is lost.
-    pub fn fence(&mut self) {
+    pub fn fence(&mut self, error: TypedErrorV1) {
         if !matches!(self.phase, StartupPhase::Failed | StartupPhase::Fenced) {
+            self.failure = Some(error);
             self.phase = StartupPhase::Fenced;
         }
     }
 
     /// Permanently closes this startup instance after a required startup failure.
-    pub fn fail(&mut self) {
+    pub fn fail(&mut self, error: TypedErrorV1) {
         if !matches!(self.phase, StartupPhase::Fenced) {
+            self.failure = Some(error);
             self.phase = StartupPhase::Failed;
         }
     }
@@ -170,6 +207,7 @@ impl StartupGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::{ErrorCategoryV1, RetryClassV1};
 
     fn reach_ready(gate: &mut StartupGate) {
         gate.record_peer_authenticated().unwrap();
@@ -178,6 +216,38 @@ mod tests {
         gate.record_owner_epoch_acquired(7).unwrap();
         gate.record_recovery_reconciled().unwrap();
         gate.record_required_services_ready().unwrap();
+    }
+
+    fn startup_failure() -> TypedErrorV1 {
+        TypedErrorV1 {
+            code: "STARTUP_FAILED".to_owned(),
+            category: ErrorCategoryV1::Unavailable,
+            message: "required kernel service failed".to_owned(),
+            retry_class: RetryClassV1::UserActionRequired,
+            retry_after_ms: None,
+            owner_cursor: None,
+            subject_ids: Vec::new(),
+            details: None,
+        }
+    }
+
+    #[test]
+    fn startup_status_tracks_readiness_and_application_rpc_admission() {
+        let mut gate = StartupGate::new();
+        assert_eq!(gate.status(), KernelStartupStatusV1::Starting);
+        assert!(gate.admit_application_rpc().is_err());
+
+        reach_ready(&mut gate);
+        assert_eq!(gate.status(), KernelStartupStatusV1::Ready);
+        assert!(gate.admit_application_rpc().is_ok());
+
+        let failure = startup_failure();
+        gate.fail(failure.clone());
+        assert_eq!(
+            gate.status(),
+            KernelStartupStatusV1::Failed(Box::new(failure))
+        );
+        assert!(gate.admit_application_rpc().is_err());
     }
 
     #[test]
@@ -221,7 +291,7 @@ mod tests {
     #[test]
     fn required_startup_failure_cannot_be_reopened() {
         let mut gate = StartupGate::new();
-        gate.fail();
+        gate.fail(startup_failure());
         assert_eq!(gate.phase(), StartupPhase::Failed);
         assert!(!gate.admits_managed_work());
         assert!(matches!(
@@ -239,12 +309,12 @@ mod tests {
         reach_ready(&mut gate);
         assert!(gate.admits_managed_work());
 
-        gate.fence();
+        gate.fence(startup_failure());
         assert_eq!(gate.phase(), StartupPhase::Fenced);
         assert!(!gate.admits_managed_work());
         assert_eq!(gate.ready_owner_epoch(), None);
         assert!(gate.record_peer_authenticated().is_err());
-        gate.fail();
+        gate.fail(startup_failure());
         assert_eq!(gate.phase(), StartupPhase::Fenced);
     }
 }

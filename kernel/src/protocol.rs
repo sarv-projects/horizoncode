@@ -100,6 +100,27 @@ pub struct KernelHelloV1 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KernelHelloResultV1 {
+    pub protocol: u16,
+    pub enabled_features: Vec<String>,
+    pub unavailable_optional_features: Vec<String>,
+    pub supervisor_nonce: String,
+    pub process_incarnation: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KernelHelloRejectedV1 {
+    pub error: TypedErrorV1,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KernelStartupStatusV1 {
+    Starting,
+    Ready,
+    Failed(Box<TypedErrorV1>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RpcRequestV1 {
     pub request_id: String,
     pub service_id: String,
@@ -162,6 +183,9 @@ pub enum RpcControlV1 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RpcMessageV1 {
     Hello(Box<KernelHelloV1>),
+    HelloResult(Box<KernelHelloResultV1>),
+    HelloRejected(Box<KernelHelloRejectedV1>),
+    StartupStatus(Box<KernelStartupStatusV1>),
     Request(Box<RpcRequestV1>),
     Response(Box<RpcResponseV1>),
     Event(Box<RpcEventV1>),
@@ -284,6 +308,12 @@ pub fn write_message<W: Write>(
 fn validate_message(message: &RpcMessageV1) -> Result<(), ProtocolError> {
     match message {
         RpcMessageV1::Hello(hello) => validate_hello(hello),
+        RpcMessageV1::HelloResult(result) => validate_hello_result(result),
+        RpcMessageV1::HelloRejected(rejected) => validate_typed_error(&rejected.error),
+        RpcMessageV1::StartupStatus(status) => match status.as_ref() {
+            KernelStartupStatusV1::Starting | KernelStartupStatusV1::Ready => Ok(()),
+            KernelStartupStatusV1::Failed(error) => validate_typed_error(error),
+        },
         RpcMessageV1::Request(request) => {
             text("requestId", &request.request_id, MAX_IDENTIFIER_BYTES)?;
             text("serviceId", &request.service_id, MAX_IDENTIFIER_BYTES)?;
@@ -429,6 +459,39 @@ fn validate_hello(hello: &KernelHelloV1) -> Result<(), ProtocolError> {
         ));
     }
     Ok(())
+}
+
+fn validate_hello_result(result: &KernelHelloResultV1) -> Result<(), ProtocolError> {
+    if result.protocol != PROTOCOL_V1 {
+        return Err(ProtocolError(ProtocolErrorKind::UnsupportedProtocol {
+            protocol: result.protocol as u64,
+        }));
+    }
+    validate_features("enabledFeatures", &result.enabled_features)?;
+    validate_features(
+        "unavailableOptionalFeatures",
+        &result.unavailable_optional_features,
+    )?;
+    if result
+        .enabled_features
+        .iter()
+        .any(|feature| result.unavailable_optional_features.contains(feature))
+    {
+        return Err(invalid(
+            "features",
+            "enabled and unavailable optional feature sets overlap",
+        ));
+    }
+    text(
+        "supervisorNonce",
+        &result.supervisor_nonce,
+        MAX_IDENTIFIER_BYTES,
+    )?;
+    text(
+        "processIncarnation",
+        &result.process_incarnation,
+        MAX_IDENTIFIER_BYTES,
+    )
 }
 
 fn validate_features(field: &'static str, features: &[String]) -> Result<(), ProtocolError> {
@@ -659,6 +722,72 @@ pub fn negotiate_hello(
     })
 }
 
+/// Binds a negotiation result to the exact host hello that initiated the handshake.
+/// This is protocol binding only; callers must separately authenticate the OS peer.
+pub fn validate_hello_result_binding(
+    hello: &KernelHelloV1,
+    result: &KernelHelloResultV1,
+) -> Result<(), ProtocolError> {
+    validate_hello(hello)?;
+    validate_hello_result(result)?;
+    if result.protocol < hello.min_protocol || result.protocol > hello.max_protocol {
+        return Err(ProtocolError(ProtocolErrorKind::TransportIncompatible));
+    }
+    if result.supervisor_nonce != hello.supervisor_nonce
+        || result.process_incarnation != hello.process_incarnation
+    {
+        return Err(ProtocolError(ProtocolErrorKind::TransportIncompatible));
+    }
+
+    let expected_enabled: Vec<&String> = hello
+        .required_features
+        .iter()
+        .chain(hello.optional_features.iter())
+        .filter(|feature| {
+            result
+                .enabled_features
+                .iter()
+                .any(|enabled| enabled == *feature)
+        })
+        .collect();
+    let actual_enabled: Vec<&String> = result.enabled_features.iter().collect();
+    if expected_enabled != actual_enabled
+        || hello
+            .required_features
+            .iter()
+            .any(|required| !result.enabled_features.contains(required))
+    {
+        return Err(ProtocolError(ProtocolErrorKind::TransportIncompatible));
+    }
+
+    let expected_unavailable: Vec<&String> = hello
+        .optional_features
+        .iter()
+        .filter(|optional| !result.enabled_features.contains(optional))
+        .collect();
+    let actual_unavailable: Vec<&String> = result.unavailable_optional_features.iter().collect();
+    if expected_unavailable != actual_unavailable {
+        return Err(ProtocolError(ProtocolErrorKind::TransportIncompatible));
+    }
+    Ok(())
+}
+
+/// Creates the host-visible success response from a trusted negotiation result.
+pub fn hello_result_for(
+    hello: &KernelHelloV1,
+    negotiated: &NegotiatedProtocol,
+) -> Result<KernelHelloResultV1, ProtocolError> {
+    let result = KernelHelloResultV1 {
+        protocol: negotiated.protocol,
+        enabled_features: negotiated.enabled_features.clone(),
+        unavailable_optional_features: negotiated.unavailable_optional_features.clone(),
+        supervisor_nonce: hello.supervisor_nonce.clone(),
+        process_incarnation: hello.process_incarnation.clone(),
+    };
+    validate_hello_result_binding(hello, &result)?;
+    Ok(result)
+}
+
 /// Validates a service body using an owner-declared byte cap, lowered to the global
 /// request/response limit. The cap must come from the trusted operation registry.
 pub fn validate_operation_body(body: &Value, owner_max_bytes: usize) -> Result<(), ProtocolError> {
@@ -719,6 +848,50 @@ fn message_to_value(message: &RpcMessageV1) -> Value {
                 "optionalFeatures",
                 strings(&hello.optional_features),
             );
+        }
+        RpcMessageV1::HelloResult(result) => {
+            put(&mut map, "kind", string("hello_result"));
+            put(&mut map, "protocol", number(result.protocol as u64));
+            put(
+                &mut map,
+                "enabledFeatures",
+                strings(&result.enabled_features),
+            );
+            put(
+                &mut map,
+                "unavailableOptionalFeatures",
+                strings(&result.unavailable_optional_features),
+            );
+            put(
+                &mut map,
+                "supervisorNonce",
+                string(&result.supervisor_nonce),
+            );
+            put(
+                &mut map,
+                "processIncarnation",
+                string(&result.process_incarnation),
+            );
+        }
+        RpcMessageV1::HelloRejected(rejected) => {
+            put(&mut map, "kind", string("hello_rejected"));
+            put(&mut map, "error", typed_error_to_value(&rejected.error));
+        }
+        RpcMessageV1::StartupStatus(status) => {
+            put(&mut map, "kind", string("startup_status"));
+            put(&mut map, "protocol", number(PROTOCOL_V1 as u64));
+            match status.as_ref() {
+                KernelStartupStatusV1::Starting => {
+                    put(&mut map, "state", string("STARTING"));
+                }
+                KernelStartupStatusV1::Ready => {
+                    put(&mut map, "state", string("READY"));
+                }
+                KernelStartupStatusV1::Failed(error) => {
+                    put(&mut map, "state", string("FAILED"));
+                    put(&mut map, "error", typed_error_to_value(error));
+                }
+            }
         }
         RpcMessageV1::Request(request) => {
             put(&mut map, "kind", string("request"));
@@ -834,6 +1007,49 @@ fn value_to_message(value: Value) -> Result<RpcMessageV1, ProtocolError> {
             required_features: take_strings(&mut map, "requiredFeatures", MAX_FEATURE_COUNT)?,
             optional_features: take_strings(&mut map, "optionalFeatures", MAX_FEATURE_COUNT)?,
         }))),
+        "hello_result" => {
+            take_protocol(&mut map)?;
+            Ok(RpcMessageV1::HelloResult(Box::new(KernelHelloResultV1 {
+                protocol: PROTOCOL_V1,
+                enabled_features: take_strings(&mut map, "enabledFeatures", MAX_FEATURE_COUNT)?,
+                unavailable_optional_features: take_strings(
+                    &mut map,
+                    "unavailableOptionalFeatures",
+                    MAX_FEATURE_COUNT,
+                )?,
+                supervisor_nonce: take_string(&mut map, "supervisorNonce", MAX_IDENTIFIER_BYTES)?,
+                process_incarnation: take_string(
+                    &mut map,
+                    "processIncarnation",
+                    MAX_IDENTIFIER_BYTES,
+                )?,
+            })))
+        }
+        "hello_rejected" => Ok(RpcMessageV1::HelloRejected(Box::new(
+            KernelHelloRejectedV1 {
+                error: value_to_typed_error(take_required(&mut map, "error")?)?,
+            },
+        ))),
+        "startup_status" => {
+            take_protocol(&mut map)?;
+            let state = take_string(&mut map, "state", 16)?;
+            let error = take_optional(&mut map, "error")?;
+            let status = match (state.as_str(), error) {
+                ("STARTING", None) => KernelStartupStatusV1::Starting,
+                ("READY", None) => KernelStartupStatusV1::Ready,
+                ("FAILED", Some(error)) => {
+                    KernelStartupStatusV1::Failed(Box::new(value_to_typed_error(error)?))
+                }
+                ("STARTING" | "READY", Some(_)) => {
+                    return Err(invalid("error", "only FAILED startup status has an error"));
+                }
+                ("FAILED", None) => {
+                    return Err(missing("error"));
+                }
+                _ => return Err(invalid("state", "unknown startup status")),
+            };
+            Ok(RpcMessageV1::StartupStatus(Box::new(status)))
+        }
         "request" => {
             take_protocol(&mut map)?;
             Ok(RpcMessageV1::Request(Box::new(RpcRequestV1 {
@@ -1219,6 +1435,122 @@ mod tests {
         }
     }
 
+    fn wire_message(fields: BTreeMap<String, Value>) -> Vec<u8> {
+        messagepack::encode(&Value::Map(fields), FRAME_LIMITS).unwrap()
+    }
+
+    fn protocol_error() -> TypedErrorV1 {
+        TypedErrorV1 {
+            code: "TRANSPORT_INCOMPATIBLE".to_owned(),
+            category: ErrorCategoryV1::Capability,
+            message: "required protocol feature is unavailable".to_owned(),
+            retry_class: RetryClassV1::Never,
+            retry_after_ms: None,
+            owner_cursor: None,
+            subject_ids: Vec::new(),
+            details: None,
+        }
+    }
+
+    fn hello_result() -> KernelHelloResultV1 {
+        let host = hello(&["threads.v1"], &["memory.v1", "other.v1"]);
+        let policy = HandshakePolicy {
+            min_protocol: 1,
+            max_protocol: 1,
+            supported_features: BTreeSet::from(["threads.v1".to_owned(), "memory.v1".to_owned()]),
+            expected_supervisor_nonce: "nonce-1".to_owned(),
+            expected_host_process_incarnation: Some("inc-1".to_owned()),
+        };
+        let negotiated = negotiate_hello(&host, &policy).unwrap();
+        hello_result_for(&host, &negotiated).unwrap()
+    }
+
+    #[test]
+    fn accepts_hello_result_wire_message() {
+        let wire = wire_message(BTreeMap::from([
+            ("kind".to_owned(), string("hello_result")),
+            ("protocol".to_owned(), number(PROTOCOL_V1 as u64)),
+            (
+                "enabledFeatures".to_owned(),
+                Value::Array(vec![string("threads.v1")]),
+            ),
+            (
+                "unavailableOptionalFeatures".to_owned(),
+                Value::Array(vec![string("memory.v1")]),
+            ),
+            ("supervisorNonce".to_owned(), string("nonce-1")),
+            ("processIncarnation".to_owned(), string("inc-1")),
+        ]));
+
+        assert!(decode_message(&wire).is_ok());
+    }
+
+    #[test]
+    fn accepts_typed_hello_rejection_wire_message() {
+        let wire = wire_message(BTreeMap::from([
+            ("kind".to_owned(), string("hello_rejected")),
+            ("error".to_owned(), typed_error_to_value(&protocol_error())),
+        ]));
+
+        assert!(decode_message(&wire).is_ok());
+    }
+
+    #[test]
+    fn accepts_startup_status_wire_variants() {
+        for (state, error) in [
+            ("STARTING", None),
+            ("READY", None),
+            ("FAILED", Some(typed_error_to_value(&protocol_error()))),
+        ] {
+            let mut fields = BTreeMap::from([
+                ("kind".to_owned(), string("startup_status")),
+                ("protocol".to_owned(), number(PROTOCOL_V1 as u64)),
+                ("state".to_owned(), string(state)),
+            ]);
+            if let Some(error) = error {
+                fields.insert("error".to_owned(), error);
+            }
+            assert!(decode_message(&wire_message(fields)).is_ok(), "{state}");
+        }
+    }
+
+    #[test]
+    fn handshake_messages_match_fixed_v1_wire_vectors() {
+        let error = protocol_error();
+        let messages = [
+            (
+                RpcMessageV1::HelloResult(Box::new(hello_result())),
+                "86af656e61626c6564466561747572657392aa746872656164732e7631a96d656d6f72792e7631a46b696e64ac68656c6c6f5f726573756c74b270726f63657373496e6361726e6174696f6ea5696e632d31a870726f746f636f6c01af73757065727669736f724e6f6e6365a76e6f6e63652d31bb756e617661696c61626c654f7074696f6e616c466561747572657391a86f746865722e7631",
+            ),
+            (
+                RpcMessageV1::HelloRejected(Box::new(KernelHelloRejectedV1 {
+                    error: error.clone(),
+                })),
+                "82a56572726f7285a863617465676f7279aa6361706162696c697479a4636f6465b65452414e53504f52545f494e434f4d50415449424c45a76d657373616765d92872657175697265642070726f746f636f6c206665617475726520697320756e617661696c61626c65aa7265747279436c617373a54e45564552aa7375626a65637449647390a46b696e64ae68656c6c6f5f72656a6563746564",
+            ),
+            (
+                RpcMessageV1::StartupStatus(Box::new(KernelStartupStatusV1::Starting)),
+                "83a46b696e64ae737461727475705f737461747573a870726f746f636f6c01a57374617465a85354415254494e47",
+            ),
+            (
+                RpcMessageV1::StartupStatus(Box::new(KernelStartupStatusV1::Ready)),
+                "83a46b696e64ae737461727475705f737461747573a870726f746f636f6c01a57374617465a55245414459",
+            ),
+            (
+                RpcMessageV1::StartupStatus(Box::new(KernelStartupStatusV1::Failed(Box::new(
+                    error,
+                )))),
+                "84a56572726f7285a863617465676f7279aa6361706162696c697479a4636f6465b65452414e53504f52545f494e434f4d50415449424c45a76d657373616765d92872657175697265642070726f746f636f6c206665617475726520697320756e617661696c61626c65aa7265747279436c617373a54e45564552aa7375626a65637449647390a46b696e64ae737461727475705f737461747573a870726f746f636f6c01a57374617465a64641494c4544",
+            ),
+        ];
+
+        for (message, expected_hex) in messages {
+            let expected = decode_hex(expected_hex);
+            assert_eq!(encode_message(&message).unwrap(), expected);
+            assert_eq!(decode_message(&expected).unwrap(), message);
+        }
+    }
+
     fn decode_hex(value: &str) -> Vec<u8> {
         assert_eq!(value.len() % 2, 0);
         value
@@ -1246,8 +1578,16 @@ mod tests {
 
     #[test]
     fn round_trips_all_message_families_and_framed_io() {
+        let failure = protocol_error();
         let messages = [
             RpcMessageV1::Hello(Box::new(hello(&["threads.v1"], &["memory.v1"]))),
+            RpcMessageV1::HelloResult(Box::new(hello_result())),
+            RpcMessageV1::HelloRejected(Box::new(KernelHelloRejectedV1 {
+                error: failure.clone(),
+            })),
+            RpcMessageV1::StartupStatus(Box::new(KernelStartupStatusV1::Starting)),
+            RpcMessageV1::StartupStatus(Box::new(KernelStartupStatusV1::Ready)),
+            RpcMessageV1::StartupStatus(Box::new(KernelStartupStatusV1::Failed(Box::new(failure)))),
             request(Value::Map(BTreeMap::from([(
                 "input".to_owned(),
                 Value::String("hello".to_owned()),
@@ -1298,6 +1638,118 @@ mod tests {
                 Some(message)
             );
         }
+    }
+
+    #[test]
+    fn hello_result_binding_rejects_nonce_incarnation_and_feature_mismatches() {
+        let host = hello(&["threads.v1"], &["memory.v1", "other.v1"]);
+        let result = hello_result();
+        assert!(validate_hello_result_binding(&host, &result).is_ok());
+
+        let mut wrong_nonce = result.clone();
+        wrong_nonce.supervisor_nonce = "other-nonce".to_owned();
+        assert!(validate_hello_result_binding(&host, &wrong_nonce).is_err());
+
+        let mut wrong_incarnation = result.clone();
+        wrong_incarnation.process_incarnation = "other-incarnation".to_owned();
+        assert!(validate_hello_result_binding(&host, &wrong_incarnation).is_err());
+
+        let mut missing_required = result.clone();
+        missing_required.enabled_features.clear();
+        missing_required.unavailable_optional_features = vec!["threads.v1".to_owned()];
+        assert!(validate_hello_result_binding(&host, &missing_required).is_err());
+
+        let mut unrequested_feature = result;
+        unrequested_feature
+            .enabled_features
+            .push("unrequested.v1".to_owned());
+        assert!(validate_hello_result_binding(&host, &unrequested_feature).is_err());
+    }
+
+    #[test]
+    fn rejects_malformed_hello_result_and_startup_status_fields() {
+        let mut wrong_protocol = BTreeMap::from([
+            ("kind".to_owned(), string("hello_result")),
+            ("protocol".to_owned(), number(2)),
+            ("enabledFeatures".to_owned(), Value::Array(vec![])),
+            (
+                "unavailableOptionalFeatures".to_owned(),
+                Value::Array(vec![]),
+            ),
+            ("supervisorNonce".to_owned(), string("nonce-1")),
+            ("processIncarnation".to_owned(), string("inc-1")),
+        ]);
+        assert!(decode_message(&wire_message(wrong_protocol.clone())).is_err());
+
+        wrong_protocol.insert("protocol".to_owned(), number(PROTOCOL_V1 as u64));
+        wrong_protocol.insert(
+            "enabledFeatures".to_owned(),
+            Value::Array(vec![string("threads.v1"), string("threads.v1")]),
+        );
+        assert!(decode_message(&wire_message(wrong_protocol)).is_err());
+
+        let ready_with_error = BTreeMap::from([
+            ("kind".to_owned(), string("startup_status")),
+            ("protocol".to_owned(), number(PROTOCOL_V1 as u64)),
+            ("state".to_owned(), string("READY")),
+            ("error".to_owned(), typed_error_to_value(&protocol_error())),
+        ]);
+        assert!(decode_message(&wire_message(ready_with_error)).is_err());
+
+        let failed_without_error = BTreeMap::from([
+            ("kind".to_owned(), string("startup_status")),
+            ("protocol".to_owned(), number(PROTOCOL_V1 as u64)),
+            ("state".to_owned(), string("FAILED")),
+        ]);
+        assert!(decode_message(&wire_message(failed_without_error)).is_err());
+
+        let unknown_state = BTreeMap::from([
+            ("kind".to_owned(), string("startup_status")),
+            ("protocol".to_owned(), number(PROTOCOL_V1 as u64)),
+            ("state".to_owned(), string("RESTARTING")),
+        ]);
+        assert!(decode_message(&wire_message(unknown_state)).is_err());
+    }
+
+    #[test]
+    fn hello_result_features_are_bounded_unique_and_disjoint() {
+        let mut too_many = hello_result();
+        too_many.enabled_features = (0..=MAX_FEATURE_COUNT)
+            .map(|index| format!("feature-{index}"))
+            .collect();
+        assert!(validate_message(&RpcMessageV1::HelloResult(Box::new(too_many))).is_err());
+
+        let mut duplicate = hello_result();
+        duplicate.enabled_features.push("threads.v1".to_owned());
+        assert!(validate_message(&RpcMessageV1::HelloResult(Box::new(duplicate))).is_err());
+
+        let mut overlap = hello_result();
+        overlap
+            .unavailable_optional_features
+            .push("threads.v1".to_owned());
+        assert!(validate_message(&RpcMessageV1::HelloResult(Box::new(overlap))).is_err());
+    }
+
+    #[test]
+    fn startup_status_wire_omits_error_except_for_failure() {
+        for status in [
+            KernelStartupStatusV1::Starting,
+            KernelStartupStatusV1::Ready,
+        ] {
+            let Value::Map(map) = message_to_value(&RpcMessageV1::StartupStatus(Box::new(status)))
+            else {
+                panic!("startup status must encode as a map");
+            };
+            assert!(!map.contains_key("error"));
+        }
+
+        let failed = RpcMessageV1::StartupStatus(Box::new(KernelStartupStatusV1::Failed(
+            Box::new(protocol_error()),
+        )));
+        let Value::Map(map) = message_to_value(&failed) else {
+            panic!("startup status must encode as a map");
+        };
+        assert!(map.contains_key("error"));
     }
 
     #[test]

@@ -56,12 +56,12 @@
 
 **Interfaces:** No code interface. The normative docs must identify OwnerLog V2 as the one canonical physical format and specify the hello-result/readiness sequence. Historical format compatibility stays unclaimed.
 
-- [ ] Replace the absent-historical-crate implementation instruction with the approved versioned-migration decision; preserve the logical event envelope and existing projection-only rule.
-- [ ] Specify V2 physical record/head/segment version fields, canonical bytes and hash preimage, append-before-head commit ordering, recovery behavior, and unknown-version refusal.
-- [ ] Specify `KernelHelloResultV1`, startup `STARTING`/`READY`/`FAILED` statuses, early-RPC rejection, and the ordering relative to OS authentication, epoch, and recovery.
-- [ ] Keep DEC-V1-17 unresolved and explicitly deny Windows `run_durable` acceptance absent native evidence.
-- [ ] Run `git diff --check` and verify the P2 delivery gate and error names remain consistent across the six documents.
-- [ ] Stage only the six amended architecture files plus this plan/spec/AGENTS handoff and commit as `docs(architecture): approve owner log v2 migration`.
+- [x] Replace the absent-historical-crate implementation instruction with the approved versioned-migration decision; preserve the logical event envelope and existing projection-only rule.
+- [x] Specify V2 physical record/head/segment version fields, canonical bytes and hash preimage, append-before-head commit ordering, recovery behavior, and unknown-version refusal.
+- [x] Specify `KernelHelloResultV1`, startup `STARTING`/`READY`/`FAILED` statuses, early-RPC rejection, and the ordering relative to OS authentication, epoch, and recovery.
+- [x] Keep DEC-V1-17 unresolved and explicitly deny Windows `run_durable` acceptance absent native evidence.
+- [x] Run `git diff --check` and verify the P2 delivery gate and error names remain consistent across the six documents.
+- [x] Stage only the six amended architecture files plus this plan/spec/AGENTS handoff and commit as `docs(architecture): approve owner log v2 migration`.
 
 ### Task 2: Add fixed typed negotiation-result and startup-status messages
 
@@ -74,12 +74,12 @@
 - Produce `KernelHelloResultV1 { protocol: u16, enabled_features: Vec<String>, unavailable_optional_features: Vec<String>, supervisor_nonce: String, process_incarnation: String }` and `KernelHelloRejectedV1 { error: TypedErrorV1 }` with wire discriminators `hello_result` / `hello_rejected`.
 - Produce `KernelStartupStatusV1` with `Starting`, `Ready`, or `Failed(TypedErrorV1)` and wire discriminator `startup_status`; no status value authenticates a peer or asserts a human principal.
 
-- [ ] Add fixed wire-vector tests for hello result and each startup status, including omission/presence rules.
-- [ ] Run `cargo test --offline --manifest-path kernel/Cargo.toml protocol::tests::hello_result` and confirm the new tests fail for missing variants/decoders.
-- [ ] Implement strict encode/decode validation, bounded strings/features, nonce/process-incarnation echo validation, and no unknown-field acceptance beyond current protocol rules.
-- [ ] Add tests for required-feature rejection, incompatible protocol, wrong nonce/incarnation, malformed status/error, and feature-list bounds.
-- [ ] Run `cargo test --offline --manifest-path kernel/Cargo.toml` and `cargo fmt --manifest-path kernel/Cargo.toml -- --check`.
-- [ ] Commit the verified protocol change as `feat(kernel): add startup handshake result`.
+- [x] Add fixed wire-vector tests for hello result and each startup status, including omission/presence rules.
+- [x] Run `cargo test --offline --manifest-path kernel/Cargo.toml protocol::tests::hello_result` and confirm the new tests fail for missing variants/decoders.
+- [x] Implement strict encode/decode validation, bounded strings/features, nonce/process-incarnation echo validation, and no unknown-field acceptance beyond current protocol rules.
+- [x] Add tests for required-feature rejection, incompatible protocol, wrong nonce/incarnation, malformed status/error, and feature-list bounds; the existing negotiation test covers required-feature/protocol rejection.
+- [x] Run `cargo test --offline --manifest-path kernel/Cargo.toml`, `cargo fmt --manifest-path kernel/Cargo.toml -- --check`, and warning-free Clippy.
+- [x] Commit the verified protocol change as `feat(kernel): add startup handshake result`.
 
 ### Task 3: Implement canonical OwnerLog V2 record encoding
 
