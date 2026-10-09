@@ -19,8 +19,16 @@
 !/packages/schema/
 !/packages/schema/src/
 !/packages/schema/src/composition-v1.ts
+!/packages/schema/src/event-payload-v1.ts
+!/packages/schema/src/memory-v1.ts
+!/packages/schema/src/repo-intelligence-v1.ts
+!/packages/schema/src/thread-v1.ts
 !/packages/schema/test/
 !/packages/schema/test/composition-v1.test.ts
+!/packages/schema/test/event-payload-v1.test.ts
+!/packages/schema/test/memory-v1.test.ts
+!/packages/schema/test/repo-intelligence-v1.test.ts
+!/packages/schema/test/thread-v1.test.ts
 !/kernel/
 !/kernel/Cargo.toml
 !/kernel/Cargo.lock
@@ -28,6 +36,7 @@
 !/kernel/src/lib.rs
 !/kernel/src/messagepack.rs
 !/kernel/src/protocol.rs
+!/kernel/src/request_cancellation.rs
 !/kernel/src/startup.rs
 !/kernel/src/transport.rs
 !/kernel/src/windows_peer.rs
