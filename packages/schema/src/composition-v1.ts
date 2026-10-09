@@ -439,16 +439,23 @@ export const CompositionLockV1 = Schema.Struct({
         resolutions.add(resolutionKey)
         resolutionByKey.set(resolutionKey, resolution)
 
-        const hasDigests =
-          resolution.contributionDigest !== undefined &&
-          resolution.implementationDigest !== undefined &&
-          resolution.eventContractDigest !== undefined
         const hasPartialDigests =
           resolution.contributionDigest !== undefined ||
           resolution.implementationDigest !== undefined ||
           resolution.eventContractDigest !== undefined
-        if (resolution.status === "RESOLVED" && (!hasDigests || resolution.reasonCode !== undefined)) {
-          return "resolved global hooks require all pinned digests and no failure reason"
+        if (resolution.status === "RESOLVED") {
+          const contributionDigest = resolution.contributionDigest
+          if (
+            contributionDigest === undefined ||
+            resolution.implementationDigest === undefined ||
+            resolution.eventContractDigest === undefined ||
+            resolution.reasonCode !== undefined
+          ) {
+            return "resolved global hooks require all pinned digests and no failure reason"
+          }
+          if (!lock.nodes.some((node) => node.contributionDigests.includes(contributionDigest))) {
+            return "resolved global hook contributions must be pinned by a selected lock node"
+          }
         }
         if (
           resolution.status === "OPTIONAL_UNAVAILABLE" &&

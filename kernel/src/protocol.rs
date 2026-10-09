@@ -1213,6 +1213,18 @@ mod tests {
         }
     }
 
+    fn decode_hex(value: &str) -> Vec<u8> {
+        assert_eq!(value.len() % 2, 0);
+        value
+            .as_bytes()
+            .chunks(2)
+            .map(|pair| {
+                let pair = std::str::from_utf8(pair).unwrap();
+                u8::from_str_radix(pair, 16).unwrap()
+            })
+            .collect()
+    }
+
     fn request(body: Value) -> RpcMessageV1 {
         RpcMessageV1::Request(Box::new(RpcRequestV1 {
             request_id: "req_1".to_owned(),
@@ -1283,6 +1295,55 @@ mod tests {
     }
 
     #[test]
+    fn control_messages_match_fixed_v1_wire_vectors() {
+        let control_messages = [
+            (
+                RpcMessageV1::Control(Box::new(RpcControlV1::Subscribe {
+                    subscription_id: "sub_1".to_owned(),
+                    owner_kind: "thread".to_owned(),
+                    owner_id: "thr_1".to_owned(),
+                    after: None,
+                })),
+                "84a46b696e64a9737562736372696265a76f776e65724964a57468725f31a96f776e65724b696e64a6746872656164ae737562736372697074696f6e4964a57375625f31",
+            ),
+            (
+                RpcMessageV1::Control(Box::new(RpcControlV1::Subscribe {
+                    subscription_id: "sub_1".to_owned(),
+                    owner_kind: "thread".to_owned(),
+                    owner_id: "thr_1".to_owned(),
+                    after: Some(cursor()),
+                })),
+                "85a5616674657284ab6576656e74446967657374d947626c616b65333a30313233343536373839616263646566303132333435363738396162636465663031323334353637383961626364656630313233343536373839616263646566a76f776e65724964a57468725f31a96f776e65724b696e64a6746872656164a3736571a23432a46b696e64a9737562736372696265a76f776e65724964a57468725f31a96f776e65724b696e64a6746872656164ae737562736372697074696f6e4964a57375625f31",
+            ),
+            (
+                RpcMessageV1::Control(Box::new(RpcControlV1::Unsubscribe {
+                    subscription_id: "sub_1".to_owned(),
+                })),
+                "82a46b696e64ab756e737562736372696265ae737562736372697074696f6e4964a57375625f31",
+            ),
+            (
+                RpcMessageV1::Control(Box::new(RpcControlV1::Ack {
+                    subscription_id: "sub_1".to_owned(),
+                    through: cursor(),
+                })),
+                "83a46b696e64a361636bae737562736372697074696f6e4964a57375625f31a77468726f75676884ab6576656e74446967657374d947626c616b65333a30313233343536373839616263646566303132333435363738396162636465663031323334353637383961626364656630313233343536373839616263646566a76f776e65724964a57468725f31a96f776e65724b696e64a6746872656164a3736571a23432",
+            ),
+            (
+                RpcMessageV1::Control(Box::new(RpcControlV1::Ping {
+                    nonce: "nonce_1".to_owned(),
+                })),
+                "82a46b696e64a470696e67a56e6f6e6365a76e6f6e63655f31",
+            ),
+        ];
+
+        for (message, expected_hex) in control_messages {
+            let expected = decode_hex(expected_hex);
+            assert_eq!(encode_message(&message).unwrap(), expected);
+            assert_eq!(decode_message(&expected).unwrap(), message);
+        }
+    }
+
+    #[test]
     fn rejects_invalid_digest_decimal_response_shape_and_protocol_version() {
         let mut invalid_cursor = cursor();
         invalid_cursor.seq = "042".to_owned();
@@ -1329,7 +1390,8 @@ mod tests {
         assert_eq!(negotiated.enabled_features, vec!["threads.v1", "memory.v1"]);
         assert_eq!(negotiated.unavailable_optional_features, vec!["other.v1"]);
 
-        let unknown_required = hello(&["unknown.required"], &[]);
+        let mut unknown_required = hello(&["unknown.required"], &[]);
+        unknown_required.process_incarnation = "host-inc-1".to_owned();
         assert!(matches!(
             negotiate_hello(&unknown_required, &policy).unwrap_err().0,
             ProtocolErrorKind::TransportIncompatible
@@ -1348,6 +1410,20 @@ mod tests {
         };
         assert!(matches!(
             negotiate_hello(&host, &protocol_two_kernel).unwrap_err().0,
+            ProtocolErrorKind::TransportIncompatible
+        ));
+
+        let mut wrong_nonce = host.clone();
+        wrong_nonce.supervisor_nonce = "wrong-nonce".to_owned();
+        assert!(matches!(
+            negotiate_hello(&wrong_nonce, &policy).unwrap_err().0,
+            ProtocolErrorKind::TransportIncompatible
+        ));
+
+        let mut wrong_incarnation = host;
+        wrong_incarnation.process_incarnation = "wrong-incarnation".to_owned();
+        assert!(matches!(
+            negotiate_hello(&wrong_incarnation, &policy).unwrap_err().0,
             ProtocolErrorKind::TransportIncompatible
         ));
     }

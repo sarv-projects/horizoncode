@@ -59,6 +59,15 @@ const baseLock = {
   lockDigest: digest,
 } as const
 
+const hookNode = {
+  pluginId: "plugin.notes",
+  version: "1.2.3",
+  packageDigest: digest,
+  schemaDigests: [],
+  contributionDigests: [digest],
+  activationOrdinal: 0,
+} as const
+
 describe("Horizon composition v1 contracts", () => {
   test("decodes manifest, service and provenance contracts", () => {
     expect(Schema.decodeUnknownSync(Composition.PluginManifestV1)(manifest as unknown)).toEqual(manifest)
@@ -166,11 +175,12 @@ describe("Horizon composition v1 contracts", () => {
       implementationDigest: digest,
       eventContractDigest: digest,
     }
+    const hookLock = { ...baseLock, nodes: [hookNode] }
     const decodeLock = Schema.decodeUnknownSync(Composition.CompositionLockV1)
 
     expect(
       decodeLock({
-        ...baseLock,
+        ...hookLock,
         globalHookBindings: [binding],
         resolvedGlobalHooks: [completeResolution],
       } as unknown).globalHookBindings,
@@ -178,7 +188,7 @@ describe("Horizon composition v1 contracts", () => {
 
     expect(() =>
       decodeLock({
-        ...baseLock,
+        ...hookLock,
         globalHookBindings: [binding],
         resolvedGlobalHooks: [{ ...completeResolution, implementationDigest: undefined }],
       } as unknown),
@@ -186,7 +196,7 @@ describe("Horizon composition v1 contracts", () => {
 
     expect(() =>
       decodeLock({
-        ...baseLock,
+        ...hookLock,
         globalHookBindings: [binding],
         resolvedGlobalHooks: [
           {
@@ -201,7 +211,7 @@ describe("Horizon composition v1 contracts", () => {
 
     expect(() =>
       decodeLock({
-        ...baseLock,
+        ...hookLock,
         globalHookBindings: [binding],
         resolvedGlobalHooks: [{ ...completeResolution, ordinal: 1 }],
       } as unknown),
@@ -215,7 +225,7 @@ describe("Horizon composition v1 contracts", () => {
     }
     expect(() =>
       decodeLock({
-        ...baseLock,
+        ...hookLock,
         globalHookBindings: [binding, secondBinding],
         resolvedGlobalHooks: [
           {
@@ -241,31 +251,62 @@ describe("Horizon composition v1 contracts", () => {
     }
     expect(() =>
       decodeLock({
-        ...baseLock,
+        ...hookLock,
         globalHookBindings: [optionalBinding],
         resolvedGlobalHooks: [unavailableResolution],
       } as unknown),
     ).toThrow()
     expect(() =>
       decodeLock({
-        ...baseLock,
+        ...hookLock,
         globalHookBindings: [binding],
         resolvedGlobalHooks: [{ ...unavailableResolution, reasonCode: "HANDLER_UNAVAILABLE" }],
       } as unknown),
     ).toThrow()
     expect(
       decodeLock({
-        ...baseLock,
+        ...hookLock,
         globalHookBindings: [optionalBinding],
         resolvedGlobalHooks: [{ ...unavailableResolution, reasonCode: "HANDLER_UNAVAILABLE" }],
       } as unknown).resolvedGlobalHooks,
     ).toHaveLength(1)
     expect(() =>
       decodeLock({
-        ...baseLock,
+        ...hookLock,
         globalHookBindings: [optionalBinding],
         resolvedGlobalHooks: [{ ...unavailableResolution, reasonCode: "r".repeat(257) }],
       } as unknown),
+    ).toThrow()
+  })
+
+  test("requires resolved global-hook contributions to be pinned by a selected lock node", () => {
+    const binding = {
+      event: "before_compaction",
+      hookId: "hook.summarize",
+      required: true,
+      ordinal: 0,
+    }
+    const resolution = {
+      event: binding.event,
+      hookId: binding.hookId,
+      ordinal: binding.ordinal,
+      status: "RESOLVED",
+      contributionDigest: digest,
+      implementationDigest: digest,
+      eventContractDigest: digest,
+    }
+    const lock = {
+      ...baseLock,
+      globalHookBindings: [binding],
+      resolvedGlobalHooks: [resolution],
+    }
+    const otherDigest = Schema.decodeUnknownSync(Composition.Digest)(`blake3:${"a".repeat(64)}`)
+    const decodeLock = Schema.decodeUnknownSync(Composition.CompositionLockV1)
+
+    expect(() => decodeLock(lock as unknown)).toThrow()
+    expect(decodeLock({ ...lock, nodes: [hookNode] } as unknown).resolvedGlobalHooks).toHaveLength(1)
+    expect(() =>
+      decodeLock({ ...lock, nodes: [{ ...hookNode, contributionDigests: [otherDigest] }] } as unknown),
     ).toThrow()
   })
 

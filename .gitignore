@@ -30,6 +30,7 @@
 !/kernel/src/protocol.rs
 !/kernel/src/startup.rs
 !/kernel/src/transport.rs
+!/kernel/src/windows_peer.rs
 !/indexd/
 !/indexd/Cargo.toml
 !/indexd/Cargo.lock

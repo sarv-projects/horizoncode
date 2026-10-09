@@ -16,7 +16,13 @@ authority.
 - Bounded, deterministic, line-oriented lexical search with generation provenance.
 - A separate immutable unsaved-buffer overlay pinned to an exact local base-generation
   digest and opaque editor version. It can replace bytes only for paths already in
-  that base and never mutates the base.
+  that base and never mutates the base. Per-file replacement and clearing produce a new
+  overlay and recompute its bounded digest without rebuilding the repository base
+  generation. A bounded atomic batch can combine replacements and clears against that
+  same base; duplicate paths, oversized batches, invalid inputs, and final overlay-limit
+  violations fail without changing the prior overlay. A batch is limited to 128 unique
+  paths and 8 MiB of replacement bytes; the resulting overlay remains subject to the
+  same file-count and aggregate-content limits.
 - Generation and query status are always `PARTIAL`. Tree-sitter, LSP, SCIP, and vector
   enrichment are explicitly unavailable; this crate never reports `CURRENT`.
 
@@ -31,6 +37,7 @@ These are implementation defaults, not policy-controlled limits:
 | Aggregate base content | 64 MiB |
 | Aggregate base path bytes | 4 MiB |
 | Overlay files | 128 |
+| Changes in one overlay batch | 128 |
 | Aggregate overlay content | 8 MiB |
 | One normalized path | 1,024 UTF-8 bytes |
 | One opaque pin/editor version | 4,096 bytes |

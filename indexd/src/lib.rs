@@ -9,16 +9,22 @@ pub const MAX_FILE_BYTES: usize = 1_048_576;
 pub const MAX_BASE_CONTENT_BYTES: usize = 67_108_864;
 pub const MAX_BASE_PATH_BYTES: usize = 4_194_304;
 pub const MAX_OVERLAY_FILES: usize = 128;
+pub const MAX_OVERLAY_CHANGES: usize = MAX_OVERLAY_FILES;
 pub const MAX_OVERLAY_CONTENT_BYTES: usize = 8_388_608;
 pub const MAX_PATH_BYTES: usize = 1_024;
 pub const MAX_PIN_BYTES: usize = 4_096;
 pub const MAX_QUERY_BYTES: usize = 256;
 pub const MAX_QUERY_RESULTS: usize = 100;
 pub const MAX_QUERY_WORK_UNITS: usize = 4_194_304;
+pub const MAX_SEARCH_CURSOR_BYTES: usize = 2_400;
 
 const BASE_DOMAIN: &[u8] = b"horizon.indexd.base-generation.v1\0";
 const FILE_DOMAIN: &[u8] = b"horizon.indexd.file-content.v1\0";
 const OVERLAY_DOMAIN: &[u8] = b"horizon.indexd.buffer-overlay.v1\0";
+const QUERY_DOMAIN: &[u8] = b"horizon.indexd.query.v1\0";
+const SEARCH_CURSOR_DOMAIN: &[u8] = b"horizon.indexd.search-cursor.v1\0";
+
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 /// BLAKE3 digest with a stable `blake3:<lowercase hex>` display representation.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -122,6 +128,12 @@ impl FileSnapshot {
             contents: contents.into(),
         }
     }
+}
+
+/// One caller-supplied edit to an immutable buffer overlay.
+pub enum OverlayChange {
+    Replace(FileSnapshot),
+    Clear { path: String },
 }
 
 /// This library can provide lexical search only; enrichment capabilities are absent.
@@ -266,7 +278,21 @@ impl BaseGeneration {
 
     /// Search the base generation only.
     pub fn search(&self, query: &str, max_results: usize) -> Result<QueryResult, IndexError> {
-        self.search_with_overlay(query, max_results, None)
+        self.search_page(query, max_results, None)
+    }
+
+    /// Search a deterministic page after an optional cursor.
+    ///
+    /// A cursor is valid only for this exact query and generation. It resumes after
+    /// the last returned matching path and line, and the bounded scan verifies that
+    /// anchor before yielding later results.
+    pub fn search_page(
+        &self,
+        query: &str,
+        max_results: usize,
+        cursor: Option<&SearchCursor>,
+    ) -> Result<QueryResult, IndexError> {
+        self.search_page_with_overlay(query, max_results, None, cursor)
     }
 
     /// Search using an optional exact-generation unsaved-buffer overlay.
@@ -275,6 +301,18 @@ impl BaseGeneration {
         query: &str,
         max_results: usize,
         overlay: Option<&BufferOverlay>,
+    ) -> Result<QueryResult, IndexError> {
+        self.search_page_with_overlay(query, max_results, overlay, None)
+    }
+
+    /// Search a deterministic page using an optional exact-generation overlay.
+    /// The cursor is bound to the query, base generation, and overlay digest.
+    pub fn search_page_with_overlay(
+        &self,
+        query: &str,
+        max_results: usize,
+        overlay: Option<&BufferOverlay>,
+        cursor: Option<&SearchCursor>,
     ) -> Result<QueryResult, IndexError> {
         validate_query(query, max_results)?;
         if let Some(overlay) = overlay {
@@ -286,22 +324,45 @@ impl BaseGeneration {
             }
         }
 
+        let query_digest = hash_query(query);
+        let cursor_anchor = if let Some(cursor) = cursor {
+            let data = decode_search_cursor(cursor.as_token())?;
+            if data.query_digest != query_digest {
+                return Err(IndexError::CursorQueryMismatch);
+            }
+            if data.generation_digest != self.generation_digest {
+                return Err(IndexError::CursorGenerationMismatch);
+            }
+            if data.overlay_digest != overlay.map(BufferOverlay::digest) {
+                return Err(IndexError::CursorOverlayMismatch);
+            }
+            Some(data.anchor)
+        } else {
+            None
+        };
+
         let pattern = query.as_bytes();
         let mut work = WorkMeter::new(MAX_QUERY_WORK_UNITS);
         let prefix = match build_prefix_table(pattern, &mut work) {
             Some(prefix) => prefix,
             None => {
+                if cursor_anchor.is_some() {
+                    return Err(IndexError::CursorWorkLimit);
+                }
                 return Ok(QueryResult::new(
                     self.generation_digest,
                     overlay,
                     Vec::new(),
                     work.used,
                     Some(SearchTruncation::WorkLimit),
+                    None,
                 ));
             }
         };
         let mut matches = Vec::new();
         let mut truncated_by = None;
+        let mut cursor_anchor_found = cursor_anchor.is_none();
+        let mut last_match = None;
 
         for (path, base_file) in &self.files {
             let contents = overlay
@@ -317,6 +378,9 @@ impl BaseGeneration {
                 &mut work,
                 max_results,
                 &mut matches,
+                cursor_anchor.as_ref(),
+                &mut cursor_anchor_found,
+                &mut last_match,
             ) {
                 FileSearchOutcome::Complete => {}
                 FileSearchOutcome::ResultLimit => {
@@ -324,11 +388,34 @@ impl BaseGeneration {
                     break;
                 }
                 FileSearchOutcome::WorkLimit => {
+                    if cursor_anchor.is_some() && !cursor_anchor_found {
+                        return Err(IndexError::CursorWorkLimit);
+                    }
                     truncated_by = Some(SearchTruncation::WorkLimit);
                     break;
                 }
+                FileSearchOutcome::CursorAnchorNotFound => {
+                    return Err(IndexError::CursorAnchorNotFound);
+                }
             }
         }
+
+        if cursor_anchor.is_some() && !cursor_anchor_found {
+            return Err(IndexError::CursorAnchorNotFound);
+        }
+
+        let next_cursor = if truncated_by == Some(SearchTruncation::ResultLimit) {
+            last_match.map(|anchor| {
+                SearchCursor::new(
+                    self.generation_digest,
+                    overlay.map(BufferOverlay::digest),
+                    query_digest,
+                    anchor,
+                )
+            })
+        } else {
+            None
+        };
 
         Ok(QueryResult::new(
             self.generation_digest,
@@ -336,6 +423,7 @@ impl BaseGeneration {
             matches,
             work.used,
             truncated_by,
+            next_cursor,
         ))
     }
 }
@@ -347,6 +435,7 @@ pub struct BufferOverlay {
     editor_version: OpaquePin,
     overlay_digest: Digest,
     files: BTreeMap<String, IndexedFile>,
+    content_bytes: usize,
 }
 
 impl fmt::Debug for BufferOverlay {
@@ -356,6 +445,7 @@ impl fmt::Debug for BufferOverlay {
             .field("base_generation_digest", &self.base_generation_digest)
             .field("overlay_digest", &self.overlay_digest)
             .field("file_count", &self.files.len())
+            .field("content_bytes", &self.content_bytes)
             .field("editor_version", &self.editor_version)
             .finish_non_exhaustive()
     }
@@ -419,7 +509,234 @@ impl BufferOverlay {
             editor_version,
             overlay_digest,
             files,
+            content_bytes,
         })
+    }
+
+    /// Return a new overlay with one existing base path replaced by an editor snapshot.
+    /// The original overlay remains unchanged; no repository-wide generation is rebuilt.
+    pub fn replace_file(
+        &self,
+        base: &BaseGeneration,
+        editor_version: OpaquePin,
+        snapshot: FileSnapshot,
+    ) -> Result<Self, IndexError> {
+        self.validate_base(base)?;
+        validate_pin(editor_version.as_bytes())?;
+        validate_path(&snapshot.path)?;
+        if !base.files.contains_key(&snapshot.path) {
+            return Err(IndexError::OverlayPathNotInBase(snapshot.path));
+        }
+        if snapshot.contents.len() > MAX_FILE_BYTES {
+            return Err(IndexError::FileTooLarge {
+                path: snapshot.path,
+                limit: MAX_FILE_BYTES,
+            });
+        }
+
+        let previous_bytes = self
+            .files
+            .get(&snapshot.path)
+            .map_or(0, |file| file.contents.len());
+        let content_bytes = self
+            .content_bytes
+            .checked_sub(previous_bytes)
+            .and_then(|bytes| bytes.checked_add(snapshot.contents.len()))
+            .filter(|bytes| *bytes <= MAX_OVERLAY_CONTENT_BYTES)
+            .ok_or(IndexError::OverlayContentLimit {
+                limit: MAX_OVERLAY_CONTENT_BYTES,
+            })?;
+        if !self.files.contains_key(&snapshot.path) && self.files.len() >= MAX_OVERLAY_FILES {
+            return Err(IndexError::TooManyOverlayFiles {
+                limit: MAX_OVERLAY_FILES,
+            });
+        }
+
+        let path = snapshot.path;
+        let content_digest = hash_content(&snapshot.contents);
+        let contents = String::from_utf8(snapshot.contents)
+            .map_err(|_| IndexError::InvalidUtf8 { path: path.clone() })?;
+        let mut files = self.files.clone();
+        files.insert(
+            path,
+            IndexedFile {
+                contents,
+                content_digest,
+            },
+        );
+        Ok(Self::from_files(
+            base.generation_digest,
+            editor_version,
+            files,
+            content_bytes,
+        ))
+    }
+
+    /// Return a new overlay with one buffer removed, revealing that path's base bytes.
+    pub fn clear_file(
+        &self,
+        base: &BaseGeneration,
+        editor_version: OpaquePin,
+        path: &str,
+    ) -> Result<Self, IndexError> {
+        self.validate_base(base)?;
+        validate_pin(editor_version.as_bytes())?;
+        validate_path(path)?;
+        if !base.files.contains_key(path) {
+            return Err(IndexError::OverlayPathNotInBase(path.to_owned()));
+        }
+
+        let mut files = self.files.clone();
+        let content_bytes = if let Some(removed) = files.remove(path) {
+            self.content_bytes
+                .checked_sub(removed.contents.len())
+                .ok_or(IndexError::OverlayContentLimit {
+                    limit: MAX_OVERLAY_CONTENT_BYTES,
+                })?
+        } else {
+            self.content_bytes
+        };
+        Ok(Self::from_files(
+            base.generation_digest,
+            editor_version,
+            files,
+            content_bytes,
+        ))
+    }
+
+    /// Apply a bounded, duplicate-free batch against one exact base generation.
+    /// A successful batch returns one new immutable overlay pinned to `editor_version`;
+    /// failures leave this overlay unchanged and return no partial overlay.
+    pub fn apply_changes<I>(
+        &self,
+        base: &BaseGeneration,
+        editor_version: OpaquePin,
+        changes: I,
+    ) -> Result<Self, IndexError>
+    where
+        I: IntoIterator<Item = OverlayChange>,
+    {
+        self.validate_base(base)?;
+        validate_pin(editor_version.as_bytes())?;
+
+        let mut staged = BTreeMap::new();
+        let mut replacement_bytes = 0usize;
+        for change in changes {
+            let (path, replacement) = match change {
+                OverlayChange::Replace(snapshot) => {
+                    validate_path(&snapshot.path)?;
+                    if !base.files.contains_key(&snapshot.path) {
+                        return Err(IndexError::OverlayPathNotInBase(snapshot.path));
+                    }
+                    if staged.contains_key(&snapshot.path) {
+                        return Err(IndexError::DuplicateOverlayChange(snapshot.path));
+                    }
+                    if staged.len() >= MAX_OVERLAY_CHANGES {
+                        return Err(IndexError::TooManyOverlayChanges {
+                            limit: MAX_OVERLAY_CHANGES,
+                        });
+                    }
+                    if snapshot.contents.len() > MAX_FILE_BYTES {
+                        return Err(IndexError::FileTooLarge {
+                            path: snapshot.path,
+                            limit: MAX_FILE_BYTES,
+                        });
+                    }
+                    replacement_bytes = replacement_bytes
+                        .checked_add(snapshot.contents.len())
+                        .filter(|total| *total <= MAX_OVERLAY_CONTENT_BYTES)
+                        .ok_or(IndexError::OverlayContentLimit {
+                            limit: MAX_OVERLAY_CONTENT_BYTES,
+                        })?;
+
+                    let path = snapshot.path;
+                    let content_digest = hash_content(&snapshot.contents);
+                    let contents = String::from_utf8(snapshot.contents)
+                        .map_err(|_| IndexError::InvalidUtf8 { path: path.clone() })?;
+                    (
+                        path,
+                        Some(IndexedFile {
+                            contents,
+                            content_digest,
+                        }),
+                    )
+                }
+                OverlayChange::Clear { path } => {
+                    validate_path(&path)?;
+                    if !base.files.contains_key(&path) {
+                        return Err(IndexError::OverlayPathNotInBase(path));
+                    }
+                    if staged.contains_key(&path) {
+                        return Err(IndexError::DuplicateOverlayChange(path));
+                    }
+                    if staged.len() >= MAX_OVERLAY_CHANGES {
+                        return Err(IndexError::TooManyOverlayChanges {
+                            limit: MAX_OVERLAY_CHANGES,
+                        });
+                    }
+                    (path, None)
+                }
+            };
+            staged.insert(path, replacement);
+        }
+
+        let mut files = self.files.clone();
+        for (path, replacement) in staged {
+            match replacement {
+                Some(file) => {
+                    files.insert(path, file);
+                }
+                None => {
+                    files.remove(&path);
+                }
+            }
+        }
+        if files.len() > MAX_OVERLAY_FILES {
+            return Err(IndexError::TooManyOverlayFiles {
+                limit: MAX_OVERLAY_FILES,
+            });
+        }
+        let content_bytes = files.values().try_fold(0usize, |total, file| {
+            total
+                .checked_add(file.contents.len())
+                .filter(|bytes| *bytes <= MAX_OVERLAY_CONTENT_BYTES)
+                .ok_or(IndexError::OverlayContentLimit {
+                    limit: MAX_OVERLAY_CONTENT_BYTES,
+                })
+        })?;
+
+        Ok(Self::from_files(
+            base.generation_digest,
+            editor_version,
+            files,
+            content_bytes,
+        ))
+    }
+
+    fn validate_base(&self, base: &BaseGeneration) -> Result<(), IndexError> {
+        if self.base_generation_digest != base.generation_digest {
+            return Err(IndexError::OverlayGenerationMismatch {
+                expected: base.generation_digest,
+                actual: self.base_generation_digest,
+            });
+        }
+        Ok(())
+    }
+
+    fn from_files(
+        base_generation_digest: Digest,
+        editor_version: OpaquePin,
+        files: BTreeMap<String, IndexedFile>,
+        content_bytes: usize,
+    ) -> Self {
+        let overlay_digest = hash_overlay(base_generation_digest, &editor_version, &files);
+        Self {
+            base_generation_digest,
+            editor_version,
+            overlay_digest,
+            files,
+            content_bytes,
+        }
     }
 
     pub fn base_generation_digest(&self) -> Digest {
@@ -437,6 +754,70 @@ impl BufferOverlay {
     pub fn file_count(&self) -> usize {
         self.files.len()
     }
+
+    pub fn content_bytes(&self) -> usize {
+        self.content_bytes
+    }
+}
+
+/// A versioned bounded resume token for deterministic lexical search pagination.
+///
+/// Treat the token as opaque. Its digest bindings detect context changes but do not
+/// authenticate the caller or grant access to repository data.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchCursor {
+    token: String,
+}
+
+impl SearchCursor {
+    /// Parse a token returned by [`QueryResult::next_cursor`].
+    pub fn parse(token: &str) -> Result<Self, IndexError> {
+        decode_search_cursor(token)?;
+        Ok(Self {
+            token: token.to_owned(),
+        })
+    }
+
+    /// Return the bounded serialized token for transport and later parsing.
+    pub fn as_token(&self) -> &str {
+        &self.token
+    }
+
+    fn new(
+        generation_digest: Digest,
+        overlay_digest: Option<Digest>,
+        query_digest: Digest,
+        anchor: CursorAnchor,
+    ) -> Self {
+        let payload = format!(
+            "v1:{}:{}:{}:{}:{}",
+            encode_hex(generation_digest.as_bytes()),
+            overlay_digest.map_or_else(
+                || "-".to_owned(),
+                |digest| encode_hex(digest.as_bytes())
+            ),
+            encode_hex(query_digest.as_bytes()),
+            encode_hex(anchor.path.as_bytes()),
+            anchor.line,
+        );
+        let checksum = hash_search_cursor_payload(payload.as_bytes());
+        let token = format!("{payload}:{}", encode_hex(checksum.as_bytes()));
+        debug_assert!(token.len() <= MAX_SEARCH_CURSOR_BYTES);
+        Self { token }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CursorAnchor {
+    path: String,
+    line: u64,
+}
+
+struct SearchCursorData {
+    generation_digest: Digest,
+    overlay_digest: Option<Digest>,
+    query_digest: Digest,
+    anchor: CursorAnchor,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -466,6 +847,8 @@ pub struct QueryResult {
     pub overlay_digest: Option<Digest>,
     pub editor_version: Option<OpaquePin>,
     pub matches: Vec<SearchMatch>,
+    /// Present only when the result limit, rather than the work limit, ended the page.
+    pub next_cursor: Option<SearchCursor>,
     pub work_units: usize,
     pub truncated_by: Option<SearchTruncation>,
 }
@@ -477,6 +860,7 @@ impl QueryResult {
         matches: Vec<SearchMatch>,
         work_units: usize,
         truncated_by: Option<SearchTruncation>,
+        next_cursor: Option<SearchCursor>,
     ) -> Self {
         Self {
             status: QueryStatus::Partial,
@@ -485,6 +869,7 @@ impl QueryResult {
             overlay_digest: overlay.map(BufferOverlay::digest),
             editor_version: overlay.map(|candidate| candidate.editor_version.clone()),
             matches,
+            next_cursor,
             work_units,
             truncated_by,
         }
@@ -503,13 +888,21 @@ pub enum IndexError {
     BaseContentLimit { limit: usize },
     BasePathLimit { limit: usize },
     TooManyOverlayFiles { limit: usize },
+    TooManyOverlayChanges { limit: usize },
     OverlayContentLimit { limit: usize },
     OverlayPathNotInBase(String),
+    DuplicateOverlayChange(String),
     EmptyQuery,
     QueryTooLarge { limit: usize },
     MultilineQuery,
     InvalidResultLimit { limit: usize },
     OverlayGenerationMismatch { expected: Digest, actual: Digest },
+    InvalidSearchCursor,
+    CursorQueryMismatch,
+    CursorGenerationMismatch,
+    CursorOverlayMismatch,
+    CursorAnchorNotFound,
+    CursorWorkLimit,
 }
 
 impl fmt::Display for IndexError {
@@ -545,6 +938,9 @@ impl fmt::Display for IndexError {
             Self::TooManyOverlayFiles { limit } => {
                 write!(formatter, "buffer overlay exceeds the {limit}-file limit")
             }
+            Self::TooManyOverlayChanges { limit } => {
+                write!(formatter, "overlay batch exceeds the {limit}-change limit")
+            }
             Self::OverlayContentLimit { limit } => {
                 write!(
                     formatter,
@@ -555,6 +951,12 @@ impl fmt::Display for IndexError {
                 write!(
                     formatter,
                     "overlay path is not present in its base: {path:?}"
+                )
+            }
+            Self::DuplicateOverlayChange(path) => {
+                write!(
+                    formatter,
+                    "overlay batch changes path more than once: {path:?}"
                 )
             }
             Self::EmptyQuery => formatter.write_str("query must not be empty"),
@@ -569,6 +971,22 @@ impl fmt::Display for IndexError {
                 formatter,
                 "overlay is pinned to {actual}, not requested generation {expected}"
             ),
+            Self::InvalidSearchCursor => formatter.write_str("search cursor is malformed"),
+            Self::CursorQueryMismatch => {
+                formatter.write_str("search cursor is bound to a different query")
+            }
+            Self::CursorGenerationMismatch => {
+                formatter.write_str("search cursor is bound to a different generation")
+            }
+            Self::CursorOverlayMismatch => {
+                formatter.write_str("search cursor is bound to a different overlay")
+            }
+            Self::CursorAnchorNotFound => {
+                formatter.write_str("search cursor anchor is not present in this query")
+            }
+            Self::CursorWorkLimit => {
+                formatter.write_str("search work limit was reached before the cursor anchor")
+            }
         }
     }
 }
@@ -622,6 +1040,116 @@ fn validate_query(query: &str, max_results: usize) -> Result<(), IndexError> {
         });
     }
     Ok(())
+}
+
+fn hash_query(query: &str) -> Digest {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(QUERY_DOMAIN);
+    update_bytes(&mut hasher, query.as_bytes());
+    Digest::from_hasher(hasher)
+}
+
+fn hash_search_cursor_payload(payload: &[u8]) -> Digest {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(SEARCH_CURSOR_DOMAIN);
+    hasher.update(payload);
+    Digest::from_hasher(hasher)
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX_DIGITS[usize::from(byte >> 4)] as char);
+        encoded.push(HEX_DIGITS[usize::from(byte & 0x0f)] as char);
+    }
+    encoded
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>, IndexError> {
+    if value.len() % 2 != 0 {
+        return Err(IndexError::InvalidSearchCursor);
+    }
+
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = decode_hex_digit(pair[0])?;
+            let low = decode_hex_digit(pair[1])?;
+            Ok((high << 4) | low)
+        })
+        .collect()
+}
+
+fn decode_hex_digit(value: u8) -> Result<u8, IndexError> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        _ => Err(IndexError::InvalidSearchCursor),
+    }
+}
+
+fn decode_digest(value: &str) -> Result<Digest, IndexError> {
+    if value.len() != 64 {
+        return Err(IndexError::InvalidSearchCursor);
+    }
+    let decoded = decode_hex(value)?;
+    let mut bytes = [0; 32];
+    bytes.copy_from_slice(&decoded);
+    Ok(Digest(bytes))
+}
+
+fn decode_search_cursor(token: &str) -> Result<SearchCursorData, IndexError> {
+    if token.len() > MAX_SEARCH_CURSOR_BYTES {
+        return Err(IndexError::InvalidSearchCursor);
+    }
+
+    let mut fields = token.split(':');
+    if fields.next() != Some("v1") {
+        return Err(IndexError::InvalidSearchCursor);
+    }
+    let generation_digest = decode_digest(fields.next().ok_or(IndexError::InvalidSearchCursor)?)?;
+    let overlay_field = fields.next().ok_or(IndexError::InvalidSearchCursor)?;
+    let overlay_digest = if overlay_field == "-" {
+        None
+    } else {
+        Some(decode_digest(overlay_field)?)
+    };
+    let query_digest = decode_digest(fields.next().ok_or(IndexError::InvalidSearchCursor)?)?;
+    let path_field = fields.next().ok_or(IndexError::InvalidSearchCursor)?;
+    if path_field.is_empty() || path_field.len() > MAX_PATH_BYTES * 2 {
+        return Err(IndexError::InvalidSearchCursor);
+    }
+    let path_bytes = decode_hex(path_field)?;
+    let path = String::from_utf8(path_bytes).map_err(|_| IndexError::InvalidSearchCursor)?;
+    validate_path(&path).map_err(|_| IndexError::InvalidSearchCursor)?;
+
+    let line_field = fields.next().ok_or(IndexError::InvalidSearchCursor)?;
+    let line = line_field
+        .parse::<u64>()
+        .map_err(|_| IndexError::InvalidSearchCursor)?;
+    if line == 0 || line.to_string() != line_field {
+        return Err(IndexError::InvalidSearchCursor);
+    }
+    let checksum_field = fields.next().ok_or(IndexError::InvalidSearchCursor)?;
+    if fields.next().is_some() {
+        return Err(IndexError::InvalidSearchCursor);
+    }
+    let checksum = decode_digest(checksum_field)?;
+    let payload = token
+        .rsplit_once(':')
+        .map(|(payload, _)| payload)
+        .ok_or(IndexError::InvalidSearchCursor)?;
+    if hash_search_cursor_payload(payload.as_bytes()) != checksum {
+        return Err(IndexError::InvalidSearchCursor);
+    }
+
+    Ok(SearchCursorData {
+        generation_digest,
+        overlay_digest,
+        query_digest,
+        anchor: CursorAnchor { path, line },
+    })
 }
 
 fn hash_content(contents: &[u8]) -> Digest {
@@ -771,6 +1299,7 @@ enum FileSearchOutcome {
     Complete,
     ResultLimit,
     WorkLimit,
+    CursorAnchorNotFound,
 }
 
 fn search_file(
@@ -781,6 +1310,9 @@ fn search_file(
     work: &mut WorkMeter,
     max_results: usize,
     matches: &mut Vec<SearchMatch>,
+    cursor_anchor: Option<&CursorAnchor>,
+    cursor_anchor_found: &mut bool,
+    last_match: &mut Option<CursorAnchor>,
 ) -> FileSearchOutcome {
     let bytes = contents.as_bytes();
     let mut start = 0usize;
@@ -806,14 +1338,52 @@ fn search_file(
         let line = &contents[start..line_end];
         match line_contains(line.as_bytes(), pattern, prefix, work) {
             Some(true) => {
+                let candidate = CursorAnchor {
+                    path: path.to_owned(),
+                    line: line_number,
+                };
+                if let Some(anchor) = cursor_anchor {
+                    if !*cursor_anchor_found {
+                        match candidate
+                            .path
+                            .cmp(&anchor.path)
+                            .then_with(|| candidate.line.cmp(&anchor.line))
+                        {
+                            std::cmp::Ordering::Less => {}
+                            std::cmp::Ordering::Equal => *cursor_anchor_found = true,
+                            std::cmp::Ordering::Greater => {
+                                return FileSearchOutcome::CursorAnchorNotFound;
+                            }
+                        }
+                        if !*cursor_anchor_found {
+                            if has_newline {
+                                start = end + 1;
+                            } else {
+                                start = end;
+                            }
+                            line_number += 1;
+                            continue;
+                        }
+                        if candidate.path == anchor.path && candidate.line == anchor.line {
+                            if has_newline {
+                                start = end + 1;
+                            } else {
+                                start = end;
+                            }
+                            line_number += 1;
+                            continue;
+                        }
+                    }
+                }
                 if matches.len() == max_results {
                     return FileSearchOutcome::ResultLimit;
                 }
                 matches.push(SearchMatch {
-                    path: path.to_owned(),
+                    path: candidate.path.clone(),
                     start_line: line_number,
                     end_line: line_number,
                 });
+                *last_match = Some(candidate);
             }
             Some(false) => {}
             None => return FileSearchOutcome::WorkLimit,
@@ -928,6 +1498,132 @@ mod tests {
         assert_eq!(result.matches[0].start_line, 1);
         assert_eq!(result.matches[1].start_line, 2);
         assert!(result.work_units <= MAX_QUERY_WORK_UNITS);
+        assert!(result.next_cursor.is_some());
+    }
+
+    #[test]
+    fn search_pages_are_stable_and_contiguous_in_path_line_order() {
+        let base = generation(vec![
+            snapshot("c.txt", "hit\n"),
+            snapshot("b.txt", "hit\nhit\n"),
+            snapshot("a.txt", "hit\nmiss\nhit\n"),
+        ]);
+        let expected = base.search("hit", MAX_QUERY_RESULTS).unwrap().matches;
+        let first = base.search_page("hit", 2, None).unwrap();
+        let first_cursor = first.next_cursor.clone().unwrap();
+        let parsed_cursor = SearchCursor::parse(first_cursor.as_token()).unwrap();
+        assert_eq!(parsed_cursor, first_cursor);
+        assert_eq!(first.matches[0].path, "a.txt");
+        assert_eq!(first.matches[0].start_line, 1);
+        assert_eq!(first.matches[1].path, "a.txt");
+        assert_eq!(first.matches[1].start_line, 3);
+        assert_eq!(first.truncated_by, Some(SearchTruncation::ResultLimit));
+
+        let second = base.search_page("hit", 2, Some(&parsed_cursor)).unwrap();
+        assert_eq!(second.matches[0].path, "b.txt");
+        assert_eq!(second.matches[0].start_line, 1);
+        assert_eq!(second.matches[1].path, "b.txt");
+        assert_eq!(second.matches[1].start_line, 2);
+        let second_cursor = second.next_cursor.as_ref().unwrap();
+
+        let third = base.search_page("hit", 2, Some(second_cursor)).unwrap();
+        assert_eq!(third.matches.len(), 1);
+        assert_eq!(third.matches[0].path, "c.txt");
+        assert_eq!(third.matches[0].start_line, 1);
+        assert_eq!(third.next_cursor, None);
+
+        let mut paged = first.matches;
+        paged.extend(second.matches);
+        paged.extend(third.matches);
+        assert_eq!(paged, expected);
+    }
+
+    #[test]
+    fn search_cursors_reject_malformed_and_oversized_tokens() {
+        let base = generation(vec![snapshot("a.txt", "hit\nhit\n")]);
+        let cursor = base.search_page("hit", 1, None).unwrap().next_cursor.unwrap();
+        let mut corrupted = cursor.as_token().to_owned();
+        let replacement = if corrupted.as_bytes()[3] == b'0' {
+            "1"
+        } else {
+            "0"
+        };
+        corrupted.replace_range(3..4, replacement);
+
+        assert!(matches!(
+            SearchCursor::parse("not-a-cursor"),
+            Err(IndexError::InvalidSearchCursor)
+        ));
+        assert!(matches!(
+            SearchCursor::parse(&corrupted),
+            Err(IndexError::InvalidSearchCursor)
+        ));
+        assert!(matches!(
+            SearchCursor::parse(&"x".repeat(MAX_SEARCH_CURSOR_BYTES + 1)),
+            Err(IndexError::InvalidSearchCursor)
+        ));
+        assert!(cursor.as_token().len() <= MAX_SEARCH_CURSOR_BYTES);
+    }
+
+    #[test]
+    fn search_cursors_reject_other_queries_generations_and_overlays() {
+        let base = generation(vec![snapshot("a.txt", "hit\nhit\n")]);
+        let cursor = base.search_page("hit", 1, None).unwrap().next_cursor.unwrap();
+        let other_generation = generation(vec![snapshot("a.txt", "hit\nchanged hit\n")]);
+
+        assert!(matches!(
+            base.search_page("different", 1, Some(&cursor)),
+            Err(IndexError::CursorQueryMismatch)
+        ));
+        assert!(matches!(
+            other_generation.search_page("hit", 1, Some(&cursor)),
+            Err(IndexError::CursorGenerationMismatch)
+        ));
+
+        let first_overlay = BufferOverlay::build(
+            &base,
+            pin("editor-1"),
+            vec![snapshot("a.txt", "hit\nhit\n")],
+        )
+        .unwrap();
+        let second_overlay = BufferOverlay::build(
+            &base,
+            pin("editor-2"),
+            vec![snapshot("a.txt", "hit\nhit\n")],
+        )
+        .unwrap();
+        let overlay_cursor = base
+            .search_page_with_overlay("hit", 1, Some(&first_overlay), None)
+            .unwrap()
+            .next_cursor
+            .unwrap();
+        assert!(matches!(
+            base.search_page_with_overlay("hit", 1, Some(&second_overlay), Some(&overlay_cursor)),
+            Err(IndexError::CursorOverlayMismatch)
+        ));
+        assert!(matches!(
+            base.search_page("hit", 1, Some(&overlay_cursor)),
+            Err(IndexError::CursorOverlayMismatch)
+        ));
+    }
+
+    #[test]
+    fn search_cursor_must_identify_a_matching_anchor() {
+        let base = generation(vec![snapshot("a.txt", "hit\nhit\n")]);
+        let cursor = SearchCursor::new(
+            base.digest(),
+            None,
+            hash_query("hit"),
+            CursorAnchor {
+                path: "missing.txt".to_owned(),
+                line: 1,
+            },
+        );
+
+        assert!(matches!(
+            base.search_page("hit", 1, Some(&cursor)),
+            Err(IndexError::CursorAnchorNotFound)
+        ));
     }
 
     #[test]
@@ -943,6 +1639,35 @@ mod tests {
         assert_eq!(result.truncated_by, Some(SearchTruncation::WorkLimit));
         assert!(result.work_units <= MAX_QUERY_WORK_UNITS);
         assert_eq!(result.work_units, MAX_QUERY_WORK_UNITS);
+    }
+
+    #[test]
+    fn kmp_line_search_matches_naive_search_for_bounded_binary_inputs() {
+        for text_length in 0..=6 {
+            for text_bits in 0..(1_usize << text_length) {
+                let text: Vec<u8> = (0..text_length)
+                    .map(|index| b'a' + ((text_bits >> index) & 1) as u8)
+                    .collect();
+                for pattern_length in 1..=4 {
+                    for pattern_bits in 0..(1_usize << pattern_length) {
+                        let pattern: Vec<u8> = (0..pattern_length)
+                            .map(|index| b'a' + ((pattern_bits >> index) & 1) as u8)
+                            .collect();
+                        let expected = text
+                            .windows(pattern.len())
+                            .any(|window| window == pattern.as_slice());
+                        let mut work = WorkMeter::new(MAX_QUERY_WORK_UNITS);
+                        let prefix = build_prefix_table(&pattern, &mut work).unwrap();
+
+                        assert_eq!(
+                            line_contains(&text, &pattern, &prefix, &mut work),
+                            Some(expected),
+                            "text={text:?}, pattern={pattern:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -969,6 +1694,332 @@ mod tests {
             overlay_result.editor_version,
             Some(pin("editor-version-42"))
         );
+    }
+
+    #[test]
+    fn overlay_file_replacement_is_immutable_and_matches_full_snapshot_digest() {
+        let base = generation(vec![
+            snapshot("a.txt", "base a\n"),
+            snapshot("b.txt", "base b\n"),
+        ]);
+        let original = BufferOverlay::build(
+            &base,
+            pin("editor-1"),
+            vec![snapshot("a.txt", "edited a\n")],
+        )
+        .unwrap();
+        let replaced = original
+            .replace_file(&base, pin("editor-2"), snapshot("a.txt", "revised a\n"))
+            .unwrap();
+        let updated = replaced
+            .replace_file(&base, pin("editor-2"), snapshot("b.txt", "edited b\n"))
+            .unwrap();
+        let rebuilt = BufferOverlay::build(
+            &base,
+            pin("editor-2"),
+            vec![
+                snapshot("a.txt", "revised a\n"),
+                snapshot("b.txt", "edited b\n"),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(updated.digest(), rebuilt.digest());
+        assert_eq!(updated.file_count(), 2);
+        assert_eq!(updated.content_bytes(), "revised a\nedited b\n".len());
+        assert_eq!(updated.editor_version(), &pin("editor-2"));
+        assert_eq!(
+            base.search_with_overlay("edited b", 10, Some(&updated))
+                .unwrap()
+                .matches
+                .len(),
+            1
+        );
+        assert!(base
+            .search_with_overlay("edited a", 10, Some(&updated))
+            .unwrap()
+            .matches
+            .is_empty());
+        assert_eq!(
+            base.search_with_overlay("edited a", 10, Some(&original))
+                .unwrap()
+                .matches
+                .len(),
+            1
+        );
+        assert!(base
+            .search_with_overlay("edited b", 10, Some(&original))
+            .unwrap()
+            .matches
+            .is_empty());
+    }
+
+    #[test]
+    fn clearing_overlay_file_restores_base_and_keeps_previous_overlay_immutable() {
+        let base = generation(vec![
+            snapshot("a.txt", "base a\n"),
+            snapshot("b.txt", "base b\n"),
+        ]);
+        let original = BufferOverlay::build(
+            &base,
+            pin("editor-1"),
+            vec![
+                snapshot("a.txt", "edited a\n"),
+                snapshot("b.txt", "edited b\n"),
+            ],
+        )
+        .unwrap();
+        let updated = original
+            .clear_file(&base, pin("editor-2"), "a.txt")
+            .unwrap();
+
+        assert_eq!(updated.file_count(), 1);
+        assert_eq!(updated.content_bytes(), "edited b\n".len());
+        assert_eq!(
+            base.search_with_overlay("base a", 10, Some(&updated))
+                .unwrap()
+                .matches
+                .len(),
+            1
+        );
+        assert!(base
+            .search_with_overlay("edited a", 10, Some(&updated))
+            .unwrap()
+            .matches
+            .is_empty());
+        assert_eq!(
+            base.search_with_overlay("edited a", 10, Some(&original))
+                .unwrap()
+                .matches
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn overlay_batch_is_immutable_order_independent_and_matches_full_snapshot_digest() {
+        let base = generation(vec![
+            snapshot("a.txt", "base a\n"),
+            snapshot("b.txt", "base b\n"),
+            snapshot("c.txt", "base c\n"),
+        ]);
+        let original = BufferOverlay::build(
+            &base,
+            pin("editor-1"),
+            vec![snapshot("a.txt", "old a\n"), snapshot("b.txt", "old b\n")],
+        )
+        .unwrap();
+        let changes = vec![
+            OverlayChange::Replace(snapshot("a.txt", "new a\n")),
+            OverlayChange::Clear {
+                path: "b.txt".to_owned(),
+            },
+            OverlayChange::Replace(snapshot("c.txt", "new c\n")),
+        ];
+        let updated = original
+            .apply_changes(&base, pin("editor-2"), changes)
+            .unwrap();
+        let reversed = original
+            .apply_changes(
+                &base,
+                pin("editor-2"),
+                vec![
+                    OverlayChange::Replace(snapshot("c.txt", "new c\n")),
+                    OverlayChange::Clear {
+                        path: "b.txt".to_owned(),
+                    },
+                    OverlayChange::Replace(snapshot("a.txt", "new a\n")),
+                ],
+            )
+            .unwrap();
+        let rebuilt = BufferOverlay::build(
+            &base,
+            pin("editor-2"),
+            vec![snapshot("a.txt", "new a\n"), snapshot("c.txt", "new c\n")],
+        )
+        .unwrap();
+
+        assert_eq!(updated.digest(), rebuilt.digest());
+        assert_eq!(updated.digest(), reversed.digest());
+        assert_eq!(updated.file_count(), 2);
+        assert_eq!(updated.content_bytes(), "new a\nnew c\n".len());
+        assert_eq!(updated.editor_version(), &pin("editor-2"));
+        assert_eq!(
+            base.search_with_overlay("base b", 10, Some(&updated))
+                .unwrap()
+                .matches
+                .len(),
+            1
+        );
+        assert!(base
+            .search_with_overlay("old a", 10, Some(&updated))
+            .unwrap()
+            .matches
+            .is_empty());
+        assert_eq!(
+            base.search_with_overlay("old a", 10, Some(&original))
+                .unwrap()
+                .matches
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn failed_overlay_batch_leaves_original_overlay_unchanged() {
+        let base = generation(vec![
+            snapshot("a.txt", "base a\n"),
+            snapshot("b.txt", "base b\n"),
+            snapshot("c.txt", "base c\n"),
+        ]);
+        let original =
+            BufferOverlay::build(&base, pin("editor-1"), vec![snapshot("a.txt", "old a\n")])
+                .unwrap();
+        let digest = original.digest();
+        let result = original.apply_changes(
+            &base,
+            pin("editor-2"),
+            vec![
+                OverlayChange::Replace(snapshot("a.txt", "new a\n")),
+                OverlayChange::Clear {
+                    path: "b.txt".to_owned(),
+                },
+                OverlayChange::Replace(FileSnapshot::new("c.txt", vec![0xff])),
+            ],
+        );
+
+        assert!(matches!(result, Err(IndexError::InvalidUtf8 { .. })));
+        assert_eq!(original.digest(), digest);
+        assert_eq!(original.file_count(), 1);
+        assert_eq!(original.content_bytes(), "old a\n".len());
+        assert_eq!(original.editor_version(), &pin("editor-1"));
+        assert_eq!(
+            base.search_with_overlay("old a", 10, Some(&original))
+                .unwrap()
+                .matches
+                .len(),
+            1
+        );
+        assert!(base
+            .search_with_overlay("new a", 10, Some(&original))
+            .unwrap()
+            .matches
+            .is_empty());
+        assert!(matches!(
+            original.apply_changes(
+                &base,
+                pin("editor-2"),
+                vec![
+                    OverlayChange::Clear {
+                        path: "b.txt".to_owned(),
+                    },
+                    OverlayChange::Replace(snapshot("b.txt", "duplicate\n")),
+                ],
+            ),
+            Err(IndexError::DuplicateOverlayChange(path)) if path == "b.txt"
+        ));
+    }
+
+    #[test]
+    fn overlay_batches_enforce_change_and_final_content_limits() {
+        let count_base = BaseGeneration::build(
+            pins(),
+            (0..=MAX_OVERLAY_CHANGES)
+                .map(|index| FileSnapshot::new(format!("entry-{index}.txt"), b"base".to_vec())),
+        )
+        .unwrap();
+        let empty = BufferOverlay::build(&count_base, pin("editor-1"), Vec::new()).unwrap();
+        let too_many_changes = empty.apply_changes(
+            &count_base,
+            pin("editor-2"),
+            (0..=MAX_OVERLAY_CHANGES).map(|index| OverlayChange::Clear {
+                path: format!("entry-{index}.txt"),
+            }),
+        );
+        assert!(matches!(
+            too_many_changes,
+            Err(IndexError::TooManyOverlayChanges { .. })
+        ));
+        assert_eq!(empty.file_count(), 0);
+        assert_eq!(empty.editor_version(), &pin("editor-1"));
+
+        let large_base = BaseGeneration::build(
+            pins(),
+            (0..9).map(|index| FileSnapshot::new(format!("file-{index}.txt"), vec![b'x'; 950_000])),
+        )
+        .unwrap();
+        let large_overlay = BufferOverlay::build(
+            &large_base,
+            pin("editor-large"),
+            (0..8).map(|index| FileSnapshot::new(format!("file-{index}.txt"), vec![b'y'; 950_000])),
+        )
+        .unwrap();
+        let digest = large_overlay.digest();
+        assert!(matches!(
+            large_overlay.apply_changes(
+                &large_base,
+                pin("editor-too-large"),
+                vec![OverlayChange::Replace(FileSnapshot::new(
+                    "file-8.txt",
+                    vec![b'z'; 950_000],
+                ))],
+            ),
+            Err(IndexError::OverlayContentLimit { .. })
+        ));
+        assert_eq!(large_overlay.digest(), digest);
+        assert_eq!(large_overlay.content_bytes(), 8 * 950_000);
+    }
+
+    #[test]
+    fn overlay_updates_reject_other_bases_and_enforce_aggregate_limits() {
+        let base = generation(vec![snapshot("a.txt", "base\n")]);
+        let other_base = generation(vec![snapshot("a.txt", "other base\n")]);
+        let overlay = BufferOverlay::build(&base, pin("editor-1"), Vec::new()).unwrap();
+        assert!(matches!(
+            overlay.replace_file(&other_base, pin("editor-2"), snapshot("a.txt", "edit\n")),
+            Err(IndexError::OverlayGenerationMismatch { .. })
+        ));
+
+        let snapshots: Vec<_> = (0..9)
+            .map(|index| FileSnapshot::new(format!("file-{index}.txt"), vec![b'x'; 950_000]))
+            .collect();
+        let large_base = BaseGeneration::build(pins(), snapshots).unwrap();
+        let large_overlay = BufferOverlay::build(
+            &large_base,
+            pin("editor-large"),
+            (0..8).map(|index| FileSnapshot::new(format!("file-{index}.txt"), vec![b'y'; 950_000])),
+        )
+        .unwrap();
+        assert!(matches!(
+            large_overlay.replace_file(
+                &large_base,
+                pin("editor-too-large"),
+                FileSnapshot::new("file-8.txt", vec![b'z'; 950_000]),
+            ),
+            Err(IndexError::OverlayContentLimit { .. })
+        ));
+
+        let count_base = BaseGeneration::build(
+            pins(),
+            (0..=MAX_OVERLAY_FILES)
+                .map(|index| FileSnapshot::new(format!("entry-{index}.txt"), b"base".to_vec())),
+        )
+        .unwrap();
+        let full_overlay = BufferOverlay::build(
+            &count_base,
+            pin("editor-full"),
+            (0..MAX_OVERLAY_FILES)
+                .map(|index| FileSnapshot::new(format!("entry-{index}.txt"), b"edit".to_vec())),
+        )
+        .unwrap();
+        assert!(matches!(
+            full_overlay.replace_file(
+                &count_base,
+                pin("editor-over-limit"),
+                FileSnapshot::new(format!("entry-{MAX_OVERLAY_FILES}.txt"), b"edit".to_vec()),
+            ),
+            Err(IndexError::TooManyOverlayFiles { .. })
+        ));
     }
 
     #[test]
