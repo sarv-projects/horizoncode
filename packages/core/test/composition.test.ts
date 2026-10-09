@@ -99,6 +99,19 @@ describe("resolveComposition", () => {
     })
   })
 
+  test("allows absent optional services without creating a dependency edge", () => {
+    const resolved = success(
+      resolve([
+        plugin("consumer", {
+          requires: [requirement("optional.missing", { optional: true })],
+        }),
+      ]),
+    )
+
+    expect(resolved.dependencyEdges).toEqual([])
+    expect(resolved.activationOrder).toEqual(["consumer"])
+  })
+
   test("rejects ambiguous singleton providers unless a trusted selection picks one", () => {
     const consumer = plugin("consumer", { requires: [requirement("store")] })
     const providerA = plugin("provider-a", { provides: [offer("store")] })
@@ -155,6 +168,26 @@ describe("resolveComposition", () => {
       "provider-z",
       "provider-b",
     ])
+  })
+
+  test("accepts safe-integer provider priorities and rejects invalid numeric values", () => {
+    const provider = plugin("provider", {
+      provides: [offer("hooks", { cardinality: "many" })],
+    })
+    const resolveWithPriority = (priority: number) =>
+      resolve([provider], {
+        providerPriorities: [{ serviceId: "hooks", pluginId: "provider", packageDigest: "digest-provider", priority }],
+      })
+
+    expect(success(resolveWithPriority(Number.MAX_SAFE_INTEGER)).providers[0]?.priority).toBe(Number.MAX_SAFE_INTEGER)
+
+    for (const priority of [1.5, Number.MAX_SAFE_INTEGER + 1, Number.POSITIVE_INFINITY, Number.NaN]) {
+      expect(failure(resolveWithPriority(priority))).toContainEqual({
+        code: "invalid_provider_priority",
+        pluginId: "provider",
+        serviceId: "hooks",
+      })
+    }
   })
 
   test("reports SemVer range and schema digest incompatibilities", () => {

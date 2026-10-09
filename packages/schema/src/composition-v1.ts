@@ -1,8 +1,8 @@
 /**
- * Browser-safe Horizon composition contracts. This is a direct, specialized schema
- * entrypoint and is intentionally not exported from the OpenCode current-contract
- * root barrel. Runtime policy, SemVer range evaluation and durable ownership remain
- * in CompositionService/Core rather than this module.
+ * Browser-safe Horizon composition and shared V1 wire contracts. This is a direct,
+ * specialized schema entrypoint and is intentionally not exported from the OpenCode
+ * current-contract root barrel. Runtime policy, SemVer range evaluation and durable
+ * ownership remain in CompositionService/Core rather than this module.
  */
 
 import { Schema } from "effect"
@@ -57,6 +57,12 @@ export const Timestamp = Schema.String.annotate({ identifier: "Horizon.PluginMan
   }),
 )
 export type Timestamp = typeof Timestamp.Type
+export interface ActorRefV1 extends Schema.Schema.Type<typeof ActorRefV1> {}
+export const ActorRefV1 = Schema.Struct({
+  kind: Schema.Literals(["user", "system", "host", "worker", "plugin", "provider"]),
+  id: Schema.String,
+}).annotate({ identifier: "Horizon.ActorRefV1" })
+
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
 const BoundedList = <S extends Schema.Top>(item: S) => Schema.Array(item).check(Schema.isMaxLength(MaxListLength))
@@ -398,6 +404,17 @@ export const CompositionLockV1 = Schema.Struct({
   .annotate({ identifier: "Horizon.PluginManifestV1.CompositionLockV1" })
   .check(
     Schema.makeFilter((lock) => {
+      const nodePluginIds = new Set(lock.nodes.map((node) => node.pluginId))
+      const activationPluginIds = new Set(lock.activationOrder)
+      if (
+        nodePluginIds.size !== lock.nodes.length ||
+        activationPluginIds.size !== lock.activationOrder.length ||
+        activationPluginIds.size !== nodePluginIds.size ||
+        lock.activationOrder.some((pluginId) => !nodePluginIds.has(pluginId))
+      ) {
+        return "composition activation order must be a duplicate-free permutation of selected node plugin IDs"
+      }
+
       const bindings = new Map<string, (typeof lock.globalHookBindings)[number]>()
       const eventOrdinals = new Set<string>()
       const previousOrdinalByEvent = new Map<string, number>()
@@ -506,6 +523,16 @@ export const PluginLifecycleStateV1 = Schema.Literals([
 ]).annotate({ identifier: "Horizon.PluginManifestV1.PluginLifecycleStateV1" })
 export type PluginLifecycleStateV1 = typeof PluginLifecycleStateV1.Type
 
+export const RetryClassV1 = Schema.Literals([
+  "NEVER",
+  "SAFE_QUERY_RETRY",
+  "RETRY_AFTER_RECONCILIATION",
+  "RETRY_AFTER_CONTEXT_RECOVERY",
+  "USER_ACTION_REQUIRED",
+  "RETRY_WITH_NEW_ID",
+]).annotate({ identifier: "Horizon.PluginManifestV1.RetryClassV1" })
+export type RetryClassV1 = typeof RetryClassV1.Type
+
 export interface TypedErrorV1 extends Schema.Schema.Type<typeof TypedErrorV1> {}
 export const TypedErrorV1 = Schema.Struct({
   code: Identifier,
@@ -522,14 +549,7 @@ export const TypedErrorV1 = Schema.Struct({
     "internal",
   ]),
   message: Text,
-  retryClass: Schema.Literals([
-    "NEVER",
-    "SAFE_QUERY_RETRY",
-    "RETRY_AFTER_RECONCILIATION",
-    "RETRY_AFTER_CONTEXT_RECOVERY",
-    "USER_ACTION_REQUIRED",
-    "RETRY_WITH_NEW_ID",
-  ]),
+  retryClass: RetryClassV1,
   retryAfterMs: optional(NonNegativeInt),
   ownerCursor: optional(
     Schema.Struct({

@@ -41,6 +41,29 @@ export type HookContributionPreflight =
     }
   | { readonly ok: false; readonly diagnostic: HookContributionPreflightDiagnostic }
 
+export type SelectedHookContributionCandidate = {
+  readonly manifestValue: unknown
+  readonly contributionRefValue: unknown
+  readonly contributionValue: unknown
+}
+
+export type SelectedHookContributionsPreflightDiagnostic =
+  | { readonly candidateIndex: number; readonly diagnostic: HookContributionPreflightDiagnostic }
+  | { readonly code: "duplicate_hook_id"; readonly candidateIndex: number; readonly firstCandidateIndex: number }
+  | {
+      readonly code: "composition_limit_exceeded"
+      readonly collection: "policy"
+      readonly actual: number
+      readonly max: number
+    }
+
+export type SelectedHookContributionsPreflight =
+  | {
+      readonly ok: true
+      readonly contributions: readonly Extract<HookContributionPreflight, { readonly ok: true }>[]
+    }
+  | { readonly ok: false; readonly diagnostics: readonly SelectedHookContributionsPreflightDiagnostic[] }
+
 export type HookResultPreflightDiagnostic =
   | { readonly code: "invalid_hook_event_contract" }
   | { readonly code: "invalid_hook_result" }
@@ -70,6 +93,41 @@ export type GlobalHookBindingPreflight =
       readonly eventContract: Manifest.HookEventContractV1
     }
   | { readonly ok: false; readonly diagnostic: GlobalHookBindingPreflightDiagnostic }
+
+export type SelectedGlobalHookBindingResolution =
+  | {
+      readonly status: "RESOLVED"
+      readonly binding: Manifest.GlobalHookBindingV1
+      readonly contributionRef: Manifest.ArtifactRef
+      readonly contribution: Manifest.HookContributionV1
+      readonly eventContract: Manifest.HookEventContractV1
+    }
+  | {
+      /** Local preflight status only; this is not a persistable lock resolution. */
+      readonly status: "OPTIONAL_UNAVAILABLE"
+      readonly binding: Manifest.GlobalHookBindingV1
+    }
+
+export type SelectedGlobalHookBindingsPreflightDiagnostic =
+  | SelectedHookContributionsPreflightDiagnostic
+  | { readonly bindingIndex: number; readonly diagnostic: GlobalHookBindingPreflightDiagnostic }
+  | {
+      readonly code: "duplicate_global_hook_binding"
+      readonly bindingIndex: number
+      readonly firstBindingIndex: number
+    }
+  | {
+      readonly code: "duplicate_global_hook_ordinal"
+      readonly bindingIndex: number
+      readonly firstBindingIndex: number
+    }
+  | { readonly code: "global_hook_binding_order_invalid"; readonly bindingIndex: number }
+  | { readonly code: "required_global_hook_missing"; readonly bindingIndex: number }
+  | { readonly code: "required_global_hook_event_not_declared"; readonly bindingIndex: number }
+
+export type SelectedGlobalHookBindingsPreflight =
+  | { readonly ok: true; readonly resolutions: readonly SelectedGlobalHookBindingResolution[] }
+  | { readonly ok: false; readonly diagnostics: readonly SelectedGlobalHookBindingsPreflightDiagnostic[] }
 
 const compareText = (left: string, right: string) => (left < right ? -1 : left > right ? 1 : 0)
 const compareDiagnostic = (left: CompositionDiagnostic, right: CompositionDiagnostic) =>
@@ -137,6 +195,58 @@ export function preflightHookContribution(
 }
 
 /**
+ * Preflight a caller-selected set of decoded hook contributions, including the
+ * CompositionService invariant that hook IDs are unique within the selected set.
+ * This remains non-authoritative: it does not verify artifact bytes/digests or
+ * replace CompositionService validation.
+ */
+export function preflightSelectedHookContributions(
+  candidates: readonly SelectedHookContributionCandidate[],
+): SelectedHookContributionsPreflight {
+  if (candidates.length > COMPOSITION_LIMITS.policyEntries) {
+    return {
+      ok: false,
+      diagnostics: [
+        {
+          code: "composition_limit_exceeded",
+          collection: "policy",
+          actual: candidates.length,
+          max: COMPOSITION_LIMITS.policyEntries,
+        },
+      ],
+    }
+  }
+
+  const diagnostics: SelectedHookContributionsPreflightDiagnostic[] = []
+  const contributions: Extract<HookContributionPreflight, { readonly ok: true }>[] = []
+  const hookIds = new Map<string, number>()
+
+  for (const [candidateIndex, candidate] of candidates.entries()) {
+    const preflight = preflightHookContribution(
+      candidate.manifestValue,
+      candidate.contributionRefValue,
+      candidate.contributionValue,
+    )
+    if (!preflight.ok) {
+      diagnostics.push({ candidateIndex, diagnostic: preflight.diagnostic })
+      continue
+    }
+
+    const firstCandidateIndex = hookIds.get(preflight.contribution.hookId)
+    if (firstCandidateIndex !== undefined) {
+      diagnostics.push({ code: "duplicate_hook_id", candidateIndex, firstCandidateIndex })
+      continue
+    }
+
+    hookIds.set(preflight.contribution.hookId, candidateIndex)
+    contributions.push(preflight)
+  }
+
+  if (diagnostics.length > 0) return { ok: false, diagnostics }
+  return { ok: true, contributions }
+}
+
+/**
  * Resolve a candidate global binding against its decoded, manifest-declared
  * contribution. Adapter guarantees, immutable digests, required-hook policy and
  * durable lock publication remain the responsibility of their canonical owners.
@@ -172,6 +282,135 @@ export function preflightGlobalHookBinding(
     contribution: contributionPreflight.contribution,
     eventContract,
   }
+}
+
+/**
+ * Preflight an explicitly selected set of global bindings against selected decoded
+ * contributions. Results preserve binding input order, which must already be
+ * increasing by ordinal within each event as required by CompositionLockV1.
+ * Optional absence is represented only as a local status; this does not create a
+ * persistable reasonCode or digest. This helper does not verify artifact bytes or
+ * digests, adapter compatibility, grants, lock digests, or CompositionService authority.
+ */
+export function preflightSelectedGlobalHookBindings(
+  contributionCandidates: readonly SelectedHookContributionCandidate[],
+  bindingValues: readonly unknown[],
+): SelectedGlobalHookBindingsPreflight {
+  const selectedContributions = preflightSelectedHookContributions(contributionCandidates)
+  if (!selectedContributions.ok) return { ok: false, diagnostics: selectedContributions.diagnostics }
+
+  if (bindingValues.length > COMPOSITION_LIMITS.policyEntries) {
+    return {
+      ok: false,
+      diagnostics: [
+        {
+          code: "composition_limit_exceeded",
+          collection: "policy",
+          actual: bindingValues.length,
+          max: COMPOSITION_LIMITS.policyEntries,
+        },
+      ],
+    }
+  }
+
+  const diagnostics: SelectedGlobalHookBindingsPreflightDiagnostic[] = []
+  const bindings: Array<Manifest.GlobalHookBindingV1 | undefined> = []
+  const bindingIndexes = new Map<string, number>()
+  const ordinalIndexes = new Map<string, Map<number, number>>()
+  const previousOrdinalByEvent = new Map<string, number>()
+  const decodeBinding = Schema.decodeUnknownSync(Manifest.GlobalHookBindingV1)
+
+  for (const [bindingIndex, value] of bindingValues.entries()) {
+    let binding: Manifest.GlobalHookBindingV1
+    try {
+      binding = decodeBinding(value)
+    } catch {
+      diagnostics.push({ bindingIndex, diagnostic: { code: "invalid_global_hook_binding" } })
+      bindings.push(undefined)
+      continue
+    }
+
+    bindings.push(binding)
+    const bindingKey = JSON.stringify([binding.event, binding.hookId])
+    const firstBindingIndex = bindingIndexes.get(bindingKey)
+    if (firstBindingIndex !== undefined) {
+      diagnostics.push({ code: "duplicate_global_hook_binding", bindingIndex, firstBindingIndex })
+    } else {
+      bindingIndexes.set(bindingKey, bindingIndex)
+    }
+
+    let eventOrdinals = ordinalIndexes.get(binding.event)
+    if (!eventOrdinals) {
+      eventOrdinals = new Map()
+      ordinalIndexes.set(binding.event, eventOrdinals)
+    }
+    const firstOrdinalIndex = eventOrdinals.get(binding.ordinal)
+    if (firstOrdinalIndex !== undefined) {
+      diagnostics.push({ code: "duplicate_global_hook_ordinal", bindingIndex, firstBindingIndex: firstOrdinalIndex })
+    } else {
+      eventOrdinals.set(binding.ordinal, bindingIndex)
+    }
+
+    const previousOrdinal = previousOrdinalByEvent.get(binding.event)
+    if (previousOrdinal !== undefined && binding.ordinal < previousOrdinal) {
+      diagnostics.push({ code: "global_hook_binding_order_invalid", bindingIndex })
+    }
+    if (previousOrdinal === undefined || binding.ordinal > previousOrdinal) {
+      previousOrdinalByEvent.set(binding.event, binding.ordinal)
+    }
+  }
+
+  if (diagnostics.length > 0) return { ok: false, diagnostics }
+
+  const contributionsByHookId = new Map(
+    selectedContributions.contributions.map((preflight) => [preflight.contribution.hookId, preflight] as const),
+  )
+  const resolutions: SelectedGlobalHookBindingResolution[] = []
+
+  for (const [bindingIndex, binding] of bindings.entries()) {
+    if (!binding) continue
+
+    const contribution = contributionsByHookId.get(binding.hookId)
+    if (!contribution) {
+      if (binding.required) {
+        diagnostics.push({ code: "required_global_hook_missing", bindingIndex })
+      } else {
+        resolutions.push({ status: "OPTIONAL_UNAVAILABLE", binding })
+      }
+      continue
+    }
+
+    const preflight = preflightGlobalHookBinding(
+      contribution.manifest,
+      contribution.contributionRef,
+      contribution.contribution,
+      binding,
+    )
+    if (preflight.ok) {
+      resolutions.push({
+        status: "RESOLVED",
+        binding: preflight.binding,
+        contributionRef: preflight.contributionRef,
+        contribution: preflight.contribution,
+        eventContract: preflight.eventContract,
+      })
+      continue
+    }
+
+    if (preflight.diagnostic.code === "global_hook_binding_event_not_declared") {
+      if (binding.required) {
+        diagnostics.push({ code: "required_global_hook_event_not_declared", bindingIndex })
+      } else {
+        resolutions.push({ status: "OPTIONAL_UNAVAILABLE", binding })
+      }
+      continue
+    }
+
+    diagnostics.push({ bindingIndex, diagnostic: preflight.diagnostic })
+  }
+
+  if (diagnostics.length > 0) return { ok: false, diagnostics }
+  return { ok: true, resolutions }
 }
 
 /**

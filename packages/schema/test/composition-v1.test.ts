@@ -159,6 +159,36 @@ describe("Horizon composition v1 contracts", () => {
     expect(() => decode({ ...contribution, events: Array.from({ length: 12 }, () => event) })).toThrow()
   })
 
+  test("matches every hook event to its architecture-defined blocking or observational mode", () => {
+    const expectedModes = [
+      ["before_start", "BLOCKING"],
+      ["after_start", "OBSERVATIONAL"],
+      ["before_tool", "BLOCKING"],
+      ["after_tool", "OBSERVATIONAL"],
+      ["tool_failure", "OBSERVATIONAL"],
+      ["before_finish", "BLOCKING"],
+      ["after_finish", "OBSERVATIONAL"],
+      ["on_failure", "OBSERVATIONAL"],
+      ["on_idle", "OBSERVATIONAL"],
+      ["before_compaction", "BLOCKING"],
+      ["after_compaction", "OBSERVATIONAL"],
+    ] as const
+    const decode = Schema.decodeUnknownSync(Composition.HookEventContractV1)
+    const common = {
+      inputSchema: { schemaId: "hook.input", version: "1", digest },
+      resultSchema: { schemaId: "hook.result", version: "1", digest },
+      maxInputBytes: 1024,
+      maxOutputBytes: 1024,
+      maxDurationMs: 100,
+    }
+
+    for (const [event, mode] of expectedModes) {
+      expect(decode({ ...common, event, mode })).toMatchObject({ event, mode })
+      const oppositeMode = mode === "BLOCKING" ? "OBSERVATIONAL" : "BLOCKING"
+      expect(() => decode({ ...common, event, mode: oppositeMode })).toThrow()
+    }
+  })
+
   test("rejects incomplete or mismatched global-hook lock resolutions", () => {
     const binding = {
       event: "before_compaction",
@@ -175,7 +205,7 @@ describe("Horizon composition v1 contracts", () => {
       implementationDigest: digest,
       eventContractDigest: digest,
     }
-    const hookLock = { ...baseLock, nodes: [hookNode] }
+    const hookLock = { ...baseLock, nodes: [hookNode], activationOrder: [hookNode.pluginId] }
     const decodeLock = Schema.decodeUnknownSync(Composition.CompositionLockV1)
 
     expect(
@@ -304,9 +334,46 @@ describe("Horizon composition v1 contracts", () => {
     const decodeLock = Schema.decodeUnknownSync(Composition.CompositionLockV1)
 
     expect(() => decodeLock(lock as unknown)).toThrow()
-    expect(decodeLock({ ...lock, nodes: [hookNode] } as unknown).resolvedGlobalHooks).toHaveLength(1)
+    expect(
+      decodeLock({ ...lock, nodes: [hookNode], activationOrder: [hookNode.pluginId] } as unknown).resolvedGlobalHooks,
+    ).toHaveLength(1)
     expect(() =>
-      decodeLock({ ...lock, nodes: [{ ...hookNode, contributionDigests: [otherDigest] }] } as unknown),
+      decodeLock({
+        ...lock,
+        nodes: [{ ...hookNode, contributionDigests: [otherDigest] }],
+        activationOrder: [hookNode.pluginId],
+      } as unknown),
+    ).toThrow()
+  })
+
+  test("requires activation order to be a duplicate-free permutation of selected node IDs", () => {
+    const otherNode = { ...hookNode, pluginId: "plugin.other", activationOrdinal: 7 }
+    const validLock = {
+      ...baseLock,
+      nodes: [hookNode, otherNode],
+      activationOrder: [otherNode.pluginId, hookNode.pluginId],
+    }
+    const decodeLock = Schema.decodeUnknownSync(Composition.CompositionLockV1)
+
+    expect(decodeLock(validLock as unknown).activationOrder).toEqual(validLock.activationOrder)
+    expect(() => decodeLock({ ...validLock, activationOrder: [hookNode.pluginId] } as unknown)).toThrow()
+    expect(() =>
+      decodeLock({
+        ...validLock,
+        activationOrder: [hookNode.pluginId, hookNode.pluginId],
+      } as unknown),
+    ).toThrow()
+    expect(() =>
+      decodeLock({
+        ...validLock,
+        activationOrder: [hookNode.pluginId, "plugin.unknown"],
+      } as unknown),
+    ).toThrow()
+    expect(() =>
+      decodeLock({
+        ...validLock,
+        nodes: [hookNode, { ...otherNode, pluginId: hookNode.pluginId }],
+      } as unknown),
     ).toThrow()
   })
 
@@ -347,6 +414,7 @@ describe("Horizon composition v1 contracts", () => {
       Composition.SemVer,
       Composition.UInt64Decimal,
       Composition.Timestamp,
+      Composition.ActorRefV1,
       Composition.ArtifactRef,
       Composition.JsonSchemaRef,
       Composition.CapabilityDescriptor,
@@ -365,6 +433,7 @@ describe("Horizon composition v1 contracts", () => {
       Composition.CompositionGenerationV1,
       Composition.PluginGenerationV1,
       Composition.CompositionStateV1,
+      Composition.RetryClassV1,
       Composition.TypedErrorV1,
     ]
     const identifiers = schemas.map((schema) => schema.ast.annotations?.identifier)
