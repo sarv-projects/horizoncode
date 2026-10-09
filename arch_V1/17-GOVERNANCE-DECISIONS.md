@@ -90,6 +90,7 @@ implementation and acceptance remain subject to the dependency-ordered gates in 
 | Usage and budget | UsageService owns append-only usage observations; BudgetService owns limits, reservations, and accounting settlement; Analytics is derived | Usage provenance stays explicit; settlement references observations and never duplicates them |
 | Completion | Only current verifier Evidence accepted by RunController produces Task PASS | A check receipt or worker self-report is evidence material only |
 | Repository/memory | Horizon-owned derived repository generations and advisory provenance-bearing memory | One index system for main/children; neither grants Guard or changes spec |
+| Memory supersession ordering | `MemoryRecordV1.supersedesMemoryIds` uses strictly ascending lexicographic order of stored UTF-8 bytes | User explicitly selected this v1 comparator on 2026-10-09. Schema validates accepted records without sorting/normalizing; MemoryService still derives the accepted set and revalidates sources atomically |
 | Process execution | One ExecutionHost supervises all local child processes | No independent subprocess manager for shell, MCP, LSP, plugin, agent or index helper |
 | ExecutionHost placement | Rust module inside the supervised `hz-kernel` process | It is distinct from the Bun/TypeScript `hzcode` host; the OS sandbox/process backend is below it |
 | First release platform | Windows is the first release target | WSL may be an execution backend, never the Windows storage root. Target priority is not evidence that sandbox support exists |

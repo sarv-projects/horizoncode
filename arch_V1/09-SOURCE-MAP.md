@@ -144,6 +144,9 @@ packages/http-recorder/src/effect.ts 1-25
   are target requirements, not checked implementation.
 - Source claims in `info2.txt` tied to its older OpenCode/Horizon pins remain unverified
   unless listed against current local source above.
+- `MemoryRecordV1.supersedesMemoryIds` UTF-8-bytewise ascending order is adopted
+  Horizon v1 semantics from explicit user direction, not recovered upstream/OpenCode or
+  historical Horizon source behavior.
 
 ## 9.6 Historical Horizon implementation seams inspected
 

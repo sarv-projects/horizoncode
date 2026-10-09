@@ -148,7 +148,9 @@ not represent a bare `full-access` execution as confined.
 overlay; stale generation never claims current; memory cannot override user/spec/policy;
 indexer crash cannot corrupt canonical state. Memory queries enforce scope/byte/token
 bounds; transcript fallback stays inside authorized ranges; stale memories remain
-advisory; cancellation and generation changes cannot accept partial/stale candidates.
+advisory; accepted memory supersession fixtures reject non-ascending or duplicate
+`supersedesMemoryIds` and accept UTF-8-bytewise sorted records without reordering decoded
+values; cancellation and generation changes cannot accept partial/stale candidates.
 
 ## Phase P5 — Agent profiles and subagents
 

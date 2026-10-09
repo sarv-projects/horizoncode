@@ -1351,9 +1351,15 @@ target scope and exact replacement set; stale sources require a new proposal/rev
 not automatic model acceptance. Both `acceptedMemoryId` and `reviewReceipt` are
 required for an `ACCEPTED` candidate. Exact replay returns the same record; no candidate
 is reported accepted without its linked canonical record.
-`supersedesMemoryIds` is the exact accepted set (sorted/unique), not the proposed set;
-legacy singular `supersedes` migrates to a singleton only after its existing provenance
-and acceptance links validate. Missing review is not repaired by fabricating a receipt.
+`supersedesMemoryIds` is the exact accepted set, strictly ascending by lexicographic
+order of the stored UTF-8 bytes and therefore unique, not the proposed set; Schema
+validates this canonical payload shape and does not sort or normalize the accepted
+values. MemoryService still owns exact accepted-set derivation, authorization, source
+revalidation and the atomic candidate/record append. Legacy singular `supersedes`
+migrates to a singleton only after its existing provenance and acceptance links validate.
+Missing review is not repaired by fabricating a receipt. `MemoryCandidateV1` may carry
+`proposedSupersedes` and `supersessionSources`, but their mutual relation is not a
+Schema invariant; candidate acceptance revalidates sources under MemoryService.
 
 MemoryConsolidation is a low-priority, bounded and interruptible MemoryService job. It
 may produce candidates and proposed supersession links only; records remain ACTIVE
