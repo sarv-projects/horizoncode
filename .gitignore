@@ -1,10 +1,40 @@
-# HorizonCode bootstrap allowlist: until the first implementation is ready, keep
-# the OpenCode base and local workspace contents out of commits. When implementing
-# a file, add narrow negations for each parent directory and the exact file before staging.
+# HorizonCode source allowlist: keep the local OpenCode base and workspace out of commits
+# unless a path is explicitly in implementation scope. Add narrow parent and file rules.
 *
 !/.gitignore
+# Deepwork progress stays local and is visible to repository tools via .ignore.
+.slim/deepwork/
+!/AGENTS.md
+!/README.md
 !/arch_V1/
 !/arch_V1/**
+!/packages/
+!/packages/core/
+!/packages/core/src/
+!/packages/core/src/composition.ts
+!/packages/core/src/composition-manifest.ts
+!/packages/core/test/
+!/packages/core/test/composition.test.ts
+!/packages/core/test/composition-manifest.test.ts
+!/packages/schema/
+!/packages/schema/src/
+!/packages/schema/src/composition-v1.ts
+!/packages/schema/test/
+!/packages/schema/test/composition-v1.test.ts
+!/kernel/
+!/kernel/Cargo.toml
+!/kernel/Cargo.lock
+!/kernel/src/
+!/kernel/src/lib.rs
+!/kernel/src/messagepack.rs
+!/kernel/src/protocol.rs
+!/kernel/src/startup.rs
+!/kernel/src/transport.rs
+!/indexd/
+!/indexd/Cargo.toml
+!/indexd/Cargo.lock
+!/indexd/src/
+!/indexd/src/**
 
 .DS_Store
 node_modules

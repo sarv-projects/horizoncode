@@ -1,0 +1,10 @@
+[package]
+name = "horizon-indexd-library"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Bounded in-memory lexical repository indexing primitives for HorizonCode"
+readme = "src/README.md"
+
+[dependencies]
+blake3 = "=1.8.7"

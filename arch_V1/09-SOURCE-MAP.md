@@ -174,3 +174,63 @@ No tests, builds, crash/power-loss drills, Windows acceptance, or sandbox escape
 were run during this documentation pass. The source review confirms the design must
 keep both Windows sandbox confinement and Windows `run_durable` storage unavailable
 until their respective backend implementations and acceptance evidence exist.
+
+## 9.7 First-pass OpenCode path-family disposition
+
+This is an initial path-family classification against the root-relative entries in the
+pinned 6,629-path inventory, not a semantic review or a claim that any disposition has
+been implemented. Each counted row below matches complete inventory paths; path counts
+are mechanical. The rationale is bounded by the observations in §9.3 and the target
+owners in [`06-CAPABILITIES.md`](06-CAPABILITIES.md), [`01-SYSTEM.md`](01-SYSTEM.md),
+and [`13-COMPOSITION-IPC.md`](13-COMPOSITION-IPC.md). A family disposition does not
+override a capability gate or imply acceptance.
+
+| Root-relative path family | Paths | Disposition | Final v1 owner/interface and rationale |
+|---|---:|---|---|
+| `packages/schema/src/session-*.ts`; `packages/protocol/src/groups/session.ts`; `packages/server/src/handlers/session.ts`; `packages/client/src/generated/`; `packages/client/src/generated-effect/` | 20 | ADAPT | Map the existing Session API through the OpenCode-compatible `ThreadStoreService` adapter; Rust ThreadService remains canonical. Keep generated clients generator-owned. |
+| `packages/core/src/session/{input.ts,run-coordinator.ts,execution/**,runner/**}` | 9 | ADAPT | Keep Core V2 as the sole host turn runner, bound to `ThreadStoreService`; collect and validate the whole provider tool batch before the kernel `ToolExecutionCoordinator` can execute it. The pinned runner currently dispatches calls as stream events arrive (§9.3). |
+| `packages/core/src/session/{projector.ts,history.ts,message-updater.ts}` | 3 | ADAPT | Use only for host projections/history selection behind ThreadService; projections are rebuildable, and ThreadService owns Context Epoch persistence. |
+| `packages/core/src/session/{sql.ts,store.ts}` | 2 | REPLACE | Replace production canonical Session persistence with Rust ThreadService. Keep any necessary host-side use limited to migration, tests, or rebuildable projections; do not create two writable transcript owners. |
+| `packages/core/src/session/{context-epoch.ts,compaction.ts,prompt.ts}`; `packages/core/src/system-context/` | 6 | ADAPT | One ContextService owns deterministic context and pruning; ThreadService owns Context Epoch persistence. Context text is data, not authority. |
+| `packages/core/src/tool/`; `packages/opencode/src/tool/` | 63 | ADAPT | Retain useful definitions and presentation while routing effects through ThreadService-owned ToolBatch transitions, Guard/EffectService, and Rust ExecutionHost; tool schemas or permission prompts alone are not confinement (§9.3; §6). |
+| `packages/llm/src/providers/`; `packages/llm/src/route/` | 24 | RETAIN | Keep the provider and route implementation in the `hzcode` host; kernel route snapshots and the SecretBroker govern selection/auth policy. DEC-V1-06 still gates real authenticated provider use. |
+| `packages/llm/src/protocols/` | 18 | ADAPT | Preserve provider protocol and normalized-stream behavior, but feed the host whole-response validation boundary before any local dispatch. Provider-hosted execution is the explicit `DISABLE` exception below. |
+| `packages/opencode/src/session/{llm.ts,processor.ts,prompt.ts,session.ts}`; `packages/opencode/src/session/llm/`; `packages/opencode/src/session/prompt/` | 24 | REMOVE-LATER | Migration/compatibility source only. Move needed product routes to Core V2 and retire this competing loop only after import/feature migration and the P2/P3 gates; do not preemptively delete it. The legacy path defaults to AI SDK and has an opt-in native fallback (§9.3). |
+| `packages/opencode/src/storage/`; `packages/opencode/migration/` | 4 | ADAPT | Keep only as migration input or rebuildable host projection/test support; Rust ThreadService owns canonical conversation state. |
+| `packages/opencode/src/permission/` | 3 | WRAP | Keep permission UX as presentation; durable Guard challenges and effect owners make every authority decision. Process-local allow/ask/deny state is not canonical authority. |
+| `packages/opencode/src/mcp/` | 6 | WRAP | Preserve protocol/discovery surfaces behind ToolDefinition and Guard/EffectService/ExecutionHost; secrets are explicit per server. Audit env inheritance and resolve DEC-V1-15 before enabling governed MCP. |
+| `packages/opencode/src/acp/` | 12 | WRAP | Route peers through the single AgentProfile registry and WorkerAdapter; report configured, observed, and enforced mediation separately. A peer may have hidden tools or refuse cancellation. |
+| `packages/opencode/src/lsp/` | 6 | WRAP | Keep language-server definitions/client surface, but ExecutionHost owns binary installation, environment, workspace scope, output, and cancellation; review each launch path before claiming containment. |
+| `packages/opencode/src/format/` | 2 | WRAP | Keep formatter registry/UX; ExecutionHost supervises formatter installation and process effects under Workspace/Guard policy. |
+| `packages/opencode/src/plugin/{index.ts,install.ts,loader.ts,meta.ts}` | 4 | DISABLE | Do not enable unrestricted third-party in-process plugin activation. Supported hooks require the isolated/capability-limited compatibility worker and `HzPluginRuntime`; unsupported hooks fail visibly (§6; §17.3). This is not a disposition of the separate provider-specific plugin subtrees. |
+| `packages/plugin/src/` | 37 | ADAPT | Retain only the compatibility surface that maps to declared `HzPluginRuntime` capabilities; unsupported hooks return `COMPATIBILITY_UNSUPPORTED`, and plugin code cannot replace sealed kernel owners. |
+| `packages/opencode/src/skill/` | 2 | RETAIN | Preserve declarative skill discovery/format; content cannot grant capabilities or bypass AgentProfile and policy admission (§6). |
+| `packages/opencode/src/worktree/` | 1 | WRAP | Reuse worktree mechanics only behind WorkspaceProvider leases, revisions, and fences; validate cross-platform behavior before relying on it (§6). |
+| `packages/app/src/` | 481 | ADAPT | Keep the Solid application surface while moving Thread/Run data and mutations to typed app APIs and kernel-owned projections; UI state is not canonical Run state. |
+| `packages/ui/src/` | 1,682 | RETAIN | Keep shared presentation components; they do not own canonical Thread, Run, permission, or effect state. |
+| `packages/tui/src/` | 185 | RETAIN | Keep the OpenTUI/Solid terminal shell and compose Horizon views through fixed slots and typed app APIs; do not make local TUI state authoritative (§6). |
+| `packages/session-ui/src/` | 114 | ADAPT | Keep session presentation behind the generated/typed client and Thread projections; remove any competing or vendored-client ownership during integration. |
+| `packages/desktop/src/` | 126 | RETAIN | Keep Electron as the initial desktop shell; Horizon service state and updater controls enter only through registered actions. Packaging/signing remain separately gated (§6). |
+| `packages/cli/src/`; `packages/opencode/src/cli/` | 105 | ADAPT | Make `hzcode` the composition root; headless commands use the same typed service/action contracts, not a second authority path (§6; §13). |
+| `.opencode/agent/`; `.opencode/command/` | 10 | RETAIN | Keep declarative agent/command assets as repository configuration; their text cannot grant capabilities or authority. |
+| Provider-hosted tool execution (`providerExecuted`) in `packages/llm/src/protocols/anthropic-messages.ts`, `packages/llm/src/protocols/openai-responses.ts`, `packages/llm/src/schema/events.ts`, and the Core V2 caller | — | DISABLE | Feature-level exception, not an additional whole-file path count: retain ordinary provider transport but reject provider-executed tools in governed v1 because Guard cannot authorize an effect after the provider has already run it. Offer mediated local equivalents (§6; §9.3). |
+
+The counted path families above account for **2,949 of 6,629 inventory entries**. The
+remaining **3,680 paths are unclassified**, not implicitly retained or removed: 3,473
+are elsewhere under `packages/`, and 207 are root-level or other top-level paths. The
+unclassified remainder includes package manifests/tests/build and release files,
+provider-specific plugin subtrees, other Core and OpenCode subsystems, hosted/service
+packages, SDK variants, repository automation, docs/specs, binaries, and symlinks. Its
+mechanical kinds are 3,397 text paths, 224 binary paths, and 59 symlink paths; symlink
+targets are not reviewed. The inventory is root-relative and does not account for the
+adjacent `opencode/` directory tree. This pass did not independently verify the ignored
+source files against the stated pin: HorizonCode's root Git history is separate from the
+ignored OpenCode checkout, whose source provenance remains unverified here. Treat the
+inventory's pin as its provenance claim and re-verify source contents when provenance is
+re-established.
+
+Complete P0.4 only after every inventory path has a non-overlapping disposition tied to
+its final owner/interface, including explicit treatment of assets and symlink targets.
+This first pass is not P0.4 completion, a whole-repository semantic coverage claim, or
+permission to delete source. No architecture link/structure checker was found in the
+current repository; the exact remaining inventory count is the current coverage limit.
