@@ -285,7 +285,8 @@ impl BaseGeneration {
     ///
     /// A cursor is valid only for this exact query and generation. It resumes after
     /// the last returned matching path and line, and the bounded scan verifies that
-    /// anchor before yielding later results.
+    /// anchor before yielding later results. `max_results` is a per-page cap and may
+    /// vary between continuation calls.
     pub fn search_page(
         &self,
         query: &str,
@@ -359,10 +360,14 @@ impl BaseGeneration {
                 ));
             }
         };
-        let mut matches = Vec::new();
+        let mut page = SearchPageState {
+            max_results,
+            matches: Vec::new(),
+            cursor_anchor: cursor_anchor.clone(),
+            cursor_anchor_found: cursor_anchor.is_none(),
+            last_match: None,
+        };
         let mut truncated_by = None;
-        let mut cursor_anchor_found = cursor_anchor.is_none();
-        let mut last_match = None;
 
         for (path, base_file) in &self.files {
             let contents = overlay
@@ -370,25 +375,14 @@ impl BaseGeneration {
                 .map(|file| file.contents.as_str())
                 .unwrap_or(base_file.contents.as_str());
 
-            match search_file(
-                path,
-                contents,
-                pattern,
-                &prefix,
-                &mut work,
-                max_results,
-                &mut matches,
-                cursor_anchor.as_ref(),
-                &mut cursor_anchor_found,
-                &mut last_match,
-            ) {
+            match search_file(path, contents, pattern, &prefix, &mut work, &mut page) {
                 FileSearchOutcome::Complete => {}
                 FileSearchOutcome::ResultLimit => {
                     truncated_by = Some(SearchTruncation::ResultLimit);
                     break;
                 }
                 FileSearchOutcome::WorkLimit => {
-                    if cursor_anchor.is_some() && !cursor_anchor_found {
+                    if page.cursor_anchor.is_some() && !page.cursor_anchor_found {
                         return Err(IndexError::CursorWorkLimit);
                     }
                     truncated_by = Some(SearchTruncation::WorkLimit);
@@ -400,12 +394,12 @@ impl BaseGeneration {
             }
         }
 
-        if cursor_anchor.is_some() && !cursor_anchor_found {
+        if page.cursor_anchor.is_some() && !page.cursor_anchor_found {
             return Err(IndexError::CursorAnchorNotFound);
         }
 
         let next_cursor = if truncated_by == Some(SearchTruncation::ResultLimit) {
-            last_match.map(|anchor| {
+            page.last_match.map(|anchor| {
                 SearchCursor::new(
                     self.generation_digest,
                     overlay.map(BufferOverlay::digest),
@@ -420,7 +414,7 @@ impl BaseGeneration {
         Ok(QueryResult::new(
             self.generation_digest,
             overlay,
-            matches,
+            page.matches,
             work.used,
             truncated_by,
             next_cursor,
@@ -792,10 +786,7 @@ impl SearchCursor {
         let payload = format!(
             "v1:{}:{}:{}:{}:{}",
             encode_hex(generation_digest.as_bytes()),
-            overlay_digest.map_or_else(
-                || "-".to_owned(),
-                |digest| encode_hex(digest.as_bytes())
-            ),
+            overlay_digest.map_or_else(|| "-".to_owned(), |digest| encode_hex(digest.as_bytes())),
             encode_hex(query_digest.as_bytes()),
             encode_hex(anchor.path.as_bytes()),
             anchor.line,
@@ -1066,16 +1057,15 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 fn decode_hex(value: &str) -> Result<Vec<u8>, IndexError> {
-    if value.len() % 2 != 0 {
-        return Err(IndexError::InvalidSearchCursor);
-    }
-
     value
         .as_bytes()
-        .chunks_exact(2)
+        .chunks(2)
         .map(|pair| {
-            let high = decode_hex_digit(pair[0])?;
-            let low = decode_hex_digit(pair[1])?;
+            let [high, low] = pair else {
+                return Err(IndexError::InvalidSearchCursor);
+            };
+            let high = decode_hex_digit(*high)?;
+            let low = decode_hex_digit(*low)?;
             Ok((high << 4) | low)
         })
         .collect()
@@ -1302,17 +1292,21 @@ enum FileSearchOutcome {
     CursorAnchorNotFound,
 }
 
+struct SearchPageState {
+    max_results: usize,
+    matches: Vec<SearchMatch>,
+    cursor_anchor: Option<CursorAnchor>,
+    cursor_anchor_found: bool,
+    last_match: Option<CursorAnchor>,
+}
+
 fn search_file(
     path: &str,
     contents: &str,
     pattern: &[u8],
     prefix: &[usize],
     work: &mut WorkMeter,
-    max_results: usize,
-    matches: &mut Vec<SearchMatch>,
-    cursor_anchor: Option<&CursorAnchor>,
-    cursor_anchor_found: &mut bool,
-    last_match: &mut Option<CursorAnchor>,
+    page: &mut SearchPageState,
 ) -> FileSearchOutcome {
     let bytes = contents.as_bytes();
     let mut start = 0usize;
@@ -1342,20 +1336,20 @@ fn search_file(
                     path: path.to_owned(),
                     line: line_number,
                 };
-                if let Some(anchor) = cursor_anchor {
-                    if !*cursor_anchor_found {
+                if let Some(anchor) = page.cursor_anchor.as_ref() {
+                    if !page.cursor_anchor_found {
                         match candidate
                             .path
                             .cmp(&anchor.path)
                             .then_with(|| candidate.line.cmp(&anchor.line))
                         {
                             std::cmp::Ordering::Less => {}
-                            std::cmp::Ordering::Equal => *cursor_anchor_found = true,
+                            std::cmp::Ordering::Equal => page.cursor_anchor_found = true,
                             std::cmp::Ordering::Greater => {
                                 return FileSearchOutcome::CursorAnchorNotFound;
                             }
                         }
-                        if !*cursor_anchor_found {
+                        if !page.cursor_anchor_found {
                             if has_newline {
                                 start = end + 1;
                             } else {
@@ -1375,15 +1369,15 @@ fn search_file(
                         }
                     }
                 }
-                if matches.len() == max_results {
+                if page.matches.len() == page.max_results {
                     return FileSearchOutcome::ResultLimit;
                 }
-                matches.push(SearchMatch {
+                page.matches.push(SearchMatch {
                     path: candidate.path.clone(),
                     start_line: line_number,
                     end_line: line_number,
                 });
-                *last_match = Some(candidate);
+                page.last_match = Some(candidate);
             }
             Some(false) => {}
             None => return FileSearchOutcome::WorkLimit,
@@ -1443,13 +1437,76 @@ mod tests {
     }
 
     #[test]
-    fn pins_are_part_of_the_generation_digest() {
+    fn generation_digest_binds_snapshot_paths_and_contents() {
         let first = generation(vec![snapshot("src/lib.rs", "same\n")]);
+        let identical = generation(vec![snapshot("src/lib.rs", "same\n")]);
+        let changed_contents = generation(vec![snapshot("src/lib.rs", "changed\n")]);
+        let changed_path = generation(vec![snapshot("src/main.rs", "same\n")]);
+
+        assert_eq!(first.digest(), identical.digest());
+        assert_ne!(first.digest(), changed_contents.digest());
+        assert_ne!(first.digest(), changed_path.digest());
+    }
+
+    #[test]
+    fn pins_are_part_of_the_generation_digest() {
+        let snapshots = vec![snapshot("src/lib.rs", "same\n")];
+        let first = BaseGeneration::build(pins(), snapshots.clone()).unwrap();
+
+        let mut changed_pins = pins();
+        changed_pins.repository = pin("different-repository");
+        let second = BaseGeneration::build(changed_pins, snapshots.clone()).unwrap();
+        assert_ne!(first.digest(), second.digest(), "repository pin");
+
+        let mut changed_pins = pins();
+        changed_pins.workspace = Some(pin("different-workspace"));
+        let second = BaseGeneration::build(changed_pins, snapshots.clone()).unwrap();
+        assert_ne!(first.digest(), second.digest(), "workspace pin");
+
+        let mut changed_pins = pins();
+        changed_pins.workspace = None;
+        let second = BaseGeneration::build(changed_pins, snapshots.clone()).unwrap();
+        assert_ne!(
+            first.digest(),
+            second.digest(),
+            "workspace None vs Some pin"
+        );
+
+        let first_without_workspace = {
+            let mut pins = pins();
+            pins.workspace = None;
+            BaseGeneration::build(pins, snapshots.clone()).unwrap()
+        };
+        assert_ne!(
+            first_without_workspace.digest(),
+            first.digest(),
+            "workspace Some vs None pin"
+        );
+
+        let mut changed_pins = pins();
+        changed_pins.revision_set = pin("different-revision-set");
+        let second = BaseGeneration::build(changed_pins, snapshots.clone()).unwrap();
+        assert_ne!(first.digest(), second.digest(), "revision_set pin");
+
+        let mut changed_pins = pins();
+        changed_pins.read_scope = pin("different-read-scope");
+        let second = BaseGeneration::build(changed_pins, snapshots.clone()).unwrap();
+        assert_ne!(first.digest(), second.digest(), "read_scope pin");
+
         let mut changed_pins = pins();
         changed_pins.read_policy = pin("different-policy");
-        let second =
-            BaseGeneration::build(changed_pins, vec![snapshot("src/lib.rs", "same\n")]).unwrap();
-        assert_ne!(first.digest(), second.digest());
+        let second = BaseGeneration::build(changed_pins, snapshots.clone()).unwrap();
+        assert_ne!(first.digest(), second.digest(), "read_policy pin");
+
+        let mut changed_pins = pins();
+        changed_pins.source_receipt = pin("different-source-receipt");
+        let second = BaseGeneration::build(changed_pins, snapshots.clone()).unwrap();
+        assert_ne!(first.digest(), second.digest(), "source_receipt pin");
+
+        let mut changed_pins = pins();
+        changed_pins.parser_set = pin("different-parser-set");
+        let second = BaseGeneration::build(changed_pins, snapshots).unwrap();
+        assert_ne!(first.digest(), second.digest(), "parser_set pin");
     }
 
     #[test]
@@ -1539,9 +1596,39 @@ mod tests {
     }
 
     #[test]
+    fn search_continuation_allows_page_size_changes_without_skips_or_duplicates() {
+        let base = generation(vec![
+            snapshot("b.txt", "hit\nhit\n"),
+            snapshot("a.txt", "hit\nhit\nhit\n"),
+        ]);
+        let expected = base.search("hit", MAX_QUERY_RESULTS).unwrap().matches;
+
+        let first = base.search_page("hit", 2, None).unwrap();
+        assert_eq!(first.matches.len(), 2);
+        let first_cursor = first.next_cursor.as_ref().unwrap();
+
+        let second = base.search_page("hit", 1, Some(first_cursor)).unwrap();
+        assert_eq!(second.matches.len(), 1);
+        let second_cursor = second.next_cursor.as_ref().unwrap();
+
+        let third = base.search_page("hit", 2, Some(second_cursor)).unwrap();
+        assert_eq!(third.matches.len(), 2);
+        assert_eq!(third.next_cursor, None);
+
+        let mut paged = first.matches;
+        paged.extend(second.matches);
+        paged.extend(third.matches);
+        assert_eq!(paged, expected);
+    }
+
+    #[test]
     fn search_cursors_reject_malformed_and_oversized_tokens() {
         let base = generation(vec![snapshot("a.txt", "hit\nhit\n")]);
-        let cursor = base.search_page("hit", 1, None).unwrap().next_cursor.unwrap();
+        let cursor = base
+            .search_page("hit", 1, None)
+            .unwrap()
+            .next_cursor
+            .unwrap();
         let mut corrupted = cursor.as_token().to_owned();
         let replacement = if corrupted.as_bytes()[3] == b'0' {
             "1"
@@ -1568,7 +1655,11 @@ mod tests {
     #[test]
     fn search_cursors_reject_other_queries_generations_and_overlays() {
         let base = generation(vec![snapshot("a.txt", "hit\nhit\n")]);
-        let cursor = base.search_page("hit", 1, None).unwrap().next_cursor.unwrap();
+        let cursor = base
+            .search_page("hit", 1, None)
+            .unwrap()
+            .next_cursor
+            .unwrap();
         let other_generation = generation(vec![snapshot("a.txt", "hit\nchanged hit\n")]);
 
         assert!(matches!(
@@ -1639,6 +1730,32 @@ mod tests {
         assert_eq!(result.truncated_by, Some(SearchTruncation::WorkLimit));
         assert!(result.work_units <= MAX_QUERY_WORK_UNITS);
         assert_eq!(result.work_units, MAX_QUERY_WORK_UNITS);
+    }
+
+    #[test]
+    fn search_continuation_fails_if_work_limit_precedes_cursor_anchor() {
+        let repeated = "a".repeat(MAX_FILE_BYTES);
+        let base = generation(vec![
+            FileSnapshot::new("a.txt", repeated.as_bytes().to_vec()),
+            FileSnapshot::new("b.txt", repeated.as_bytes().to_vec()),
+            FileSnapshot::new("c.txt", repeated.as_bytes().to_vec()),
+            FileSnapshot::new("d.txt", repeated.as_bytes().to_vec()),
+            snapshot("z.txt", "hit\n"),
+        ]);
+        let cursor = SearchCursor::new(
+            base.digest(),
+            None,
+            hash_query("hit"),
+            CursorAnchor {
+                path: "z.txt".to_owned(),
+                line: 1,
+            },
+        );
+
+        assert!(matches!(
+            base.search_page("hit", 1, Some(&cursor)),
+            Err(IndexError::CursorWorkLimit)
+        ));
     }
 
     #[test]
