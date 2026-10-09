@@ -31,7 +31,6 @@ export type MemoryExtractionId = typeof MemoryExtractionId.Type
 export const MemoryConsolidationId = id("Horizon.MemoryV1.MemoryConsolidationId")
 export type MemoryConsolidationId = typeof MemoryConsolidationId.Type
 
-const JsonNumber = Schema.Finite
 const utf8Encoder = new TextEncoder()
 
 const compareUtf8Bytes = (left: string, right: string) => {
@@ -161,7 +160,7 @@ export const MemoryQueryResultV1 = Schema.Struct({
       memoryId: MemoryId,
       contentRef: Composition.ArtifactRef,
       freshness: Schema.Literals(["CURRENT", "STALE", "EXPIRED"]),
-      rank: JsonNumber,
+      rank: NonNegativeInt,
       provenance: Schema.Array(Composition.ArtifactRef),
     }),
   ),

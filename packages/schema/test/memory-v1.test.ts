@@ -108,7 +108,7 @@ describe("Horizon memory v1 contracts", () => {
           memoryId: "memory.1",
           contentRef: artifact,
           freshness: "EXPIRED",
-          rank: 1.5,
+          rank: 1,
           provenance: [artifact],
         },
       ],
@@ -244,9 +244,63 @@ describe("Horizon memory v1 contracts", () => {
       ordinary,
     )
     expect(decodeRecord({ ...record, supersedesMemoryIds: unicode }).supersedesMemoryIds?.map(String)).toEqual(unicode)
+    expect(decodeRecord({ ...record, supersedesMemoryIds: [] }).supersedesMemoryIds).toEqual([])
+    expect(decodeRecord({ ...record, supersedesMemoryIds: ["memory.only"] }).supersedesMemoryIds?.map(String)).toEqual([
+      "memory.only",
+    ])
     expect(() => decodeRecord({ ...record, supersedesMemoryIds: ["memory.z", "memory.a"] })).toThrow()
     expect(() => decodeRecord({ ...record, supersedesMemoryIds: ["memory.\u{10000}", "memory.\uE000"] })).toThrow()
     expect(() => decodeRecord({ ...record, supersedesMemoryIds: ["memory.same", "memory.same"] })).toThrow()
+  })
+
+  test("requires memory result ranks to be nonnegative safe integers", () => {
+    const decodeResult = Schema.decodeUnknownSync(Memory.MemoryQueryResultV1)
+    const match = {
+      memoryId: "memory.1",
+      contentRef: artifact,
+      freshness: "CURRENT",
+      rank: 0,
+      provenance: [],
+    } as const
+    const result = {
+      queryId: "memory-query.1",
+      status: "CURRENT",
+      matches: [match],
+    } as const
+
+    expect(decodeResult(result).matches[0].rank).toBe(0)
+    expect(decodeResult({ ...result, matches: [{ ...match, rank: Number.MAX_SAFE_INTEGER }] }).matches[0].rank).toBe(
+      Number.MAX_SAFE_INTEGER,
+    )
+    for (const rank of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => decodeResult({ ...result, matches: [{ ...match, rank }] })).toThrow()
+    }
+  })
+
+  test("does not equate candidate supersession proposals with source snapshots", () => {
+    const candidate = Schema.decodeUnknownSync(Memory.MemoryCandidateV1)({
+      candidateId: "memory-candidate.proposed",
+      proposedScope: scope,
+      content: artifact,
+      sourceRefs: [artifact],
+      confidence: "medium",
+      proposedSupersedes: ["memory.proposed"],
+      sourceGenerationRefs: [generationRef],
+      supersessionSources: [
+        {
+          memoryId: "memory.observed",
+          generation: 3,
+          contentDigest: digest,
+        },
+      ],
+      policyDigest: digest,
+      state: "PROPOSED",
+      candidateDigest: digest,
+      createdAt: "2026-10-09T12:30:45.123Z",
+    })
+
+    expect(candidate.proposedSupersedes.map(String)).toEqual(["memory.proposed"])
+    expect(candidate.supersessionSources.map((source) => String(source.memoryId))).toEqual(["memory.observed"])
   })
 
   test("omits undefined optional values when encoding", () => {
