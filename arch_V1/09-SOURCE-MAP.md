@@ -178,6 +178,13 @@ were run during this documentation pass. The source review confirms the design m
 keep both Windows sandbox confinement and Windows `run_durable` storage unavailable
 until their respective backend implementations and acceptance evidence exist.
 
+The historical `horizoncode-eventlog` source and physical format were not recovered
+after the fresh-Git reset. The user approved OwnerLog V2 as an explicit new physical
+format on 2026-10-09. This decision does not claim source recovery or byte compatibility;
+OwnerLog V2 remains the only canonical store, and unknown legacy bytes are read-only until
+a verified importer exists. Windows `run_durable` remains unavailable pending DEC-V1-17
+and native acceptance evidence.
+
 ## 9.7 First-pass OpenCode path-family disposition
 
 This is an initial path-family classification against the root-relative entries in the

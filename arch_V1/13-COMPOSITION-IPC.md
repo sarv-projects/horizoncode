@@ -398,6 +398,22 @@ type KernelHelloV1 = {
   requiredFeatures: string[]
   optionalFeatures: string[]
 }
+type KernelHelloResultV1 = {
+  kind: "hello_result"
+  protocol: 1
+  enabledFeatures: string[]
+  unavailableOptionalFeatures: string[]
+  supervisorNonce: string // exact nonce bound to the authenticated launch/channel
+  processIncarnation: string // exact host incarnation from KernelHelloV1
+}
+type KernelHelloRejectedV1 = {
+  kind: "hello_rejected"
+  error: TypedErrorV1 // incompatible protocol or unavailable required feature
+}
+type KernelStartupStatusV1 =
+  | { kind: "startup_status"; protocol: 1; state: "STARTING" }
+  | { kind: "startup_status"; protocol: 1; state: "READY" }
+  | { kind: "startup_status"; protocol: 1; state: "FAILED"; error: TypedErrorV1 }
 type RpcRequestV1 = {
   kind: "request"
   protocol: 1
@@ -447,12 +463,21 @@ owner-authorized ArtifactRef. Limits may be lowered by policy, never raised by t
 caller. Oversize input is rejected before decode/allocation beyond the configured
 frame ceiling.
 
+The supervisor authenticates the exact OS peer/channel before accepting `KernelHelloV1`;
+the nonce is an additional binding, not peer authentication. The kernel responds with
+`KernelHelloResultV1` or bounded `KernelHelloRejectedV1`. The success response echoes the
+authenticated-launch supervisor nonce and the exact host process incarnation from hello.
 Handshake chooses the highest mutually supported protocol version. Required unknown
 features fail startup with `TRANSPORT_INCOMPATIBLE`; optional features are listed as
-unavailable. Major version incompatibility never falls back to an untyped or public
-transport. Schema/API changes are additive within a major version only when old
-clients can safely ignore the field; changing owner semantics or enum meaning
-requires a major protocol/schema version.
+unavailable. After successful negotiation, the kernel emits `KernelStartupStatusV1`
+`STARTING` while it validates canonical owner state, acquires the owner epoch, reconciles
+recovery, and readies required services. It emits `READY` only after those milestones, or
+`FAILED` with a typed error and fences startup. The host sends no application request
+before `READY`; the kernel rejects every application RPC received before it. None of these
+frames asserts a human principal or authorization. Major version incompatibility never
+falls back to an untyped or public transport. Schema/API changes are additive within a
+major version only when old clients can safely ignore the field; changing owner semantics
+or enum meaning requires a major protocol/schema version.
 
 ### Request and delivery semantics
 

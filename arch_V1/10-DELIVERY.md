@@ -73,10 +73,13 @@ unsupported or failed required hooks fail closed and cannot alter Guard/Task PAS
 ## Phase P2 — Rust kernel transport and canonical Thread
 
 - Implement private versioned bounded IPC, build handshake, idempotent delivery IDs,
-  typed errors, owner cursors, cancellation lane and process supervision.
-- Reuse/extend `horizoncode-eventlog` for the richer logical owner payloads; preserve
-  its segmented committed-head physical format unless a versioned migration is
-  explicitly approved. Do not build a parallel persistence engine.
+  typed hello result/rejection, startup `STARTING`/`READY`/`FAILED` status, early-RPC
+  rejection, owner cursors, cancellation lane and process supervision.
+- Implement the approved, explicit OwnerLog V2 migration because the historical
+  `horizoncode-eventlog` source was not recovered. V2 is the single segmented,
+  committed-head canonical store; do not claim physical compatibility, overwrite
+  unknown/legacy data, or build a parallel persistence engine. Import requires a
+  separately verified reader and idempotent migration fixtures.
 - Move production Thread/input/message/Turn ownership to kernel event streams through
   `ThreadStoreService`; leave host SQL only as projection/test/import input.
 - Implement the one-to-one Session alias/import contract, preserving fork links, ordered

@@ -6,7 +6,7 @@
   contracts before changing behavior or ownership. OpenCode source and its upstream
   documentation establish implementation facts only; they do not override `arch_V1/`.
 - Root commit `0009178` established the docs-only bootstrap baseline. The current branch
-  contains bounded HorizonCode P1/P2/P4 prototype slices, but not the OpenCode application
+  contains HorizonCode P1/P2/P4 prototype implementations, but not the OpenCode application
   base. The local working copy also has the pinned OpenCode snapshot
   `b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322`; those source files remain ignored and
   untracked, and are not in `main` or a fresh clone. Only `origin` is configured; no
@@ -24,6 +24,48 @@
 - Keep unavailable capabilities visibly unavailable. Unresolved decisions in
   `arch_V1/17-GOVERNANCE-DECISIONS.md` gate only their named capabilities; do not silently
   resolve them or broaden their safe interim behavior.
+
+## Delivery phases and active work
+
+`arch_V1/10-DELIVERY.md` is the source of truth for phase scope, dependencies, and
+acceptance. Its complete phase sequence is:
+
+| Phase | Name | Current status |
+|---|---|---|
+| P0 | Preserve Horizon and establish the OpenCode base | Incomplete; provenance, base, inventory, baseline, generated-output, and license gates remain open |
+| P1 | Composition and typed service seam | Active; implementation and lifecycle acceptance remain incomplete |
+| P2 | Rust kernel transport and canonical Thread | Active; canonical persistence, Thread ownership, and integration remain incomplete |
+| P3 | Direct coding fast path and effects | Not active in this continuation |
+| P4 | Repository intelligence and memory | Active; authorized acquisition and canonical owners remain incomplete |
+| P5 | Agent profiles and subagents | Not active in this continuation |
+| P6 | Durable managed execution | Not active in this continuation |
+| P7 | Independent verification and acceptance | Not active in this continuation |
+| P8 | Ecosystem and compatibility | Later phase |
+| P9 | Web/Desktop polish and updates | Later phase; remote continuation is separately gated |
+
+The current cross-phase objective is P1/P2/P4, with the approved P2 kernel foundation
+as the next implementation work. Status labels are not acceptance claims; use each
+phase's gate and `arch_V1/10-DELIVERY.md` evidence.
+
+## Continuity and goal-control failures
+
+- A goal/status plugin reporting that another process owns the workflow only disables
+  that plugin's goal-state commands. It does **not** block ordinary repository work.
+  Continue user-authorized discovery, design, implementation, testing, and handoff in
+  this session; do not stop or demand a fork solely for that control-plane error.
+- Never emit a goal-complete marker or describe the requested work as complete when only
+  a design, plan, prototype, or subset of phase gates is complete. Report the exact
+  completed work, remaining work, and the next concrete action instead.
+- When a contract or source is missing, follow the user's fallback order: inspect the
+  relevant `arch_V1/` contracts, inspect the local pinned OpenCode packages and actual
+  repository patterns, then research primary external sources when needed. Design the
+  smallest architecture-aligned safe seam, document any explicit migration/decision,
+  implement it, and run its targeted tests. A missing dependency may gate only the
+  capability that truly depends on it; continue independent authorized work and preserve
+  fail-closed behavior rather than stopping the whole objective.
+- Update `CURRENT_RUN.md` with exact files, fresh verification evidence, remaining gates,
+  and numbered next steps whenever work pauses or ends. Do not re-ask for approval already
+  given for the active design or implementation method.
 
 ## OpenCode source conventions
 

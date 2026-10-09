@@ -48,17 +48,38 @@ struct EventEnvelope<P> {
 }
 ```
 
-This is the **logical domain contract**, not a new physical file format. The physical
-starting seam is the existing `horizoncode-eventlog` crate. At the current inspected
-source revision, its `EventRecord` stores `seq`, `time_ms`, dotted `kind`, bounded
-object `data`, `previous_digest`, and `event_digest`; the stream root and committed
-head bind owner kind/ID, schema version, generation and durability profile. It writes
-canonical JSONL segments, BLAKE3 digest links, segment seals and one committed head.
+This is the **logical domain contract**, distinct from the versioned physical record.
+The historical `horizoncode-eventlog` source was not recovered after the fresh-Git
+reset. On 2026-10-09 the user approved an explicit OwnerLog V2 physical format
+migration rather than claiming compatibility or introducing SQLite as a second
+authority. OwnerLog V2 is the single canonical Rust persistence engine. This is not a
+port or compatibility claim for the missing crate; unknown/legacy formats are preserved
+read-only and refused for writes until a separately verified importer exists.
 
-The implementation mapping must preserve that single persistence engine:
+OwnerLog V2 stores per-owner canonical JSONL segments and one committed head. A physical
+record has fixed field order: `format_version`, `seq`, `time_ms`, `kind`, `data`,
+`previous_digest`, `event_digest`. Format version is `2`; `data` is a bounded JSON object
+carrying the versioned logical payload. Object keys inside `data` are recursively sorted;
+arrays retain semantic order; strings are hashed as stored UTF-8 with no normalization.
+The physical event digest is BLAKE3 over the exact canonical JSON record bytes with the
+`event_digest` field omitted; the JSONL line terminator is excluded. Logical `payloadDigest` retains
+the §12.1/§4 family-payload preimage and is not a second physical chain.
 
-- Owner identity and stream-local sequence come from the configured `EventLog` and
-  its committed head; do not add a global sequence or duplicate stream store.
+The V2 committed head binds `format_version`, owner kind/ID, schema version, generation,
+durability profile, committed sequence, committed event digest, active segment ID and
+committed byte offset. Segment IDs are monotonically increasing within an owner. A seal
+binds the segment ID, committed byte offset, first/last sequence, record count, last event
+digest, and BLAKE3 digest of exactly the committed segment-prefix bytes. The owner
+directory is derived from BLAKE3 of `u32be(kind_byte_length) || kind_UTF8 ||
+u32be(id_byte_length) || id_UTF8`; each identity field is nonempty and at most 256 UTF-8
+bytes. The directory name is lowercase digest hex and never contains caller-provided path
+text. Physical records are at most 1 MiB and segments at most 16 MiB; both bounds are fixed
+kernel constants, not caller-controlled.
+
+The logical-to-physical mapping must preserve that single persistence engine:
+
+- Owner identity and stream-local sequence come from the configured OwnerLog V2 stream
+  and its committed head; do not add a global sequence or duplicate stream store.
 - The typed logical event ID, per-event schema version, actor, causation/correlation
   IDs, payload digest and typed payload are represented in the bounded `data` object
   under one versioned owner payload schema. The physical row's `event_digest` is the
@@ -69,9 +90,9 @@ The implementation mapping must preserve that single persistence engine:
   `.`, and the schema decoder rejects any non-canonical mapping. Thus the logical
   event type is recoverable without duplicating it in `data`.
 - The physical row's `kind` remains that stable dotted event discriminator and `seq`,
-  `time_ms`, `previous_digest` and `event_digest` are verified by `horizoncode-eventlog`.
+  `time_ms`, `previous_digest` and `event_digest` are verified by OwnerLog V2.
 - In the logical view, `owner_kind`, `owner_id`, `seq`, `previous_event_digest`, and
-  `event_digest` are sourced from the configured stream and physical `EventRecord`;
+  `event_digest` are sourced from the configured stream and physical V2 record;
   they are not duplicated inside `data`. The physical `event_digest` is the logical
   `event_digest`, and the physical `previous_digest` is the logical
   `previous_event_digest`. `payload_digest` is exactly `"blake3:" +
@@ -81,26 +102,32 @@ The implementation mapping must preserve that single persistence engine:
   self-referential. The physical `event_digest` remains the existing event-chain
   commitment over the canonical physical event body, including bounded `data` and
   `payload_digest`; its own digest output field is excluded from that body.
-- The current physical log stores BLAKE3 digests as 64-character lowercase hex; the
+- The V2 physical log stores BLAKE3 digests as 64-character lowercase hex; the
   logical `Digest` wire representation uses the `blake3:` prefix. Conversion is
   strict and lossless. Do not hash the physical row a second time to manufacture a
   new chain.
-- Extending the current stream-owner vocabulary beyond its session/run use, adding
-  Thread/Supervisor/Effect owner streams, and migrating existing Session/Run streams
-  require explicit compatibility and replay fixtures. The current crate is a strong
-  implementation seam, not proof that the full adopted owner model is already
-  supported.
-- If a required logical field cannot be preserved in the current payload schema or
-  its digest/canonicalization contract, stop and version/migrate that existing format;
-  do not create a parallel SQLite/JSONL writer to bridge the gap.
+- OwnerLog V2 supports one stream per configured owner kind/ID. Migrating existing
+  Session/Run streams and adding Thread/Supervisor/Effect streams require explicit
+  compatibility and replay fixtures; the physical format alone does not implement
+  those domain owners.
+- If a required logical field cannot be preserved in the V2 payload schema or its
+  digest/canonicalization contract, version/migrate OwnerLog before writing it; do not
+  create a parallel SQLite/JSONL writer to bridge the gap.
 
 Appending validates schema, owner sequence, previous digest, payload limit, lifecycle
 transition, authorization and idempotency before commit. Unknown major schemas refuse
 replay. Event payloads do not contain raw credentials. Canonical log durability and
 projection updates are separate operations; projection cursors make replay explicit.
-Physical append ordering, commit durability, head replacement, segment rotation, and
-tail-recovery behavior are specified by the existing event-log implementation contract
-and summarized in §18.
+Append ordering is: validate the complete owner command; durably publish referenced
+immutable artifacts; append the whole bounded event batch; synchronize the segment; write
+and synchronize a same-directory head temporary; atomically replace the committed head;
+synchronize the parent directory when required by the profile; then acknowledge. If the
+commit result is uncertain, retry/query with the same delivery ID. Recovery validates the
+head and every committed segment prefix. Bytes after a committed offset are uncommitted,
+are never promoted, are preserved for diagnosis, and cause subsequent appends to use a new
+segment. Corrupt committed bytes fence the owner; there is no SQLite fallback. Unknown
+format versions are rejected without rewriting data. Platform synchronization and
+acceptance requirements are specified in §18.
 
 ## 4.3 Event-name registry
 

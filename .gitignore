@@ -8,6 +8,12 @@
 !/README.md
 !/arch_V1/
 !/arch_V1/**
+!/docs/
+!/docs/superpowers/
+!/docs/superpowers/specs/
+!/docs/superpowers/specs/2026-10-09-horizon-p2-kernel-foundation-design.md
+!/docs/superpowers/plans/
+!/docs/superpowers/plans/2026-10-09-horizon-p2-foundation.md
 !/packages/
 !/packages/core/
 !/packages/core/src/

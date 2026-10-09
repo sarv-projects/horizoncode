@@ -31,12 +31,14 @@ kernel/supervisor loses ownership, new managed dispatch is fenced until recovery
 
 ## 18.2 Persistence, durability, projections and disk pressure
 
-Use the existing Horizon segmented committed-head event-log design as the starting
-implementation seam: canonical event line and required artifacts become durable
-before the committed head advances; sealed segments and head digests are validated on
-replay. Do not introduce a competing JSONL/SQLite event format. Each owner has its own
-stream and sequence. SQLite/read models are projections only; projection deletion
-must not delete canonical history.
+Use the approved OwnerLog V2 as the single canonical segmented committed-head store.
+This is an explicit new physical format because the historical `horizoncode-eventlog`
+source was not recovered; it is not a compatibility claim. Each owner has its own stream
+and sequence. Canonical event bytes and required artifacts are durable before the
+committed head advances; seals and head digests are validated on replay. SQLite/read
+models are rebuildable projections and migration input only; projection deletion must
+not delete canonical history. Unknown/legacy log formats are preserved read-only and
+refused for writes until a separately verified importer exists.
 
 Run/Effect/Thread owner commands acknowledge only after their required durability
 profile is satisfied. Long-horizon runs require the `run_durable` durability contract;
@@ -45,13 +47,13 @@ label a separately accepted interactive-only profile. Do not weaken durability
 silently. Exact durability behavior depends on the active `DurabilityBackend` and
 must be validated on target filesystem, crash and power-loss conditions.
 
-At the current inspected HorizonCode revision, `horizoncode-eventlog::StdCommitSink`
-supports its `run_durable` contract only when compiled for Unix; non-Unix directory
-sync is explicitly unsupported and `EventLog::open` refuses that profile. Therefore
-Windows-first delivery currently has two independent storage/platform blockers:
-confined sandboxing and durable Run storage. Resolve DEC-V1-01 and DEC-V1-17 with
-platform implementations and acceptance records before advertising governed Windows
-managed Runs.
+No OwnerLog V2 backend is yet accepted for `run_durable`. The historical
+`horizoncode-eventlog::StdCommitSink` observation supports that contract only when
+compiled for Unix and remains a source-map fact, not the V2 implementation. Windows
+directory-entry durability and crash/power-loss recovery have not been accepted.
+Therefore Windows-first delivery retains two independent blockers: confined sandboxing
+and durable Run storage. Resolve DEC-V1-01 and DEC-V1-17 with platform implementations
+and native acceptance records before advertising governed Windows managed Runs.
 
 Canonical event append sequence:
 
