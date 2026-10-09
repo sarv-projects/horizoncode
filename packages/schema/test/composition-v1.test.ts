@@ -59,6 +59,18 @@ const baseLock = {
   lockDigest: digest,
 } as const
 
+const lockWithOptionalUnavailableHooks = (bindings: readonly Composition.GlobalHookBindingV1[]) => ({
+  ...baseLock,
+  globalHookBindings: bindings,
+  resolvedGlobalHooks: bindings.map((binding) => ({
+    event: binding.event,
+    hookId: binding.hookId,
+    ordinal: binding.ordinal,
+    status: "OPTIONAL_UNAVAILABLE" as const,
+    reasonCode: "HANDLER_UNAVAILABLE",
+  })),
+})
+
 const hookNode = {
   pluginId: "plugin.notes",
   version: "1.2.3",
@@ -307,6 +319,47 @@ describe("Horizon composition v1 contracts", () => {
         resolvedGlobalHooks: [{ ...unavailableResolution, reasonCode: "r".repeat(257) }],
       } as unknown),
     ).toThrow()
+  })
+
+  test("accepts sparse ascending global-hook ordinals and ordinal reuse across events", () => {
+    const bindings = [
+      { event: "before_compaction", hookId: "hook.first", required: false, ordinal: 2 },
+      { event: "before_compaction", hookId: "hook.second", required: false, ordinal: 7 },
+      { event: "after_compaction", hookId: "hook.third", required: false, ordinal: 2 },
+    ] as const
+    const decodeLock = Schema.decodeUnknownSync(Composition.CompositionLockV1)
+
+    expect(decodeLock(lockWithOptionalUnavailableHooks(bindings) as unknown).globalHookBindings).toEqual(bindings)
+  })
+
+  test("rejects duplicate global-hook event and hook ID pairs", () => {
+    const bindings = [
+      { event: "before_compaction", hookId: "hook.first", required: false, ordinal: 2 },
+      { event: "before_compaction", hookId: "hook.first", required: false, ordinal: 7 },
+    ] as const
+    const decodeLock = Schema.decodeUnknownSync(Composition.CompositionLockV1)
+
+    expect(() => decodeLock(lockWithOptionalUnavailableHooks(bindings) as unknown)).toThrow()
+  })
+
+  test("rejects duplicate global-hook event and ordinal pairs", () => {
+    const bindings = [
+      { event: "before_compaction", hookId: "hook.first", required: false, ordinal: 2 },
+      { event: "before_compaction", hookId: "hook.second", required: false, ordinal: 2 },
+    ] as const
+    const decodeLock = Schema.decodeUnknownSync(Composition.CompositionLockV1)
+
+    expect(() => decodeLock(lockWithOptionalUnavailableHooks(bindings) as unknown)).toThrow()
+  })
+
+  test("rejects descending global-hook ordinals within an event", () => {
+    const bindings = [
+      { event: "before_compaction", hookId: "hook.first", required: false, ordinal: 7 },
+      { event: "before_compaction", hookId: "hook.second", required: false, ordinal: 2 },
+    ] as const
+    const decodeLock = Schema.decodeUnknownSync(Composition.CompositionLockV1)
+
+    expect(() => decodeLock(lockWithOptionalUnavailableHooks(bindings) as unknown)).toThrow()
   })
 
   test("requires resolved global-hook contributions to be pinned by a selected lock node", () => {

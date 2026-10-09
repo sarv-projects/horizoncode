@@ -196,6 +196,9 @@ describe("Horizon memory v1 contracts", () => {
     expect(() =>
       Schema.decodeUnknownSync(Memory.MemoryCandidateV1)({ ...candidate, reviewReceipt: undefined }),
     ).toThrow()
+    const { acceptedMemoryId, ...candidateWithoutAcceptedMemoryId } = candidate
+    expect(acceptedMemoryId).toBeDefined()
+    expect(() => Schema.decodeUnknownSync(Memory.MemoryCandidateV1)(candidateWithoutAcceptedMemoryId)).toThrow()
     expect(() => Schema.decodeUnknownSync(Memory.MemoryExtractionV1)({ ...extraction, failure: undefined })).toThrow()
     expect(() =>
       Schema.decodeUnknownSync(Memory.MemoryConsolidationV1)({ ...consolidation, state: "FAILED" }),
