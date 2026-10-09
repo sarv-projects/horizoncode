@@ -362,6 +362,12 @@ fn validate_message(message: &RpcMessageV1) -> Result<(), ProtocolError> {
                 text("ownerId", owner_id, MAX_IDENTIFIER_BYTES)?;
                 if let Some(cursor) = after {
                     validate_cursor(cursor)?;
+                    if cursor.owner_kind != *owner_kind || cursor.owner_id != *owner_id {
+                        return Err(invalid(
+                            "after",
+                            "subscription cursor must belong to the requested owner",
+                        ));
+                    }
                 }
                 Ok(())
             }
@@ -611,7 +617,7 @@ pub fn negotiate_hello(
         || policy
             .expected_host_process_incarnation
             .as_ref()
-            .is_some_and(|expected| expected != &hello.process_incarnation)
+            .is_none_or(|expected| expected != &hello.process_incarnation)
     {
         return Err(ProtocolError(ProtocolErrorKind::TransportIncompatible));
     }
@@ -1344,6 +1350,28 @@ mod tests {
     }
 
     #[test]
+    fn subscription_start_cursor_must_match_requested_owner() {
+        let subscription_for = |cursor| {
+            RpcMessageV1::Control(Box::new(RpcControlV1::Subscribe {
+                subscription_id: "sub_1".to_owned(),
+                owner_kind: "thread".to_owned(),
+                owner_id: "thr_1".to_owned(),
+                after: Some(cursor),
+            }))
+        };
+
+        assert!(encode_message(&subscription_for(cursor())).is_ok());
+
+        let mut wrong_owner_kind = cursor();
+        wrong_owner_kind.owner_kind = "run".to_owned();
+        assert!(encode_message(&subscription_for(wrong_owner_kind)).is_err());
+
+        let mut wrong_owner_id = cursor();
+        wrong_owner_id.owner_id = "thr_other".to_owned();
+        assert!(encode_message(&subscription_for(wrong_owner_id)).is_err());
+    }
+
+    #[test]
     fn rejects_invalid_digest_decimal_response_shape_and_protocol_version() {
         let mut invalid_cursor = cursor();
         invalid_cursor.seq = "042".to_owned();
@@ -1426,37 +1454,112 @@ mod tests {
             negotiate_hello(&wrong_incarnation, &policy).unwrap_err().0,
             ProtocolErrorKind::TransportIncompatible
         ));
+
+        let missing_expected_incarnation = HandshakePolicy {
+            expected_host_process_incarnation: None,
+            ..policy
+        };
+        assert!(matches!(
+            negotiate_hello(
+                &hello(&["threads.v1"], &["memory.v1"]),
+                &missing_expected_incarnation
+            )
+            .unwrap_err()
+            .0,
+            ProtocolErrorKind::TransportIncompatible
+        ));
     }
 
     #[test]
-    fn request_and_event_bodies_have_independent_decoded_value_limits() {
+    fn request_response_and_event_bodies_have_independent_decoded_value_limits() {
         let too_large = Value::String("x".repeat(MAX_BODY_BYTES));
         assert!(validate_message(&request(too_large)).is_err());
 
-        let event = RpcMessageV1::Event(Box::new(RpcEventV1 {
-            subscription_id: "sub_1".to_owned(),
-            cursor: cursor(),
-            event_type: "test".to_owned(),
-            payload: Value::String("x".repeat(MAX_EVENT_PAYLOAD_BYTES)),
-        }));
-        assert!(validate_message(&event).is_err());
+        let response_for_body = |body| {
+            RpcMessageV1::Response(Box::new(RpcResponseV1 {
+                request_id: "req_body".to_owned(),
+                outcome: RpcOutcomeV1::Ok,
+                owner_cursor: None,
+                receipt_digest: None,
+                body: Some(body),
+                error: None,
+            }))
+        };
+        let body_at_limit = Value::Binary(vec![0; MAX_BODY_BYTES - 5]);
+        assert_eq!(
+            messagepack::encoded_len(&body_at_limit, FRAME_LIMITS).unwrap(),
+            MAX_BODY_BYTES
+        );
+        assert!(encode_message(&response_for_body(body_at_limit)).is_ok());
+        assert!(
+            encode_message(&response_for_body(Value::Binary(vec![
+                0;
+                MAX_BODY_BYTES - 4
+            ])))
+            .is_err()
+        );
+
+        let event_for_payload = |payload| {
+            RpcMessageV1::Event(Box::new(RpcEventV1 {
+                subscription_id: "sub_1".to_owned(),
+                cursor: cursor(),
+                event_type: "test".to_owned(),
+                payload,
+            }))
+        };
+        let payload_at_limit = Value::Binary(vec![0; MAX_EVENT_PAYLOAD_BYTES - 5]);
+        assert_eq!(
+            messagepack::encoded_len(&payload_at_limit, FRAME_LIMITS).unwrap(),
+            MAX_EVENT_PAYLOAD_BYTES
+        );
+        assert!(encode_message(&event_for_payload(payload_at_limit)).is_ok());
+        assert!(
+            encode_message(&event_for_payload(Value::Binary(vec![
+                0;
+                MAX_EVENT_PAYLOAD_BYTES
+                    - 4
+            ])))
+            .is_err()
+        );
     }
 
     #[test]
     fn trusted_operation_and_artifact_chunk_limits_can_only_lower_global_body_limit() {
-        assert!(validate_operation_body(&Value::Nil, MAX_BODY_BYTES + 1).is_ok());
         assert!(validate_operation_body(&Value::Nil, 0).is_err());
+        let above_global_limit = Value::Binary(vec![0; MAX_BODY_BYTES - 4]);
+        assert_eq!(
+            messagepack::encoded_len(&above_global_limit, FRAME_LIMITS).unwrap(),
+            MAX_BODY_BYTES + 1
+        );
+        assert!(validate_operation_body(&above_global_limit, MAX_BODY_BYTES + 1).is_err());
+        assert!(canonical_body_bytes(&above_global_limit, MAX_BODY_BYTES + 1).is_err());
+        let chunk_at_limit = Value::Binary(vec![0; MAX_ARTIFACT_CHUNK_BODY_BYTES - 5]);
+        assert_eq!(
+            messagepack::encoded_len(&chunk_at_limit, FRAME_LIMITS).unwrap(),
+            MAX_ARTIFACT_CHUNK_BODY_BYTES
+        );
+        assert!(validate_artifact_chunk_body(&chunk_at_limit).is_ok());
         assert!(
             validate_artifact_chunk_body(&Value::Binary(vec![
                 0;
-                MAX_ARTIFACT_CHUNK_BODY_BYTES - 5
+                MAX_ARTIFACT_CHUNK_BODY_BYTES - 4
             ]))
-            .is_ok()
+            .is_err()
         );
-        assert!(
-            validate_artifact_chunk_body(&Value::Binary(vec![0; MAX_ARTIFACT_CHUNK_BODY_BYTES]))
-                .is_err()
+    }
+
+    #[test]
+    fn operation_body_limit_matches_canonical_encoded_bytes() {
+        let body = Value::String("x".to_owned());
+        let encoded_length = messagepack::encoded_len(&body, FRAME_LIMITS).unwrap();
+        assert_eq!(encoded_length, 2);
+        assert!(validate_operation_body(&body, encoded_length).is_ok());
+        assert!(validate_operation_body(&body, encoded_length - 1).is_err());
+        assert_eq!(
+            canonical_body_bytes(&body, encoded_length).unwrap(),
+            [0xa1, b'x']
         );
+        assert!(canonical_body_bytes(&body, encoded_length - 1).is_err());
     }
 
     #[test]
@@ -1466,6 +1569,10 @@ mod tests {
         assert!(validate_deadline(400_000, 1_000, true).is_ok());
         assert!(validate_deadline(1_000, 1_000, true).is_err());
         assert!(validate_deadline(MAX_SAFE_INTEGER + 1, 1_000, true).is_err());
+        assert!(validate_deadline(1_000 + MAX_DEADLINE_INTERACTIVE_MS, 1_000, false).is_ok());
+        assert!(validate_deadline(1_001 + MAX_DEADLINE_INTERACTIVE_MS, 1_000, false).is_err());
+        assert!(validate_deadline(1_000 + MAX_DEADLINE_DURABLE_MS, 1_000, true).is_ok());
+        assert!(validate_deadline(1_001 + MAX_DEADLINE_DURABLE_MS, 1_000, true).is_err());
     }
 
     #[test]
@@ -1495,5 +1602,60 @@ mod tests {
             }),
         }));
         assert!(validate_message(&response).is_err());
+    }
+
+    #[test]
+    fn enforces_the_encoded_typed_error_detail_limit_at_the_boundary() {
+        assert_eq!(MAX_ERROR_BYTES, 64 * 1024);
+
+        let error_for_message = |message: String| TypedErrorV1 {
+            code: "UNAVAILABLE".to_owned(),
+            category: ErrorCategoryV1::Unavailable,
+            message,
+            retry_class: RetryClassV1::Never,
+            retry_after_ms: None,
+            owner_cursor: None,
+            subject_ids: Vec::new(),
+            details: None,
+        };
+        let encoded_error_len = |message_length: usize| {
+            let value = typed_error_to_value(&error_for_message("x".repeat(message_length)));
+            messagepack::encoded_len(&value, FRAME_LIMITS).unwrap()
+        };
+        let response_for_message = |message: String| {
+            RpcMessageV1::Response(Box::new(RpcResponseV1 {
+                request_id: "req_error".to_owned(),
+                outcome: RpcOutcomeV1::Error,
+                owner_cursor: None,
+                receipt_digest: None,
+                body: None,
+                error: Some(error_for_message(message)),
+            }))
+        };
+
+        let mut largest_accepted_message = 0;
+        let mut upper_message_length = MAX_ERROR_BYTES;
+        while largest_accepted_message < upper_message_length {
+            let candidate = largest_accepted_message
+                + (upper_message_length - largest_accepted_message).div_ceil(2);
+            if encoded_error_len(candidate) <= MAX_ERROR_BYTES {
+                largest_accepted_message = candidate;
+            } else {
+                upper_message_length = candidate - 1;
+            }
+        }
+
+        assert!(largest_accepted_message < MAX_ERROR_BYTES);
+        assert!(encoded_error_len(largest_accepted_message) <= MAX_ERROR_BYTES);
+        assert!(encoded_error_len(largest_accepted_message + 1) > MAX_ERROR_BYTES);
+        assert!(
+            encode_message(&response_for_message("x".repeat(largest_accepted_message))).is_ok()
+        );
+        assert!(
+            encode_message(&response_for_message(
+                "x".repeat(largest_accepted_message + 1)
+            ))
+            .is_err()
+        );
     }
 }
