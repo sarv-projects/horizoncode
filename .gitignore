@@ -39,6 +39,7 @@
 !/kernel/Cargo.toml
 !/kernel/Cargo.lock
 !/kernel/src/
+!/kernel/src/owner_log.rs
 !/kernel/src/lib.rs
 !/kernel/src/messagepack.rs
 !/kernel/src/protocol.rs
@@ -46,6 +47,11 @@
 !/kernel/src/startup.rs
 !/kernel/src/transport.rs
 !/kernel/src/windows_peer.rs
+!/kernel/tests/
+!/kernel/tests/fixtures/
+!/kernel/tests/fixtures/owner-log-v2/
+!/kernel/tests/fixtures/owner-log-v2/record-v2.jsonl
+!/kernel/tests/owner_log_golden.rs
 !/indexd/
 !/indexd/Cargo.toml
 !/indexd/Cargo.lock

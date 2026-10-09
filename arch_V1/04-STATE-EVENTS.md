@@ -59,17 +59,25 @@ read-only and refused for writes until a separately verified importer exists.
 OwnerLog V2 stores per-owner canonical JSONL segments and one committed head. A physical
 record has fixed field order: `format_version`, `seq`, `time_ms`, `kind`, `data`,
 `previous_digest`, `event_digest`. Format version is `2`; `data` is a bounded JSON object
-carrying the versioned logical payload. Object keys inside `data` are recursively sorted;
-arrays retain semantic order; strings are hashed as stored UTF-8 with no normalization.
+carrying the versioned logical payload. The command writer stores `schemaVersion` and
+`payload`, plus `deliveryId` and its `commandDigest` together when the event belongs to a
+delivered command; those two command fields must either both be present or both absent.
+Object keys inside `data` are recursively sorted; arrays retain semantic order; strings
+are hashed as stored UTF-8 with no normalization.
 The physical event digest is BLAKE3 over the exact canonical JSON record bytes with the
 `event_digest` field omitted; the JSONL line terminator is excluded. Logical `payloadDigest` retains
 the §12.1/§4 family-payload preimage and is not a second physical chain.
 
-The V2 committed head binds `format_version`, owner kind/ID, schema version, generation,
-durability profile, committed sequence, committed event digest, active segment ID and
-committed byte offset. Segment IDs are monotonically increasing within an owner. A seal
-binds the segment ID, committed byte offset, first/last sequence, record count, last event
-digest, and BLAKE3 digest of exactly the committed segment-prefix bytes. The owner
+The V2 committed head uses fixed field order: `format_version`, `owner_kind`, `owner_id`,
+`schema_version`, `generation`, `durability_profile`, `committed_seq`,
+`committed_event_digest`, `active_segment_id`, `committed_offset`, `head_digest`. The
+durability profile is `interactive_only` or `run_durable`; the profile label does not
+establish backend capability or acceptance. `head_digest` is BLAKE3 over the
+canonical head JSON with `head_digest` omitted; its line terminator is excluded. Segment
+IDs are monotonically increasing within an owner. A seal uses fixed field order:
+`format_version`, `segment_id`, `committed_offset`, `first_seq`, `last_seq`,
+`record_count`, `last_event_digest`, `segment_digest`. `segment_digest` is BLAKE3 of
+exactly the committed segment-prefix bytes, including each record's LF. The owner
 directory is derived from BLAKE3 of `u32be(kind_byte_length) || kind_UTF8 ||
 u32be(id_byte_length) || id_UTF8`; each identity field is nonempty and at most 256 UTF-8
 bytes. The directory name is lowercase digest hex and never contains caller-provided path

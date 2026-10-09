@@ -1,0 +1,1 @@
+{"format_version":2,"seq":7,"time_ms":1700000000123,"kind":"thread.created","data":{"payload":{"a":"value","z":"é"},"schemaVersion":1,"z":[3,2,1]},"previous_digest":"0000000000000000000000000000000000000000000000000000000000000000","event_digest":"fdcdc963ab56868451dbef5f7b638824f627e4f934e4f7b2f6c1e9fc17f1985a"}

@@ -80,18 +80,29 @@ contracts together before changing runtime behavior.
 - Use bounded, append-only canonical JSONL segments and one atomically replaced committed
   head per owner. Both segment and head carry format version 2. A head binds owner kind/ID,
   schema version, generation, committed sequence, committed event digest, active segment,
-  committed byte offset, and the named durability profile.
+  committed byte offset, and the named durability profile (`interactive_only` or
+  `run_durable`). The label does not itself establish backend capability or acceptance.
+  Head field order is `format_version`, `owner_kind`, `owner_id`, `schema_version`,
+  `generation`, `durability_profile`, `committed_seq`, `committed_event_digest`,
+  `active_segment_id`, `committed_offset`, `head_digest`; `head_digest` is BLAKE3 over
+  canonical head JSON with its own field omitted, excluding the line terminator.
 - A physical record carries sequence, timestamp, dotted event kind, bounded `data`, the
   previous event digest, and its event digest. Serialize the physical envelope in fixed
   field order; recursively sort object keys in `data`. Preserve semantic order in ordered
   arrays and enforce each set-like array's declared order/uniqueness. Encode strings as
   stored UTF-8 without normalization, per `arch_V1/12-DOMAIN-SCHEMAS.md:183-197`.
+- The physical `data` object carries `schemaVersion` plus nested event `payload`. A delivered
+  owner command additionally stores the `deliveryId` and `commandDigest` together in that
+  object; the two fields are either both present or both absent.
 - `event_digest` is BLAKE3 over the canonical physical record with its output digest omitted.
   `payloadDigest` remains the logical family-payload BLAKE3 defined by §4; it is not a second
   physical chain. Physical digests are lowercase hex internally and use the shared `Digest`
   representation at JSON/RPC boundaries.
 - Physical records are capped at 1 MiB and segments at 16 MiB. Those limits are fixed kernel
   constants, never caller-controlled. Rotation seals a segment; sealed prefixes are immutable.
+- Segment seals use fixed field order `format_version`, `segment_id`, `committed_offset`,
+  `first_seq`, `last_seq`, `record_count`, `last_event_digest`, `segment_digest`; the final
+  digest is BLAKE3 over the exact committed prefix including each JSONL line terminator.
 
 ### Append, retry, and recovery
 

@@ -87,21 +87,22 @@
 - Modify: `kernel/Cargo.toml`, `kernel/Cargo.lock`
 - Create: `kernel/src/owner_log.rs`
 - Modify: `kernel/src/lib.rs`
-- Test: unit tests in `owner_log.rs` plus shared fixtures under `kernel/tests/fixtures/owner-log-v2/`
+- Test: `kernel/tests/owner_log_golden.rs` plus shared fixtures under `kernel/tests/fixtures/owner-log-v2/`
 
 **Interfaces:**
 - `OwnerIdentity::new(kind: String, id: String) -> Result<OwnerIdentity, OwnerLogError>` validates non-empty UTF-8 identity fields of at most `MAX_IDENTIFIER_BYTES` (256 bytes each). The path-key preimage is `u32be(kind_byte_length) || kind_UTF8 || u32be(id_byte_length) || id_UTF8`.
 - `OwnerEventInput { schema_version: u16, time_ms: u64, kind: String, data: serde_json::Value, delivery_id: Option<String>, command_digest: Option<String> }` is a validated append input; delivery metadata is committed in the same owner record.
 - `OwnerLogV2::encode_record(record: &PhysicalRecordV2) -> Result<Vec<u8>, OwnerLogError>` emits exactly one bounded canonical JSON line plus LF.
 - `OwnerLogV2::event_digest(record: &PhysicalRecordV2) -> Result<Digest, OwnerLogError>` hashes the fixed-field-order record with its output digest omitted using BLAKE3.
+- `OwnerHeadV2::new(...)`, `OwnerLogV2::head_digest`, and `OwnerLogV2::encode_head` encode the fixed-order committed head and verify its self-excluding digest; `SegmentSealV2::new(...)` binds exact committed-prefix bytes and `encode_seal` emits fixed-order metadata.
 
-- [ ] Add fixtures/tests for recursively sorted JSON keys, fixed envelope field order, UTF-8 preservation without normalization, array-order preservation, and exact BLAKE3 vectors.
-- [ ] Run focused tests and verify they fail before implementation.
-- [ ] Pin `blake3` to `=1.8.7` and `serde_json` to `=1.0.150`; do not enable map-order-preservation features that would defeat sorted keys.
-- [ ] Implement record/head schemas, canonical encoding, digest formatting, and bounds; reject non-finite numbers and out-of-range numeric values before serialization.
-- [ ] Test malformed digest, invalid owner/event fields, duplicate/oversized data, unknown format version, and exact fixture bytes.
-- [ ] Run all Kernel tests, fmt, and warning-free Clippy offline.
-- [ ] Commit the verified codec change as `feat(kernel): add owner log v2 codec`.
+- [x] Add fixtures/tests for recursively sorted JSON keys, fixed envelope field order, UTF-8 preservation without normalization, array-order preservation, and exact BLAKE3 vectors.
+- [x] Run focused tests and verify they fail before implementation.
+- [x] Pin `blake3` to `=1.8.7` and `serde_json` to `=1.0.150`; do not enable map-order-preservation features that would defeat sorted keys.
+- [x] Implement record/head/seal schemas, canonical encoding, digest formatting, and bounds; reject non-finite numbers and out-of-range numeric values before serialization.
+- [x] Test malformed digest, invalid owner/event fields, oversized/deep data, unknown format version, and exact fixture bytes. Raw duplicate-key rejection is assigned to Task 4's replay decoder because `serde_json::Value` cannot retain duplicate keys.
+- [x] Run all Kernel tests, fmt, and warning-free Clippy offline.
+- [x] Commit the verified codec change as `feat(kernel): add owner log v2 codec`.
 
 ### Task 4: Implement append, committed-head recovery, and delivery idempotency
 
