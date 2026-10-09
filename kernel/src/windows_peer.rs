@@ -12,6 +12,44 @@
 //! the name and apply bounded retry policy. The listener blocks until a client connects;
 //! it has no cancellation path and has not received native Windows runtime review.
 
+const MAX_WINDOWS_IMAGE_PATH_CHARS: usize = 32 * 1024;
+
+/// Require exact path spelling so case-sensitive Windows directories cannot make a
+/// case-insensitive executable-policy comparison identify a different image.
+fn same_windows_path_units(left: &[u16], right: &[u16]) -> bool {
+    !left.is_empty()
+        && !right.is_empty()
+        && left.len() <= MAX_WINDOWS_IMAGE_PATH_CHARS
+        && right.len() <= MAX_WINDOWS_IMAGE_PATH_CHARS
+        && left == right
+}
+
+#[cfg(test)]
+mod portable_tests {
+    use super::*;
+
+    #[test]
+    fn executable_path_policy_requires_exact_bounded_spelling() {
+        let expected: Vec<u16> = r"C:\Program Files\Horizon\Kernel.exe"
+            .encode_utf16()
+            .collect();
+        let same_spelling: Vec<u16> = r"C:\Program Files\Horizon\Kernel.exe"
+            .encode_utf16()
+            .collect();
+        let different_case: Vec<u16> = r"C:\Program Files\Horizon\kernel.exe"
+            .encode_utf16()
+            .collect();
+
+        assert!(same_windows_path_units(&expected, &same_spelling));
+        assert!(!same_windows_path_units(&expected, &different_case));
+        assert!(!same_windows_path_units(&[], &same_spelling));
+        assert!(!same_windows_path_units(
+            &vec![b'a' as u16; MAX_WINDOWS_IMAGE_PATH_CHARS + 1],
+            &vec![b'a' as u16; MAX_WINDOWS_IMAGE_PATH_CHARS + 1]
+        ));
+    }
+}
+
 use std::ffi::{OsStr, OsString, c_void};
 use std::fmt;
 use std::fs::File;
@@ -25,7 +63,6 @@ use windows_sys::Win32::Foundation::{
     ERROR_PIPE_CONNECTED, FILETIME, GENERIC_READ, GENERIC_WRITE, GetLastError,
     INVALID_HANDLE_VALUE, LocalFree, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
-use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
 };
@@ -51,7 +88,7 @@ use windows_sys::Win32::System::Threading::{
 
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 const TOKEN_BUFFER_LIMIT: usize = 64 * 1024;
-const PROCESS_IMAGE_BUFFER_CHARS: usize = 32 * 1024;
+const PROCESS_IMAGE_BUFFER_CHARS: usize = MAX_WINDOWS_IMAGE_PATH_CHARS;
 const SECURITY_DESCRIPTOR_REVISION: u32 = 1;
 // FILE_GENERIC_READ | FILE_GENERIC_WRITE | SYNCHRONIZE. Generic write includes
 // FILE_CREATE_PIPE_INSTANCE (0x4), required to create a pipe instance. The DACL grants
@@ -203,7 +240,8 @@ pub struct ExpectedWindowsPeer(WindowsPeerIdentity);
 
 impl ExpectedWindowsPeer {
     /// Capture the process instance behind a supervisor-owned process handle.
-    /// `expected_image_path` must come from trusted executable policy, not RPC input.
+    /// `expected_image_path` must come from trusted executable policy, not RPC input;
+    /// its UTF-16 spelling must exactly match the process image path.
     pub fn from_process_handle(
         process: BorrowedHandle<'_>,
         expected_image_path: &Path,
@@ -692,24 +730,24 @@ fn same_process_identity(left: &WindowsPeerIdentity, right: &WindowsPeerIdentity
 }
 
 fn same_windows_path(left: &Path, right: &Path) -> bool {
-    let left: Vec<u16> = left.as_os_str().encode_wide().collect();
-    let right: Vec<u16> = right.as_os_str().encode_wide().collect();
-    if left.is_empty()
-        || right.is_empty()
-        || left.len() > i32::MAX as usize
-        || right.len() > i32::MAX as usize
-    {
+    fn path_units(path: &Path) -> Option<Vec<u16>> {
+        let mut units = Vec::new();
+        for unit in path.as_os_str().encode_wide() {
+            if units.len() == MAX_WINDOWS_IMAGE_PATH_CHARS {
+                return None;
+            }
+            units.push(unit);
+        }
+        Some(units)
+    }
+
+    let Some(left) = path_units(left) else {
         return false;
-    }
-    unsafe {
-        CompareStringOrdinal(
-            left.as_ptr(),
-            left.len() as i32,
-            right.as_ptr(),
-            right.len() as i32,
-            1,
-        ) == CSTR_EQUAL
-    }
+    };
+    let Some(right) = path_units(right) else {
+        return false;
+    };
+    same_windows_path_units(&left, &right)
 }
 
 fn wide(value: &str) -> Vec<u16> {
@@ -759,14 +797,14 @@ mod tests {
     }
 
     #[test]
-    fn path_policy_comparison_is_windows_case_insensitive() {
+    fn path_policy_comparison_requires_exact_spelling() {
         assert!(same_windows_path(
             Path::new(r"C:\Program Files\Horizon\Kernel.exe"),
-            Path::new(r"c:\program files\horizon\kernel.EXE")
+            Path::new(r"C:\Program Files\Horizon\Kernel.exe")
         ));
         assert!(!same_windows_path(
             Path::new(r"C:\Program Files\Horizon\Kernel.exe"),
-            Path::new(r"C:\Program Files\Other\Kernel.exe")
+            Path::new(r"C:\Program Files\Horizon\kernel.exe")
         ));
     }
 
