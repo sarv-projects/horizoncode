@@ -1,11 +1,28 @@
 # 18. Operations, data lifecycle, performance and release
 
+
+> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19–26. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
+
+## 2026-10-10 OpenCode-first reconciliation
+### Operational acceptance for OpenCode-first v2
+- **Process supervisor**: versioned OpenCode bridge, kernel and workers; startup recovers inflight effects and stale leases before serving new managed tasks.
+- **Storage**: keep OpenCode session DB and kernel owned event journal separately; transactional outbox bridge; retention rules protect checkpoints, proof and user changes; WAL and event tables have measured quotas.
+- **Worktree pool**: default warm idle count configurable (start at 0 or 1), maximum concurrency and storage quota, hygiene scan before reassignment, finite TTL with dry-run garbage collection; no user-change deletion.
+- **Providers**: circuit breaker per explicitly selected endpoint/model; surface unavailability; never switch paid route without user action.
+- **Privacy**: no telemetry or repair-learning from code content without explicit user choice; local models may be fully local only if browser, embeddings, extensions and plugins are restricted too.
+- **Release**: old and updated provider/session APIs pass regression; kernel test suites pass; permissions validated with injected bypass attempts; context compaction and crash replay pass; worktrees leave no orphan processes, ports or test DB; novice and expert acceptance tests pass; release artifact includes licenses and upstream diff attribution.
+- **Health**: report observed fact separately from expected capability; an architecture update is not a runtime-ready release.
+
+---
+
 This contract is written for a local-first product with Windows as the first release
 target. It defines the runtime/operational guarantees the design requires; it is not
 evidence that any target OS, updater, package, backup or performance budget currently
 passes.
 
 ## 18.1 State root, process lifetime and location
+
+> **v2 ownership cutover annotation:** The v1 Rust-canonical-Thread ownership described in portions of this section is a historical target, not the current OpenCode-first design. Canonical conversational Session messages and provider continuation are targeted to remain in OpenCode. The Rust kernel remains authoritative for managed Run/Goal, effects and evidence, with the existing OwnerLog preserved as a verified primitive. The actual code cutover requires Session replay/tool/compaction parity; this architecture edit alone does not complete that migration. See [decisions](17-GOVERNANCE-DECISIONS.md), [code audit](24-LOCAL-CODE-AUDIT-AND-MIGRATION.md), and [crosswalk](25-DATA-AND-CONTROL-PLANE-CROSSWALK.md).
 
 The user state root is resolved only from trusted installation/user configuration and
 validated before launch. On Windows, canonical state stays under the selected Windows

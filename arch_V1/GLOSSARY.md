@@ -1,5 +1,22 @@
 # HorizonCode v1 architecture glossary
 
+
+> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19–26. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
+
+## 2026-10-10 OpenCode-first reconciliation
+### v2 additions
+- **OpenCode substrate**: pinned upstream modules kept for provider, session and coding tool behavior.
+- **Session foreign link**: stable identifier from OpenCode Session to kernel managed Run/Attempt. It is not a new conversation owner.
+- **Pinned model**: explicit provider/model/harness configuration; changes only by user action or explicit reviewed fallback.
+- **Effect broker**: kernel authorization and idempotency gateway for real tool side effects.
+- **Evidence gate**: independent checks bound to final revision required before terminal success.
+- **Warm worktree**: cleaned and validated reusable Git workspace with no active lease.
+- **Fenced lease**: generation-bound authorization preventing stale workers from publishing side effects.
+- **Healer**: bounded recovery strategy engine; L3 learned patterns advisory, L4 policy proposals never automatically privileged.
+- **Universal perspective**: Create/Develop/Delegate/Operate UI on the same underlying project/run.
+
+---
+
 This glossary defines domain terms only. Identity/overview is in [`02-DOMAIN.md`](02-DOMAIN.md),
 canonical states/transitions are in [`11-LIFECYCLE.md`](11-LIFECYCLE.md), wire schemas
 are in [`12-DOMAIN-SCHEMAS.md`](12-DOMAIN-SCHEMAS.md), and persistence/recovery is in

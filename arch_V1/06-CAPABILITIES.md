@@ -1,5 +1,18 @@
 # 6. OpenCode capability parity and reuse plan
 
+
+> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19–26. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
+
+## 2026-10-10 OpenCode-first reconciliation
+### Reuse versus new modules
+**Retain and regression-test from pinned OpenCode:** auth/provider catalog, model compatibility and usage, turn runner, Session history/compaction, tools, MCP, skills/plugins, config, terminal, syntax-aware code references, Git/worktree APIs, TUI and app UI. Their existence is not proof the new kernel-mediated call path works.
+**Keep existing Rust code:** OwnerLog V2 and test fixtures, bounded MessagePack frames, transport codecs, artifact-store primitives, cancellation primitives and Windows peer adapter; finish missing integration rather than add parallel greenfield kernels.
+**Develop as independent modules:** Goal/Run DAG, policy broker, effect reconciler, evidence/acceptance, healing, circuit breaks, resource/worktree pool, account-aware budget ledger, independent verification, source-anchored visual editing, beginner-friendly publishing and export.
+**Capability states:** `UPSTREAM_PRESENT`, `LOCAL_CODE_PRESENT`, `CONNECTED`, `TESTED`, `VERIFIED`. Only `VERIFIED` is end-user ready. Updating a source mirror or passing unit tests cannot automatically advance status.
+**Model capability:** if selected cheap/local model lacks tools or structured output, use explicit compatible harness when supported; show limitations, never switch model without consent or change cost silently.
+
+---
+
 “Parity” here means the user-facing capability relevant to local coding workflows,
 not byte-for-byte compatibility with every hosted OpenCode service, release channel or
 third-party extension. This matrix is a target plan, not a report that the capability
@@ -17,10 +30,10 @@ already works in HorizonCode.
 | OpenCode `packages/llm` | Retain heavily as provider implementation | Provider protocols, route schema, stream normalization and usage flow through Horizon route/policy/secret snapshots | `@opencode-ai/llm` exists at pinned head; Core V2 uses it, but legacy application runner defaults to AI SDK |
 | Provider/model catalog and picker | Retain/adapt | Catalog is advisory metadata; profile/explicit selection owns model choice; route snapshot pinned by kernel | No catalog refresh or live provider check; no model hidden cost optimizer |
 | OpenCode Session V2 input inbox | Adopt concepts, replace authority | Kernel Thread input supports durable admit-before-wake, steer/queue promotion and exact retry; host adapter maps OpenCode APIs | Current V2 prompt admission is durable, but drain/coordinator is process-local |
-| OpenCode Core V2 runner | Selected production turn runtime; adapt before app cutover | Route application features through Core V2 bound to kernel-owned ThreadStoreService; whole-response tool batch gate required | Current runner dispatches local tool calls as stream events arrive; product-route convergence and post-crash provider continuation are not established |
+| OpenCode Core V2 runner | Selected production turn runtime; adapt before app cutover | Route application features through Core V2 bound to kernel-owned ThreadStoreService; whole-response tool batch gate required | A local pre-cutover runner slice now buffers local calls through the provider terminal and step-finish, validates all local call schemas, then dispatches; no Core-side effects start on provider failure/incomplete output. Rust ToolBatch ownership, Guard admission, effect mediation, app route convergence and post-crash provider continuation remain unimplemented |
 | Legacy `packages/opencode` Session loop | Migration/compatibility source only | Migrate remaining app features to Core V2; never run it as a competing production loop or transcript owner | Current legacy loop defaults to AI SDK; native `packages/llm` is opt-in with fallback |
 | OpenCode Session SQL/database | Replace as production Thread authority | Kernel Thread log is canonical; host tables remain rebuildable UI/search projection, test adapter or migration source | Cross-version session migration, attachments, compaction and fork semantics are a major acceptance gate |
-| Provider stream events and tool schemas | Retain/adapt | Keep shared typed event model; hold tool calls until complete response and validate the whole batch | Current V2 has streaming dispatch; this is an explicit divergence/required adaptation |
+| Provider stream events and tool schemas | Retain/adapt | Keep shared typed event model; hold tool calls until complete response and validate the whole batch | The Core runner now has a tested schema/stream-completion barrier. It still executes local tools through the Bun registry, so it is not the Rust ToolBatch/Guard/ExecutionHost gate |
 | Provider-hosted tools (`providerExecuted`) | Disable in governed v1 | Offer local mediated equivalents; only re-enable if a future protocol can authorize before provider execution | Current `packages/llm` marks these and callers skip local dispatch; Guard cannot govern prior provider execution |
 | Built-in read/write/edit/shell/search tools | Retain schemas/UX, replace executor ownership | Kernel canonical Action/Effect + ExecutionHost; bounded args/results and workspace revision fencing | Existing OpenCode shell/permission path is not itself OS confinement |
 | Permission prompts and allow/ask/deny UX | Retain presentation, replace authority | Durable Guard challenge bound to exact action/resource/policy/content digest | Process-local permission path is not a canonical authority or sandbox |

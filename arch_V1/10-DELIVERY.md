@@ -1,5 +1,22 @@
 # 10. Implementation sequence and acceptance gates
 
+
+> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19–26. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
+
+## 2026-10-10 OpenCode-first reconciliation
+### Revised delivery sequencing (must be satisfied in dependency order)
+- P0: audit and safeguard current Git baseline; preserve pinned snapshot and kernel tests; stop root/nested duplicate development from drifting. No destructive cleanup.
+- P1: bridge OpenCode Session / provider registry to Rust with typed messages and stable IDs; one tool broker, event outbox and failure reconciliation. Test provider parity and prompt retry/cancellation.
+- P2: preserve existing Rust owner-log/transport code; land Goal/Task/Effect/Evidence domain migration as additions, not replacement of whole kernel. Verify no duplicate Session authority.
+- P3: minimal single-agent flow from request -> tool effect -> diff -> independent verification -> finished report. Include P0 cheap/local models.
+- P4: bounded parallel scheduler and worktree pool, independent data/port allocations, lease fencing, merge staging and crash cleanup.
+- P5: L1 deterministic healing, L2 provider breaker/retry on same model, L3 advisory repair knowledge, L4 quarantined self-tuning validation.
+- P6: three-column UI, Create/Develop/Delegate/Operate, visual source mapping and nondeveloper workflow.
+- P7: external skills/tools/ACP/A2A/MCP, prepublish staging/deploy/export and advanced operations.
+**No fake acceptance:** a package compiling, source being copied, or documentation generated does not mean a user workflow is verified. Each stage needs contract tests + failure injection + a demo recorded against real code.
+
+---
+
 This is the dependency-ordered implementation plan for the adopted v1 architecture,
 not a TODO status ledger. Phase labels guide safe dependencies; they may be resequenced
 as evidence warrants, but do not weaken the final owner contracts or acceptance gates.
@@ -74,6 +91,8 @@ drain waits for in-flight leases; plugin crash cannot mutate canonical state; ma
 unsupported or failed required hooks fail closed and cannot alter Guard/Task PASS.
 
 ## Phase P2 — Rust kernel transport and canonical Thread
+
+> **v2 ownership cutover annotation:** The v1 Rust-canonical-Thread ownership described in portions of this section is a historical target, not the current OpenCode-first design. Canonical conversational Session messages and provider continuation are targeted to remain in OpenCode. The Rust kernel remains authoritative for managed Run/Goal, effects and evidence, with the existing OwnerLog preserved as a verified primitive. The actual code cutover requires Session replay/tool/compaction parity; this architecture edit alone does not complete that migration. See [decisions](17-GOVERNANCE-DECISIONS.md), [code audit](24-LOCAL-CODE-AUDIT-AND-MIGRATION.md), and [crosswalk](25-DATA-AND-CONTROL-PLANE-CROSSWALK.md).
 
 - Implement private versioned bounded IPC, build handshake, idempotent delivery IDs,
   typed hello result/rejection, startup `STARTING`/`READY`/`FAILED` status, early-RPC
@@ -309,3 +328,67 @@ document, source presence or unit-only mock cannot satisfy an acceptance gate.
 ## Pinned base reference
 
 - [OpenCode at the selected base revision](https://github.com/anomalyco/opencode/tree/b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322)
+
+## 2026-10-10 — P1.1 implemented: read-only OpenCode Session event projection
+
+**Status:** IMPLEMENTED AND FOCUSED-TESTED, but NOT connected to the running OpenCode host. No production permission/tool boundary is claimed.
+
+- Rust: `kernel/src/session_projection.rs` (`SessionProjection`, `cursor`, `sync`, `link_attempt`, `correlation`). Reads the actual OpenCode V2 `event` table (`id,aggregate_id,seq,type,data`) and stores **only** immutable correlation metadata (session/message/tool IDs, source-event type and hash, contiguous cursor) in its own database; it never edits upstream Session/Message/Part or calls a model.
+- The existing OpenCode `packages/core/src/event.ts` uses `latest = -1` before the first committed event, then `seq = latest + 1`. This underpins the projection's strict 0-based sequence and gap checks.
+- `kernel/src/bin/session_sync_probe.rs` exposes a manual read-only source DB diagnostic. Actual host connection, lifecycle watcher, safe transport and scheduler integration **remain unimplemented**.
+- `kernel/tests/session_projection.rs`: 9 cases include admitted/promoted correlation, deterministic replay, source drift, gaps, malformed content, multi-session separation, link conflicts, process-reopen recovery, and bounds.
+- After adding the module, `cargo test --manifest-path kernel/Cargo.toml --locked --offline --quiet` passed 115 tests (70 + 11 + 25 + 9). Formatting checked with `cargo fmt --manifest-path kernel/Cargo.toml --check`.
+- Manual executable fixture: built a synthetic SQLite `event` table matching `packages/core/src/event/sql.ts`; CLI first pass imported three events through cursor 2; second pass imported zero; source SHA-256 unchanged; sensitive prompt text absent from projection receipt fields.
+
+### Next implementation gate P1.2
+1. Integrate a mediated OpenCode host Session stream/reader with authenticated Rust supervisor RPC. Reconcile source events after process restart without writing OpenCode conversational state.
+2. Test actual OpenCode Session admission (not only a synthetic SQLite table), `PromptAdmitted` → `Prompted`, event payload versions, exact ID preservation, and compaction replay.
+3. Integrate Rust ToolBroker authorization and effects; this read-only projection does not enforce permissions or route tool effects.
+4. Add source DB WAL/concurrent-write integration tests, projection file permission checks, and careful storage retention/compaction for high-volume sessions.
+5. Provide a launch-time bridge health status; do not mark P1 complete until end-to-end tool/sandbox/security and restart checks pass.
+
+## 2026-10-10 — P1.2-A: live read-only OpenCode Session follower (implemented)
+
+**Status:** Live-read follower and integration tests implemented; authenticated supervisor and mediated tool effects still pending. Do not mark the entire P1.2 milestone complete.
+
+### Source code
+- `kernel/src/session_projection.rs` now pins an SQLite read transaction across the last-committed boundary verification and the next event batch, preventing cross-snapshot race during OpenCode WAL updates.
+- `kernel/src/bin/session_sync_probe.rs` supports live `--follow`, polling `--poll-ms=50..60000`, bounded `--max-polls=N`. Source is opened `SQLITE_OPEN_READ_ONLY` with `query_only=ON`; source/destination path aliases and Unix hardlinks are rejected. Each imported batch has a durable cursor and idempotent metadata receipts.
+- `packages/core/test/kernel-projection-live.test.ts` publishes actual `SessionEvent.ContextUpdated` via OpenCode's `EventV2.Service` and `Database.layerFromPath` to an isolated disposable SQLite database. Rust follows committed WAL events, preserves message IDs, and observes subsequent events while the publisher is live. A restart imports 0 duplicates; prompt content remains in OpenCode and is absent from Rust metadata.
+- `.gitignore` explicitly allows tracking the integration test; no old OpenCode provider, session-runner or renderer logic was rewritten.
+
+### Local reproducible checks
+Run in the WSL repository:
+```bash
+cargo fmt --manifest-path kernel/Cargo.toml --check
+cargo test --manifest-path kernel/Cargo.toml --locked --offline
+cargo build --manifest-path kernel/Cargo.toml --locked --offline --bin session_sync_probe
+cd packages/core
+/home/sarvesh/.bun/bin/bun test ./test/kernel-projection-live.test.ts
+/home/sarvesh/.bun/bin/bun run typecheck
+```
+The `bun` absolute path reflects the current WSL machine; production instructions should use the configured package manager path.
+
+For an explicitly selected **non-production or authorized** OpenCode SQLite database and Session ID:
+```bash
+cargo run --manifest-path kernel/Cargo.toml --bin session_sync_probe --   /path/to/disposable/opencode.db /path/to/disposable/kernel-projection.db ses_test   --follow --poll-ms=250
+```
+Use Ctrl+C to stop the diagnostic. An idle live watcher is **not** yet launched/managed automatically by the application supervisor. The follower does not replace the OpenCode Session DB, run models or execute any tools.
+
+### Evidence and limits
+- Rust kernel: 70 unit + 11 owner-log golden + 25 owner-log recovery + 9 projection tests = **115 passed**.
+- OpenCode/Bun: 2 integration tests passed, 18 assertions. Tests include actual OpenCode EventV2 publisher, WAL visibility, session replay and hardlink/same-file rejection.
+- Core package: `bun run typecheck` passed. No model/provider API calls or user-owned database migrations executed.
+- Still required: production supervisor startup/shutdown, authenticated Rust IPC stream, event cursor delivery to UI, actual OpenCode prompt admission with `PromptAdmitted` and `Prompted` integration, compaction recovery, persistence root hardening, complete mediated ToolIntent flow and Guard enforcement. The read-only follower does not prove any of these yet.
+
+### Next gate P1.2-B
+1. Define a strongly authenticated local supervisor identity and event subscription contract (incremental cursor, backpressure, version negotiation), keeping OpenCode the only conversation owner.
+2. Connect the Rust follower to automatic per-session lifecycle with an explicit stop/cancel path; secure state path, process ownership and logs without exposing raw prompt content.
+3. Confirm actual prompt-admission/turn-result semantics across both existing OpenCode session generations with a disposable fixture and versioned event-manifest assertions.
+4. Before any effectful ToolIntent proxy is released, implement and verify OS-enforced permission coverage for shell, edit, MCP and hosted provider tools. **No partial broker that leaves bypasses as enabled production functionality.**
+
+## Current coding-agent implementation handoff — 2026-10-10
+
+**Implementation increment status:** P1.1 Rust read-only projection verified; P1.2-A live WAL follower + real OpenCode EventV2 publisher verified in disposable test. **P1.2-B remains open:** actual OpenCode `PromptAdmitted`/`Prompted` parity under the running Session service, authenticated local supervisor and event subscription/ack/replay/cancellation. Then P1.3 complete mediated ToolIntent enforcement. This increment nomenclature does **not** supersede the historical P0–P9 phase acceptance table above. Detailed next commands and owner files are in repository-root `HANDOFF.md`, and the coverage/contradictions ledger is in [27](27-IMPLEMENTATION-READINESS-AUDIT.md).
+
+Use the `AGENTS.md` autonomous verified-slice loop: do not stop after one passing test; do not cross safety/budget/user-decision boundaries; continue to the next unblocked dependency and update the tracked handoff. Historical Rust-canonical Thread wording is superseded by adopted v2 ownership, but the existing Rust OwnerLog is retained.

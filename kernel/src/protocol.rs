@@ -12,6 +12,7 @@ use std::fmt;
 use std::io::{Read, Write};
 
 pub const PROTOCOL_V1: u16 = 1;
+pub const FEATURE_SESSION_PAGE_CONTROL_V1: &str = "session.events.page-control.v1";
 pub const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 pub const MAX_EVENT_PAYLOAD_BYTES: usize = 256 * 1024;
@@ -172,6 +173,20 @@ pub enum RpcControlV1 {
         subscription_id: String,
         through: CursorV1,
     },
+    /// Server-to-client page boundary. The cursor is the last acknowledged event,
+    /// including the requested cursor for an empty page.
+    PageEnd {
+        subscription_id: String,
+        through: CursorV1,
+        has_more: bool,
+    },
+    /// The requested cursor is no longer represented by retained owner history.
+    /// The client must obtain a fresh owner snapshot before resuming.
+    ResnapshotRequired {
+        subscription_id: String,
+        requested: CursorV1,
+        latest: CursorV1,
+    },
     CancelRequest {
         request_id: String,
     },
@@ -305,7 +320,7 @@ pub fn write_message<W: Write>(
     Ok(())
 }
 
-fn validate_message(message: &RpcMessageV1) -> Result<(), ProtocolError> {
+pub(crate) fn validate_message(message: &RpcMessageV1) -> Result<(), ProtocolError> {
     match message {
         RpcMessageV1::Hello(hello) => validate_hello(hello),
         RpcMessageV1::HelloResult(result) => validate_hello_result(result),
@@ -410,6 +425,32 @@ fn validate_message(message: &RpcMessageV1) -> Result<(), ProtocolError> {
             } => {
                 text("subscriptionId", subscription_id, MAX_IDENTIFIER_BYTES)?;
                 validate_cursor(through)
+            }
+            RpcControlV1::PageEnd {
+                subscription_id,
+                through,
+                ..
+            } => {
+                text("subscriptionId", subscription_id, MAX_IDENTIFIER_BYTES)?;
+                validate_cursor(through)
+            }
+            RpcControlV1::ResnapshotRequired {
+                subscription_id,
+                requested,
+                latest,
+            } => {
+                text("subscriptionId", subscription_id, MAX_IDENTIFIER_BYTES)?;
+                validate_cursor(requested)?;
+                validate_cursor(latest)?;
+                if requested.owner_kind != latest.owner_kind
+                    || requested.owner_id != latest.owner_id
+                {
+                    return Err(invalid(
+                        "latest",
+                        "resnapshot cursors must belong to the same owner",
+                    ));
+                }
+                Ok(())
             }
             RpcControlV1::CancelRequest { request_id } => {
                 text("requestId", request_id, MAX_IDENTIFIER_BYTES)
@@ -975,6 +1016,26 @@ fn message_to_value(message: &RpcMessageV1) -> Value {
                 put(&mut map, "subscriptionId", string(subscription_id));
                 put(&mut map, "through", cursor_to_value(through));
             }
+            RpcControlV1::PageEnd {
+                subscription_id,
+                through,
+                has_more,
+            } => {
+                put(&mut map, "kind", string("page_end"));
+                put(&mut map, "subscriptionId", string(subscription_id));
+                put(&mut map, "through", cursor_to_value(through));
+                put(&mut map, "hasMore", Value::Bool(*has_more));
+            }
+            RpcControlV1::ResnapshotRequired {
+                subscription_id,
+                requested,
+                latest,
+            } => {
+                put(&mut map, "kind", string("resnapshot_required"));
+                put(&mut map, "subscriptionId", string(subscription_id));
+                put(&mut map, "requested", cursor_to_value(requested));
+                put(&mut map, "latest", cursor_to_value(latest));
+            }
             RpcControlV1::CancelRequest { request_id } => {
                 put(&mut map, "kind", string("cancel_request"));
                 put(&mut map, "requestId", string(request_id));
@@ -1114,6 +1175,18 @@ fn value_to_message(value: Value) -> Result<RpcMessageV1, ProtocolError> {
             subscription_id: take_string(&mut map, "subscriptionId", MAX_IDENTIFIER_BYTES)?,
             through: value_to_cursor(take_required(&mut map, "through")?)?,
         }))),
+        "page_end" => Ok(RpcMessageV1::Control(Box::new(RpcControlV1::PageEnd {
+            subscription_id: take_string(&mut map, "subscriptionId", MAX_IDENTIFIER_BYTES)?,
+            through: value_to_cursor(take_required(&mut map, "through")?)?,
+            has_more: take_bool(&mut map, "hasMore")?,
+        }))),
+        "resnapshot_required" => Ok(RpcMessageV1::Control(Box::new(
+            RpcControlV1::ResnapshotRequired {
+                subscription_id: take_string(&mut map, "subscriptionId", MAX_IDENTIFIER_BYTES)?,
+                requested: value_to_cursor(take_required(&mut map, "requested")?)?,
+                latest: value_to_cursor(take_required(&mut map, "latest")?)?,
+            },
+        ))),
         "cancel_request" => Ok(RpcMessageV1::Control(Box::new(
             RpcControlV1::CancelRequest {
                 request_id: take_string(&mut map, "requestId", MAX_IDENTIFIER_BYTES)?,
@@ -1357,6 +1430,16 @@ fn take_optional_string(
 fn take_u64(map: &mut BTreeMap<String, Value>, field: &'static str) -> Result<u64, ProtocolError> {
     value_to_u64(take_required(map, field)?)
         .map_err(|_| invalid(field, "must be an unsigned integer"))
+}
+
+fn take_bool(
+    map: &mut BTreeMap<String, Value>,
+    field: &'static str,
+) -> Result<bool, ProtocolError> {
+    match take_required(map, field)? {
+        Value::Bool(value) => Ok(value),
+        _ => Err(invalid(field, "must be a boolean")),
+    }
 }
 
 fn value_to_u64(value: Value) -> Result<u64, ProtocolError> {
@@ -1799,6 +1882,42 @@ mod tests {
             assert_eq!(encode_message(&message).unwrap(), expected);
             assert_eq!(decode_message(&expected).unwrap(), message);
         }
+    }
+
+    #[test]
+    fn page_control_messages_roundtrip_and_resnapshot_is_owner_scoped() {
+        let page_end = RpcMessageV1::Control(Box::new(RpcControlV1::PageEnd {
+            subscription_id: "sub_1".to_owned(),
+            through: cursor(),
+            has_more: true,
+        }));
+        assert_eq!(
+            decode_message(&encode_message(&page_end).unwrap()).unwrap(),
+            page_end
+        );
+
+        let resnapshot = RpcMessageV1::Control(Box::new(RpcControlV1::ResnapshotRequired {
+            subscription_id: "sub_1".to_owned(),
+            requested: cursor(),
+            latest: cursor(),
+        }));
+        assert_eq!(
+            decode_message(&encode_message(&resnapshot).unwrap()).unwrap(),
+            resnapshot
+        );
+
+        let mut wrong_owner = cursor();
+        wrong_owner.owner_id = "thr_other".to_owned();
+        assert!(
+            validate_message(&RpcMessageV1::Control(Box::new(
+                RpcControlV1::ResnapshotRequired {
+                    subscription_id: "sub_1".to_owned(),
+                    requested: cursor(),
+                    latest: wrong_owner,
+                }
+            )))
+            .is_err()
+        );
     }
 
     #[test]

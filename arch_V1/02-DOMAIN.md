@@ -1,5 +1,33 @@
 # 2. Domain model and schemas
 
+
+> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19–26. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
+
+## 2026-10-10 OpenCode-first reconciliation
+### Canonical aggregate authority (effective v2)
+| Aggregate | Write owner | Replication or derived read side |
+|---|---|---|
+| OpenCode Session, Message, Part, Prompt and provider-native continuation | OpenCode SessionStore / established provider runner | Kernel stores stable foreign keys and correlated telemetry, not a second canonical transcript |
+| GoalRevision, Criterion, Run, TaskGraph, Attempt, ExecutionLease | Rust kernel | OpenCode context packet references the immutable accepted snapshot |
+| ToolIntent, Approval, Effect and Evidence | Rust authorization/effect/verification services | UI and OpenCode tool response consume signed/validated receipts |
+| Workspace lease, test DB/port allocation, worktree state | Rust resource manager | Existing OpenCode Git APIs are constrained backend actions |
+| Learned repair recipe and promotion decision | Recovery catalog and validation gate | Model sees only selected, bounded, cited guidance |
+**Cutover condition:** existing kernel OwnerLog V2 supports event storage but has no production ThreadService integration. Preserve its test-covered codecs, use it for managed domain log, and refactor only after a dual-write/replay parity spike proves OpenCode Session semantics can be retained safely. Do not drop owner_log or old schema tests.
+### Versioned domain additions
+```typescript
+type SelectedModel = {providerId:string; modelId:string; harnessId:string; pinned:true; sessionId:string};
+type ExecutionIdentity = {runId:string;taskId:string;attemptId:string;executionId:string; epoch:number;fence:number; sessionId:string};
+type ApprovalMode = 'ask'|'safe_auto'|'yolo_sandbox';
+type PoolEntryState = 'provisioning'|'warm_idle'|'leased'|'dirty'|'quarantined'|'reaping'|'removed';
+type EffectDisposition = 'requested'|'started'|'applied'|'rejected'|'uncertain'|'compensated';
+type GoalAcceptance = {criteriaIds:string[]; integratedRevision:string; verdict:'pass'|'fail'|'inconclusive'; evidenceIds:string[]};
+type RetryDisposition = {sameModelOnly:true; retryable:boolean; reason:string; nextAttemptId?:string};
+```
+### Required integrity
+All mutable managed objects have version, actor, event cursor and idempotency key. Child attempts inherit a subset of parent permissions, never exceed it. A provider-supported model switch is a *new user decision* and new attempt; never a silent mid-turn transition. A goal cannot become verified without independent evidence from the final integrated revision.
+
+---
+
 This chapter is the conceptual domain and identity overview. Canonical closed state
 sets and guarded transitions are in [`11-LIFECYCLE.md`](11-LIFECYCLE.md); canonical
 logical wire record shapes are in [`12-DOMAIN-SCHEMAS.md`](12-DOMAIN-SCHEMAS.md).
@@ -35,6 +63,8 @@ not durable Turn or WorkerExecution ownership. Host SQLite tables are rebuildabl
 projections; canonical Thread history is replayable from the kernel event stream.
 
 ## 2.2 Thread and direct-turn records
+
+> **v2 ownership cutover annotation:** The v1 Rust-canonical-Thread ownership described in portions of this section is a historical target, not the current OpenCode-first design. Canonical conversational Session messages and provider continuation are targeted to remain in OpenCode. The Rust kernel remains authoritative for managed Run/Goal, effects and evidence, with the existing OwnerLog preserved as a verified primitive. The actual code cutover requires Session replay/tool/compaction parity; this architecture edit alone does not complete that migration. See [decisions](17-GOVERNANCE-DECISIONS.md), [code audit](24-LOCAL-CODE-AUDIT-AND-MIGRATION.md), and [crosswalk](25-DATA-AND-CONTROL-PLANE-CROSSWALK.md).
 
 These logical records are canonical kernel facts. The host's OpenCode-derived runtime
 uses `ThreadStoreService` and typed kernel RPC to read/append them; it must not write a

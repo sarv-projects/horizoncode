@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HorizonCodeManagedEventEnvelopeV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "eventId",
+    "eventType",
+    "aggregateId",
+    "schemaVersion",
+    "sequence",
+    "idempotencyKey",
+    "payloadHash",
+    "payload",
+    "occurredAt"
+  ],
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "eventType": {
+      "type": "string",
+      "enum": [
+        "GoalApproved",
+        "RunStarted",
+        "TaskLeased",
+        "ToolIntentRequested",
+        "ToolEffectApplied",
+        "ToolEffectUncertain",
+        "EvidenceCaptured",
+        "RunFinalizationRejected",
+        "RunSucceeded",
+        "ModelSelectionPinned",
+        "ProviderCircuitOpened",
+        "WorktreeLeaseGranted",
+        "WorktreeQuarantined",
+        "HealCandidateValidated",
+        "SessionProjectionReconciled"
+      ]
+    },
+    "aggregateId": {
+      "type": "string"
+    },
+    "schemaVersion": {
+      "const": 2
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "correlationId": {
+      "type": "string"
+    },
+    "causationId": {
+      "type": "string"
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "minLength": 1
+    },
+    "payloadHash": {
+      "type": "string",
+      "minLength": 16
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object"
+    }
+  }
+}

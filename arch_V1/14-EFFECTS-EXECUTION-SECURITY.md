@@ -1,5 +1,27 @@
 # 14. Effects, execution, security and extension trust
 
+
+> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19–26. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
+
+## 2026-10-10 OpenCode-first reconciliation
+### Concrete effect broker guards
+```text
+admit(intent):
+ assert schema-valid, actor-authorized, action permitted by chosen mode
+ normalize real path, network origin, env, write targets and arguments
+ check worker fence, workspace lease, expected file hashes
+ match existing idempotency receipt or reject differing payload
+ reserve required budget and effect row
+ dispatch to sandbox with scoped short-lived capability
+ reconcile observed after-state, capture digest/exit/env
+ persist APPLIED / REJECTED / UNCERTAIN; return immutable receipt
+```
+**YOLO is not root access**: `yolo_sandbox` only suppresses UI prompts for actions still governed by actual OS isolation; production writes, environment escalation and external side effects remain privileged. If supported OS isolation cannot be verified, it is unavailable.
+**Side-effect classification**: reversible (scoped patch), compensatable (PR or staging deployment), externally uncertain (remote API), irreversible (destructive production migration). Different recovery and approval.
+**Cross-agent coordination**: all writes use fencing+hash precondition; shell, MCP, browser and provider-hosted tools cannot bypass the broker. Before releasing sandbox resources, settle subprocesses, ports, mock services, test DB and artifacts.
+
+---
+
 This is the detailed enforcement contract for `05-SECURITY.md`. Guard, EffectService
 and ExecutionHost are distinct modules: Guard decides authority; EffectService makes
 the intent durable and settles outcomes; ExecutionHost performs and observes the
@@ -174,6 +196,17 @@ and collects complete tool batches only; it never executes effect-capable operat
 or starts their child processes. Tool handlers, plugin code and controllers may request
 an execution through the kernel-owned flow but cannot create an untracked process
 manager or bypass Guard, EffectService, or the capability lease.
+
+**Source-backed progress, 2026-10-10:** `packages/core/src/session/runner/llm.ts` now
+buffers local calls until the provider stream has a terminal `finish` and a completed
+`step-finish`; a provider error, transport failure, interruption, missing terminal, or
+invalid local-call schema produces zero local dispatches for that batch. Tests cover
+provider failure after a call, clean EOF without finish, finish without step settlement,
+schema rejection of one call withholding valid siblings, and concurrent dispatch after a
+valid complete batch. This closes the early-stream-dispatch gap only. The runner still
+executes through `ToolRegistry` in Bun; no Rust Guard/EffectService/ExecutionHost path or
+complete legacy/V2 effect coverage is implemented, so production governed tools remain
+unaccepted.
 
 ```rust
 trait ExecutionHost {

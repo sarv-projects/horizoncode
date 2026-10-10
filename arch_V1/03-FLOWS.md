@@ -1,5 +1,29 @@
 # 3. End-to-end flows
 
+
+> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19–26. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
+
+## 2026-10-10 OpenCode-first reconciliation
+### Flow F-V2-01: existing OpenCode interactive change
+1. Composer parses typed references and chosen `agentId/providerId/modelId/harnessId`; pin immutable attempt configuration.
+2. UI calls OpenCode Session admission with idempotent prompt ID; new managed goal only when the user chooses Delegate or explicitly invokes /goal.
+3. The OpenCode turn stream persists messages/parts. Every effectful tool proposal becomes Rust `ToolIntentRequested`.
+4. Kernel Guard classifies scope, permission mode, version and user grants. On approval, dispatch the constrained operation; persist effect and tool result.
+5. OpenCode receives an opaque receipt plus bounded output; the UI reconciles progress from both event streams with cursors.
+6. If the user pauses, stop new tool admissions, settle open effects, snapshot state; session and run may be resumed independently.
+### Flow F-V2-02: managed goal
+GoalRevision approved -> validate measurable criteria -> DAG -> critical path/resource conflict check -> lease task/worktree/test DB/port -> OpenCode attempt -> broker effects -> independent test and evidence -> integrate -> reverify final revision -> finalize. A model's done signal only moves Attempt to DONE_PROPOSED.
+### Flow F-V2-03: nondeveloper visual creation
+Plain-language intent -> trusted scaffold selection -> preview worker and isolated data -> element-selection-to-source anchor -> staged patch -> browser journey -> approval (only if policy requires) -> source commit -> optional release prep -> explicit publish approval -> postdeploy probes.
+### Flow F-V2-04: provider limit
+429/5xx/timeout -> classify -> circuit-breaker and bounded same-model retry -> PAUSED_PROVIDER or NEEDS_YOU. **Do not** switch to another provider/model unless explicit user action pins a new selection. Offline local mode must not call paid provider spontaneously.
+### Flow F-V2-05: worker crash and reuse
+Detect missed lease heartbeat -> fence execution -> reconcile effects from snapshots/remote receipts -> quarantine dirty worktree -> restart only replay-safe attempt -> new epoch -> build fresh bounded context packet -> no duplicate side effects.
+### Failure contracts
+Every flow reports typed `blocked`, `inconclusive`, `failed` or `succeeded` with links to evidence; never mark success just because the model or command returned successfully.
+
+---
+
 These flows define the adopted v1 contract across the OpenCode-derived host and Rust
 kernel. Stream chunks and UI render state are not durable business facts. All durable
 mutations are owner-authenticated, schema-validated, idempotent and ordered within the

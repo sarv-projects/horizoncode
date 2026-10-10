@@ -1,5 +1,19 @@
 # 15. Direct turns, context, repository intelligence and managed work
 
+
+> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19–26. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
+
+## 2026-10-10 OpenCode-first reconciliation
+### OpenCode-first execution modes
+**Direct**: OpenCode owns session and fast interactive turn; Rust mediates tool effects and durable ledger but does not force every small chat message into a Goal DAG.
+**Managed**: kernel owns GoalRevision -> Run -> Task DAG -> Attempt -> WorkerExecution with pinned OpenCode Session bindings per worker. Accepted goal and criteria injected as immutable context references before each attempt; compaction cannot erase them.
+**Model policy**: selected model remains pinned; no automatic price-based routing. Retry the same provider/model with bounded backoff when safe, or pause. Optional explicit fallback policy requires user to preselect every route, review cost and permit only before new visible turn.
+**No-progress**: classify normalized error + file hash + command signature + changed evidence across 3-step window; no identical retry without strategy change. Deterministic AST repair first if safe; never blindly auto-patch unrelated code.
+**Parallel**: choose DAG-independent tasks only if lock analysis includes file ranges, services, ports, test data and repository integration. Acquire bounded worktree from pool, lease resources, dispatch child attempt, collect evidence, integrate on staging branch, re-test final revision, release or quarantine.
+**Recovery**: restore durable kernel goal/task/effect cursor; reconcile OpenCode session history using its store; fence previous worker; preserve accepted user changes. No fake completion after OpenCode compaction.
+
+---
+
 This document connects the records in `11-LIFECYCLE.md` and `12-DOMAIN-SCHEMAS.md`
 into runtime procedures. Direct interaction and durable managed execution share the
 Thread runtime, provider layer and authorized tools; they do not share the same
@@ -44,6 +58,8 @@ The preparation profile can read/query only; it cannot write the workspace, cont
 external systems, install extensions, or use an unreviewed secret.
 
 ## 15.2 Direct Thread runtime contract
+
+> **v2 ownership cutover annotation:** The v1 Rust-canonical-Thread ownership described in portions of this section is a historical target, not the current OpenCode-first design. Canonical conversational Session messages and provider continuation are targeted to remain in OpenCode. The Rust kernel remains authoritative for managed Run/Goal, effects and evidence, with the existing OwnerLog preserved as a verified primitive. The actual code cutover requires Session replay/tool/compaction parity; this architecture edit alone does not complete that migration. See [decisions](17-GOVERNANCE-DECISIONS.md), [code audit](24-LOCAL-CODE-AUDIT-AND-MIGRATION.md), and [crosswalk](25-DATA-AND-CONTROL-PLANE-CROSSWALK.md).
 
 1. UI submits an `InputAdmissionRequestV1` with stable `deliveryId`, explicit `steer` or
    `queue` lane, bounded body/artifact refs, Thread ID and expected cursor.

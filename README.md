@@ -5,6 +5,10 @@ HorizonCode v1 is a rebuild targeting the pinned OpenCode source revision
 That is the intended implementation base, **not** the parent of the current HorizonCode
 Git history and not evidence of HorizonCode implementation or acceptance.
 
+## Architecture upgrade, 2026-10-10
+
+The authoritative OpenCode-first architecture is [arch_V1/README.md](arch_V1/README.md), including its new 19–26 chapters. Existing pinned provider/session files and Rust kernel primitives have been inspected; the source tree has **not** yet passed end-to-end integration. OpenCode owns the conversational Session under the *proposed, gated* v2 cutover; Rust owns managed goals, effects, leases and evidence. Models remain user-pinned and free/local operation is a first-class path. The preceding bootstrap descriptions below are historical until superseded by the new phase plan.
+
 ## Repository status
 
 - Root commit `0009178` (`docs: add finalized HorizonCode v1 architecture`) was the
@@ -44,3 +48,7 @@ readiness. Current working-copy handoff details are in [`CURRENT_RUN.md`](CURREN
 See [`AGENTS.md`](AGENTS.md) for repository-state cautions and applicable OpenCode
 working conventions. The pinned source snapshot is included only on the P2 work branch
 until merge; implementation and release acceptance remain evidence-gated.
+
+## Implementer entry point
+
+See [AGENTS.md](AGENTS.md), [HANDOFF.md](HANDOFF.md), [implementation prompt](IMPLEMENTER_PROMPT.md), and [architecture audit](arch_V1/27-IMPLEMENTATION-READINESS-AUDIT.md). The active baseline is OpenCode-first; verified Session projection tests are not evidence that the full coding agent is production-ready.

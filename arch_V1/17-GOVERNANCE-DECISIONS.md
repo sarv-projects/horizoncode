@@ -1,5 +1,27 @@
 # 17. Architecture governance and reconciliation decisions
 
+
+> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19–26. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
+
+## 2026-10-10 OpenCode-first reconciliation
+### Adopted v2 decisions and immutable constraints
+| ID | Decision | Consequence |
+|---|---|---|
+| A-V2-01 | OpenCode is coding provider/session substrate | No greenfield provider rewrite; use pinned packages, upstream parity tests |
+| A-V2-02 | OpenCode owns canonical messages; Rust owns managed goals/effects | Must implement session/run bridge; preexisting kernel owner log preserved and re-scoped by tested migration |
+| A-V2-03 | User pins model/provider/harness | No default automatic cost-aware routing, no surprise subscription/API use |
+| A-V2-04 | ask/safe-auto/yolo-in-sandbox | No repetitive approval for bounded safe actions, but untrusted escalation denied |
+| A-V2-05 | Pooled worktrees + leases | Minimum idle warm pool configured; hard cap, quarantine dirty, bounded cleanup |
+| A-V2-06 | Four-tier self-healing | L1 deterministic, L2 same-model infra, L3 advisory, L4 sandbox-confirmed; never self-amend policy |
+| A-V2-07 | One underlying product for novice and expert | UI complexity progressive, not domain ownership duplicate |
+| A-V2-08 | Final verification independent | A model's 'done' cannot produce RunSucceeded |
+| A-V2-09 | Existing kernel implementation preserved | Source/test inventory before Rust ownership migration |
+| A-V2-10 | Existing OpenCode pin fixed until upgrade experiment | Don't track dev automatically or destructively flatten package trees |
+### Decisions still open / must test
+Whether Rust session mirror duplicates enough information to support replay; supported sandbox isolation per OS; exact node/Electron vs Tauri tradeoff (existing Electron is retained unless tested replacement); upstream V1/V2 session convergence; local harness compatibility; cost estimation when providers omit usage; visual source-map stability; remote runner lifecycle.
+
+---
+
 ## 17.1 Adopted status and change control
 
 **Decision: ADOPTED AND FROZEN AS THE V1 TARGET (2026-10-08).** The user directed that
@@ -59,6 +81,8 @@ catalog rows and schemas do not establish platform capability.
 
 ## 17.3 Adopted v1 decisions
 
+> **v2 ownership cutover annotation:** The v1 Rust-canonical-Thread ownership described in portions of this section is a historical target, not the current OpenCode-first design. Canonical conversational Session messages and provider continuation are targeted to remain in OpenCode. The Rust kernel remains authoritative for managed Run/Goal, effects and evidence, with the existing OwnerLog preserved as a verified primitive. The actual code cutover requires Session replay/tool/compaction parity; this architecture edit alone does not complete that migration. See [decisions](17-GOVERNANCE-DECISIONS.md), [code audit](24-LOCAL-CODE-AUDIT-AND-MIGRATION.md), and [crosswalk](25-DATA-AND-CONTROL-PLANE-CROSSWALK.md).
+
 The following are normative v1 decisions captured by the adopted architecture. Their
 implementation and acceptance remain subject to the dependency-ordered gates in §10:
 
@@ -72,7 +96,7 @@ implementation and acceptance remain subject to the dependency-ordered gates in 
 | TUI/web/desktop | Retain OpenTUI/Solid, OpenCode Solid app and Electron shell | Adopted v1 surface; historical alternatives are provenance only |
 | Host loop | OpenCode Core V2 is the sole production Turn runner | P0 establishes and verifies the pinned OpenCode base; production route convergence follows canonical Thread and whole-batch/Guard gates; legacy `packages/opencode` is migration/compatibility, not an alternate runner |
 | Provider transport | OpenCode `packages/llm` is primary provider/protocol implementation | Pricing/capability metadata is advisory; route selection is explicit |
-| Canonical conversation | Rust ThreadService owns canonical Thread/input/Turn/message history | OpenCode SQL Session DB becomes migration/test/rebuildable projection only |
+| Canonical conversation (v2 supersedes historical v1 owner decision) | **OpenCode Session/input/Turn/message/Part and provider continuation remain canonical** | Rust Kernel stores managed Goal/Run/task/effects/evidence plus read-only Session event correlation; old Rust-canonical transcript proposal remains historical until tested cutover and must not be implemented as a competing owner |
 | ToolBatch ownership | ThreadService owns and commits every ToolBatch transition and ordered result in the Thread stream; ToolExecutionCoordinator executes and returns observations only | No second ToolService event store or executor-owned ToolBatch transition |
 | Managed execution | Rust RunController owns Goal/Spec/Run/Task/Attempt/WorkerExecution truth | Thread/Session idle, process exit and worker message do not mean Task PASS |
 | Kernel seam | Supervised Rust process over private local, versioned IPC | No FFI into Bun, no public kernel listener and no second orchestration engine |
@@ -94,6 +118,15 @@ implementation and acceptance remain subject to the dependency-ordered gates in 
 | Repository/memory | Horizon-owned derived repository generations and advisory provenance-bearing memory | One index system for main/children; neither grants Guard or changes spec |
 | Memory supersession ordering | `MemoryRecordV1.supersedesMemoryIds` uses strictly ascending lexicographic order of stored UTF-8 bytes | User explicitly selected this v1 comparator on 2026-10-09. Schema validates accepted records without sorting/normalizing; MemoryService still derives the accepted set and revalidates sources atomically |
 | Process execution | One ExecutionHost supervises all local child processes | No independent subprocess manager for shell, MCP, LSP, plugin, agent or index helper |
+
+**ToolBatch implementation status (2026-10-10):** Core V2's local `SessionRunnerLLM`
+now waits for a complete provider terminal plus `step-finish`, validates the schemas of
+every local call in that response, and dispatches zero calls if the stream is incomplete,
+fails, or any local input fails validation. This is a tested staging barrier only. The
+runner still invokes its Bun `ToolRegistry`; it does not yet commit Rust ThreadService-owned
+ToolBatch lifecycle, authorize every effect through Guard, or execute through the Rust
+ExecutionHost. Do not treat this increment as satisfying the adopted ToolBatch ownership
+or production route-convergence gate.
 | ExecutionHost placement | Rust module inside the supervised `hz-kernel` process | It is distinct from the Bun/TypeScript `hzcode` host; the OS sandbox/process backend is below it |
 | First release platform | Windows is the first release target | WSL may be an execution backend, never the Windows storage root. Target priority is not evidence that sandbox support exists |
 
@@ -141,6 +174,7 @@ interim behavior remains mandatory while a gate is unresolved.
 | DEC-V1-15 | Exact accepted MCP protocol versions/transports and remote-auth profile | Protocol owner, pinned SDK/spec and conformance tests | MCP integration and P8 ecosystem release | Pin SDK/spec at implementation; reject incompatible protocol/auth features |
 | DEC-V1-16 | OS credential store/key derivation and state-root encryption per platform | Security/platform owner; recovery and account-transition tests | Authenticated provider release path | Store references only; refuse protected storage features not available on target |
 | DEC-V1-17 | Windows `run_durable` event-store synchronization backend for long-horizon Runs | Storage/platform owner; Windows filesystem crash/power-loss tests, directory-entry durability and recovery evidence | P2 Windows durable owner-stream persistence and P6 Windows durable Managed Runs | Current `horizoncode-eventlog::StdCommitSink` reports `run_durable` unavailable off Unix; durable Windows streams/managed Runs remain unavailable until a backend is implemented and accepted |
+| DEC-V1-18 | Identity and owner mapping between canonical OpenCode Session and Rust ThreadService when Rust owns ToolBatch facts, including direct Sessions without a Run/Attempt | Product/architecture owner; reconcile §§12.3, 13.2, 17.3 and 25.1 without creating a second conversation owner | Rust ThreadService ToolBatch admission, supervisor-event consumer, automatic P1.2 lifecycle and any effectful route convergence | OpenCode remains sole message/provider-continuation owner; keep Rust projection read-only; do not create Thread-owned ToolBatch facts or release effectful broker paths until the mapping and payload scope are adopted |
 
 This register is not permission to choose unresolved decisions silently. Each decision
 moves to `resolved` only with decision owner, alternatives, rationale, date/revision,

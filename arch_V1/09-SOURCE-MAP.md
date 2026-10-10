@@ -1,5 +1,18 @@
 # 9. Pinned source map and coverage limits
 
+
+> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19–26. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
+
+## 2026-10-10 OpenCode-first reconciliation
+### Current workspace measured code seams (2026-10-10)
+- Root branch main; tracked repository already contains the pinned OpenCode snapshot under opencode/, and OpenCode-derived root packages physically exist. Existing selected corresponding files match byte-for-byte (provider/provider.ts, session/session.ts, session/prompt.ts, core/session/runner/llm.ts, tool/registry.ts, worktree/index.ts, app/index.ts and desktop/main/index.ts).
+- Source snapshot revision: b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322. Treat the pinned inventory as baseline, NOT current upstream dev. Do not overwrite active root packages wholesale.
+- Existing Rust files inspected: kernel/src/{lib,owner_log,owner_log_index,messagepack,protocol,transport,artifact_store,request_cancellation,startup,windows_peer}. Unit-tested primitives do not imply production daemon/effect gate implementation.
+- New source decisions: target adapter at existing packages/opencode/src/ rather than clone one more fork. Extend existing app, server, CLI/TUI with typed control-plane projections. New Rust units should initially live in kernel/src/ not dozens of empty crates.
+- Complete file/function migration matrix is now in 24-LOCAL-CODE-AUDIT-AND-MIGRATION.md. Do not cite the new 19–23 proposals as proof of code already implemented.
+
+---
+
 ## 9.1 Baseline and inventory
 
 Primary upstream source is [`opencode/` at pinned revision

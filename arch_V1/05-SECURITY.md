@@ -1,5 +1,20 @@
 # 5. Security, effects, and extension boundaries
 
+
+> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19–26. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
+
+## 2026-10-10 OpenCode-first reconciliation
+### Permission policy — three user-visible modes
+- `ask`: request narrowly scoped approval for each ungranted consequential effect; reusable scoped grants may be explicitly saved.
+- `safe_auto`: authorize read, semantic search, local sandboxed tests and bounded edits inside approved roots where effect policy allows; elevate only genuinely consequential operations.
+- `yolo_sandbox`: skip repetitive low-risk prompts **inside an enforceable sandbox**; never grant arbitrary external host privileges, credentials, production writes or unrestricted network egress. Where platform isolation is unverifiable, downgrade to `safe_auto` and explain.
+All modes enforce explicit immutable deny policy. Approval ID binds exact operation digest, target, expected revision, user, expiry and scope; plan changes invalidate high-risk grants.
+**Provider bridge:** expose tools through Rust broker handles; plugin hooks, MCP, shell, browser, hosted provider tools and legacy SDK tools cannot bypass policy. Audit privilege coverage and refuse unsafe opaque agent connections.
+**Injection boundary:** repo files, web pages and plugin outputs cannot write privileged policy. Security checks include symlink traversal, shell interpolation, path canonicalization, TOCTOU, network destinations, content exfiltration and malicious tool descriptions.
+**Development safety:** never silently discard dirty changes, send test traffic to production, or perform irreversible migrations without explicit user-approved release intent.
+
+---
+
 ## 5.1 Security objective and limits
 
 The kernel is the authority for application-mediated effects, but a permission prompt

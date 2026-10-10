@@ -1,108 +1,67 @@
-# HorizonCode v1 architecture
+# HorizonCode — OpenCode-first universal software-agent architecture
+**Architecture revision:** v2 integrated into existing `arch_V1/` · **Design status:** approved target to implement; not an integrated released runtime.
 
-**Status: FINALIZED TARGET — CANONICAL FOR HORIZONCODE V1 IMPLEMENTATION.** By explicit
-user direction, this package is the self-contained normative architecture for the
-OpenCode-derived HorizonCode v1 rebuild. The intended implementation base is the exact
-pinned OpenCode source. The prior HorizonCode repository was initially preserved on
-`legacy-horizoncode` / `pre-opencode-rebase`, but the user later directed that all prior
-Git metadata be purged before initializing a fresh repository. Those local refs and
-objects are gone; the P0 archive/provenance gate in [`10-DELIVERY.md`](10-DELIVERY.md)
-is therefore **not satisfied**. Do not claim P0 completion or port old code without
-independently recovering and verifying its source.
+## Start here
+The existing local code is derived from pinned OpenCode `b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322`. Existing `packages/` providers, Session runner, tools and UI should be reused. `kernel/` contains real Rust codecs/event-log primitives but not a complete supervisor or verification gate. Do not implement a parallel model-provider SDK or rewrite upstream Session management without a measured parity test.
 
-Finalizing the architecture does not claim that any v1 contract is implemented,
-verified, accepted, or release-ready; it does not promote `TODO.md` rows, tests, or
-acceptance records. The HLD/LLD contracts are organized across documents 01–18.
-Unresolved capability decisions gate only the capabilities and claims listed in
-[`17-GOVERNANCE-DECISIONS.md`](17-GOVERNANCE-DECISIONS.md); unrelated implementation may
-proceed in dependency order under [`10-DELIVERY.md`](10-DELIVERY.md).
+**One authority per aggregate:** OpenCode is targeted to own canonical conversations and provider-native Session parts; Rust owns managed goals, task DAG, effects, scoped approvals, worktree leases, recovery and evidence. The Session migration is **not yet implemented**. Preserve existing Rust OwnerLog work and gated tests until cutover proves parity.
 
-## Decision frame
+**User-pinned models:** free/local and cheap models first-class; no cost-aware automatic routing and no unexpected switch to a paid provider. Permission modes ask/safe-auto/yolo-in-sandbox; tool effects always brokered.
 
-The adopted v1 architecture uses the exact OpenCode revision below as the physical
-starting point. `info.txt`, `info2.txt`, old `ARCH/` documents, research dumps and prior
-conversation records are authoring provenance only. Their accepted requirements have
-been reconciled into this package; none is required to understand or implement it, and
-none remains an authority after cutover. The previous HorizonCode source was initially
-preserved in Git, but its local refs and objects were removed during the fresh-Git reset.
-Recover any source independently before considering a component for port through the
-migration matrix in [`10-DELIVERY.md`](10-DELIVERY.md).
+## Read order
+1. [Governance and decisions](17-GOVERNANCE-DECISIONS.md) + [existing code audit](24-LOCAL-CODE-AUDIT-AND-MIGRATION.md).
+2. [Upstream OpenCode reuse](19-OPENCODE-UPSTREAM-REUSE.md) + [exact integration LLD](20-OPENCODE-INTEGRATION-LLD.md).
+3. [System topology](01-SYSTEM.md), [domain](02-DOMAIN.md), [schemas and APIs](25-DATA-AND-CONTROL-PLANE-CROSSWALK.md), [IPC](13-COMPOSITION-IPC.md).
+4. [Runtime](15-RUNTIME-EXECUTION.md), [recovery and worktree pooling](21-HEALING-PERMISSIONS-WORKTREE-POOL.md), [lifecycle](11-LIFECYCLE.md).
+5. [UI](16-UX-SETTINGS-ECOSYSTEM.md), [builder experience](22-UNIVERSAL-UI-COMMANDS-MEMORY.md), [acceptance journeys](26-UX-ACCEPTANCE-AND-RELEASE.md).
+6. [Delivery](10-DELIVERY.md) and [v2 tests](23-ADOPTION-GATES-TESTS.md).
 
-The adopted design uses an OpenCode-derived TypeScript/Bun host as the application,
-and a Rust Horizon kernel as the authority. The kernel owns canonical Thread state as
-well as managed Goal/Run/Task/Attempt state, effects, workspace fencing, recovery and
-verification. The host retains the provider/runtime and UI substrate, but its session
-database becomes a projection/compatibility source rather than a second conversation
-authority. The Rust kernel is not a second model loop. The exact boundary is in
-[`01-SYSTEM.md`](01-SYSTEM.md).
+## Single-source-of-truth rule
+The original 01–18 design contracts remain authoritative *within their topic* after the **2026-10-10 OpenCode-first reconciliation** blocks inserted in each document. Conflicts are resolved by documented A-V2 decisions in 17 and implementation-specific 19–26, not silently guessed. Mark any unremediated contradiction in the integration ledger before coding. The uploaded comprehensive v2 source is preserved under `../docs/architecture-input/` for provenance only; it is NOT a competing architecture.
 
-## Baselines
+## Document index
+| File | Responsibility |
+|---|---|
+| [01-SYSTEM.md](01-SYSTEM.md) | System topology and OpenCode/Rust process ownership |
+| [02-DOMAIN.md](02-DOMAIN.md) | Canonical aggregates and stable identity model |
+| [03-FLOWS.md](03-FLOWS.md) | Interactive, managed, visual, recovery flows |
+| [04-STATE-EVENTS.md](04-STATE-EVENTS.md) | State/event/outbox/reconciliation semantics |
+| [05-SECURITY.md](05-SECURITY.md) | Policy, isolation, threat boundaries |
+| [06-CAPABILITIES.md](06-CAPABILITIES.md) | Upstream parity and implementation states |
+| [07-UX-COMMANDS.md](07-UX-COMMANDS.md) | UI surfaces, action registry, slash commands |
+| [08-RECONCILIATION.md](08-RECONCILIATION.md) | Historical versus adopted design decisions |
+| [09-SOURCE-MAP.md](09-SOURCE-MAP.md) | Pinned repository path map and source audit |
+| [10-DELIVERY.md](10-DELIVERY.md) | Phased delivery with acceptance gates |
+| [11-LIFECYCLE.md](11-LIFECYCLE.md) | State machines, transition guards, terminal criteria |
+| [12-DOMAIN-SCHEMAS.md](12-DOMAIN-SCHEMAS.md) | Domain/wire/versioned schema definitions |
+| [13-COMPOSITION-IPC.md](13-COMPOSITION-IPC.md) | Service composition and private kernel transport |
+| [14-EFFECTS-EXECUTION-SECURITY.md](14-EFFECTS-EXECUTION-SECURITY.md) | Effect authorization and sandbox/execution host |
+| [15-RUNTIME-EXECUTION.md](15-RUNTIME-EXECUTION.md) | Context, provider turn, managed work and recovery |
+| [16-UX-SETTINGS-ECOSYSTEM.md](16-UX-SETTINGS-ECOSYSTEM.md) | Settings, provider profiles, plugin UI and UX |
+| [17-GOVERNANCE-DECISIONS.md](17-GOVERNANCE-DECISIONS.md) | Adopted ADRs, unresolved gates, normative priority |
+| [18-OPERATIONS-RELEASE.md](18-OPERATIONS-RELEASE.md) | Storage, telemetry, packaging and release |
+| [19-OPENCODE-UPSTREAM-REUSE.md](19-OPENCODE-UPSTREAM-REUSE.md) | v2 upstream ownership, reuse, licensing and extension seams |
+| [20-OPENCODE-INTEGRATION-LLD.md](20-OPENCODE-INTEGRATION-LLD.md) | v2 integration packages/classes/functions and bridge |
+| [21-HEALING-PERMISSIONS-WORKTREE-POOL.md](21-HEALING-PERMISSIONS-WORKTREE-POOL.md) | v2 recovery tiers, broker rules, worktree pool |
+| [22-UNIVERSAL-UI-COMMANDS-MEMORY.md](22-UNIVERSAL-UI-COMMANDS-MEMORY.md) | v2 universal software-building UX, models, harnesses |
+| [23-ADOPTION-GATES-TESTS.md](23-ADOPTION-GATES-TESTS.md) | v2 implementation stages, source-specific test gates |
+| [24-LOCAL-CODE-AUDIT-AND-MIGRATION.md](24-LOCAL-CODE-AUDIT-AND-MIGRATION.md) | audited paths, existing implementation, exact change targets |
+| [25-DATA-AND-CONTROL-PLANE-CROSSWALK.md](25-DATA-AND-CONTROL-PLANE-CROSSWALK.md) | v2 schemas, event ownership, control API and replay |
+| [26-UX-ACCEPTANCE-AND-RELEASE.md](26-UX-ACCEPTANCE-AND-RELEASE.md) | reference UI, command list, end-to-end user acceptance |
+| [27-IMPLEMENTATION-READINESS-AUDIT.md](27-IMPLEMENTATION-READINESS-AUDIT.md) | Coverage audit, contradicting decisions, implementation status and handoff truth |
 
-| Input | Revision / identity | Use |
-|---|---|---|
-| [OpenCode](https://github.com/anomalyco/opencode/tree/b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322) selected base | `b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322` | Intended physical base; source files are present locally but ignored, and fresh `main` has no OpenCode-base commit yet; P0 base/provenance gate remains incomplete |
-| HorizonCode legacy source | `5c20a65ee6c05c7771fbcbe1e2cde8fc192b8a34` (implementation seams inspected) | Local Git refs/object database were purged on 2026-10-08; historical evidence only until independently recovered; no selective port without source recovery and migration-matrix review |
-| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness/tree/5badb15009ae1756c3afe0ae0cef1faafc290ccc) reference | `5badb15009ae1756c3afe0ae0cef1faafc290ccc` | Non-normative composition-pattern source; claims are bounded by the source map |
-| `info.txt` / `info2.txt` | Historical proposal snapshots | Non-normative authoring provenance; not carried into active `main` and not required for implementation |
+## Machine-readable additions
+- [Managed-work additive SQLite schema](contracts-v2/managed-work-additive.sql) — prototype migration, **not applied**.
+- [Managed event envelope](contracts-v2/managed-event.schema.json) — example envelope slice; full event vocabulary remains in chapter 04.
+- [Control-plane OpenAPI](contracts-v2/control-api.openapi.json) — additive run/goal route skeletons; does not replace OpenCode HTTP Session API.
+- [Upstream source inventory](opencode-b1fe25ab-path-inventory.jsonl) — pinned historical source path counts, not code review.
 
-The proposal snapshots cite older OpenCode/HorizonCode revisions. Those citations explain
-design provenance only; implementation claims use the exact source pins in this package.
+## Completion standard
+Source code copied, documentation authored, unit tests passing, or task-worker claims are not sufficient for feature acceptance. Every shipped feature needs explicit provenance, contract tests, isolated effects, final integrated-revision evidence, crash/replay checks where relevant, and a named UI acceptance path. Remaining prerequisites are recorded in [delivery gates](23-ADOPTION-GATES-TESTS.md) and [existing code audit](24-LOCAL-CODE-AUDIT-AND-MIGRATION.md).
 
-The OpenCode tree is inventoried at path and line-count level. That mechanical inventory
-is not a claim that every line received semantic review. The source-review coverage and
-limits are recorded in [`09-SOURCE-MAP.md`](09-SOURCE-MAP.md), alongside the generated
-path manifest. The domain vocabulary is in [`GLOSSARY.md`](GLOSSARY.md).
+## What this architecture update did not do
+No production runtime rewrites, provider/session replacement, package deletion, git reset, auto-routing switch, worktree pruning or released user-visible feature implementation. Preserve the existing kernel/source and implement in bounded verified slices.
 
-## Document map
+## Agent implementation handoff (2026-10-10)
 
-1. [System, process, service, and ownership topology](01-SYSTEM.md)
-2. [Domain model and schema overview](02-DOMAIN.md)
-3. [End-to-end flows](03-FLOWS.md)
-4. [Events, persistence, and recovery](04-STATE-EVENTS.md)
-5. [Security, effects, and extension boundaries](05-SECURITY.md)
-6. [OpenCode capability parity](06-CAPABILITIES.md)
-7. [UI, CLI, and command surface](07-UX-COMMANDS.md)
-8. [Reconciliation rationale and historical references](08-RECONCILIATION.md)
-9. [Pinned source map and coverage limits](09-SOURCE-MAP.md)
-10. [Implementation sequence and acceptance gates](10-DELIVERY.md)
-11. [Canonical lifecycle and transition contracts](11-LIFECYCLE.md)
-12. [Canonical domain schemas](12-DOMAIN-SCHEMAS.md)
-13. [Service composition and host/kernel IPC](13-COMPOSITION-IPC.md)
-14. [Effects, execution, security, and extension trust](14-EFFECTS-EXECUTION-SECURITY.md)
-15. [Direct turns, context, repository intelligence, and managed work](15-RUNTIME-EXECUTION.md)
-16. [UI, actions, settings, and extension ecosystem](16-UX-SETTINGS-ECOSYSTEM.md)
-17. [Governance, reconciliation decisions, and open decisions](17-GOVERNANCE-DECISIONS.md)
-18. [Operations, data lifecycle, performance, and release](18-OPERATIONS-RELEASE.md)
-19. [Domain glossary](GLOSSARY.md)
-
-## Governing invariants for adopted HorizonCode v1
-
-- OpenCode-derived host code is the application/provider/UI base; the Rust Horizon
-  kernel owns canonical Thread and managed-work truth.
-- OpenCode remains the interactive provider/model/tool-loop substrate. The Rust kernel
-  does not add a second model loop.
-- OpenCode's existing Session SQL store cannot remain a second production conversation
-  authority; session APIs are adapted to the kernel-owned Thread service.
-- The Horizon kernel is the only managed Run/Task/Attempt lifecycle authority.
-- `ThreadId`, provider Turn, Run, Task, Attempt, and WorkerExecution are distinct identities.
-- Every effect-capable OpenCode tool crosses the same Horizon authorization and
-  settlement boundary before dispatch; exceptions are declared as trusted/unmediated,
-  never silently described as governed.
-- A worker's result, session completion, process exit, or UI status never means
-  `Task PASS`; only independent, revision-bound verification can produce qualifying
-  evidence.
-- OpenCode's native capability surface is retained or explicitly listed as an open
-  parity gap. Hosted service behavior is not silently represented as locally available.
-- Host and kernel exchange typed, bounded, versioned private RPC. Neither process
-  writes the other owner's state store.
-- Host features compose through typed service definitions and pinned generations;
-  production canonical authority services are sealed, and third-party executable
-  extensions do not run with unrestricted host authority.
-- Uncertain provider, process, effect, and launch outcomes remain `UNKNOWN` until
-  reconciled; no blind replay is permitted.
-- The logical domain envelope and physical event-log record are separate contracts;
-  the existing Horizon segmented committed-head event log is the persistence seam,
-  not a reason to create a parallel format. See [§4](04-STATE-EVENTS.md) and the
-  [current-source ledger](09-SOURCE-MAP.md).
-- Platform readiness, OpenCode parity, security enforcement, and release acceptance
-  require revision-bound evidence; architecture adoption establishes none.
+Read [27-IMPLEMENTATION-READINESS-AUDIT.md](27-IMPLEMENTATION-READINESS-AUDIT.md) before changing a system boundary. The tracked repo-root `AGENTS.md`, `HANDOFF.md` and `IMPLEMENTER_PROMPT.md` define agent execution procedures and actual next gate. These govern **how to execute** this architecture; they do not override the normative contracts of 01–26. The latest working Rust event follower is implemented only as P1.2-A; authenticated supervisor P1.2-B and ToolIntent broker remain unverified.

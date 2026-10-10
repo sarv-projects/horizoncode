@@ -1,0 +1,410 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "HorizonCode OpenCode-first control API",
+    "version": "0.2.0",
+    "description": "Design-only boundary. Existing OpenCode session routes are NOT replaced."
+  },
+  "paths": {
+    "/v2/goals": {
+      "post": {
+        "summary": "Create proposed goal",
+        "operationId": "post__v2_goals",
+        "responses": {
+          "200": {
+            "description": "Versioned receipt or typed read projection"
+          },
+          "400": {
+            "description": "Typed failure"
+          },
+          "403": {
+            "description": "Denied by policy"
+          },
+          "409": {
+            "description": "Stale version or conflict"
+          }
+        }
+      },
+      "get": {
+        "summary": "List goals",
+        "operationId": "get__v2_goals",
+        "responses": {
+          "200": {
+            "description": "Versioned receipt or typed read projection"
+          },
+          "400": {
+            "description": "Typed failure"
+          },
+          "403": {
+            "description": "Denied by policy"
+          },
+          "409": {
+            "description": "Stale version or conflict"
+          }
+        }
+      }
+    },
+    "/v2/goals/{goalId}/approve": {
+      "post": {
+        "summary": "Approve goal criteria",
+        "operationId": "post__v2_goals__goalId__approve",
+        "responses": {
+          "200": {
+            "description": "Versioned receipt or typed read projection"
+          },
+          "400": {
+            "description": "Typed failure"
+          },
+          "403": {
+            "description": "Denied by policy"
+          },
+          "409": {
+            "description": "Stale version or conflict"
+          }
+        }
+      }
+    },
+    "/v2/goals/{goalId}/revise": {
+      "post": {
+        "summary": "Request goal revision",
+        "operationId": "post__v2_goals__goalId__revise",
+        "responses": {
+          "200": {
+            "description": "Versioned receipt or typed read projection"
+          },
+          "400": {
+            "description": "Typed failure"
+          },
+          "403": {
+            "description": "Denied by policy"
+          },
+          "409": {
+            "description": "Stale version or conflict"
+          }
+        }
+      }
+    },
+    "/v2/runs": {
+      "post": {
+        "summary": "Start managed run",
+        "operationId": "post__v2_runs",
+        "responses": {
+          "200": {
+            "description": "Versioned receipt or typed read projection"
+          },
+          "400": {
+            "description": "Typed failure"
+          },
+          "403": {
+            "description": "Denied by policy"
+          },
+          "409": {
+            "description": "Stale version or conflict"
+          }
+        }
+      },
+      "get": {
+        "summary": "List managed runs",
+        "operationId": "get__v2_runs",
+        "responses": {
+          "200": {
+            "description": "Versioned receipt or typed read projection"
+          },
+          "400": {
+            "description": "Typed failure"
+          },
+          "403": {
+            "description": "Denied by policy"
+          },
+          "409": {
+            "description": "Stale version or conflict"
+          }
+        }
+      }
+    },
+    "/v2/runs/{runId}": {
+      "get": {
+        "summary": "Read run and evidence",
+        "operationId": "get__v2_runs__runId",
+        "responses": {
+          "200": {
+            "description": "Versioned receipt or typed read projection"
+          },
+          "400": {
+            "description": "Typed failure"
+          },
+          "403": {
+            "description": "Denied by policy"
+          },
+          "409": {
+            "description": "Stale version or conflict"
+          }
+        }
+      }
+    },
+    "/v2/runs/{runId}/pause": {
+      "post": {
+        "summary": "Pause and fence in-flight effects",
+        "operationId": "post__v2_runs__runId__pause",
+        "responses": {
+          "200": {
+            "description": "Versioned receipt or typed read projection"
+          },
+          "400": {
+            "description": "Typed failure"
+          },
+          "403": {
+            "description": "Denied by policy"
+          },
+          "409": {
+            "description": "Stale version or conflict"
+          }
+        }
+      }
+    },
+    "/v2/runs/{runId}/resume": {
+      "post": {
+        "summary": "Resume after effect reconciliation",
+        "operationId": "post__v2_runs__runId__resume",
+        "responses": {
+          "200": {
+            "description": "Versioned receipt or typed read projection"
+          },
+          "400": {
+            "description": "Typed failure"
+          },
+          "403": {
+            "description": "Denied by policy"
+          },
+          "409": {
+            "description": "Stale version or conflict"
+          }
+        }
+      }
+    },
+    "/v2/runs/{runId}/verify": {
+      "post": {
+        "summary": "Evaluate final integrated revision",
+        "operationId": "post__v2_runs__runId__verify",
+        "responses": {
+          "200": {
+            "description": "Versioned receipt or typed read projection"
+          },
+          "400": {
+            "description": "Typed failure"
+          },
+          "403": {
+            "description": "Denied by policy"
+          },
+          "409": {
+            "description": "Stale version or conflict"
+          }
+        }
+      }
+    },
+    "/v2/approvals/{approvalId}": {
+      "post": {
+        "summary": "Approve or deny bounded effect",
+        "operationId": "post__v2_approvals__approvalId",
+        "responses": {
+          "200": {
+            "description": "Versioned receipt or typed read projection"
+          },
+          "400": {
+            "description": "Typed failure"
+          },
+          "403": {
+            "description": "Denied by policy"
+          },
+          "409": {
+            "description": "Stale version or conflict"
+          }
+        }
+      }
+    },
+    "/v2/worktrees": {
+      "get": {
+        "summary": "Show pool health and resource ownership",
+        "operationId": "get__v2_worktrees",
+        "responses": {
+          "200": {
+            "description": "Versioned receipt or typed read projection"
+          },
+          "400": {
+            "description": "Typed failure"
+          },
+          "403": {
+            "description": "Denied by policy"
+          },
+          "409": {
+            "description": "Stale version or conflict"
+          }
+        }
+      }
+    },
+    "/v2/worktrees/gc": {
+      "post": {
+        "summary": "Request dry-run/prune of clean idle worktrees",
+        "operationId": "post__v2_worktrees_gc",
+        "responses": {
+          "200": {
+            "description": "Versioned receipt or typed read projection"
+          },
+          "400": {
+            "description": "Typed failure"
+          },
+          "403": {
+            "description": "Denied by policy"
+          },
+          "409": {
+            "description": "Stale version or conflict"
+          }
+        }
+      }
+    },
+    "/v2/provider-health": {
+      "get": {
+        "summary": "Show explicit model circuit breaker",
+        "operationId": "get__v2_provider_health",
+        "responses": {
+          "200": {
+            "description": "Versioned receipt or typed read projection"
+          },
+          "400": {
+            "description": "Typed failure"
+          },
+          "403": {
+            "description": "Denied by policy"
+          },
+          "409": {
+            "description": "Stale version or conflict"
+          }
+        }
+      }
+    },
+    "/v2/models/select": {
+      "post": {
+        "summary": "Explicitly select pinned model, no automatic fallback",
+        "operationId": "post__v2_models_select",
+        "responses": {
+          "200": {
+            "description": "Versioned receipt or typed read projection"
+          },
+          "400": {
+            "description": "Typed failure"
+          },
+          "403": {
+            "description": "Denied by policy"
+          },
+          "409": {
+            "description": "Stale version or conflict"
+          }
+        }
+      }
+    },
+    "/v2/recovery/{runId}": {
+      "get": {
+        "summary": "Read recovery status and suggested strategies",
+        "operationId": "get__v2_recovery__runId",
+        "responses": {
+          "200": {
+            "description": "Versioned receipt or typed read projection"
+          },
+          "400": {
+            "description": "Typed failure"
+          },
+          "403": {
+            "description": "Denied by policy"
+          },
+          "409": {
+            "description": "Stale version or conflict"
+          }
+        }
+      }
+    },
+    "/v2/events": {
+      "get": {
+        "summary": "Replay managed domain event cursor",
+        "operationId": "get__v2_events",
+        "responses": {
+          "200": {
+            "description": "Versioned receipt or typed read projection"
+          },
+          "400": {
+            "description": "Typed failure"
+          },
+          "403": {
+            "description": "Denied by policy"
+          },
+          "409": {
+            "description": "Stale version or conflict"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CommandReceipt": {
+        "type": "object",
+        "required": [
+          "entityId",
+          "version",
+          "eventCursor"
+        ],
+        "properties": {
+          "entityId": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "eventCursor": {
+            "type": "string"
+          }
+        }
+      },
+      "CommandError": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "details": {
+            "type": "object"
+          }
+        }
+      },
+      "PinnedModel": {
+        "type": "object",
+        "required": [
+          "providerId",
+          "modelId",
+          "harnessId",
+          "pinned"
+        ],
+        "properties": {
+          "providerId": {
+            "type": "string"
+          },
+          "modelId": {
+            "type": "string"
+          },
+          "harnessId": {
+            "type": "string"
+          },
+          "pinned": {
+            "const": true
+          }
+        }
+      }
+    }
+  }
+}

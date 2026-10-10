@@ -1,5 +1,22 @@
 # 12. Canonical domain schemas
 
+
+> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19–26. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
+
+## 2026-10-10 OpenCode-first reconciliation
+### v2 domain changes required in implementation contracts
+```typescript
+interface PinnedModelV2 { sessionId:string; providerId:string; modelId:string; harnessId:string; pricePolicy:'free'|'local'|'subscription'|'api'|'unknown'; explicitFallbackIds:readonly string[]; fallbackEnabled:false; selectionVersion:number }
+interface WorktreePoolEntryV2 { poolEntryId:string; projectId:string; path:string; baseRevision:string; status:'provisioning'|'warm_idle'|'leased'|'dirty'|'quarantined'|'reaping'|'removed'; generation:number; leaseId?:string; ownerAttemptId?:string; processIds:readonly number[]; reservedPorts:readonly number[]; testDataId?:string; lastCleanHash?:string; pinned:boolean }
+interface RecoveryCaseV2 { caseId:string; classification:'syntax'|'test'|'provider429'|'provider5xx'|'context'|'tool_uncertain'|'no_progress'|'policy'|'unknown'; fingerprint:string; attemptedStrategies:readonly string[]; nextStrategy?:string; tokensSpent?:number; evidenceIds:readonly string[]; status:'open'|'proposed'|'validating'|'resolved'|'blocked' }
+interface ModelUsageV2 { modelSelectionVersion:number; actualTokens?:number; estimatedTokens?:number; cost?:{currency:string; amount:number}; costKnown:boolean; source:'provider'|'estimate'|'unknown'; paidFallbackAuthorized:boolean }
+```
+**Data ownership**: expose `OpenCodeSessionRef` and `RunSessionLink` as foreign-key bridge; existing Root Session and new managed run DB do not jointly own messages. Export schemas in a versioned compatibility namespace without changing OpenCode upstream tables unless required by measured integration.
+**Migration**: schema additions only, table prefix `hc_` for managed domain; SQLite WAL bounded, transactional write and outbox; no production table drop. Explicit schema version and rollback notes. Retain old v1 types as versioned compatibility views until cutover tests pass.
+**Local model support**: capability matrix `tool_calling`, `streaming`, `structured_output`, `context_window`, `image_input`, `temperature`; degrade honestly when unsupported rather than swapping models.
+
+---
+
 This document fills the canonical domain-record schema gaps in `02-DOMAIN.md`. Types
 are logical v1 contracts: Rust owns durable domain records; OpenCode TypeScript owns
 provider/UI-native types and maps them through the generated boundary. Boundary
@@ -269,6 +286,14 @@ Run, workspace and Evidence names the exact member IDs and revision set used.
 `vcsKind=none` still has a content tree digest, but has no synthetic Git commit.
 
 ## 12.3 Thread inputs, turns, messages and parts
+
+> **v2 ownership cutover annotation:** The v1 Rust-canonical-Thread ownership described in portions of this section is a historical target, not the current OpenCode-first design. Canonical conversational Session messages and provider continuation are targeted to remain in OpenCode. The Rust kernel remains authoritative for managed Run/Goal, effects and evidence, with the existing OwnerLog preserved as a verified primitive. The actual code cutover requires Session replay/tool/compaction parity; this architecture edit alone does not complete that migration. See [decisions](17-GOVERNANCE-DECISIONS.md), [code audit](24-LOCAL-CODE-AUDIT-AND-MIGRATION.md), and [crosswalk](25-DATA-AND-CONTROL-PLANE-CROSSWALK.md).
+
+> **Open decision DEC-V1-18:** These schemas do not yet define whether a Rust `ThreadId` is a
+> control-plane handle linked 1:1 to an OpenCode Session, or whether ToolBatch facts should be
+> keyed directly by an `OpenCodeSessionRef`. The gap also affects direct Sessions without a
+> managed Run/Attempt. Until the product/architecture owner resolves it under §17.5, do not
+> infer a Thread ID from a Session ID or persist ToolBatch facts into a Rust Thread stream.
 
 ```ts
 type ThreadV1 = {

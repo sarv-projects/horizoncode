@@ -1,5 +1,33 @@
 # 1. System, process, and ownership topology
 
+
+> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19–26. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
+
+## 2026-10-10 OpenCode-first reconciliation
+### Current high-level process topology
+- **UI host (existing OpenCode React/Electron/TUI)**: progressive Create, Develop, Delegate, Operate presentation; it must never own the Run scheduler or persistent permissions. Prefer adapting existing packages/app, desktop, tui and server rather than installing a second desktop stack.
+- **OpenCode agent substrate (existing packages/opencode, core, llm, schema, protocol)**: provider registry/auth/model selection, Session persistence, prompt turns, tool registration, plugin/MCP discovery. Canonical conversational Session messages remain OpenCode-owned *after migration gate*; Rust never executes provider inference a second time.
+- **Rust kernel (existing kernel/src)**: extend existing transport, owner log, artifact store and cancellation; add Goal, Run, Task, Attempt, WorkerExecution, Effect, Evidence, verification, resource leases, authorization, ledger, circuit breakers, projections.
+- **Workers**: no worker may write across the Rust effect broker. Execution process isolation is a separate variable from workspace worktrees and test database isolation. Browser and preview reuse existing implementation paths where possible.
+- **Event boundary**: OpenCode Session identity plus prompt message IDs are preserved, with a versioned Session-to-Run mapping. Exactly one authority per aggregate; cross-store updates use an outbox and reconciliation, not distributed transactions.
+- **Host protocol**: retain existing Rust MessagePack frame contract unless an evaluated migration is approved. A new JSON-RPC diagram is not permission to duplicate transports.
+- **Resource accounting**: selected provider/model/harness is immutable per attempt; provider errors cannot trigger model replacement by a heuristic.
+### Schematic
+```mermaid
+flowchart LR
+  UI[Existing OpenCode app, CLI, TUI] <--> OC[OpenCode Session and Provider Loop]
+  OC --> TB[Typed Tool Intent Boundary]
+  TB <--> KR[Rust Kernel: Policy, Effects, Goals, Runs]
+  KR --> EX[Sandbox, Worktree, Browser, Test]
+  EX --> VE[Evidence and Recovery]
+  VE --> KR
+  KR --> J[(OwnerLog, projections, artifacts)]
+```
+### Required class seams
+`OpenCodeSessionGateway.createOrResume(sessionRef)`, `admitPrompt(messageKey,hash)`, `streamTurn(fence)`, `interruptSession()`, `getSessionCursor()`; `RunCoordinator.create(goal)`, `scheduleReady()`, `reconcileEffects()`, `verifyGoal()`. The same request is never allowed to bypass the broker via an older OpenCode tool path.
+
+---
+
 ## 1.1 Product shape
 
 OpenCode is the primary application base, not an optional sidecar. Its TypeScript/Bun
@@ -75,6 +103,8 @@ OpenCode SQL Session tables may remain as UI/search projections, test implementa
 or migration input, but not as production canonical Thread state.
 
 ## 1.2 Processes
+
+> **v2 ownership cutover annotation:** The v1 Rust-canonical-Thread ownership described in portions of this section is a historical target, not the current OpenCode-first design. Canonical conversational Session messages and provider continuation are targeted to remain in OpenCode. The Rust kernel remains authoritative for managed Run/Goal, effects and evidence, with the existing OwnerLog preserved as a verified primitive. The actual code cutover requires Session replay/tool/compaction parity; this architecture edit alone does not complete that migration. See [decisions](17-GOVERNANCE-DECISIONS.md), [code audit](24-LOCAL-CODE-AUDIT-AND-MIGRATION.md), and [crosswalk](25-DATA-AND-CONTROL-PLANE-CROSSWALK.md).
 
 | Process | Language/base | Lifetime | Authority |
 |---|---|---|---|

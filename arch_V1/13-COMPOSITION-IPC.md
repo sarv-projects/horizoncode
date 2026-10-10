@@ -1,5 +1,22 @@
 # 13. Service composition and host/kernel IPC
 
+
+> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19–26. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
+
+## 2026-10-10 OpenCode-first reconciliation
+### Current IPC integration contract
+- Keep tested `kernel/src/messagepack.rs`, `protocol.rs`, `transport.rs`; adapt OpenCode server routes and Session messages through a single versioned bridge instead of duplicating service protocols.
+- `bridge.hello`: negotiate protocol schema, current OpenCode pin, supported capabilities, max frame size, permission enforcement coverage and runtime host.
+- `bridge.session.admit`: `(sessionId,messageId,promptDigest,selectionVersion,runLink?)` -> persisted admission receipt; same key/same digest idempotent, conflict rejected.
+- `bridge.agent.stream`: cursor-based stream of user-visible messages and structured ToolIntents. No side effect can be dispatched before Guard receipt.
+- `bridge.tool.result`: `(effectId,toolCallId,resultDigest,revision,executionFence)` -> settle OpenCode tool execution only once, retaining provider metadata.
+- `bridge.session.interrupt`: stop current provider turn, reconcile pending tool calls and retain queued user inputs.
+- `bridge.session.recover`: remap OpenCode session IDs and persistent context; Rust run restoration separately reconciles effects and leases.
+- `bridge.health`: distinguish provider availability, permission coverage, local sandbox support, and owner-log durability.
+A bridge crash cannot corrupt OpenCode SQLite or kernel owner-log; restart must resume from idempotent records. MessagePack framing, authenticated peer and bounded output are requirements; no speculative automatic fallback to JSON without a migration ADR.
+
+---
+
 This document fixes the runtime seam between the OpenCode-derived TypeScript host
 and the Rust authority kernel. It does not add a second public API, event store,
 provider registry or service-composition framework.
@@ -53,6 +70,8 @@ managed work. A restart increments the epoch and fences stale dispatchers. The
 `hzcode` host may reconnect but cannot mint an epoch or claim ownership.
 
 ## 13.2 Service Definition and composition graph
+
+> **v2 ownership cutover annotation:** The v1 Rust-canonical-Thread ownership described in portions of this section is a historical target, not the current OpenCode-first design. Canonical conversational Session messages and provider continuation are targeted to remain in OpenCode. The Rust kernel remains authoritative for managed Run/Goal, effects and evidence, with the existing OwnerLog preserved as a verified primitive. The actual code cutover requires Session replay/tool/compaction parity; this architecture edit alone does not complete that migration. See [decisions](17-GOVERNANCE-DECISIONS.md), [code audit](24-LOCAL-CODE-AUDIT-AND-MIGRATION.md), and [crosswalk](25-DATA-AND-CONTROL-PLANE-CROSSWALK.md).
 
 Each service has one stable typed definition; consumers import the definition, not a
 concrete implementation. The interface includes method schemas, authorization
@@ -376,6 +395,80 @@ an OS-local private channel. Transport selection is platform-specific:
 | Unix local attach | Unix-domain socket in owner-only state directory | Socket owner/mode, peer credentials, expected executable/process policy and handshake nonce |
 | Windows local attach | Named pipe with explicit DACL | Client/server PID and token/SID validation, pipe ACL and handshake nonce |
 
+**Implementation evidence (2026-10-10):** `kernel/src/unix_peer.rs` now provides a Linux
+Unix-domain listener/client seam. It checks an absolute socket path beneath a canonical,
+owner-only directory, socket UID/mode, kernel `SO_PEERCRED` UID/PID, and exact canonical
+`/proc/<pid>/exe` path before exposing an `AuthenticatedUnixStream`. It refuses to replace
+an existing path and removes only the socket inode it created. **Update:**
+`kernel/src/rpc_handshake.rs` now performs the first hello exchange over that authenticated
+stream, applies protocol/feature/nonce/incarnation policy, returns a typed rejection for
+incompatible peers, and refuses non-hello first frames. `kernel/src/supervisor_session.rs`
+binds this to `StartupGate`, emits STARTING/READY/FAILED transitions, and prevents
+application reads/writes until READY. The trusted supervisor must still perform canonical
+state validation, recovery and required-service checks before reporting those milestones;
+process launch/ownership and service dispatch are not implemented. WSL/Linux tests do not
+establish macOS or native Windows runtime acceptance; Windows keeps its separate named-pipe
+adapter.
+
+`kernel/src/supervisor_lease.rs` now supplies the Linux process-held lease primitive:
+it requires an existing canonical owner-only state directory with no unprotected
+shared-writable ancestor, locks a private file
+nonblockingly, advances a durable epoch with synced atomic replacement, and retains the
+lock for the lease lifetime. `AuthenticatedKernelSession.owner_epoch_acquired` now takes a
+reference to that lease and stores the borrow, so a READY connection cannot outlive its
+lease. The lease primitive itself does not perform startup source/log reconciliation or
+shutdown orchestration; the executable layer owns those operations.
+
+`kernel/src/bin/session_supervisor.rs` now provides a narrow Linux observer executable.
+It holds the lease, opens the EventV2 source read-only, checks SQLite integrity and required
+columns, opens and integrity-checks the separate private projection, fully synchronizes the
+configured Session before binding, authenticates one exact host executable, negotiates the
+nonce/incarnation and `session.events.page-control.v1`, and sends READY only after
+source/projection preflight. It accepts repeated cursor-bearing Subscribe controls for the
+same configured Session and subscription identity. Before each page it refreshes the
+projection from the read-only source, sends a bounded metadata page, waits for exact ACKs,
+and returns a typed `page_end`; it remains available for another client-driven poll until a
+matching Unsubscribe or channel loss. A retention gap returns `resnapshot_required` and
+closes the observer rather than approximating history. Process tests cover these controls,
+projection refresh, cursor resume, source corruption/schema rejection before listener
+creation, hardlink alias refusal, wrong-session scope, prompt redaction, source immutability
+and epoch advancement after restart. Core lifecycle ownership and native Windows runtime
+acceptance remain open.
+
+`packages/core/src/session/supervisor.ts` now adds an Effect-scoped host client and is
+registered in OpenCode's `AppLayer`. It starts the pinned Rust observer with argument-array
+execution through Core's `AppProcess`, checks the owner-only socket path, binds a fresh
+nonce/incarnation to `KernelHelloV1`, validates negotiated features and waits for READY
+before returning a client. `subscribe`, `receive`, `ack`, and `unsubscribe` preserve the
+owner cursor and 64-event bound; scope release closes the channel and waits for the child,
+with bounded signal escalation if it does not exit. Each launch uses a nonce-derived socket
+name inside the private state directory, so a crash-left socket from an earlier incarnation
+cannot block restart. Rust independently authenticates the
+exact Bun host executable through `SO_PEERCRED` and `/proc/<pid>/exe`. No event payload is
+logged or sent to process output. A cross-runtime test launches the actual compiled Rust
+binary from Bun against OpenCode's actual persisted prompt events, receives both versioned
+events, enforces ACK order, interrupts an Effect scope and restarts with an incremented
+epoch. This is a caller-owned Session-scoped client API; automatic wiring into every
+SessionV2 request remains open. The client atomically checkpoints only the last `page_end`
+cursor (owner-only mode, same private state directory) after Rust has accepted the page's
+contiguous ACKs. A crash mid-page replays that bounded page; a completed page resumes without
+duplicates. The cursor file contains only owner/sequence/digest metadata, rejects symlinks,
+malformed data and cursor rollback, and is not a conversation store. This is a rebuildable
+host control-plane projection; OpenCode EventV2 remains canonical.
+
+The same `SessionSupervisor.node` is now part of the active HTTP API server root graph in
+`packages/opencode/src/server/routes/instance/httpapi/server.ts`, so Session route runtime
+composition can resolve the scoped child client. This registration does not start children:
+explicit binary/state configuration, a real managed-control-plane event consumer and
+per-Session lifecycle ownership remain required before automatic startup is enabled.
+
+The current HTTP API route tree composes `SessionV2.node` and the local
+`SessionExecution` implementation, but its public session handlers still call the
+compatibility Session API. Source search finds no production `SessionV2.Service` consumer
+or supervisor event consumer. The observer must therefore remain caller-owned until the
+V2 route convergence and managed consumer have a real owner; registering a service in the
+layer graph alone is not lifecycle integration.
+
 No loopback/public TCP listener is allowed for kernel authority. A public HTTP route
 on `hzcode` is a separate client surface and cannot expose arbitrary kernel methods.
 Peer authentication identifies the host process, not the human caller by itself;
@@ -448,9 +541,17 @@ type RpcControlV1 =
   | { kind: "subscribe"; subscriptionId: string; ownerKind: string; ownerId: string; after?: Cursor }
   | { kind: "unsubscribe"; subscriptionId: string }
   | { kind: "ack"; subscriptionId: string; through: Cursor }
+  | { kind: "page_end"; subscriptionId: string; through: Cursor; hasMore: boolean }
+  | { kind: "resnapshot_required"; subscriptionId: string; requested: Cursor; latest: Cursor }
   | { kind: "cancel_request"; requestId: string }
   | { kind: "ping"; nonce: string }
 ```
+
+`page_end` and `resnapshot_required` are server-to-client controls gated by the negotiated
+`session.events.page-control.v1` feature. A page boundary reports the last contiguous
+acknowledged cursor (the requested cursor for an empty page) and whether the current
+projection already has another page. A retention gap returns only `resnapshot_required`
+with requested and latest cursors for the same owner; the server sends no partial page.
 
 The outer frame is `{length:u32be, payload:length bytes}`. V1 limits: 8 MiB encoded
 frame maximum; 1 MiB decoded request/response body maximum; 256 KiB event payload
@@ -514,6 +615,27 @@ cursor. If retained history no longer covers the cursor, return `RESNAPSHOT_REQU
 and do not send a partial approximation. Client acknowledgements are flow-control
 only; they do not delete canonical history. A bounded queue overflow terminates the
 subscription with a typed gap marker and required resnapshot.
+
+The current Rust slice implements `BoundedSubscription` in
+`kernel/src/subscription.rs`: a caller-selected window is restricted to 1–256 total queued
+and sent-but-unacknowledged events. `offer` verifies subscription/owner identity and exact
+next sequence, returns backpressure without advancing its cursor when full, and detects
+same-sequence event drift. `next_event` marks an event as sent; `ack` releases only a
+contiguous prefix of exact delivered cursors, and a repeated latest ACK is idempotent.
+`SessionProjection.subscription_cursor/page` reads only bounded metadata receipts and
+returns event IDs, kinds, message IDs, and tool-call IDs; it never returns source prompt
+payloads. OpenCode source sequence zero maps to owner-scoped subscription cursor one, with
+cursor zero reserved for the before-first snapshot. The page reader reports
+`ResnapshotRequired` for missing retained cursors. The Linux
+`AuthenticatedKernelSession.send_subscription_page` method sends one bounded page over the
+authenticated, negotiated, READY-gated stream, waits for matching contiguous subscription
+ACKs, and emits a typed `page_end` carrying the acknowledged cursor and `hasMore`. The
+observer executable refreshes the OpenCode projection before each repeated cursor-bearing
+Subscribe; this is client-driven polling, not server-side continuous push. It maps a missing
+retained cursor to `resnapshot_required` with same-owner requested/latest cursors, then closes
+so the client cannot resume from an unsafe approximation. Wrong-subscription ACKs, invalid
+delivery cursors and excessive duplicate ACK frames terminate the session. Core automatic
+SessionV2 lifecycle ownership, interruption parity and native Windows acceptance remain open.
 
 Token deltas, PTY bytes, UI focus, animation frames, high-rate indexing samples and
 transient worker heartbeats do not traverse the durable kernel event stream. Provider

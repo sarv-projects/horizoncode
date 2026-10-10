@@ -1,5 +1,17 @@
 # 16. UI, actions, settings and extension ecosystem
 
+
+> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19–26. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
+
+## 2026-10-10 OpenCode-first reconciliation
+### UI blueprint v2 tied to supplied image
+Three resizable panes: **Explorer** left (project, workspaces, branches, agents, files, task DAG); **Work** center (conversation, active task, progress, editor/preview, acceptance); **Inspect** right (changes, terminal, tests, preview, evidence, resources, memory and costs). Composer spans bottom, with agent picker and **dependent model picker**, task-mode selector, permission chip, @-references and / autocomplete.
+Create/Develop/Delegate/Operate are *perspective switches*, not independent persistence engines; user may change perspective during a task. Nondeveloper Create defaults to preview, simple explanations, reversible scoped edits and guided publish; advanced Develop retains complete terminal/editor and test details.
+Settings groups: Providers (auth, local endpoints, exact models, capability errors); Agents (role, tools, skills, MCP, hooks, instructions, model, harness); Permissions (ask/safe-auto/yolo sandbox); Parallel (limits, pool, leases, cleanup); Memory (sources, consent, retention); Costs (measured versus estimated); UI (keymaps, theme, accessibility); Updates and upstream parity.
+Slash commands use one `ActionDescriptor` registry shared by TUI/UI/CLI with route, schema, docs, safety metadata, and handler. Model picker choices depend on agent/provider connection; never auto-enroll into a billable model. Preserve existing upstream commands except collisions intentionally versioned and documented.
+
+---
+
 OpenCode TUI/web/desktop surfaces remain the product shell; this document specifies
 Horizon routes and interaction contracts without adding a parallel UI framework. All
 visible execution facts are owner projections. A UI interaction may request an owner

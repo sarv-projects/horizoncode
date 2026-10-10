@@ -1,5 +1,22 @@
 # 11. Canonical states and transition contracts
 
+
+> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19–26. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
+
+## 2026-10-10 OpenCode-first reconciliation
+### Effective v2 state additions
+- User-authored Goal has `DRAFT -> APPROVED -> ACTIVE -> PAUSED/BLOCKED -> COMPLETION_PROPOSED -> VERIFIED`. Agent-authored proposal cannot bypass user scope; automated completion proposal is not final success.
+- OpenCode Session is a continuing conversation aggregate; `SessionClosed` does not imply Run finished, and Run completion does not delete transcript. The older Rust canonical Thread migration path is recorded as superseded until parity gate.
+- Provider route `PINNED_AVAILABLE -> RATE_LIMITED/UNAVAILABLE -> RETRY_SAME_MODEL -> WAITING_USER/RECOVERED`. Switching provider/model creates a new explicit selection event, never automatic.
+- Worktree pool entry `PROVISIONING -> WARM_IDLE -> LEASED -> WARM_IDLE` on clean release, `LEASED -> DIRTY -> QUARANTINED` when changes/unmerged effects exist, `WARM_IDLE -> REAPING -> REMOVED` under quota. A leased path cannot be reclaimed.
+- Heal candidate `DETECTED -> PROPOSED -> SANDBOX_VALIDATING -> ACCEPTED/REJECTED`. Only accepted bounded repairs can be suggested, no policy widening.
+- A Task `VERIFIED` on branch X becomes *stale evidence* after integration Y; final Run SUCCESS requires final revision verification, and no uncertain effects or uncontrolled processes.
+- Worker leases carry `generation` fencing. A canceled stale worker cannot write, lease completion must acknowledge process, ports, databases and workspace cleanup.
+### Transition table requirements
+Every new transition specifies issuing actor, expected prior state/version, permission, durable event, replay behavior, retryability, and negative tests. Append-only facts never mutate old evidence; supersede by new identified evidence.
+
+---
+
 **Status:** normative target contract for the OpenCode-based v1 design. These are
 owner-validated transitions, not UI-local state. The owning service appends the event
 that makes a transition true; kernel-owned canonical aggregates use the Rust event
@@ -76,6 +93,8 @@ freshness classification, not a negative test verdict. `WorkerExecution.FINISHED
 does not transition a Task to `PASSED`.
 
 ## 11.3 Thread and provider transitions
+
+> **v2 ownership cutover annotation:** The v1 Rust-canonical-Thread ownership described in portions of this section is a historical target, not the current OpenCode-first design. Canonical conversational Session messages and provider continuation are targeted to remain in OpenCode. The Rust kernel remains authoritative for managed Run/Goal, effects and evidence, with the existing OwnerLog preserved as a verified primitive. The actual code cutover requires Session replay/tool/compaction parity; this architecture edit alone does not complete that migration. See [decisions](17-GOVERNANCE-DECISIONS.md), [code audit](24-LOCAL-CODE-AUDIT-AND-MIGRATION.md), and [crosswalk](25-DATA-AND-CONTROL-PLANE-CROSSWALK.md).
 
 | From | Event | Guards | To | Invalid behavior |
 |---|---|---|---|---|

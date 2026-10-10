@@ -1,5 +1,20 @@
 # 8. Reconciliation rationale and historical references
 
+
+> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19–26. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
+
+## 2026-10-10 OpenCode-first reconciliation
+### Supersession record
+- Prior v1 design proposed Rust canonical Thread history and OpenCode SQL as a mere projection. Current v2 adopts OpenCode's mature Session history for conversations and Rust for durable managed Goal/Run/effects; this is a *prospective cutover*, not proof it is implemented.
+- Existing Rust OwnerLog V2 code remains valuable durable event storage and **must not be discarded**, but ThreadService migration needs acceptance of dual-store replay and exact-session behavior.
+- Reuse OpenCode's existing provider/catalog instead of rebuilding equivalent Rust provider transports.
+- The current local source pin and 6,629-path inventory remain provenance; do not silently update to an unverified upstream dev commit.
+- Users own model/provider/harness choices; no default cost-aware model router or automatic paid fallback.
+- Source v2 chapters imported into 19–23; original archive remains under docs/architecture-input for traceability only.
+**Negative decision:** do not import a second project/session database, a second chat/agent loop, or a second UI shell unless a measured compatibility experiment explicitly justifies it.
+
+---
+
 ## 8.1 Historical provenance and source pins
 
 `info.txt`, `info2.txt`, previous HorizonCode `ARCH/`, and research/conversation

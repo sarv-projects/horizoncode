@@ -1,5 +1,18 @@
 # 7. UI, CLI, and command surface
 
+
+> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19–26. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
+
+## 2026-10-10 OpenCode-first reconciliation
+### UI reference image: canonical three-column composition
+Left: project/workspace explorer (files, branches, tasks, agent profiles). Center: active task, clear progress, acceptance checklist, editor/preview; right: Inspector tabs (diff, terminal, test, browser preview, evidence, agents, resources, costs). Bottom: multiline composer with agent dropdown, dependent model dropdown, mode/permissions, @ mentions, / commands and attach.
+**Progressive disclosure**: novice Create journey displays UI preview and task explanation. Develop reveals code/LSP/Git/terminal. Delegate shows DAG and workers. Operate shows deploy/backup/incident; project IDs/run IDs remain identical across surfaces.
+**Slash command semantics (typed, discoverable):**
+`/goal [status|set|clear|pause|resume]` durable user-approved objective; `/model` manual model selection; `/harness` explicit same-model harness mode; `/agent`, `/agents` profile selection/editor; `/permissions [ask|safe-auto|yolo]`; `/parallel [status|on|off|limit]`; `/worktrees [status|pool|gc]`; `/heal [status|replay|disable]`; `/budget`, `/usage`, `/context`, `/compact`, `/sessions`, `/resume`, `/pause`, `/cancel`, `/diff`, `/review`, `/test`, `/preview`, `/publish`, `/export`, `/skills`, `/mcp`, `/hooks`, `/help`.
+Never treat commands as opaque prompt strings: each registered descriptor defines args, permission scope, handler, optimistic version, result event, telemetry and discoverability.
+
+---
+
 ## 7.1 Surface ownership
 
 The OpenTUI + Solid TUI and OpenCode web/desktop surfaces remain the product shell.

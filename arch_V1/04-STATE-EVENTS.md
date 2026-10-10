@@ -1,6 +1,22 @@
 # 4. Events, persistence, and recovery
 
+
+> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19–26. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
+
+## 2026-10-10 OpenCode-first reconciliation
+### v2 ownership and event bridge
+Source OpenCode events are correlated by `sessionId`, `messageId`, `toolCallId`, `sessionEventSeq`, and `runEpoch`. Kernel journal facts are correlated by `runId/taskId/attemptId/executionId/effectId`. The adapter must not create two success owners.
+**New domain events:** `ModelSelectionPinned`, `ModelSwitchRequested`, `ModelSwitchApproved`, `ProviderCircuitOpened`, `ProviderCircuitHalfOpen`, `ProviderRecovered`, `GoalEvidenceInvalidated`, `WorktreePoolWarmed`, `WorktreeLeaseGranted`, `WorktreeQuarantined`, `WorktreeReclaimed`, `EnvironmentReserved`, `HealStrategyProposed`, `HealCandidateValidated`, `HealPromotionRejected`, `SessionProjectionReconciled`, `RunFinalizationRejected`.
+**Event envelope:** `{eventId, eventType, schemaVersion, sequence, aggregateId, actor, correlationId, causationId, idempotencyKey, occurredAt, payloadHash, payload}`. Never serialize provider secrets or raw local file contents into the general telemetry stream.
+**Outbox:** receipt committed before async worker delivery; replay deduplicates by `eventId`; stale fencing epoch prevents late effects; unknown external tool results remain `UNCERTAIN` until observed; no guessed cancellation rollback.
+**Read model:** ordinary UI sees normalized progress, but Inspector can reveal correlated source events, rejected actions, final file hashes and evidence. Cursor gaps trigger resync, not fabricated history.
+**Two-store cutover gate:** Session history stays OpenCode-owned, run events stay kernel-owned, and a bridge builds projections. Run completion must be idempotent with immutable acceptance report.
+
+---
+
 ## 4.1 Canonical owners and streams
+
+> **v2 ownership cutover annotation:** The v1 Rust-canonical-Thread ownership described in portions of this section is a historical target, not the current OpenCode-first design. Canonical conversational Session messages and provider continuation are targeted to remain in OpenCode. The Rust kernel remains authoritative for managed Run/Goal, effects and evidence, with the existing OwnerLog preserved as a verified primitive. The actual code cutover requires Session replay/tool/compaction parity; this architecture edit alone does not complete that migration. See [decisions](17-GOVERNANCE-DECISIONS.md), [code audit](24-LOCAL-CODE-AUDIT-AND-MIGRATION.md), and [crosswalk](25-DATA-AND-CONTROL-PLANE-CROSSWALK.md).
 
 Each fact has one write owner and one append-only canonical stream. The owner emits
 monotonic sequence numbers only within its stream; there is no invented global total
