@@ -77,6 +77,15 @@ contracts together before changing runtime behavior.
   `u32be(kind_byte_length) || kind_UTF8 || u32be(id_byte_length) || id_UTF8`; require each
   nonempty owner field to be at most 256 UTF-8 bytes. The committed head records the original
   owner identity; input IDs are never concatenated into filesystem paths.
+- The configured root contains `owners/<owner-key>/owner.lock`, `head.json`,
+  `segment-<20-digit-id>.jsonl`, and `segment-<20-digit-id>.seal.json` for sealed segments.
+  Hold an exclusive OS lock on `owner.lock` for the open owner's lifetime; never use a stale
+  PID file as a lock. A competing open fails without writing. Replay decodes and re-encodes
+  each committed record byte-for-byte, rejecting duplicate JSON keys and noncanonical lines.
+- The owner directory may also contain `owner-index.sqlite` and its transient rollback
+  journal. They are private rebuildable indexes only, never canonical facts. Validate the
+  owner directory and sidecar paths before opening SQLite; rebuild from the committed stream
+  and discard/recreate invalid derived data without rewriting the head or segments.
 - Use bounded, append-only canonical JSONL segments and one atomically replaced committed
   head per owner. Both segment and head carry format version 2. A head binds owner kind/ID,
   schema version, generation, committed sequence, committed event digest, active segment,
@@ -86,6 +95,17 @@ contracts together before changing runtime behavior.
   `generation`, `durability_profile`, `committed_seq`, `committed_event_digest`,
   `active_segment_id`, `committed_offset`, `head_digest`; `head_digest` is BLAKE3 over
   canonical head JSON with its own field omitted, excluding the line terminator.
+- Bound one command to 1–16,384 events, each physical record to 1 MiB, and both the
+  canonical command preimage and committed segment bytes to 16 MiB.
+- The current Kernel foundation supports only owner event schema version 1; reject other
+  versions on append and open until an owner-specific schema registry is implemented.
+- Require an owner-private state root. On Unix create/reject directories with group/other
+  permissions and create log files owner-only; on Windows fail closed until the trusted
+  state-root resolver can validate the user-private DACL inherited by child entries.
+- Append each command's records contiguously to the active segment when it has no
+  uncommitted tail or seal and the full batch fits. Otherwise seal the active committed
+  prefix and start a fresh segment. A commit failure that leaves an uncommitted suffix
+  forces the next append to rotate; no suffix is truncated or reused.
 - A physical record carries sequence, timestamp, dotted event kind, bounded `data`, the
   previous event digest, and its event digest. Serialize the physical envelope in fixed
   field order; recursively sort object keys in `data`. Preserve semantic order in ordered
@@ -120,6 +140,18 @@ contracts together before changing runtime behavior.
    A rebuildable lookup may accelerate replay, but it is not authoritative. Exact retry
    returns the original receipt; a different digest for the same delivery ID returns
    `REPLAY_CONFLICT`.
+
+A bounded in-memory negative filter may skip exact lookup only when it proves a delivery ID
+absent. A possible hit must query the derived index and fall back to canonical-log scanning
+when its row is missing or invalid. False positives/saturation affect performance only;
+delivery identities are never evicted. If index creation or canonical replay rebuild cannot
+complete during open, fail the owner open closed rather than trust partial/stale rows.
+
+The kernel recomputes the command digest before writing. Its preimage is compact canonical
+UTF-8 JSON for `{"deliveryId":<id>,"events":[{"data":{"payload":<event data>,"schemaVersion":<u16>},"kind":<kind>,"timeMs":<safe integer>},...],"format":"horizon.owner-command.v1"}`, with every object key recursively sorted by UTF-8 bytes and array order preserved. The digest is `blake3:` plus lowercase BLAKE3 hex. Any supplied digest or per-event delivery metadata that differs from the recomputed command identity is rejected before disk mutation.
+
+`CommitReceiptV1.receiptDigest` is BLAKE3 over compact canonical UTF-8 JSON for
+`{"commandDigest":<digest>,"deliveryId":<id>,"eventCount":<u64>,"format":"horizon.owner-receipt.v1","ownerCursor":{"eventDigest":<digest>,"ownerId":<id>,"ownerKind":<kind>,"seq":<UInt64Decimal>}}`, with recursively byte-sorted object keys; its wire value uses the `blake3:` prefix. Replay reconstructs receipts from committed events rather than treating receipts as a separate authority.
 
 On open, validate the head and replay exactly its committed prefix, verifying sequence,
 owner binding, schema, canonical encoding, and the one digest chain. Bytes after the committed

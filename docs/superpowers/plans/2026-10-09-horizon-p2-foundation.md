@@ -6,7 +6,7 @@
 
 **Architecture:** Rust `kernel/` is the private transport and future canonical owner boundary. Add the versioned OwnerLog V2 as the sole canonical persistence engine, an immutable ArtifactService storage seam, and explicit hello/readiness messages. OpenCode SQLite remains projection/import input only. Linux implementation evidence does not imply Windows `run_durable` acceptance.
 
-**Tech Stack:** Rust 2024, Cargo, existing bounded MessagePack codec, BLAKE3, canonical JSON, standard filesystem APIs, and targeted Rust unit/integration tests.
+**Tech Stack:** Rust 2024, Cargo, existing bounded MessagePack codec, BLAKE3, canonical JSON, standard filesystem APIs, a private bundled-SQLite derived index, and targeted Rust unit/integration tests.
 
 **Spec:** `docs/superpowers/specs/2026-10-09-horizon-p2-kernel-foundation-design.md`
 
@@ -107,6 +107,9 @@
 ### Task 4: Implement append, committed-head recovery, and delivery idempotency
 
 **Files:**
+- Modify: `arch_V1/04-STATE-EVENTS.md`, `arch_V1/18-OPERATIONS-RELEASE.md`, `docs/superpowers/specs/2026-10-09-horizon-p2-kernel-foundation-design.md`
+- Modify: `kernel/Cargo.toml`, `kernel/Cargo.lock`
+- Create: `kernel/src/owner_log_index.rs`
 - Modify: `kernel/src/owner_log.rs`
 - Test: fault-injection and filesystem integration tests in `owner_log.rs` / `kernel/tests/owner_log_recovery.rs`
 
@@ -114,14 +117,24 @@
 - `OwnerLogV2::open(root: &Path, owner: OwnerIdentity, profile: DurabilityProfile) -> Result<OwnerLogV2, OwnerLogError>` validates the current format/head and opens the committed stream.
 - `OwnerLogV2::append_batch(&mut self, delivery_id: &str, command_digest: &str, events: &[OwnerEventInput], expected: Option<&CursorV1>) -> Result<CommitReceiptV1, OwnerLogError>` commits one bounded owner batch.
 - `OwnerLogV2::read_after(&self, cursor: Option<&CursorV1>, limit: NonZeroUsize) -> Result<ReadBatchV1, OwnerLogError>` returns only committed records.
+- `CommitReceiptV1` returns the delivery ID, command digest, latest owner cursor, event count, and receipt digest; exact retries return this original receipt.
+- `OwnerLogV2::command_digest(delivery_id, events)` computes the Task 4 canonical command digest; `append_batch` rejects any supplied digest that does not match. Its v1 preimage is documented in `arch_V1/04-STATE-EVENTS.md`.
+- `ReadBatchV1` returns committed events after an optional owner-scoped cursor, a final cursor, and `has_more`; cursor mismatch never becomes global ordering.
+- A private rebuildable disk index accelerates delivery-receipt lookup and segment paging. OwnerLog V2 remains authoritative; index rows are reconstructed from the committed stream and are discarded/rebuilt when invalid.
 - `DurabilityProfile::RunDurable` is rejected on any platform/backend unable to synchronize file and parent-directory metadata as required.
 
-- [ ] Add failure-injection tests for segment append/sync, head temp write/sync, head replacement, and parent-directory sync; assert recovery returns precisely the old or new committed prefix.
-- [ ] Add exact-retry and conflicting-delivery tests, expected-cursor conflict tests, and a test proving same delivery IDs in different owners are independent.
-- [ ] Add recovery tests for torn uncommitted tail, corrupt committed record, owner/head mismatch, unknown format, and preservation of original bytes on refusal.
-- [ ] Implement staged segment append, sync-before-head publication, atomic same-directory head replacement, committed-prefix replay, and typed fencing errors.
-- [ ] Keep any orphaned tail bytes for diagnosis and continue in a fresh segment; never promote them into the head or truncate silently.
-- [ ] Run focused recovery tests, all Kernel tests, fmt, warning-free Clippy, and Windows-target test compilation. Do not claim native Windows runtime or DEC-V1-17 acceptance.
+- [x] Add failure-injection tests for segment append/sync, head temp write/sync, head replacement, and parent-directory sync; assert recovery returns precisely the old or new committed prefix.
+- [x] Add exact-retry and conflicting-delivery tests, expected-cursor conflict tests, and a test proving same delivery IDs in different owners are independent.
+- [x] Add recovery tests for torn uncommitted tail, corrupt committed record, owner/head mismatch, unknown format, and preservation of original bytes on refusal.
+- [x] Implement staged segment append, sync-before-head publication, atomic same-directory head replacement, committed-prefix replay, and typed fencing errors.
+- [x] Keep any orphaned tail bytes for diagnosis and continue in a fresh segment; never promote them into the head or truncate silently.
+- [x] Bound paginated reads to replay-validated segment summaries and cover clean in-place append failures; reject unsupported owner schema versions and keep Unix storage owner-private.
+- [x] Fail closed on Windows OwnerLog opens until trusted state-root DACL validation is integrated; this is not Windows runtime or security acceptance.
+- [x] Attempt Windows-target test compilation with bundled SQLite; blocked in `libsqlite3-sys` because this Linux environment lacks `lib.exe`. Do not claim native Windows runtime or DEC-V1-17 acceptance.
+- [x] Add regressions for corrupt-index reopen/rebuild, exact retry/conflict on a missing receipt row, pagination on missing/corrupt segment rows, canonical-head preservation, and pre-open sidecar symlink rejection.
+- [x] Implement a private `rusqlite` index with a bounded 2 MiB SQLite page cache; stream validated OwnerLog history into delivery and segment tables during open. Remove history-sized receipt/segment `BTreeMap`/`Vec` state. Update the index only after canonical head publication; index failure cannot reverse or misreport the canonical result.
+- [x] Validate the derived index and journal paths before opening SQLite; create the index owner-only and use bundled SQLite features. The host build passes; cross-target compilation remains unverified due to missing MSVC tools.
+- [x] Make indexed receipt and page lookups verify canonical records and fall back to committed-log scans on missing/stale/corrupt index data. Keep the negative filter fixed-size; never cap history or evict delivery IDs.
 - [ ] Commit the verified log change as `feat(kernel): persist owner log commits`.
 
 ### Task 5: Add immutable artifact-byte storage behind an authorization seam
@@ -149,11 +162,11 @@
 - Modify: `CURRENT_RUN.md`
 - Test: Kernel package verification
 
-- [ ] Run `cargo test --offline --manifest-path kernel/Cargo.toml`.
-- [ ] Run `cargo fmt --manifest-path kernel/Cargo.toml -- --check`.
-- [ ] Run `cargo clippy --offline --manifest-path kernel/Cargo.toml --all-targets -- -D warnings`.
-- [ ] Run `cargo check --offline --manifest-path kernel/Cargo.toml --tests --target x86_64-pc-windows-msvc` when the target is installed; report cross-compilation separately from native runtime.
-- [ ] Review the complete diff, verify no ignored OpenCode files or secrets entered the commit, update `CURRENT_RUN.md` with exact test outcomes, and leave P2 Thread ownership/import and P1/P4 integrations explicitly open until implemented and verified.
+- [x] Run `HORIZON_OWNER_LOG_TEST_TMPDIR=/tmp/opencode cargo test --offline --manifest-path kernel/Cargo.toml --quiet` (47 unit, 11 golden, 21 recovery tests passed).
+- [x] Run `cargo fmt --manifest-path kernel/Cargo.toml -- --check`.
+- [x] Run `cargo clippy --offline --manifest-path kernel/Cargo.toml --all-targets -- -D warnings`.
+- [x] Attempt `cargo check --offline --manifest-path kernel/Cargo.toml --all-targets --target x86_64-pc-windows-msvc --features blake3/pure`; blocked because `libsqlite3-sys` cannot find `lib.exe` on this Linux host. This is not a native Windows result.
+- [ ] Review the complete diff, verify no secrets entered the commit, update `CURRENT_RUN.md` with exact test outcomes, and leave P2 Thread ownership/import and P1/P4 integrations explicitly open until implemented and verified.
 
 ## Follow-up work required for the P2 gate
 

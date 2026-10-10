@@ -82,7 +82,18 @@ directory is derived from BLAKE3 of `u32be(kind_byte_length) || kind_UTF8 ||
 u32be(id_byte_length) || id_UTF8`; each identity field is nonempty and at most 256 UTF-8
 bytes. The directory name is lowercase digest hex and never contains caller-provided path
 text. Physical records are at most 1 MiB and segments at most 16 MiB; both bounds are fixed
-kernel constants, not caller-controlled.
+kernel constants, not caller-controlled. An owner command contains 1–16,384 events; the
+canonical command preimage and encoded segment are each bounded to 16 MiB.
+
+Within the configured OwnerLog root, the V2 layout is `owners/<owner-key>/owner.lock`,
+`head.json`, `segment-<20-digit-id>.jsonl`, and for sealed segments
+`segment-<20-digit-id>.seal.json`. The owner lock is an exclusive OS file lock held for
+the lifetime of the open owner, not a stale PID marker; a competing open fails without
+mutating the stream. The head is the sole committed-prefix authority. During replay, each
+record in every committed prefix must decode and re-encode to the exact original canonical
+line; this also rejects duplicate JSON object keys that a value parser would otherwise
+collapse. Unknown versions and corrupt committed bytes are read-only refusals that leave
+all original bytes untouched.
 
 The logical-to-physical mapping must preserve that single persistence engine:
 
@@ -124,7 +135,9 @@ The logical-to-physical mapping must preserve that single persistence engine:
 
 Appending validates schema, owner sequence, previous digest, payload limit, lifecycle
 transition, authorization and idempotency before commit. Unknown major schemas refuse
-replay. Event payloads do not contain raw credentials. Canonical log durability and
+replay. The current Kernel foundation registers only `schemaVersion: 1`; unsupported or
+unregistered versions are rejected before append and during open, without rewriting the
+head or committed records. Event payloads do not contain raw credentials. Canonical log durability and
 projection updates are separate operations; projection cursors make replay explicit.
 Append ordering is: validate the complete owner command; durably publish referenced
 immutable artifacts; append the whole bounded event batch; synchronize the segment; write
@@ -136,6 +149,38 @@ are never promoted, are preserved for diagnosis, and cause subsequent appends to
 segment. Corrupt committed bytes fence the owner; there is no SQLite fallback. Unknown
 format versions are rejected without rewriting data. Platform synchronization and
 acceptance requirements are specified in §18.
+
+Appending keeps a complete command batch contiguous in the active segment while that
+segment has no uncommitted tail or seal and the full bounded batch fits. Otherwise it seals
+the active committed prefix and starts a fresh monotonically increasing segment. Any
+uncommitted suffix is preserved and forces rotation; it is never truncated or reused.
+
+For delivery idempotency, the kernel recomputes `commandDigest` as
+`"blake3:" + lowercase_hex(BLAKE3(canonical_command_bytes))`. The canonical command is
+the recursively key-sorted compact UTF-8 JSON object
+`{"deliveryId":<delivery ID>,"events":[{"data":{"payload":<event data>,"schemaVersion":<u16>},"kind":<kind>,"timeMs":<safe integer>},...],"format":"horizon.owner-command.v1"}`.
+Object keys are sorted recursively by UTF-8 bytes; array order is preserved. The supplied
+digest must match this preimage before any write; optional per-event delivery metadata,
+when supplied, must match the verified delivery ID and digest.
+
+`CommitReceiptV1.receiptDigest` is `"blake3:" + lowercase_hex(BLAKE3(canonical_receipt_bytes))`.
+The canonical receipt is compact UTF-8 JSON with recursively byte-sorted object keys for
+`{"commandDigest":<digest>,"deliveryId":<id>,"eventCount":<u64>,"format":"horizon.owner-receipt.v1","ownerCursor":{"eventDigest":<digest>,"ownerId":<id>,"ownerKind":<kind>,"seq":<UInt64Decimal>}}`.
+It binds the exact delivery identity and final owner cursor; the receipt itself is
+reconstructed from committed event data during replay, not a separate authority.
+
+Receipt and segment lookup indexes may be persisted in a rebuildable derived database so
+replay and pagination do not retain lifetime-sized in-memory maps/vectors. Rebuild them by
+streaming and validating canonical OwnerLog V2; never treat index rows as committed facts.
+An unavailable, stale, or corrupt index is discarded/rebuilt, and exact reads may scan the
+canonical stream. If index creation or its canonical replay rebuild cannot complete during
+open, fail the owner open closed rather than trust partial/stale rows. Publish index updates
+only after the committed head advances; failure of a derived-index update does not reverse
+or change the result of a canonical commit. No history cap or delivery-ID eviction is
+permitted. Index format/technology is private implementation detail and must not become a
+second canonical store. A bounded in-memory negative filter may skip a lookup only when it
+proves the delivery ID absent; positives require exact index/log verification. Saturation may
+reduce performance but cannot change retry semantics.
 
 ## 4.3 Event-name registry
 

@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 blake3 = "=1.8.7"
+rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled", "bundled-windows"] }
 serde_json = "=1.0.150"
 
 [target.'cfg(windows)'.dependencies]

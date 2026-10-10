@@ -11,6 +11,7 @@
 
 pub mod messagepack;
 pub mod owner_log;
+pub(crate) mod owner_log_index;
 pub mod protocol;
 pub mod request_cancellation;
 pub mod startup;
