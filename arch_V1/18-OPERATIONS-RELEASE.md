@@ -14,12 +14,14 @@ workspace roots are distinct: the state root is owner-private and never mounted 
 untrusted worker views. Project/workspace paths are explicit bindings, not inferred
 from the process current directory after startup.
 
-OwnerLog storage must preserve that privacy boundary: on Unix, create its state and owner
-directories owner-only and files owner-readable/writable, and reject a permissive existing
-root. On Windows, the trusted state-root resolver must validate a user-private DACL before
-opening the store; child files inherit that ACL. The current Kernel OwnerLog fails closed
-with `StoragePermissionsUnavailable` until that validator is integrated. Target ACL and
-crash tests remain an acceptance gate, not a Windows security claim.
+OwnerLog and ArtifactStore storage must preserve that privacy boundary: on Unix, create
+their state and owner directories owner-only and reject a permissive existing root. OwnerLog
+files are owner-readable/writable; ArtifactStore metadata and immutable payload files are
+owner-readable only. On Windows, the trusted state-root resolver must validate a user-private
+DACL before opening either store; child files inherit that ACL. The current Kernel OwnerLog
+and ArtifactStore fail closed with `StoragePermissionsUnavailable` until that validator is
+integrated. Target ACL and crash tests remain an acceptance gate, not a Windows security
+claim.
 
 Process status vocabulary is precise: `installed`, `discovered`, `launchable`,
 `running`, `healthy`, and `available` are separate observations. A catalog/registry

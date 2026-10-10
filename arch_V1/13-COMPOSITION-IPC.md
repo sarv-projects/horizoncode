@@ -459,9 +459,10 @@ schema depth at most 64; deadlines at most 24 hours for durable managed operatio
 and 5 minutes for ordinary interactive calls. Artifact transfer uses a distinct
 chunk operation with a 768 KiB maximum chunk body (so the full request stays under
 the decoded-body bound), declared total length/digest, sequential offsets and an
-owner-authorized ArtifactRef. Limits may be lowered by policy, never raised by the
-caller. Oversize input is rejected before decode/allocation beyond the configured
-frame ceiling.
+owner-authorized ArtifactRef. An artifact is at most 256 MiB total; owner policy may lower
+that ceiling, never raise it. Transfer limits may also be lowered by policy, never raised by
+the caller. Oversize input is rejected before decode/allocation beyond the configured frame
+ceiling.
 
 The supervisor authenticates the exact OS peer/channel before accepting `KernelHelloV1`;
 the nonce is an additional binding, not peer authentication. The kernel responds with

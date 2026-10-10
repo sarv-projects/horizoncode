@@ -152,10 +152,11 @@
 - `ArtifactStore::put(bytes: &[u8], metadata: ArtifactMetadataV1) -> Result<ArtifactRefV1, ArtifactError>` verifies exact length/digest and publishes create-new immutable bytes before returning.
 - `ArtifactStore::read(permit: &ReadPermit, offset: u64, max_bytes: NonZeroUsize) -> Result<ArtifactChunkV1, ArtifactError>` never accepts an unvalidated caller artifact ID as a filesystem path.
 
-- [ ] Test exact-byte BLAKE3 and length validation, duplicate identical put, digest-path collision refusal, chunk offset/size bounds, and read denial without a permit.
-- [ ] Implement digest-derived internal paths, staged writes, sync-before-publish, immutable collision handling, and bounded chunk reads.
-- [ ] Ensure filesystem paths and raw `File` handles do not cross the public kernel interface; ensure sensitive classification never silently downgrades encryption requirements.
-- [ ] Run ArtifactStore tests and full Kernel tests/fmt/Clippy. Until Guard/Artifact owner wiring exists, report this as an internal storage seam, not an enabled production read capability.
+- [x] Test exact-byte BLAKE3 and length validation, duplicate identical put, digest-path collision refusal, chunk offset/size bounds, and read denial without a permit; reject conflicting artifact IDs before publishing bytes and recover uncertain sync/`AlreadyExists` publication paths.
+- [x] Enforce the architecture's 256 MiB maximum object size (policy may lower, never raise it) and a conservative 1 KiB headroom under the 768 KiB encoded chunk-body ceiling.
+- [x] Implement digest-derived internal paths, staged writes, sync-before-publish, immutable collision handling, and bounded chunk reads.
+- [x] Keep filesystem paths and raw `File` handles private; reject sensitive classification and unavailable state-key encryption rather than silently downgrade.
+- [x] Run ArtifactStore tests and full Kernel tests/fmt/Clippy. Until Guard/Artifact owner wiring exists, report this as an internal storage seam, not an enabled production read capability. Windows currently fails closed pending private-DACL validation.
 - [ ] Commit the verified storage primitive as `feat(kernel): add immutable artifact storage`.
 
 ### Task 6: Integration and verification report

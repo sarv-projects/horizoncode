@@ -21,7 +21,7 @@ order. Cross-owner causality uses stable IDs and linked cursors/digests.
 | Effect-owner stream | EffectService, linked to the initiating domain | Prepared/dispatched/settled/unknown effects and reconciliation facts; Guard owns approval challenge/resolution records linked by IDs/cursors |
 | Guard/policy stream | Guard | Effective policy snapshots, authorization decisions, approval challenge lifecycle and one-use grant resolution |
 | Audit chain | Audit service | Security-relevant actor/action/decision/receipt facts and integrity linkage; not a duplicate Run transcript |
-| Artifact CAS | Artifact service | Bounded immutable content-addressed payloads with owner references, retention and redaction metadata |
+| Artifact CAS | Artifact service | Immutable content-addressed payloads bounded to 256 MiB each, with owner references, retention and redaction metadata |
 | Host DB/projections | Host/UI and kernel projector | Rebuildable query models, search tables, generated SDK caches and UI state only |
 
 If event streams and SQLite projections disagree, the canonical committed stream wins.

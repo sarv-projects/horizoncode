@@ -166,12 +166,15 @@ format versions return `FORMAT_MIGRATION_REQUIRED` without rewriting files.
   RepoIntel, and Memory owners. Its interface is bounded `put`, metadata lookup, authorized
   read, and sequential chunk transfer; it does not expose a filesystem path.
 - Content identity is BLAKE3 over the exact immutable artifact bytes. Verify declared byte
-  length and digest before publishing. Store by digest under the kernel state root; use
+  length and digest before publishing. Each artifact is at most 256 MiB; owner policy may
+  lower this ceiling but must not raise it. Store by digest under the kernel state root; use
   create-new temporary files, synchronize before publication, and never overwrite a
   different object at an existing digest path.
 - Chunk bodies remain at or below the §13 maximum of 768 KiB, with exact declared total
   length/digest and sequential offsets. The owner authorizes each reference; a valid digest
   alone grants no access. Metadata remains owner-controlled and follows `ArtifactMetadataV1`.
+- Until Windows private-DACL validation is integrated, the local storage primitive fails
+  closed on Windows; Unix-host tests do not establish Windows storage acceptance.
 - Canonical typed event payload bytes follow §12.1/§4 and receive shared Rust/TypeScript
   golden vectors. Schema defines shapes only. Sensitive-artifact support must not silently
   downgrade encryption; if the configured state-key facility is unavailable, reject the

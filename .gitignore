@@ -44,6 +44,7 @@
 !/kernel/src/owner_log.rs
 !/kernel/src/owner_log_index.rs
 !/kernel/src/lib.rs
+!/kernel/src/artifact_store.rs
 !/kernel/src/messagepack.rs
 !/kernel/src/protocol.rs
 !/kernel/src/request_cancellation.rs
