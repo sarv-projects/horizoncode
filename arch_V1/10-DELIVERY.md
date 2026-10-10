@@ -101,6 +101,18 @@ unsupported or failed required hooks fail closed and cannot alter Guard/Task PAS
 - Implement the one-to-one Session alias/import contract, preserving fork links, ordered
   tool history, available attachments, compaction metadata and a read-only rollback
   snapshot.
+- Preflight the production Session cutover against the required `ThreadV1` and
+  `InputAdmissionRequestV1` references: authoritative Project identity, selected
+  ProfileRevision, active ContextEpoch, an authenticated application principal, and
+  owner-authorized ArtifactRefs must be available from their canonical owners. The current
+  canonical-owner table does not name a Project stream; P3/P5 schedule related Context/Profile
+  capabilities, and the current ArtifactStore is only a storage primitive. Host SQL/config,
+  caller/model/plugin fields, and artifact IDs/digests are not substitutes for those owners
+  or authorization. If an owner/binding is absent, keep dependent Session operations
+  unavailable and the P2 gate open; do not synthesize references, add allow-all access, or
+  silently pull full P3/P5 scope into P2. Any authorized prerequisite slice requires its
+  owner/interface and phase dependency to be recorded in the affected `arch_V1/` contracts
+  before behavior changes.
 
 **Gate:** crash/restart, exact retry/conflict, replay/projection rebuild, snapshot+replay,
 retention resnapshot and migration round-trip tests preserve conversation semantics;

@@ -157,7 +157,7 @@
 - [x] Implement digest-derived internal paths, staged writes, sync-before-publish, immutable collision handling, and bounded chunk reads.
 - [x] Keep filesystem paths and raw `File` handles private; reject sensitive classification and unavailable state-key encryption rather than silently downgrade.
 - [x] Run ArtifactStore tests and full Kernel tests/fmt/Clippy. Until Guard/Artifact owner wiring exists, report this as an internal storage seam, not an enabled production read capability. Windows currently fails closed pending private-DACL validation.
-- [ ] Commit the verified storage primitive as `feat(kernel): add immutable artifact storage`.
+- [x] Commit the verified storage primitive as `feat(kernel): add immutable artifact storage` (`1c98f49d8`).
 
 ### Task 6: Integration and verification report
 
@@ -166,7 +166,7 @@
 - Modify: `CURRENT_RUN.md`
 - Test: Kernel package verification
 
-- [x] Run `HORIZON_OWNER_LOG_TEST_TMPDIR=/tmp/opencode cargo test --offline --manifest-path kernel/Cargo.toml --quiet` (47 unit, 11 golden, 21 recovery tests passed).
+- [x] Run `HORIZON_OWNER_LOG_TEST_TMPDIR=/tmp/opencode cargo test --offline --manifest-path kernel/Cargo.toml` (70 unit, 11 golden, 25 recovery tests passed; 106 total, 0 doctests).
 - [x] Run `cargo fmt --manifest-path kernel/Cargo.toml -- --check`.
 - [x] Run `cargo clippy --offline --manifest-path kernel/Cargo.toml --all-targets -- -D warnings`.
 - [x] Attempt `cargo check --offline --manifest-path kernel/Cargo.toml --all-targets --target x86_64-pc-windows-msvc --features blake3/pure`; blocked because `libsqlite3-sys` cannot find `lib.exe` on this Linux host. This is not a native Windows result.
