@@ -95,6 +95,15 @@ line; this also rejects duplicate JSON object keys that a value parser would oth
 collapse. Unknown versions and corrupt committed bytes are read-only refusals that leave
 all original bytes untouched.
 
+The owner lock serializes cooperating opens; it is not mandatory write protection against a
+process bypassing the lock while running as the same OS identity. The configured private
+state root and its OS identity are the current trust boundary. Before acknowledging an append
+or exact retry, an open owner compares the on-disk head and streams the complete committed
+history again, fencing itself if a changed head or committed prefix is observed. This detects
+prior same-length edits but does not claim protection against a concurrent same-identity
+writer racing that verification; stronger same-identity isolation requires a separately
+approved OS boundary.
+
 The logical-to-physical mapping must preserve that single persistence engine:
 
 - Owner identity and stream-local sequence come from the configured OwnerLog V2 stream
@@ -154,6 +163,12 @@ Appending keeps a complete command batch contiguous in the active segment while 
 segment has no uncommitted tail or seal and the full bounded batch fits. Otherwise it seals
 the active committed prefix and starts a fresh monotonically increasing segment. Any
 uncommitted suffix is preserved and forces rotation; it is never truncated or reused.
+If a rotation wrote an unsealed segment before its head commit failed, a later committed
+segment may leave a segment-ID gap. Replay may skip an unsealed gap only when its segment
+file is a regular private file and every later committed segment validates as a direct
+continuation of the preceding committed sequence and digest. A missing gap file, a seal on
+an uncommitted segment, or any discontinuity remains corruption; segment IDs are never
+reused.
 
 For delivery idempotency, the kernel recomputes `commandDigest` as
 `"blake3:" + lowercase_hex(BLAKE3(canonical_command_bytes))`. The canonical command is
@@ -181,6 +196,11 @@ permitted. Index format/technology is private implementation detail and must not
 second canonical store. A bounded in-memory negative filter may skip a lookup only when it
 proves the delivery ID absent; positives require exact index/log verification. Saturation may
 reduce performance but cannot change retry semantics.
+
+Revalidating the complete committed history before each append uses bounded replay memory
+but makes append verification I/O proportional to retained history. This cost is intentional
+until an alternative preserves same-length mutation detection and the stated trust boundary;
+performance and same-identity race limitations must remain explicit in acceptance evidence.
 
 ## 4.3 Event-name registry
 

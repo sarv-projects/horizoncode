@@ -734,6 +734,8 @@ impl OwnerLogV2 {
             return Err(OwnerLogError::CommandDigestMismatch);
         }
 
+        self.verify_committed_state()?;
+
         if let Some(receipt) = self.delivery_receipt(delivery_id)? {
             if receipt.command_digest == command_digest {
                 return Ok(receipt);
@@ -1106,6 +1108,10 @@ impl OwnerLogV2 {
         let mut summary = index
             .segment_for_seq(after_seq)?
             .ok_or(OwnerLogError::IndexUnavailable)?;
+        if after_seq == 0 && (summary.previous_seq != 0 || summary.previous_digest != Digest::ZERO)
+        {
+            return Err(OwnerLogError::IndexUnavailable);
+        }
         if after_seq > 0 && after_seq < summary.first_seq {
             return Err(OwnerLogError::IndexUnavailable);
         }
@@ -1351,6 +1357,37 @@ impl OwnerLogV2 {
             return Err(OwnerLogError::Fenced);
         }
         Ok(())
+    }
+
+    fn verify_committed_state(&mut self) -> Result<(), OwnerLogError> {
+        let result = (|| {
+            let expected_head = Self::encode_head(&self.head)?;
+            let Some(on_disk_head) =
+                read_optional_bounded(&self.directory.join("head.json"), MAX_OWNER_METADATA_BYTES)?
+            else {
+                return Err(OwnerLogError::CorruptCommittedLog(
+                    "committed head disappeared while the owner was open",
+                ));
+            };
+            if on_disk_head != expected_head {
+                return Err(OwnerLogError::CorruptCommittedLog(
+                    "committed head changed while the owner was open",
+                ));
+            }
+            scan_committed_history(
+                &self.directory,
+                &self.owner,
+                &self.head,
+                None,
+                |_| Ok(()),
+                |_, _| Ok(()),
+            )?;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.fenced = true;
+        }
+        result
     }
 
     #[cfg(test)]
@@ -2059,7 +2096,13 @@ fn decode_record(bytes: &[u8]) -> Result<PhysicalRecordV2, OwnerLogError> {
         previous_digest,
         event_digest,
     };
-    if OwnerLogV2::encode_record(&record)? != bytes {
+    let encoded = OwnerLogV2::encode_record(&record).map_err(|error| match error {
+        OwnerLogError::InvalidDigest => OwnerLogError::CorruptCommittedLog(
+            "record digest does not match its canonical contents",
+        ),
+        error => error,
+    })?;
+    if encoded != bytes {
         return Err(OwnerLogError::CorruptCommittedLog(
             "record is not canonical",
         ));
@@ -2298,9 +2341,16 @@ fn scan_committed_history(
             let Some(bytes) =
                 read_optional_bounded(&seal_path(directory, segment_id), MAX_OWNER_METADATA_BYTES)?
             else {
-                return Err(OwnerLogError::CorruptCommittedLog(
-                    "committed segment is missing its seal",
-                ));
+                let orphan_path = segment_path(directory, segment_id);
+                let metadata = fs::symlink_metadata(&orphan_path)
+                    .map_err(|error| io_error("inspect unsealed segment gap", error))?;
+                if !metadata.file_type().is_file() {
+                    return Err(OwnerLogError::CorruptCommittedLog(
+                        "unsealed segment gap is not a regular file",
+                    ));
+                }
+                validate_private_file(&orphan_path, &metadata)?;
+                continue;
             };
             let seal = decode_seal(&bytes)?;
             if seal.segment_id() != segment_id {
@@ -3176,6 +3226,79 @@ mod persistence_tests {
                 assert_eq!(batch.events[1].data["payload"]["name"], "after");
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovered_orphan_segment_id_does_not_poison_later_commits() {
+        let root = TempRoot::new();
+        let owner = OwnerIdentity::new("thread".to_owned(), "orphan-gap".to_owned()).unwrap();
+        let mut log =
+            OwnerLogV2::open(&root.0, owner.clone(), DurabilityProfile::RunDurable).unwrap();
+        let first_events = [OwnerEventInput {
+            schema_version: 1,
+            time_ms: 1_700_000_000_123,
+            kind: "thread.created".to_owned(),
+            data: serde_json::json!({"name": "first"}),
+            delivery_id: None,
+            command_digest: None,
+        }];
+        let first_digest = OwnerLogV2::command_digest("delivery-0", &first_events).unwrap();
+        log.append_batch("delivery-0", &first_digest, &first_events, None)
+            .unwrap();
+        drop(log);
+
+        let directory = root.0.join("owners").join(owner.directory_key());
+        let mut tail = OpenOptions::new()
+            .append(true)
+            .open(segment_path(&directory, 1))
+            .unwrap();
+        tail.write_all(b"uncommitted-tail").unwrap();
+        tail.sync_all().unwrap();
+        drop(tail);
+
+        let mut log =
+            OwnerLogV2::open(&root.0, owner.clone(), DurabilityProfile::RunDurable).unwrap();
+        log.failpoint = Some(CommitFailPoint::HeadReplace);
+        let failed_events = [OwnerEventInput {
+            schema_version: 1,
+            time_ms: 1_700_000_000_124,
+            kind: "thread.renamed".to_owned(),
+            data: serde_json::json!({"name": "uncommitted"}),
+            delivery_id: None,
+            command_digest: None,
+        }];
+        let failed_digest = OwnerLogV2::command_digest("delivery-1", &failed_events).unwrap();
+        assert!(matches!(
+            log.append_batch("delivery-1", &failed_digest, &failed_events, None),
+            Err(OwnerLogError::InjectedFailure)
+        ));
+        drop(log);
+
+        let mut recovered =
+            OwnerLogV2::open(&root.0, owner.clone(), DurabilityProfile::RunDurable).unwrap();
+        let committed_events = [OwnerEventInput {
+            schema_version: 1,
+            time_ms: 1_700_000_000_125,
+            kind: "thread.renamed".to_owned(),
+            data: serde_json::json!({"name": "committed"}),
+            delivery_id: None,
+            command_digest: None,
+        }];
+        let committed_digest = OwnerLogV2::command_digest("delivery-2", &committed_events).unwrap();
+        recovered
+            .append_batch("delivery-2", &committed_digest, &committed_events, None)
+            .unwrap();
+        drop(recovered);
+
+        let reopened = OwnerLogV2::open(&root.0, owner, DurabilityProfile::RunDurable).unwrap();
+        let history = reopened
+            .read_after(None, NonZeroUsize::new(4).unwrap())
+            .unwrap();
+        assert_eq!(history.events.len(), 2);
+        assert_eq!(history.events[0].seq, 1);
+        assert_eq!(history.events[1].seq, 2);
+        assert_eq!(history.events[1].data["payload"]["name"], "committed");
     }
 
     #[cfg(unix)]

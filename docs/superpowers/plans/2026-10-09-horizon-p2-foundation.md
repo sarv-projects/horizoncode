@@ -135,7 +135,10 @@
 - [x] Implement a private `rusqlite` index with a bounded 2 MiB SQLite page cache; stream validated OwnerLog history into delivery and segment tables during open. Remove history-sized receipt/segment `BTreeMap`/`Vec` state. Update the index only after canonical head publication; index failure cannot reverse or misreport the canonical result.
 - [x] Validate the derived index and journal paths before opening SQLite; create the index owner-only and use bundled SQLite features. The host build passes; cross-target compilation remains unverified due to missing MSVC tools.
 - [x] Make indexed receipt and page lookups verify canonical records and fall back to committed-log scans on missing/stale/corrupt index data. Keep the negative filter fixed-size; never cap history or evict delivery IDs.
-- [ ] Commit the verified log change as `feat(kernel): persist owner log commits`.
+- [x] Add regressions for orphan segment-ID gaps after failed rotation, missing first segment index row, same-length head/record edits while open, and derived-index transaction failure after canonical head commit.
+- [x] Revalidate the disk head and complete committed history before each append/retry; document O(retained history) I/O and the same-OS-identity trust-boundary limitation. This detects prior edits; it is not a mandatory-lock/anti-race guarantee.
+- [x] Commit the verified Task 4 index implementation as `feat(kernel): persist owner log commits` (`1aa8207d0`); follow-up review fixes are pending a separate verified commit.
+- [x] Run the complete Kernel suite, formatting, strict Clippy, and diff review after review fixes; preserve the Windows toolchain blocker, replay-memory amplification, O(retained history) pre-append I/O, and same-identity writer limitation as explicit constraints.
 
 ### Task 5: Add immutable artifact-byte storage behind an authorization seam
 

@@ -5,7 +5,7 @@ use horizoncode_kernel::owner_log::{
 use horizoncode_kernel::protocol::CursorV1;
 use rusqlite::Connection;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::num::NonZeroUsize;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -436,6 +436,233 @@ fn missing_segment_index_entry_falls_back_to_canonical_pagination() {
     assert_eq!(next.events.len(), 1);
     assert_eq!(next.events[0].seq, 2);
     assert_eq!(next.events[0].data["payload"]["name"], "page-2");
+}
+
+#[test]
+fn missing_first_segment_index_entry_falls_back_to_complete_history() {
+    let root = TempRoot::new();
+    let identity = owner("thr_missing_first_segment_index");
+    let mut log = OwnerLogV2::open(
+        root.path(),
+        identity.clone(),
+        DurabilityProfile::InteractiveOnly,
+    )
+    .unwrap();
+    let first_events = [event("first-segment")];
+    log.append_batch(
+        "delivery-first-segment",
+        &command_digest("delivery-first-segment", &first_events),
+        &first_events,
+        None,
+    )
+    .unwrap();
+    drop(log);
+
+    let directory = owner_dir(root.path(), &identity);
+    let mut tail = OpenOptions::new()
+        .append(true)
+        .open(directory.join("segment-00000000000000000001.jsonl"))
+        .unwrap();
+    tail.write_all(b"uncommitted-tail").unwrap();
+    tail.sync_all().unwrap();
+    drop(tail);
+
+    let mut log = OwnerLogV2::open(
+        root.path(),
+        identity.clone(),
+        DurabilityProfile::InteractiveOnly,
+    )
+    .unwrap();
+    let second_events = [event("second-segment")];
+    log.append_batch(
+        "delivery-second-segment",
+        &command_digest("delivery-second-segment", &second_events),
+        &second_events,
+        None,
+    )
+    .unwrap();
+
+    Connection::open(directory.join("owner-index.sqlite"))
+        .unwrap()
+        .execute(
+            "DELETE FROM segments WHERE segment_id = '00000000000000000001'",
+            [],
+        )
+        .unwrap();
+
+    let history = log.read_after(None, NonZeroUsize::new(4).unwrap()).unwrap();
+    assert_eq!(history.events.len(), 2);
+    assert_eq!(history.events[0].seq, 1);
+    assert_eq!(history.events[0].data["payload"]["name"], "first-segment");
+    assert_eq!(history.events[1].seq, 2);
+    assert_eq!(history.events[1].data["payload"]["name"], "second-segment");
+}
+
+#[cfg(unix)]
+#[test]
+fn append_fences_when_committed_bytes_change_while_owner_is_open() {
+    let root = TempRoot::new();
+    let identity = owner("thr_mutated_while_open");
+    let mut log = OwnerLogV2::open(
+        root.path(),
+        identity.clone(),
+        DurabilityProfile::InteractiveOnly,
+    )
+    .unwrap();
+    let first_events = [event("original")];
+    log.append_batch(
+        "delivery-original",
+        &command_digest("delivery-original", &first_events),
+        &first_events,
+        None,
+    )
+    .unwrap();
+
+    let directory = owner_dir(root.path(), &identity);
+    let segment = directory.join("segment-00000000000000000001.jsonl");
+    let bytes = fs::read(&segment).unwrap();
+    let value_offset = bytes
+        .windows(b"\"name\":\"original\"".len())
+        .position(|window| window == b"\"name\":\"original\"")
+        .unwrap() as u64
+        + b"\"name\":\"".len() as u64;
+    let mut file = OpenOptions::new().write(true).open(&segment).unwrap();
+    file.seek(SeekFrom::Start(value_offset)).unwrap();
+    file.write_all(b"modified").unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    let head_before = fs::read(directory.join("head.json")).unwrap();
+
+    let second_events = [event("second")];
+    let append_result = log.append_batch(
+        "delivery-second",
+        &command_digest("delivery-second", &second_events),
+        &second_events,
+        None,
+    );
+    assert!(
+        matches!(append_result, Err(OwnerLogError::CorruptCommittedLog(_))),
+        "unexpected append result: {:?}",
+        append_result.as_ref().err()
+    );
+    assert_eq!(fs::read(directory.join("head.json")).unwrap(), head_before);
+    assert!(matches!(
+        log.read_after(None, NonZeroUsize::new(4).unwrap()),
+        Err(OwnerLogError::Fenced)
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn append_fences_when_committed_head_changes_while_owner_is_open() {
+    let root = TempRoot::new();
+    let identity = owner("thr_head_changed_while_open");
+    let mut log = OwnerLogV2::open(
+        root.path(),
+        identity.clone(),
+        DurabilityProfile::InteractiveOnly,
+    )
+    .unwrap();
+    let first_events = [event("first")];
+    log.append_batch(
+        "delivery-first",
+        &command_digest("delivery-first", &first_events),
+        &first_events,
+        None,
+    )
+    .unwrap();
+
+    let head_path = owner_dir(root.path(), &identity).join("head.json");
+    let mut head = fs::read(&head_path).unwrap();
+    let generation_offset = head
+        .windows(b"\"generation\":2".len())
+        .position(|window| window == b"\"generation\":2")
+        .unwrap() as u64
+        + b"\"generation\":".len() as u64;
+    let mut file = OpenOptions::new().write(true).open(&head_path).unwrap();
+    file.seek(SeekFrom::Start(generation_offset)).unwrap();
+    file.write_all(b"3").unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    head[generation_offset as usize] = b'3';
+
+    let next_events = [event("next")];
+    let result = log.append_batch(
+        "delivery-next",
+        &command_digest("delivery-next", &next_events),
+        &next_events,
+        None,
+    );
+    assert!(
+        matches!(result, Err(OwnerLogError::CorruptCommittedLog(_))),
+        "unexpected append result: {:?}",
+        result.as_ref().err()
+    );
+    assert_eq!(fs::read(head_path).unwrap(), head);
+    assert!(matches!(
+        log.read_after(None, NonZeroUsize::new(4).unwrap()),
+        Err(OwnerLogError::Fenced)
+    ));
+}
+
+#[test]
+fn derived_index_failure_after_head_commit_preserves_receipt_and_rebuilds() {
+    let root = TempRoot::new();
+    let identity = owner("thr_index_commit_failure");
+    let directory = owner_dir(root.path(), &identity);
+    let mut log = OwnerLogV2::open(
+        root.path(),
+        identity.clone(),
+        DurabilityProfile::InteractiveOnly,
+    )
+    .unwrap();
+    let delivery_id = "delivery-index-commit-failure";
+    let events = [event("canonical-commit")];
+    let digest = command_digest(delivery_id, &events);
+
+    Connection::open(directory.join("owner-index.sqlite"))
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER fail_delivery_index_insert BEFORE INSERT ON deliveries
+             BEGIN SELECT RAISE(ABORT, 'injected derived index failure'); END;",
+        )
+        .unwrap();
+
+    let head_before = fs::read(directory.join("head.json")).unwrap();
+    let receipt = log
+        .append_batch(delivery_id, &digest, &events, None)
+        .unwrap();
+    assert_ne!(fs::read(directory.join("head.json")).unwrap(), head_before);
+    let indexed_delivery_count: i64 = Connection::open(directory.join("owner-index.sqlite"))
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM deliveries", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(indexed_delivery_count, 0);
+    assert_eq!(receipt.owner_cursor.seq, "1");
+    let retry = log
+        .append_batch(delivery_id, &digest, &events, None)
+        .unwrap();
+    assert_eq!(retry, receipt);
+    let history = log.read_after(None, NonZeroUsize::new(2).unwrap()).unwrap();
+    assert_eq!(history.events.len(), 1);
+    assert_eq!(
+        history.events[0].data["payload"]["name"],
+        "canonical-commit"
+    );
+    drop(log);
+
+    Connection::open(directory.join("owner-index.sqlite"))
+        .unwrap()
+        .execute_batch("DROP TRIGGER fail_delivery_index_insert;")
+        .unwrap();
+    let mut reopened =
+        OwnerLogV2::open(root.path(), identity, DurabilityProfile::InteractiveOnly).unwrap();
+    assert_eq!(
+        reopened
+            .append_batch(delivery_id, &digest, &events, None)
+            .unwrap(),
+        receipt
+    );
 }
 
 #[test]

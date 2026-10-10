@@ -90,8 +90,12 @@ unsupported or failed required hooks fail closed and cannot alter Guard/Task PAS
   non-authoritative and may be discarded; positive/missing and unavailable/corrupt lookups
   fall back to exact OwnerLog V2 scans. This adds no history cap or second canonical store.
   Failure to build the index during owner open fails closed rather than trusting partial data;
-  post-open index failure falls back to canonical scans. Index failure after head commit cannot
-  undo or misreport the canonical commit.
+   post-open index failure falls back to canonical scans. Index failure after head commit cannot
+   undo or misreport the canonical commit. Before each append/retry, compare the disk head and
+   revalidate committed bytes to detect prior mutations; this is bounded-memory but adds
+   I/O proportional to retained history per append. The exclusive owner lock coordinates
+   cooperating opens but is not mandatory protection from same-identity writers, so that
+   race remains outside the current trust boundary and must be explicit in acceptance evidence.
 - Move production Thread/input/message/Turn ownership to kernel event streams through
   `ThreadStoreService`; leave host SQL only as projection/test/import input.
 - Implement the one-to-one Session alias/import contract, preserving fork links, ordered
