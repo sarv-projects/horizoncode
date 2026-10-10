@@ -5,15 +5,16 @@
 - `arch_V1/` is the only normative HorizonCode v1 architecture. Read its relevant
   contracts before changing behavior or ownership. OpenCode source and its upstream
   documentation establish implementation facts only; they do not override `arch_V1/`.
-- Root commit `0009178` established the docs-only bootstrap baseline. The current branch
-  contains HorizonCode P1/P2/P4 prototype implementations, but not the OpenCode application
-  base. The local working copy also has the pinned OpenCode snapshot
-  `b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322`; those source files remain ignored and
-  untracked, and are not in `main` or a fresh clone. Only `origin` is configured; no
-  OpenCode `upstream` remote is configured.
-- These are bootstrap facts, not completion claims. P0 archive/source provenance,
-  OpenCode-base, inventory, baseline verification, generated-output, and license gates
-  remain incomplete as recorded in [`arch_V1/10-DELIVERY.md`](arch_V1/10-DELIVERY.md).
+- Root commit `0009178` established the docs-only bootstrap baseline. The `p2-foundation`
+  branch is adding the pinned OpenCode source snapshot under `opencode/`; the exact upstream
+  tree at `b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322` and its path inventory were verified,
+  but this does not make OpenCode the root Git base or rewrite HorizonCode history. Until
+  merge/push, `main` and fresh clones do not contain the snapshot. Only `origin` is
+  configured; no OpenCode `upstream` remote is configured.
+- These are bootstrap facts, not completion claims. The purged Horizon archive and
+  OpenCode-derived root-base requirements, full path-disposition inventory, baseline
+  verification, generated-output, and dependency/license gates remain incomplete as
+  recorded in [`arch_V1/10-DELIVERY.md`](arch_V1/10-DELIVERY.md).
   Do not claim implementation, runtime, platform, security, or release acceptance
   without the evidence required there and in `arch_V1/18-OPERATIONS-RELEASE.md`.
 - Prior Git metadata and archive refs were purged. Do not claim old HorizonCode

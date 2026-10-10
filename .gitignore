@@ -6,6 +6,8 @@
 .slim/deepwork/
 !/AGENTS.md
 !/README.md
+!/opencode/
+!/opencode/**
 !/arch_V1/
 !/arch_V1/**
 !/docs/
@@ -40,6 +42,7 @@
 !/kernel/Cargo.lock
 !/kernel/src/
 !/kernel/src/owner_log.rs
+!/kernel/src/owner_log_index.rs
 !/kernel/src/lib.rs
 !/kernel/src/messagepack.rs
 !/kernel/src/protocol.rs
@@ -52,6 +55,7 @@
 !/kernel/tests/fixtures/owner-log-v2/
 !/kernel/tests/fixtures/owner-log-v2/record-v2.jsonl
 !/kernel/tests/owner_log_golden.rs
+!/kernel/tests/owner_log_recovery.rs
 !/indexd/
 !/indexd/Cargo.toml
 !/indexd/Cargo.lock

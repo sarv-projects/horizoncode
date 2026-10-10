@@ -8,14 +8,16 @@ Git history and not evidence of HorizonCode implementation or acceptance.
 ## Repository status
 
 - Root commit `0009178` (`docs: add finalized HorizonCode v1 architecture`) was the
-  docs-only bootstrap baseline. Current `main` also contains bounded HorizonCode P1/P2/P4
-  prototype slices; it is still not a buildable OpenCode application because the pinned
-  OpenCode source base remains ignored and untracked. The repository's `README.md` and
-  `AGENTS.md` guidance are tracked; a fresh clone does not include the local OpenCode
-  source snapshot.
+  docs-only bootstrap baseline. The `p2-foundation` work adds the verified pinned OpenCode
+  source under `opencode/` without rewriting HorizonCode history; until that branch is
+  merged and pushed, `main` and fresh clones do not contain the source snapshot. This
+  subdirectory snapshot is not an OpenCode-derived root Git base and does not by itself
+  establish a reproducible build or release.
 - `origin` is the only configured remote; no OpenCode `upstream` remote is configured.
-- The archive/source-provenance and OpenCode-base P0 gates remain incomplete. So do the
-  repository inventory, baseline verification, generated-output, and license gates.
+- The prior Horizon archive gate and OpenCode-derived root-base gate remain incomplete.
+  The pinned source tree and byte-level path inventory are verified; baseline build,
+  generated-output, full path-disposition, dependency/bundled-asset license, and release
+  review gates remain open.
   See [`arch_V1/10-DELIVERY.md`](arch_V1/10-DELIVERY.md) for status and evidence
   requirements. This repository is not a verified HorizonCode runtime or release.
 
@@ -40,5 +42,5 @@ readiness. Current working-copy handoff details are in [`CURRENT_RUN.md`](CURREN
 ## Development guidance
 
 See [`AGENTS.md`](AGENTS.md) for repository-state cautions and applicable OpenCode
-working conventions. Current `main` includes bounded HorizonCode prototype slices but
-still cannot build the OpenCode application without the separately pinned source base.
+working conventions. The pinned source snapshot is included only on the P2 work branch
+until merge; implementation and release acceptance remain evidence-gated.

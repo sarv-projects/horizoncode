@@ -2,9 +2,13 @@
 
 ## 9.1 Baseline and inventory
 
-Primary upstream source is the local [`opencode/` checkout at pinned revision
-`b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322`](https://github.com/anomalyco/opencode/tree/b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322); it was detached and clean at the start of
-the review. The initial HorizonCode architecture/source review began at
+Primary upstream source is [`opencode/` at pinned revision
+`b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322`](https://github.com/anomalyco/opencode/tree/b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322).
+The local source directory has no independent Git metadata. On 2026-10-10, the exact
+upstream commit was fetched by object ID for verification and every local path, mode, and
+Git blob hash was compared with its tree: **6,629 blobs, 0 missing, 0 extra, 0 changed**.
+No remote was configured and no upstream ref was created. The initial HorizonCode
+architecture/source review began at
 `9fd96b07a65b3c2faf3380c4fd24069cc993598a`; the current local implementation seams
 listed in §9.6 were re-inspected at commit
 `5c20a65ee6c05c7771fbcbe1e2cde8fc192b8a34`. These are bounded source checks, not a
@@ -14,8 +18,15 @@ It records tracked path, file kind, bytes and line count; it is not semantic rev
 
 Inventory result: **6,629 tracked paths**: 6,233 text files (1,435,757 newline
 records), 336 binary files and 60 symlinks. Symlink targets are not counted as
-reviewed. The inventory is tied to the pinned revision and must be regenerated after
-any upstream revision change.
+reviewed. The committed inventory was independently compared with the local snapshot:
+all 6,629 paths, kinds, byte counts and text line counts matched. The inventory is tied to
+the pinned revision and must be regenerated after any upstream revision change.
+
+License-file scan of the pinned tree found four license files, all MIT: the root OpenCode
+license, `packages/docs/LICENSE`, `packages/http-recorder/LICENSE`, and `packages/ui/LICENSE`.
+No `NOTICE` file exists in the pinned tree. This source-file check is not a dependency,
+bundled-asset, or legal redistribution review; DEC-V1-11 and the release license gate remain
+open.
 
 ## 9.2 Semantic review evidence
 

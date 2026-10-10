@@ -36,12 +36,15 @@ captured in a verified clean archival revision:
 6. Verify license/notice inventory, exact source provenance and generator ownership.
    DEC-V1-11 remains a distribution gate; it need not block unrelated local coding.
 
-**Current status (2026-10-08):** After the initial archive refs were created, the user
-directed removal of all prior Git metadata and initialized a fresh, empty `main`. The
-local archive refs/object database are gone; the OpenCode files remain on disk but are
-ignored and uncommitted. P0 items 1–3 and the gate below are **not satisfied**. Do not
-claim a verified archive or an OpenCode-derived Git base unless those are independently
-re-established with evidence or the architecture decision is explicitly revised.
+**Current status (2026-10-10):** After the initial archive refs were created, the user
+directed removal of all prior Git metadata and initialized a fresh, empty `main`. The local
+archive refs/object database are gone and cannot be claimed as recoverable. The pinned
+OpenCode source under `opencode/` has now been verified against the exact upstream commit
+and its path inventory (see [`09-SOURCE-MAP.md`](09-SOURCE-MAP.md)); this checkout still
+does not have OpenCode as its Git base, and the snapshot is being added under a subdirectory
+rather than replacing repository history. P0 item 1, item 2's root-base requirement, the
+full path-disposition inventory, and the gate below remain **unsatisfied**. Do not claim a
+verified Horizon archive or an OpenCode-derived root Git base.
 
 The adopted synchronization policy is in §17.3: release-triggered candidate review,
 expedited security review, named patch owners, pinned generators and zero unowned or
@@ -80,6 +83,15 @@ unsupported or failed required hooks fail closed and cannot alter Guard/Task PAS
   committed-head canonical store; do not claim physical compatibility, overwrite
   unknown/legacy data, or build a parallel persistence engine. Import requires a
   separately verified reader and idempotent migration fixtures.
+- Bound OwnerLog recovery and pagination memory as lifetime history grows. Exact delivery
+  retry identities must survive restart; never silently evict them. Use a rebuildable
+  disk-backed lookup index for receipts and segment summaries, rebuilt by streaming the
+  canonical log, plus a bounded in-memory negative filter for delivery IDs. The index is
+  non-authoritative and may be discarded; positive/missing and unavailable/corrupt lookups
+  fall back to exact OwnerLog V2 scans. This adds no history cap or second canonical store.
+  Failure to build the index during owner open fails closed rather than trusting partial data;
+  post-open index failure falls back to canonical scans. Index failure after head commit cannot
+  undo or misreport the canonical commit.
 - Move production Thread/input/message/Turn ownership to kernel event streams through
   `ThreadStoreService`; leave host SQL only as projection/test/import input.
 - Implement the one-to-one Session alias/import contract, preserving fork links, ordered
