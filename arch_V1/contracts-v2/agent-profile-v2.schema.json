@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/agent-profile-v2",
+  "title": "AgentProfileV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "revision",
+    "name",
+    "mode",
+    "model",
+    "harnessId",
+    "tools",
+    "mcp",
+    "pathRules",
+    "contextIsolation",
+    "inputMode",
+    "limits"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mode": {
+      "enum": [
+        "primary",
+        "specialist",
+        "subagent",
+        "maintenance"
+      ]
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "providerId",
+        "modelId"
+      ],
+      "properties": {
+        "providerId": {
+          "type": "string"
+        },
+        "modelId": {
+          "type": "string"
+        },
+        "reasoningEffort": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "harnessId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Explicit harness profile id resolved independently from provider/model selection"
+    },
+    "tools": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allow",
+        "deny"
+      ],
+      "properties": {
+        "allow": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "deny": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "skills": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true,
+      "default": []
+    },
+    "mcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "servers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "allowTools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "denyTools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "subagents": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true,
+      "default": []
+    },
+    "pathRules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "effect",
+          "pattern"
+        ],
+        "properties": {
+          "effect": {
+            "enum": [
+              "allow",
+              "deny",
+              "ask"
+            ]
+          },
+          "pattern": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "contextIsolation": {
+      "enum": [
+        "fresh",
+        "conversation_slice",
+        "fork"
+      ]
+    },
+    "inputMode": {
+      "enum": [
+        "default",
+        "read_only",
+        "careful",
+        "sandbox_auto"
+      ]
+    },
+    "instructions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "providerVariants": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {}
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxDepth",
+        "maxActiveChildren",
+        "maxTotalChildren",
+        "maxPendingMessages",
+        "maxMessageBytes"
+      ],
+      "properties": {
+        "maxDepth": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxActiveChildren": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxTotalChildren": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxPendingMessages": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxMessageBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tokenBudget": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "wallTimeMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

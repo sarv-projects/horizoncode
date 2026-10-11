@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReplSessionActionV1",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "language": {
+      "enum": [
+        "python",
+        "javascript"
+      ]
+    },
+    "action": {
+      "enum": [
+        "start",
+        "execute",
+        "reset",
+        "status",
+        "output_range",
+        "stop"
+      ]
+    },
+    "code": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "resourceProfileRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "callbackCapabilityIds": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "effectContextRef": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "deadlineMs": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "requestId",
+    "sessionId",
+    "generation",
+    "language",
+    "action",
+    "resourceProfileRef",
+    "callbackCapabilityIds",
+    "deadlineMs"
+  ],
+  "additionalProperties": false
+}

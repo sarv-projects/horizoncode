@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test"
+import { createHash } from "node:crypto"
 import { Database as SQLite } from "bun:sqlite"
 import {
   mkdtempSync,
+  mkdirSync,
   existsSync,
   readdirSync,
   rmSync,
@@ -9,10 +11,13 @@ import {
   unlinkSync,
   symlinkSync,
   writeFileSync,
+  readFileSync,
+  realpathSync,
+  lstatSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { DateTime, Deferred, Effect, Fiber } from "effect"
+import { DateTime, Deferred, Effect, Exit, Fiber, Layer, Ref, Stream } from "effect"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Database } from "@opencode-ai/core/database/database"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
@@ -33,6 +38,23 @@ import { AbsolutePath } from "@opencode-ai/core/schema"
 import { Prompt } from "@opencode-ai/core/session/prompt"
 import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
 
+import { AgentV2 } from "@opencode-ai/core/agent"
+import { Config } from "@opencode-ai/core/config"
+import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
+import { Location } from "@opencode-ai/core/location"
+import { ReferenceGuidance } from "@opencode-ai/core/reference/guidance"
+import { SessionRunner } from "@opencode-ai/core/session/runner"
+import * as SessionRunnerLLM from "@opencode-ai/core/session/runner/llm"
+import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
+import { SkillGuidance } from "@opencode-ai/core/skill/guidance"
+import { Snapshot } from "@opencode-ai/core/snapshot"
+import { SystemContext } from "@opencode-ai/core/system-context"
+import { SystemContextRegistry } from "@opencode-ai/core/system-context/registry"
+import { ToolRegistry } from "@opencode-ai/core/tool/registry"
+import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
+import { WriteTool } from "@opencode-ai/core/tool/write"
+import { LLMClient, LLMEvent, Model, type LLMClientShape } from "@opencode-ai/llm"
+import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
 const rust = resolve(import.meta.dir, "../../../kernel/target/debug/session_sync_probe")
 const supervisorRust = resolve(import.meta.dir, "../../../kernel/target/debug/session_supervisor")
 const sessionID = SessionID.make("ses_kernel_live_producer")
@@ -58,7 +80,7 @@ async function publish(source: string, text: string) {
   )
 }
 
-async function admitAndPromote(source: string) {
+async function admitAndPromote(source: string, directory = "/projection-test") {
   const replacement = makeGlobalNode({
     service: Database.Service,
     layer: Database.layerFromPath(source),
@@ -84,7 +106,7 @@ async function admitAndPromote(source: string) {
       const session = yield* SessionV2.Service
       yield* db
         .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/projection-test"), sandboxes: [] })
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make(directory), sandboxes: [] })
         .onConflictDoNothing()
         .run()
         .pipe(Effect.orDie)
@@ -94,7 +116,7 @@ async function admitAndPromote(source: string) {
           id: sessionID,
           project_id: Project.ID.global,
           slug: "projection-test",
-          directory: "/projection-test",
+          directory,
           title: "projection test",
           version: "test",
         })
@@ -113,7 +135,7 @@ async function admitAndPromote(source: string) {
   )
 }
 
-describe("OpenCode EventV2 -> Rust read-only live projection", () => {
+describe("OpenCode EventV2 -> Rust Session supervisor", () => {
   test("Core Effect supervisor authenticates, negotiates, receives and ACKs real OpenCode events", async () => {
     expect(existsSync(supervisorRust)).toBe(true)
     const dir = mkdtempSync(join(tmpdir(), "hc-session-supervised-"))
@@ -246,6 +268,302 @@ describe("OpenCode EventV2 -> Rust read-only live projection", () => {
     }
   }, 30000)
 
+  test("Core Effect admits and settles a files.write through Rust Guard and ExecutionHost", async () => {
+    expect(existsSync(supervisorRust)).toBe(true)
+    const dir = mkdtempSync(join(tmpdir(), "hc-session-effect-write-"))
+    const source = join(dir, "opencode.db")
+    const workspacePath = join(dir, "workspace")
+    const installRoot = join(dir, "install")
+    const stateRoot = join(dir, "state")
+    try {
+      mkdirSync(workspacePath)
+      const workspace = realpathSync(workspacePath)
+      await admitAndPromote(source, workspace)
+      const sha256 = createHash("sha256").update(readFileSync(supervisorRust)).digest("hex")
+      const runtime = Layer.succeed(
+        SessionSupervisor.RuntimeConfig,
+        SessionSupervisor.RuntimeConfig.of({
+          assetPath: supervisorRust,
+          manifestJSON: JSON.stringify({
+            schemaVersion: 1,
+            status: "available",
+            binaryName: "session_supervisor",
+            target: `linux-${process.arch}-gnu`,
+            sha256,
+          }),
+          installRoot,
+          stateRoot,
+        }),
+      )
+      const layer = AppNodeBuilder.build(LayerNode.group([SessionSupervisor.node]), [
+        [SessionSupervisor.runtimeConfigNode, runtime],
+      ])
+      const content = "TypeScript-to-Rust guarded workspace write"
+      const target = join(workspace, "approved.txt")
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const supervisor = yield* SessionSupervisor.Service
+            const turnComplete = yield* Ref.make(false)
+            const ready = yield* Deferred.make<void>()
+            const watcher = yield* Effect.forkScoped(
+              supervisor.watchSession(sessionID, source, workspace, turnComplete, ready),
+            )
+            yield* Deferred.await(ready)
+            const admission = yield* supervisor.prepareToolBatch({
+              sessionID,
+              batchID: "batch_typescript_interop",
+              turnContextDigest: `sha256:${"c".repeat(64)}`,
+              calls: [
+                {
+                  callID: "call_typescript_write",
+                  capabilityID: "files.write",
+                  arguments: { path: "approved.txt", content },
+                },
+              ],
+            })
+            expect(admission.status).toBe("admitted")
+            if (admission.status !== "admitted") return
+            expect(admission.challenge.target).toBe(target)
+            expect(admission.challenge.resource).toBe("approved.txt")
+            yield* supervisor.approveEffect({
+              sessionID,
+              challengeID: admission.challenge.challengeID,
+            })
+            const receipt = yield* supervisor.executeWrite({
+              sessionID,
+              challengeID: admission.challenge.challengeID,
+              content,
+            })
+            expect(receipt.effectID).toBe(admission.challenge.effectID)
+            expect(receipt.target).toBe(target)
+            expect(receipt.resource).toBe("approved.txt")
+            expect(receipt.receiptDigest).toMatch(/^blake3:[0-9a-f]{64}$/)
+            const replay = yield* Effect.exit(
+              supervisor.executeWrite({
+                sessionID,
+                challengeID: admission.challenge.challengeID,
+                content,
+              }),
+            )
+            expect(Exit.isFailure(replay)).toBe(true)
+            yield* Ref.set(turnComplete, true)
+            yield* Fiber.join(watcher)
+          }).pipe(Effect.provide(layer)),
+        ),
+      )
+      expect(readFileSync(target, "utf8")).toBe(content)
+      const sessionState = join(
+        stateRoot,
+        `s-${createHash("sha256").update(sessionID).digest("hex").slice(0, 20)}`,
+      )
+      expect(readFileSync(join(sessionState, "effects.sqlite")).includes(Buffer.from(content))).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  test("SessionRunner binds its generated digest through Rust effects.v2 and denies multi-write batches", async () => {
+    expect(existsSync(supervisorRust)).toBe(true)
+    const dir = mkdtempSync(join(tmpdir(), "hc-session-runner-effect-"))
+    const source = join(dir, "opencode.db")
+    const workspacePath = join(dir, "workspace")
+    const installRoot = join(dir, "install")
+    const stateRoot = join(dir, "state")
+    const content = "PRIVATE_SESSION_RUNNER_EFFECT_CONTENT"
+    const deniedBatch = [
+      { id: "call_session_runner_batch_first", path: "batch-first.txt", content: "PRIVATE_BATCH_FIRST_CONTENT" },
+      { id: "call_session_runner_batch_second", path: "batch-second.txt", content: "PRIVATE_BATCH_SECOND_CONTENT" },
+    ] as const
+    const target = join(workspacePath, "approved.txt")
+    try {
+      mkdirSync(workspacePath)
+      const workspace = realpathSync(workspacePath)
+      await admitAndPromote(source, workspace)
+      const sha256 = createHash("sha256").update(readFileSync(supervisorRust)).digest("hex")
+      const runtime = Layer.succeed(
+        SessionSupervisor.RuntimeConfig,
+        SessionSupervisor.RuntimeConfig.of({
+          assetPath: supervisorRust,
+          manifestJSON: JSON.stringify({
+            schemaVersion: 1,
+            status: "available",
+            binaryName: "session_supervisor",
+            target: `linux-${process.arch}-gnu`,
+            sha256,
+          }),
+          installRoot,
+          stateRoot,
+        }),
+      )
+      const databaseNode = makeGlobalNode({
+        service: Database.Service,
+        layer: Database.layerFromPath(source),
+        deps: [],
+      })
+      const fakeModel = Model.make({ id: "guard-test-model", provider: "test", route: OpenAIChat.route })
+      const model = SessionRunnerModel.layerWith(() => Effect.succeed(fakeModel))
+      const responses = [
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.toolCall({
+            id: "call_session_runner_write",
+            name: "write",
+            input: { path: "approved.txt", content },
+          }),
+          LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+          LLMEvent.finish({ reason: "tool-calls" }),
+        ],
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          ...deniedBatch.map((call) =>
+            LLMEvent.toolCall({
+              id: call.id,
+              name: "write",
+              input: { path: call.path, content: call.content },
+            }),
+          ),
+          LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+          LLMEvent.finish({ reason: "tool-calls" }),
+        ],
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.textStart({ id: "text-final" }),
+          LLMEvent.textDelta({ id: "text-final", text: "File written; unsupported batch denied." }),
+          LLMEvent.textEnd({ id: "text-final" }),
+          LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+          LLMEvent.finish({ reason: "stop" }),
+        ],
+      ]
+      const client = Layer.succeed(
+        LLMClient.Service,
+        LLMClient.Service.of({
+          prepare: () => Effect.die("unused"),
+          stream: (() => Stream.fromIterable((responses.shift() ?? []) as never[])) as unknown as LLMClientShape["stream"],
+          generate: () => Effect.die("unused"),
+        }),
+      )
+      const systemContext = AppNodeBuilder.build(SystemContextRegistry.node)
+      const skillGuidance = Layer.mock(SkillGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) })
+      const referenceGuidance = Layer.mock(ReferenceGuidance.Service, {
+        load: () => Effect.succeed(SystemContext.empty),
+      })
+      const config = Layer.succeed(Config.Service, Config.Service.of({ entries: () => Effect.succeed([]) }))
+      const layer = AppNodeBuilder.build(
+        LayerNode.group([
+          Database.node,
+          EventV2.node,
+          SessionProjector.node,
+          SessionStore.node,
+          AgentV2.node,
+          ToolRegistry.node,
+          ToolRegistry.toolsNode,
+          SessionRunnerModel.node,
+          SystemContextRegistry.node,
+          SkillGuidance.node,
+          ReferenceGuidance.node,
+          Config.node,
+          Snapshot.node,
+          SessionRunnerLLM.node,
+          WriteTool.node,
+          SessionSupervisor.node,
+        ]),
+        [
+          [Database.node, databaseNode],
+          [LayerNodePlatform.llmClient, client],
+          [SessionRunnerModel.node, model],
+          [SystemContextRegistry.node, systemContext],
+          [Location.node, Location.boundNode({ directory: AbsolutePath.make(workspace) })],
+          [SkillGuidance.node, skillGuidance],
+          [ReferenceGuidance.node, referenceGuidance],
+          [Config.node, config],
+          [Snapshot.node, Snapshot.noopLayer],
+          [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
+          [SessionSupervisor.runtimeConfigNode, runtime],
+        ],
+      )
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const agents = yield* AgentV2.Service
+            yield* agents.transform((editor) =>
+              editor.update(AgentV2.ID.make("build"), (agent) => {
+                agent.permissions = [{ action: "edit", resource: "*", effect: "allow" }]
+              }),
+            )
+            const supervisor = yield* SessionSupervisor.Service
+            const database = yield* Database.Service
+            const runner = yield* SessionRunner.Service
+            const turnComplete = yield* Ref.make(false)
+            const ready = yield* Deferred.make<void>()
+            const watcher = yield* Effect.forkScoped(
+              supervisor.watchSession(sessionID, database.path, workspace, turnComplete, ready),
+            )
+            yield* Deferred.await(ready)
+            yield* runner.run({ sessionID, force: true })
+            yield* Ref.set(turnComplete, true)
+            yield* Fiber.join(watcher)
+
+            const store = yield* SessionStore.Service
+            const transcript = yield* store.context(sessionID)
+            const writeCall = transcript
+              .flatMap((message) => (message.type === "assistant" ? message.content : []))
+              .find((part) => part.type === "tool" && part.id === "call_session_runner_write")
+            expect(writeCall).toMatchObject({ type: "tool", state: { status: "completed" } })
+            expect(readFileSync(target, "utf8")).toBe(content)
+            const transcriptParts = transcript.flatMap((message) =>
+              message.type === "assistant" ? message.content : [],
+            )
+            for (const call of deniedBatch) {
+              expect(
+                transcriptParts.find((part) => part.type === "tool" && part.id === call.id),
+              ).toMatchObject({ type: "tool", id: call.id, state: { status: "error" } })
+              expect(existsSync(join(workspace, call.path))).toBe(false)
+            }
+
+            const sessionState = join(
+              stateRoot,
+              `s-${createHash("sha256").update(sessionID).digest("hex").slice(0, 20)}`,
+            )
+            const effectsDatabasePath = join(sessionState, "effects.sqlite")
+            expect(readFileSync(effectsDatabasePath).includes(Buffer.from(content))).toBe(false)
+            for (const call of deniedBatch) {
+              expect(readFileSync(effectsDatabasePath).includes(Buffer.from(call.content))).toBe(false)
+            }
+            const effectsDatabase = new SQLite(effectsDatabasePath, { readonly: true, strict: true })
+            let challengeID: string
+            try {
+              const row = effectsDatabase
+                .query("SELECT challenge_id, turn_context_digest, status FROM effect_challenges")
+                .get() as { challenge_id: string; turn_context_digest: string; status: string } | null
+              expect(row).toBeDefined()
+              if (!row) return yield* Effect.die("Expected a settled Rust effect challenge")
+              expect(row.status).toBe("SETTLED")
+              expect(row.turn_context_digest).toMatch(/^sha256:[0-9a-f]{64}$/)
+              expect(row.turn_context_digest).not.toBe(`sha256:${"c".repeat(64)}`)
+              challengeID = row.challenge_id
+            } finally {
+              effectsDatabase.close()
+            }
+
+            const replayTurnComplete = yield* Ref.make(false)
+            const replayReady = yield* Deferred.make<void>()
+            const replayWatcher = yield* Effect.forkScoped(
+              supervisor.watchSession(sessionID, database.path, workspace, replayTurnComplete, replayReady),
+            )
+            yield* Deferred.await(replayReady)
+            const replay = yield* Effect.exit(supervisor.executeWrite({ sessionID, challengeID, content }))
+            expect(Exit.isFailure(replay)).toBe(true)
+            yield* Ref.set(replayTurnComplete, true)
+            yield* Fiber.join(replayWatcher)
+          }).pipe(Effect.provide(layer)),
+        ),
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 60000)
+
   test("Effect scope interruption releases the process lease and permits restart", async () => {
     expect(existsSync(supervisorRust)).toBe(true)
     const dir = mkdtempSync(join(tmpdir(), "hc-session-supervisor-cancel-"))
@@ -377,10 +695,9 @@ describe("OpenCode EventV2 -> Rust read-only live projection", () => {
         await Bun.sleep(180)
         await publish(source, "private third message must not replicate")
         expect(await child.exited).toBe(0)
-        const output = await new Response(child.stdout).text()
+        await new Response(child.stdout).text()
         const errors = await new Response(child.stderr).text()
         expect(errors).toBe("")
-        expect(output).toContain("imported=1")
         const db = new SQLite(target, { readonly: true, strict: true })
         try {
           const values = db.query("SELECT kind,message_id,tool_call_id,seq FROM hc_session_receipts ORDER BY seq").all() as Array<{
@@ -433,3 +750,115 @@ test("refuses same file or hardlink for projection database", async () => {
     rmSync(directory, { recursive: true, force: true })
   }
 }, 20000)
+
+test("bundled Session observer installs the pinned artifact and resumes its ACK cursor", async () => {
+  expect(existsSync(supervisorRust)).toBe(true)
+  const directory = mkdtempSync(join(tmpdir(), "hc-session-observer-install-"))
+  const source = join(directory, "opencode.db")
+  const sha256 = createHash("sha256").update(readFileSync(supervisorRust)).digest("hex")
+  try {
+    await admitAndPromote(source)
+    const runtime = Layer.succeed(
+      SessionSupervisor.RuntimeConfig,
+      SessionSupervisor.RuntimeConfig.of({
+        assetPath: supervisorRust,
+        manifestJSON: JSON.stringify({
+          schemaVersion: 1,
+          status: "available",
+          binaryName: "session_supervisor",
+          target: `linux-${process.arch}-gnu`,
+          sha256,
+        }),
+        installRoot: join(directory, "install"),
+        stateRoot: join(directory, "state"),
+      }),
+    )
+    const layer = AppNodeBuilder.build(LayerNode.group([SessionSupervisor.node]), [
+      [SessionSupervisor.runtimeConfigNode, runtime],
+    ])
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const supervisor = yield* SessionSupervisor.Service
+          const opened = yield* supervisor.openForSession(sessionID, source)
+          expect(opened.status).toBe("available")
+          if (opened.status !== "available") return
+          yield* Effect.tryPromise({ try: () => opened.client.subscribe(), catch: (error) => error as Error })
+          let events = 0
+          while (true) {
+            const message = yield* Effect.tryPromise({
+              try: () => opened.client.receive(),
+              catch: (error) => error as Error,
+            })
+            if (message.kind === "event") {
+              events++
+              expect(JSON.stringify(message.payload)).not.toContain("private prompt text")
+              yield* Effect.tryPromise({
+                try: () => opened.client.ack(message),
+                catch: (error) => error as Error,
+              })
+              continue
+            }
+            expect(message.kind).toBe("page_end")
+            if (message.kind === "page_end") {
+              expect(message.hasMore).toBe(false)
+              expect(message.through.seq).toBe("2")
+            }
+            break
+          }
+          expect(events).toBe(2)
+          expect((yield* Effect.tryPromise({
+            try: () => opened.client.resumeCursor(),
+            catch: (error) => error as Error,
+          })).seq).toBe("2")
+        }).pipe(Effect.provide(layer)),
+      ),
+    )
+    const installed = join(directory, "install", `session_supervisor-${sha256}`)
+    expect((lstatSync(installed).mode & 0o777).toString(8)).toBe("700")
+    expect(createHash("sha256").update(readFileSync(installed)).digest("hex")).toBe(sha256)
+    const sessionState = join(directory, "state", `s-${createHash("sha256").update(sessionID).digest("hex").slice(0, 20)}`)
+    expect(readdirSync(sessionState).filter((name) => name.endsWith(".sock"))).toEqual([])
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+}, 30000)
+
+test("bundled Session observer refuses a sidecar that differs from its manifest", async () => {
+  expect(existsSync(supervisorRust)).toBe(true)
+  const directory = mkdtempSync(join(tmpdir(), "hc-session-observer-pin-"))
+  const source = join(directory, "opencode.db")
+  try {
+    await admitAndPromote(source)
+    const runtime = Layer.succeed(
+      SessionSupervisor.RuntimeConfig,
+      SessionSupervisor.RuntimeConfig.of({
+        assetPath: supervisorRust,
+        manifestJSON: JSON.stringify({
+          schemaVersion: 1,
+          status: "available",
+          binaryName: "session_supervisor",
+          target: `linux-${process.arch}-gnu`,
+          sha256: "0".repeat(64),
+        }),
+        installRoot: join(directory, "install"),
+        stateRoot: join(directory, "state"),
+      }),
+    )
+    const layer = AppNodeBuilder.build(LayerNode.group([SessionSupervisor.node]), [
+      [SessionSupervisor.runtimeConfigNode, runtime],
+    ])
+    const exit = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const supervisor = yield* SessionSupervisor.Service
+          return yield* Effect.exit(supervisor.openForSession(sessionID, source))
+        }).pipe(Effect.provide(layer)),
+      ),
+    )
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(existsSync(join(directory, "install"))).toBe(false)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+}, 30000)

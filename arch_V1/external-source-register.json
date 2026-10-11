@@ -1,0 +1,675 @@
+{
+  "purpose": "Exact external repo/reference register, 2026-10-11; editable design evidence not proof of runtime integration",
+  "checked_at": "2026-10-11",
+  "repos": [
+    {
+      "key": "horizoncode",
+      "repo": "sarv-projects/horizoncode",
+      "canonical_url": "https://github.com/sarv-projects/horizoncode",
+      "pinned_commit": "bf0399469470c6ffdcbe5421dc5c506db2d61fae",
+      "pinned_tree": null,
+      "role": "first-party local working tree",
+      "current_local_status": "existing_source",
+      "license_review": "Proprietary/see repo; local user-owned",
+      "notes": "Current local working-tree base; commit was not present on GitHub remote when checked. Do not fabricate a public tree URL. Remote main at audit was a22f810daa76f42e99a8e455af9e949bf9a4788e; uncommitted local changes also exist.",
+      "local_base_commit": "bf0399469470c6ffdcbe5421dc5c506db2d61fae",
+      "remote_main_at_audit": "a22f810daa76f42e99a8e455af9e949bf9a4788e",
+      "public_pin_status": "local_head_not_present_on_remote_at_audit"
+    },
+    {
+      "key": "opencode",
+      "repo": "anomalyco/opencode",
+      "canonical_url": "https://github.com/anomalyco/opencode",
+      "pinned_commit": "b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322",
+      "pinned_tree": "https://github.com/anomalyco/opencode/tree/b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322",
+      "role": "canonical pinned OpenCode source base",
+      "current_local_status": "existing_source",
+      "license_review": "Inspect repository and dependency licenses before copying",
+      "notes": "Local source is transformed and not literally a clean copy; existing Core/LLM/TUI/runtime are reused"
+    },
+    {
+      "key": "omp",
+      "repo": "can1357/oh-my-pi",
+      "canonical_url": "https://github.com/can1357/oh-my-pi",
+      "pinned_commit": "eec114a9226da698ebc015fd8996a8ca3bc4625c",
+      "pinned_tree": "https://github.com/can1357/oh-my-pi/tree/eec114a9226da698ebc015fd8996a8ca3bc4625c",
+      "role": "competitive source and extraction candidates",
+      "current_local_status": "source_inspected",
+      "license_review": "MIT top-level; pi-builtins has additional file license; verify per-path+dependencies",
+      "notes": "Source inspection includes docs/registry/native modules; no OMP runtime code copied"
+    },
+    {
+      "key": "deepseek-harness",
+      "repo": "deepseek-ai/deepseek-harness",
+      "canonical_url": "https://github.com/deepseek-ai/deepseek-harness",
+      "pinned_commit": "5badb15009ae1756c3afe0ae0cef1faafc290ccc",
+      "pinned_tree": "https://github.com/deepseek-ai/deepseek-harness/tree/5badb15009ae1756c3afe0ae0cef1faafc290ccc",
+      "role": "modular plugin/capability orchestration reference",
+      "current_local_status": "research_reference",
+      "license_review": "CHECK per-file license/dependency",
+      "notes": "Already cited in docs, no code copied"
+    },
+    {
+      "key": "codex",
+      "repo": "openai/codex",
+      "canonical_url": "https://github.com/openai/codex",
+      "pinned_commit": "8c0f7011674145da7e10627769fb221c74fbf7a0",
+      "pinned_tree": "https://github.com/openai/codex/tree/8c0f7011674145da7e10627769fb221c74fbf7a0",
+      "role": "Goal/agent loop/permissions/TUI reference",
+      "current_local_status": "research_reference",
+      "license_review": "Apache-2.0 metadata; verify exact file/deps",
+      "notes": "Reference main commit checked 2026-10-11; do not infer code read at every path"
+    },
+    {
+      "key": "cline",
+      "repo": "cline/cline",
+      "canonical_url": "https://github.com/cline/cline",
+      "pinned_commit": "c3a40572765b76873c597247941118c1778d02c8",
+      "pinned_tree": "https://github.com/cline/cline/tree/c3a40572765b76873c597247941118c1778d02c8",
+      "role": "VS Code UX, computer/automation competitive reference",
+      "current_local_status": "research_reference",
+      "license_review": "Apache-2.0 metadata; verify dependencies",
+      "notes": "Primary repo verified; no extraction implementation approved"
+    },
+    {
+      "key": "grok-build",
+      "repo": "xai-org/grok-build",
+      "canonical_url": "https://github.com/xai-org/grok-build",
+      "pinned_commit": "2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8",
+      "pinned_tree": "https://github.com/xai-org/grok-build/tree/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8",
+      "role": "coding agent/workflow competitive reference",
+      "current_local_status": "research_reference",
+      "license_review": "Apache-2.0 metadata; verify dependencies",
+      "notes": "Primary repo verified; no code copied"
+    },
+    {
+      "key": "claude-code",
+      "repo": "anthropics/claude-code",
+      "canonical_url": "https://github.com/anthropics/claude-code",
+      "pinned_commit": "2301018b1f61073c501a8e7a4813ef48c239163b",
+      "pinned_tree": "https://github.com/anthropics/claude-code/tree/2301018b1f61073c501a8e7a4813ef48c239163b",
+      "role": "official public docs/behavior comparison",
+      "current_local_status": "reference_only",
+      "license_review": "No source reuse assumed; inspect repo LICENSE before any copied code",
+      "notes": "Do not assume a full open-source Claude Code implementation is available"
+    },
+    {
+      "key": "mini-swe-agent",
+      "repo": "SWE-agent/mini-swe-agent",
+      "canonical_url": "https://github.com/SWE-agent/mini-swe-agent",
+      "pinned_commit": "04d809ceab9df28f9adaed044884180159172930",
+      "pinned_tree": "https://github.com/SWE-agent/mini-swe-agent/tree/04d809ceab9df28f9adaed044884180159172930",
+      "role": "minimal agent loop baseline",
+      "current_local_status": "research_reference",
+      "license_review": "MIT metadata; verify file/deps",
+      "notes": "Use for benchmark/test design, not new canonical runtime"
+    },
+    {
+      "key": "openhands",
+      "repo": "OpenHands/OpenHands",
+      "canonical_url": "https://github.com/OpenHands/OpenHands",
+      "pinned_commit": "2d174175cedeac45a0bd7c776728464d7c1140a7",
+      "pinned_tree": "https://github.com/OpenHands/OpenHands/tree/2d174175cedeac45a0bd7c776728464d7c1140a7",
+      "role": "developer/cloud isolation and workflow reference",
+      "current_local_status": "research_reference",
+      "license_review": "MIT metadata; verify file/deps",
+      "notes": "No code copied"
+    },
+    {
+      "key": "openhands-sdk",
+      "repo": "OpenHands/software-agent-sdk",
+      "canonical_url": "https://github.com/OpenHands/software-agent-sdk",
+      "pinned_commit": "4cc058275c5a08d845bd846576aafc80e5dd7d0d",
+      "pinned_tree": "https://github.com/OpenHands/software-agent-sdk/tree/4cc058275c5a08d845bd846576aafc80e5dd7d0d",
+      "role": "software-agent SDK/conversation API reference",
+      "current_local_status": "research_reference",
+      "license_review": "MIT metadata; verify file/deps",
+      "notes": "No code copied"
+    },
+    {
+      "key": "openinterpreter",
+      "repo": "openinterpreter/openinterpreter",
+      "canonical_url": "https://github.com/openinterpreter/openinterpreter",
+      "pinned_commit": "ac1fcc8fe57aba51fcc3c79afd57a0883237fe87",
+      "pinned_tree": "https://github.com/openinterpreter/openinterpreter/tree/ac1fcc8fe57aba51fcc3c79afd57a0883237fe87",
+      "role": "computer-use/safety and host-side execution comparison",
+      "current_local_status": "research_reference",
+      "license_review": "Verify license/file/deps",
+      "notes": "Do not adopt ambient host execution security model"
+    }
+  ],
+  "extraction_patterns": [
+    {
+      "id": "SRC-001",
+      "source_repo": "opencode",
+      "status": "PRESERVE_EXISTING",
+      "priority": "P0",
+      "exact_source_files": [
+        {
+          "path": "packages/core/src/session.ts",
+          "url": "https://github.com/anomalyco/opencode/blob/b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322/packages/core/src/session.ts"
+        },
+        {
+          "path": "packages/core/src/session/runner/llm.ts",
+          "url": "https://github.com/anomalyco/opencode/blob/b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322/packages/core/src/session/runner/llm.ts"
+        },
+        {
+          "path": "packages/core/src/tool/registry.ts",
+          "url": "https://github.com/anomalyco/opencode/blob/b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322/packages/core/src/tool/registry.ts"
+        }
+      ],
+      "specific_logic_to_extract": "Canonical session/provider runner, whole-response ToolBatch planning and tool mapping",
+      "horizon_owner_or_adaptation_target": "packages/core/src/session, packages/core/src/tool; \u00a720",
+      "do_not_copy_or_security_limits": "No Rust conversation duplicate or second provider loop",
+      "required_tests": "Core existing parity and Session projection; ToolBatch direct bypass denial"
+    },
+    {
+      "id": "SRC-002",
+      "source_repo": "opencode",
+      "status": "PRESERVE_EXISTING",
+      "priority": "P0",
+      "exact_source_files": [
+        {
+          "path": "packages/tui/package.json",
+          "url": "https://github.com/anomalyco/opencode/blob/b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322/packages/tui/package.json"
+        },
+        {
+          "path": "packages/llm/package.json",
+          "url": "https://github.com/anomalyco/opencode/blob/b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322/packages/llm/package.json"
+        }
+      ],
+      "specific_logic_to_extract": "Retain existing TUI provider/rendering dependencies before introducing changes",
+      "horizon_owner_or_adaptation_target": "packages/tui, packages/llm, packages/app; \u00a7\u00a716,20,31",
+      "do_not_copy_or_security_limits": "No parallel Tauri/TUI/provider SDK",
+      "required_tests": "TUI parity, provider capability tests, P95 performance"
+    },
+    {
+      "id": "SRC-003",
+      "source_repo": "omp",
+      "status": "ADOPT_DESIGN",
+      "priority": "P1",
+      "exact_source_files": [
+        {
+          "path": "crates/pi-edit/src/modes/hashline/patcher.rs",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/crates/pi-edit/src/modes/hashline/patcher.rs"
+        },
+        {
+          "path": "crates/pi-edit/src/store.rs",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/crates/pi-edit/src/store.rs"
+        },
+        {
+          "path": "packages/coding-agent/src/edit/index.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/edit/index.ts"
+        }
+      ],
+      "specific_logic_to_extract": "Hashline anchors+seen-line snapshots; stale recovery, no-op validation; choose edit mode for model",
+      "horizon_owner_or_adaptation_target": "\u00a714 effect broker then existing OpenCode edit executor; \u00a733 tool edit",
+      "do_not_copy_or_security_limits": "16-bit visible hash cannot establish integrity; use full digest and revision+Guard",
+      "required_tests": "stale line, malicious alias, conflict, atomic rollback, model-specific compatibility"
+    },
+    {
+      "id": "SRC-004",
+      "source_repo": "omp",
+      "status": "EXPERIMENT_ONLY",
+      "priority": "P1",
+      "exact_source_files": [
+        {
+          "path": "crates/pi-walker/src/lib.rs",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/crates/pi-walker/src/lib.rs"
+        },
+        {
+          "path": "crates/pi-natives/src/grep.rs",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/crates/pi-natives/src/grep.rs"
+        },
+        {
+          "path": "crates/pi-natives/src/ast.rs",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/crates/pi-natives/src/ast.rs"
+        }
+      ],
+      "specific_logic_to_extract": "Native walker/grep/AST speed and source graph semantics",
+      "horizon_owner_or_adaptation_target": "indexd/src, packages/core/src/horizon proposed RepoIntel (\u00a730)",
+      "do_not_copy_or_security_limits": "Pure scanning first; ignore/workspace/path/symlink rules; trust source revision",
+      "required_tests": "benchmark vs existing glob/grep/index; stale invalidation; symlink sandbox"
+    },
+    {
+      "id": "SRC-005",
+      "source_repo": "omp",
+      "status": "ADOPT_DESIGN",
+      "priority": "P1",
+      "exact_source_files": [
+        {
+          "path": "packages/coding-agent/src/tools/browser/tab-supervisor.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/tools/browser/tab-supervisor.ts"
+        },
+        {
+          "path": "packages/coding-agent/src/tools/browser/tab-worker.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/tools/browser/tab-worker.ts"
+        },
+        {
+          "path": "packages/coding-agent/src/tools/browser/network.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/tools/browser/network.ts"
+        }
+      ],
+      "specific_logic_to_extract": "Named tab worker identity, observation epochs, recycle/recover, CDP/DOM/network visibility",
+      "horizon_owner_or_adaptation_target": "\u00a737 BrowserBackendV1, existing OpenCode/browser adapter surfaces",
+      "do_not_copy_or_security_limits": "Network interception not sandbox; attached tabs/auth/effects require Guard",
+      "required_tests": "tab recovery/stale-handle/attached consent/browser effect retry"
+    },
+    {
+      "id": "SRC-006",
+      "source_repo": "omp",
+      "status": "ADOPT_DESIGN",
+      "priority": "P1",
+      "exact_source_files": [
+        {
+          "path": "packages/coding-agent/src/tools/computer/worker.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/tools/computer/worker.ts"
+        },
+        {
+          "path": "packages/coding-agent/src/tools/computer/supervisor.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/tools/computer/supervisor.ts"
+        },
+        {
+          "path": "crates/pi-natives/src/desktop/mod.rs",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/crates/pi-natives/src/desktop/mod.rs"
+        }
+      ],
+      "specific_logic_to_extract": "Native screenshot/AX/action lifecycle and platform adapters",
+      "horizon_owner_or_adaptation_target": "\u00a737 DesktopActionV1 proposed, Rust ExecutionHost, packages/app",
+      "do_not_copy_or_security_limits": "Unrestricted Eval not permitted; stale capture/focus and OS-specific rights",
+      "required_tests": "screenshot freshness/focus/permission/window handle/esc kill"
+    },
+    {
+      "id": "SRC-007",
+      "source_repo": "omp",
+      "status": "ADOPT_DESIGN",
+      "priority": "P1",
+      "exact_source_files": [
+        {
+          "path": "packages/coding-agent/src/web/search/index.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/web/search/index.ts"
+        },
+        {
+          "path": "packages/coding-agent/src/web/search/provider.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/web/search/provider.ts"
+        },
+        {
+          "path": "packages/coding-agent/src/web/search/providers/public.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/web/search/providers/public.ts"
+        }
+      ],
+      "specific_logic_to_extract": "Typed web search routing, 20 direct+6 grounded registry and provenance/fallback",
+      "horizon_owner_or_adaptation_target": "\u00a737 WebSearchProviderProfileV1 proposed; SecretBroker, tool catalog",
+      "do_not_copy_or_security_limits": "Free/payed mismatch, provider auth/network policy, no invisible API charges",
+      "required_tests": "offline, source provenance, cost opt-in, rate-limit, no silent fallback"
+    },
+    {
+      "id": "SRC-008",
+      "source_repo": "omp",
+      "status": "ADOPT_DESIGN",
+      "priority": "P1",
+      "exact_source_files": [
+        {
+          "path": "packages/coding-agent/src/lsp/mux/daemon.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/lsp/mux/daemon.ts"
+        },
+        {
+          "path": "packages/coding-agent/src/lsp/tool.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/lsp/tool.ts"
+        },
+        {
+          "path": "packages/coding-agent/src/tools/debug.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/tools/debug.ts"
+        }
+      ],
+      "specific_logic_to_extract": "Multiplex language servers; DAP attach/session debugging API",
+      "horizon_owner_or_adaptation_target": "\u00a737 LanguageServiceBrokerV1 and proposed DebugAdapterBrokerV1",
+      "do_not_copy_or_security_limits": "LSP rename/workspace edit and debugger Eval are guarded EFFECTS",
+      "required_tests": "server crash, restart, multiple workspace, protocol/scope, evaluate denial"
+    },
+    {
+      "id": "SRC-009",
+      "source_repo": "omp",
+      "status": "ADOPT_DESIGN",
+      "priority": "P2",
+      "exact_source_files": [
+        {
+          "path": "packages/coding-agent/src/slash-commands/builtin-registry.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/slash-commands/builtin-registry.ts"
+        },
+        {
+          "path": "packages/tui/src/theme/symbols.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/tui/src/theme/symbols.ts"
+        },
+        {
+          "path": "packages/tui/src/overlays/model-hub.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/tui/src/overlays/model-hub.ts"
+        },
+        {
+          "path": "packages/tui/src/overlays/settings-selector.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/tui/src/overlays/settings-selector.ts"
+        },
+        {
+          "path": "packages/coding-agent/src/config/all-settings.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/config/all-settings.ts"
+        }
+      ],
+      "specific_logic_to_extract": "Schema-driven settings, icon slash registry, role/provider hub UX, dynamic statuses",
+      "horizon_owner_or_adaptation_target": "Existing ActionDescriptor/SettingsDescriptor under packages/core, packages/tui, packages/app; \u00a7\u00a716,40",
+      "do_not_copy_or_security_limits": "Do not duplicate command/auth handlers; all aliases hit Guard; no hidden costs",
+      "required_tests": "85 command reference parity, 409 metadata audit, actual Horizon descriptor tests, keyboard UAT"
+    },
+    {
+      "id": "SRC-010",
+      "source_repo": "omp",
+      "status": "ADOPT_DESIGN",
+      "priority": "P2",
+      "exact_source_files": [
+        {
+          "path": "packages/tui/src/chat/figure-markdown.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/tui/src/chat/figure-markdown.ts"
+        },
+        {
+          "path": "packages/tui/src/chat/svg-figure.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/tui/src/chat/svg-figure.ts"
+        },
+        {
+          "path": "packages/tui/src/chat/svg-source.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/tui/src/chat/svg-source.ts"
+        },
+        {
+          "path": "crates/pi-natives/src/svg.rs",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/crates/pi-natives/src/svg.rs"
+        }
+      ],
+      "specific_logic_to_extract": "Incremental SVG source segmentation/partial tag repair, 200ms single-flight latest-good raster, fixed width/theme/epoch",
+      "horizon_owner_or_adaptation_target": "\u00a731/37 ArtifactRenderServiceV2; TUI FigureBlock adapter",
+      "do_not_copy_or_security_limits": "Untrusted SVG in crash-isolated bounded worker, no network/FS/scripts",
+      "required_tests": "partial SVG, malicious XML, stale async frame, theme resize and fallback"
+    },
+    {
+      "id": "SRC-011",
+      "source_repo": "omp",
+      "status": "ADOPT_DESIGN",
+      "priority": "P2",
+      "exact_source_files": [
+        {
+          "path": "packages/tui/src/chat/table-chart.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/tui/src/chat/table-chart.ts"
+        },
+        {
+          "path": "packages/tui/src/charts/chart-plan.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/tui/src/charts/chart-plan.ts"
+        },
+        {
+          "path": "packages/tui/src/charts/chart-svg.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/tui/src/charts/chart-svg.ts"
+        }
+      ],
+      "specific_logic_to_extract": "Numeric table complete detection then local typed chart spec; optional judge plan for smart",
+      "horizon_owner_or_adaptation_target": "\u00a731 TUI ArtifactRenderer + optional Job route",
+      "do_not_copy_or_security_limits": "Smart model cost explicit; table remains source; no chart until closed",
+      "required_tests": "negative values/units/huge tables, no graphics fallback, cost consent"
+    },
+    {
+      "id": "SRC-012",
+      "source_repo": "omp",
+      "status": "ADOPT_DESIGN",
+      "priority": "P2",
+      "exact_source_files": [
+        {
+          "path": "crates/pi-natives/src/mermaid/mod.rs",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/crates/pi-natives/src/mermaid/mod.rs"
+        },
+        {
+          "path": "packages/tui/src/theme/mermaid-cache.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/tui/src/theme/mermaid-cache.ts"
+        },
+        {
+          "path": "packages/tui/src/chat/fence-figure.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/tui/src/chat/fence-figure.ts"
+        }
+      ],
+      "specific_logic_to_extract": "Rust Mermaid layout to Unicode; fit alternatives/capped LRU, finished fence only",
+      "horizon_owner_or_adaptation_target": "\u00a731/37 MermaidTextRendererV1 proposed",
+      "do_not_copy_or_security_limits": "Do not render unsafe Mermaid HTML/JS; isolate parser; source fallback",
+      "required_tests": "unclosed fence, unsupported grammar, worker fault, narrow-width layout"
+    },
+    {
+      "id": "SRC-013",
+      "source_repo": "omp",
+      "status": "ADOPT_DESIGN",
+      "priority": "P2",
+      "exact_source_files": [
+        {
+          "path": "packages/tui/src/components/image.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/tui/src/components/image.ts"
+        },
+        {
+          "path": "packages/tui/src/kitty-graphics.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/tui/src/kitty-graphics.ts"
+        },
+        {
+          "path": "docs/tui-core-renderer.md",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/docs/tui-core-renderer.md"
+        },
+        {
+          "path": "packages/tui/src/chrome/transcript-container.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/tui/src/chrome/transcript-container.ts"
+        }
+      ],
+      "specific_logic_to_extract": "Kitty/SIXEL/Tern capability, ImageBudget leases/transmit once, viewport vs ACKed immutable history",
+      "horizon_owner_or_adaptation_target": "Existing packages/tui; \u00a731/37 TerminalGraphicLease/ViewportHistory",
+      "do_not_copy_or_security_limits": "Never assume image protocol; no graphic memory leak/scroll theft",
+      "required_tests": "ANSI-only/WinTerm/tmux/Kitty, resize, eviction, batch ACK, draft focus"
+    },
+    {
+      "id": "SRC-014",
+      "source_repo": "omp",
+      "status": "ADOPT_DESIGN",
+      "priority": "P2",
+      "exact_source_files": [
+        {
+          "path": "packages/tui/src/tools/streaming-output.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/tui/src/tools/streaming-output.ts"
+        },
+        {
+          "path": "packages/coding-agent/src/session/artifacts.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/session/artifacts.ts"
+        },
+        {
+          "path": "packages/coding-agent/src/session/blob-store.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/session/blob-store.ts"
+        },
+        {
+          "path": "docs/blob-artifact-architecture.md",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/docs/blob-artifact-architecture.md"
+        }
+      ],
+      "specific_logic_to_extract": "Content-addressed blobs, session artifacts with FULL/SAMPLE head/tail fidelity, atomic saved logs",
+      "horizon_owner_or_adaptation_target": "\u00a731/37 ArtifactStoreV2 proposed; existing kernel/src/artifact_store.rs",
+      "do_not_copy_or_security_limits": "Visibility + lifetime + auth, no false fully-saved claim; no direct source delete",
+      "required_tests": "disk-full, 16MiB cap, 8MiB read, dedupe, retry and resume"
+    },
+    {
+      "id": "SRC-015",
+      "source_repo": "omp",
+      "status": "ADOPT_DESIGN",
+      "priority": "P2",
+      "exact_source_files": [
+        {
+          "path": "docs/provider-streaming-internals.md",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/docs/provider-streaming-internals.md"
+        },
+        {
+          "path": "packages/ai/src/utils/event-stream.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/ai/src/utils/event-stream.ts"
+        },
+        {
+          "path": "packages/tui/src/chat/assistant-message.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/tui/src/chat/assistant-message.ts"
+        }
+      ],
+      "specific_logic_to_extract": "Provider delta normalization, stable-prefix incremental Markdown, UI lanes",
+      "horizon_owner_or_adaptation_target": "Existing OpenCode Core/LLM, \u00a731 UiEventMuxV2 and packages/tui",
+      "do_not_copy_or_security_limits": "OMP event queues are UNBOUNDED; adopt bounded presentation only",
+      "required_tests": "multi-turn reconnect, no double receipt, burst backpressure and 100K tokens"
+    },
+    {
+      "id": "SRC-016",
+      "source_repo": "omp",
+      "status": "DEFER",
+      "priority": "POST_V1",
+      "exact_source_files": [
+        {
+          "path": "docs/stream.md",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/docs/stream.md"
+        },
+        {
+          "path": "packages/coding-agent/src/stream/paint-encoder.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/stream/paint-encoder.ts"
+        },
+        {
+          "path": "packages/coding-agent/src/stream/redactor.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/stream/redactor.ts"
+        }
+      ],
+      "specific_logic_to_extract": "Separate explicit redacted screen stream/record (paint frames vs model events)",
+      "horizon_owner_or_adaptation_target": "\u00a731 optional remote UI streaming only after privacy/security release gate",
+      "do_not_copy_or_security_limits": "Best-effort redaction not secrecy; do not upload screen/files without consent",
+      "required_tests": "redaction adversarial, image placeholder, auth/tls, reconnect, opt-in"
+    },
+    {
+      "id": "SRC-017",
+      "source_repo": "deepseek-harness",
+      "status": "REFERENCE_ONLY",
+      "priority": "P2",
+      "exact_source_files": [
+        {
+          "path": "docs/architecture.md",
+          "url": "https://github.com/deepseek-ai/deepseek-harness/blob/5badb15009ae1756c3afe0ae0cef1faafc290ccc/docs/architecture.md"
+        },
+        {
+          "path": "packages/boot/plugin-manager/README.md",
+          "url": "https://github.com/deepseek-ai/deepseek-harness/blob/5badb15009ae1756c3afe0ae0cef1faafc290ccc/packages/boot/plugin-manager/README.md"
+        }
+      ],
+      "specific_logic_to_extract": "Modular plugin lifecycle and capability-source arbitration",
+      "horizon_owner_or_adaptation_target": "\u00a729 plugin/mcp registry, \u00a737 typed adapter layer",
+      "do_not_copy_or_security_limits": "No trust shortcut via host plugin initialization",
+      "required_tests": "plugin dependency graph, permission provenance, unload/reload"
+    },
+    {
+      "id": "SRC-018",
+      "source_repo": "codex",
+      "status": "REFERENCE_ONLY",
+      "priority": "P2",
+      "exact_source_files": [
+        {
+          "path": "codex-rs/ext/goal/src/tool.rs",
+          "url": "https://github.com/openai/codex/blob/8c0f7011674145da7e10627769fb221c74fbf7a0/codex-rs/ext/goal/src/tool.rs"
+        },
+        {
+          "path": "codex-rs/ext/goal/src/spec.rs",
+          "url": "https://github.com/openai/codex/blob/8c0f7011674145da7e10627769fb221c74fbf7a0/codex-rs/ext/goal/src/spec.rs"
+        },
+        {
+          "path": "codex-rs/tui/src/slash_command.rs",
+          "url": "https://github.com/openai/codex/blob/8c0f7011674145da7e10627769fb221c74fbf7a0/codex-rs/tui/src/slash_command.rs"
+        }
+      ],
+      "specific_logic_to_extract": "Goal input grammar and TUI command ideas",
+      "horizon_owner_or_adaptation_target": "\u00a716/40 GoalDraft and ActionDescriptor",
+      "do_not_copy_or_security_limits": "No Rust canonical conversation, no second goal authority",
+      "required_tests": "SpecVersion approval, keyboard and plan/execute gate"
+    },
+    {
+      "id": "SRC-019",
+      "source_repo": "mini-swe-agent",
+      "status": "REFERENCE_ONLY",
+      "priority": "P3",
+      "exact_source_files": [
+        {
+          "path": "src/minisweagent/agents/default.py",
+          "url": "https://github.com/SWE-agent/mini-swe-agent/blob/04d809ceab9df28f9adaed044884180159172930/src/minisweagent/agents/default.py"
+        }
+      ],
+      "specific_logic_to_extract": "Minimal agent loop baseline and task fixtures",
+      "horizon_owner_or_adaptation_target": "\u00a732 evaluation",
+      "do_not_copy_or_security_limits": "Not alternative provider/runtime",
+      "required_tests": "easy repository fix, error recover, token budgets"
+    },
+    {
+      "id": "SRC-020",
+      "source_repo": "openhands-sdk",
+      "status": "REFERENCE_ONLY",
+      "priority": "P3",
+      "exact_source_files": [
+        {
+          "path": "openhands-sdk/openhands/sdk/agent/agent.py",
+          "url": "https://github.com/OpenHands/software-agent-sdk/blob/4cc058275c5a08d845bd846576aafc80e5dd7d0d/openhands-sdk/openhands/sdk/agent/agent.py"
+        },
+        {
+          "path": "openhands-sdk/openhands/sdk/conversation/conversation.py",
+          "url": "https://github.com/OpenHands/software-agent-sdk/blob/4cc058275c5a08d845bd846576aafc80e5dd7d0d/openhands-sdk/openhands/sdk/conversation/conversation.py"
+        }
+      ],
+      "specific_logic_to_extract": "SDK abstractions for external worker and structured collaboration",
+      "horizon_owner_or_adaptation_target": "\u00a729 agent harness adapter, \u00a737 delegation mailbox",
+      "do_not_copy_or_security_limits": "External agent cannot own canonical Session or bypass effects",
+      "required_tests": "third-party action tool/budget/security compatibility"
+    },
+    {
+      "id": "SRC-021",
+      "source_repo": "openinterpreter",
+      "status": "REFERENCE_ONLY",
+      "priority": "P1",
+      "exact_source_files": [
+        {
+          "path": "README.md",
+          "url": "https://github.com/openinterpreter/openinterpreter/blob/ac1fcc8fe57aba51fcc3c79afd57a0883237fe87/README.md"
+        },
+        {
+          "path": "docs/open-interpreter-delta.md",
+          "url": "https://github.com/openinterpreter/openinterpreter/blob/ac1fcc8fe57aba51fcc3c79afd57a0883237fe87/docs/open-interpreter-delta.md"
+        }
+      ],
+      "specific_logic_to_extract": "Host computer control risk/reference",
+      "horizon_owner_or_adaptation_target": "\u00a714/37 DesktopAction",
+      "do_not_copy_or_security_limits": "Reject unrestricted interpreter and side-effect shells",
+      "required_tests": "OS permission deny, ambient resource access denied"
+    },
+    {
+      "id": "SRC-022",
+      "source_repo": "grok-build",
+      "status": "REFERENCE_ONLY",
+      "priority": "P3",
+      "exact_source_files": [
+        {
+          "path": "README.md",
+          "url": "https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/README.md"
+        }
+      ],
+      "specific_logic_to_extract": "Product comparison and benchmark inspiration",
+      "horizon_owner_or_adaptation_target": "\u00a728/32 task catalog",
+      "do_not_copy_or_security_limits": "Product claims are not implementation evidence",
+      "required_tests": "adversarial benchmark reproduction"
+    },
+    {
+      "id": "SRC-023",
+      "source_repo": "cline",
+      "status": "REFERENCE_ONLY",
+      "priority": "P3",
+      "exact_source_files": [
+        {
+          "path": "README.md",
+          "url": "https://github.com/cline/cline/blob/c3a40572765b76873c597247941118c1778d02c8/README.md"
+        }
+      ],
+      "specific_logic_to_extract": "Product/TUI and VS Code UX inspiration",
+      "horizon_owner_or_adaptation_target": "\u00a716/26 UI and \u00a732 acceptance",
+      "do_not_copy_or_security_limits": "Do not copy framework/extension licensing without review",
+      "required_tests": "end-to-end UI+permissions parity"
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto"
 import {
   LLM,
   LLMClient,
@@ -37,6 +38,8 @@ import { SessionRunnerModel } from "./model"
 import { createLLMEventPublisher } from "./publish-llm-event"
 import { toLLMMessages } from "./to-llm-message"
 import { MAX_STEPS_PROMPT } from "./max-steps"
+import { SessionSupervisor } from "../../session/supervisor"
+import type { EffectAdmission } from "../../session/supervisor"
 import { Snapshot } from "../../snapshot"
 import { makeLocationNode } from "../../effect/app-node"
 import { llmClient } from "../../effect/app-node-platform"
@@ -68,11 +71,10 @@ import { llmClient } from "../../effect/app-node-platform"
  *   - [x] Persist reasoning, provider errors, and tool-call events incrementally as they arrive.
  *
  * - Tool settlement and continuation
- *   - [x] Durably record each tool call before side effects begin.
- *   - [x] Authorize and execute recorded local calls through a core-owned registry hook.
- *   - [x] Persist typed success, failure, and provider-executed tool outcomes.
- *   - [x] Collect local calls until the provider turn completes; validate the full batch before dispatch.
- *   - [x] Start each admitted local call concurrently and await all settlements before continuation.
+ *   - [x] Persist provider tool-call events; local calls dispatch only after complete-batch input validation.
+ *   - [x] Settle local calls through the core registry and persist local/hosted outcomes.
+ *   - [ ] Authorize every effectful call through Rust Guard/EffectIntent/lease and execute it through ExecutionHost.
+ *   - [x] Collect local calls through terminal provider response and validate the full batch before dispatch.
  *   - [ ] Add scoped runtime context, progress updates, attachment normalization,
  *     plugins, and cancellation settlement.
  *   - [x] Reload projected history and start the next explicit provider turn after local tool results.
@@ -99,6 +101,8 @@ const layer = Layer.effect(
     const llm = yield* LLMClient.Service
     const agents = yield* AgentV2.Service
     const tools = yield* ToolRegistry.Service
+    const permission = yield* PermissionV2.Service
+    const supervisor = yield* SessionSupervisor.Service
     const models = yield* SessionRunnerModel.Service
     const store = yield* SessionStore.Service
     const location = yield* Location.Service
@@ -182,6 +186,7 @@ const layer = Layer.effect(
       if (session.location.directory !== location.directory || session.location.workspaceID !== location.workspaceID)
         return yield* Effect.interrupt
       const agent = yield* agents.select(session.agent)
+      const policySnapshotDigest = yield* permission.policySnapshotDigest({ agent: agent.id })
       const initialized = yield* SessionContextEpoch.initialize(db, loadSystemContext(agent), session.id)
       const toolFibers = yield* FiberSet.make<void, ToolOutputStore.Error>()
       let needsContinuation = false
@@ -294,6 +299,56 @@ const layer = Layer.effect(
             } else {
               const validation = yield* Effect.forEach(localToolCalls, (call) => materialization.validate(call))
               const invalid = validation.some((message) => message !== undefined)
+              let admission: EffectAdmission | undefined
+              if (!invalid) {
+                const capabilities = localToolCalls.map((call) => materialization.classify(call))
+                const guarded = capabilities.some(
+                  (capability) => capability.effectClass === "effect" || capability.effectClass === "unknown",
+                )
+                if (guarded) {
+                  admission = yield* supervisor
+                    .prepareToolBatch({
+                      sessionID: session.id,
+                      batchID: `batch_${randomUUID().replaceAll("-", "")}`,
+                      turnContextDigest: `sha256:${createHash("sha256")
+                        .update(
+                          JSON.stringify({
+                            runner: "SessionRunnerLLM",
+                            sessionID: session.id,
+                            agentID: agent.id,
+                            providerID: model.provider,
+                            modelID: model.id,
+                            modelVariant: session.model?.variant ?? null,
+                            agentPermissions: agent.info?.permissions ?? [],
+                            permissionPolicyDigest: policySnapshotDigest,
+                            toolDefinitions: materialization.definitions,
+                          }),
+                        )
+                        .digest("hex")}`,
+                      calls: localToolCalls.map((call, index) => ({
+                        callID: call.id,
+                        capabilityID: capabilities[index]!.id,
+                        arguments: call.input,
+                      })),
+                    })
+                    .pipe(
+                      Effect.catch((error) =>
+                        Effect.succeed({
+                          status: "denied" as const,
+                          reason: `Rust Guard unavailable: ${error.message}`,
+                        }),
+                      ),
+                    )
+                  if (
+                    admission.status === "admitted" &&
+                    (localToolCalls.length !== 1 || capabilities[0]?.id !== "files.write")
+                  )
+                    admission = {
+                      status: "denied",
+                      reason: "Rust admitted an unsupported local ToolBatch",
+                    }
+                }
+              }
               for (const [index, call] of localToolCalls.entries()) {
                 const validationError = validation[index]
                 if (invalid) {
@@ -309,7 +364,26 @@ const layer = Layer.effect(
                   )
                   continue
                 }
+                if (admission?.status === "denied") {
+                  yield* publish(
+                    LLMEvent.toolResult({
+                      id: call.id,
+                      name: call.name,
+                      result: { type: "error", value: admission.reason },
+                    }),
+                  )
+                  continue
+                }
                 const assistantMessageID = yield* publisher.assistantMessageID(call.id)
+                const effect =
+                  admission?.status === "admitted"
+                    ? {
+                        challengeID: admission.challenge.challengeID,
+                        effectID: admission.challenge.effectID,
+                        target: admission.challenge.target,
+                        resource: admission.challenge.resource,
+                      }
+                    : undefined
                 yield* Effect.uninterruptibleMask((restore) =>
                   restore(
                     materialization.settle({
@@ -317,6 +391,7 @@ const layer = Layer.effect(
                       agent: agent.id,
                       assistantMessageID,
                       call,
+                      ...(effect ? { effect } : {}),
                     }),
                   ).pipe(
                     Effect.flatMap((settlement) =>
@@ -466,6 +541,7 @@ export const node = makeLocationNode({
     EventV2.node,
     llmClient,
     AgentV2.node,
+    PermissionV2.node,
     ToolRegistry.node,
     SessionRunnerModel.node,
     SessionStore.node,
@@ -476,5 +552,6 @@ export const node = makeLocationNode({
     Config.node,
     Snapshot.node,
     Database.node,
+    SessionSupervisor.node,
   ],
 })

@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FigureBlockV1",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "figureId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "messagePartId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sourceRevision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "sourceDigest": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "enum": [
+        "svg",
+        "mermaid",
+        "chart"
+      ]
+    },
+    "status": {
+      "enum": [
+        "open",
+        "rendering",
+        "ready",
+        "failed",
+        "closed"
+      ]
+    },
+    "rendererVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "themeEpoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "geometryEpoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "altText": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "sourceArtifactRef": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "figureId",
+    "messagePartId",
+    "sourceRevision",
+    "sourceDigest",
+    "kind",
+    "status",
+    "rendererVersion",
+    "themeEpoch",
+    "geometryEpoch"
+  ],
+  "additionalProperties": false
+}

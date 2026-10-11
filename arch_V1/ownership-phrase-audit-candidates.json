@@ -1,0 +1,351 @@
+{
+  "status": "mechanical phrase flags; NOT semantic legal/architecture findings",
+  "candidate_count": 69,
+  "candidate_lines": [
+    {
+      "path": "arch_V1/36-CONTRACT-CONVERGENCE-PLAN.md",
+      "line": 7,
+      "text": "- OpenCode Core V2 owns Session/Input/Message/Part/provider continuation, model transport and conversational tool-call/result parts. Rust MUST NOT recreate their content in a canonical Thread store."
+    },
+    {
+      "path": "arch_V1/15-RUNTIME-EXECUTION.md",
+      "line": 4,
+      "text": "> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19\u201326. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit."
+    },
+    {
+      "path": "arch_V1/15-RUNTIME-EXECUTION.md",
+      "line": 6,
+      "text": "> **2026-10-11 audit resolution:** Read this chapter with \u00a7\u00a728\u201334. For V1, OpenCode remains canonical for Session/Input/Message/Part/provider continuation. Rust OwnerLog is canonical only for HorizonCode-managed control-plane facts (Goal/Spec/Run/Task/Attempt, ToolBatch control metadata/correlation, effects/approvals/leases, recovery and evidence). Any older wording that makes a Rust Thread store the competing canonical conversational transcript is **superseded**. New agent/context/index/local-model/UI-performance/analytics contracts in \u00a7\u00a729\u201333 are additive normative requirements; they are not"
+    },
+    {
+      "path": "arch_V1/15-RUNTIME-EXECUTION.md",
+      "line": 64,
+      "text": "> **v2 ownership cutover annotation:** The v1 Rust-canonical-Thread ownership described in portions of this section is a historical target, not the current OpenCode-first design. Canonical conversational Session messages and provider continuation are targeted to remain in OpenCode. The Rust kernel remains authoritative for managed Run/Goal, effects and evidence, with the existing OwnerLog preserved as a verified primitive. The actual code cutover requires Session replay/tool/compaction parity; this architecture edit alone does not complete that migration. See [decisions](17-GOVERNANCE-DECISION"
+    },
+    {
+      "path": "arch_V1/07-UX-COMMANDS.md",
+      "line": 4,
+      "text": "> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19\u201326. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit."
+    },
+    {
+      "path": "arch_V1/14-EFFECTS-EXECUTION-SECURITY.md",
+      "line": 4,
+      "text": "> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19\u201326. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit."
+    },
+    {
+      "path": "arch_V1/13-COMPOSITION-IPC.md",
+      "line": 4,
+      "text": "> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19\u201326. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit."
+    },
+    {
+      "path": "arch_V1/13-COMPOSITION-IPC.md",
+      "line": 6,
+      "text": "> **2026-10-11 audit resolution:** Read this chapter with \u00a7\u00a728\u201334. For V1, OpenCode remains canonical for Session/Input/Message/Part/provider continuation. Rust OwnerLog is canonical only for HorizonCode-managed control-plane facts (Goal/Spec/Run/Task/Attempt, ToolBatch control metadata/correlation, effects/approvals/leases, recovery and evidence). Any older wording that makes a Rust Thread store the competing canonical conversational transcript is **superseded**. New agent/context/index/local-model/UI-performance/analytics contracts in \u00a7\u00a729\u201333 are additive normative requirements; they are not"
+    },
+    {
+      "path": "arch_V1/13-COMPOSITION-IPC.md",
+      "line": 44,
+      "text": "Private IPC remains length-prefixed bounded MessagePack, authenticated per peer and epoch. Host cannot mint a lease or directly bypass the Rust Guard. The kernel is NOT a second public HTTP API or a replacement SessionStore. Current P1.2 observer is a tested *read-only* subset, not this fully integrated effect path."
+    },
+    {
+      "path": "arch_V1/13-COMPOSITION-IPC.md",
+      "line": 48,
+      "text": "> **v2 ownership cutover annotation:** The v1 Rust-canonical-Thread ownership described in portions of this section is a historical target, not the current OpenCode-first design. Canonical conversational Session messages and provider continuation are targeted to remain in OpenCode. The Rust kernel remains authoritative for managed Run/Goal, effects and evidence, with the existing OwnerLog preserved as a verified primitive. The actual code cutover requires Session replay/tool/compaction parity; this architecture edit alone does not complete that migration. See [decisions](17-GOVERNANCE-DECISION"
+    },
+    {
+      "path": "arch_V1/11-LIFECYCLE.md",
+      "line": 4,
+      "text": "> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19\u201326. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit."
+    },
+    {
+      "path": "arch_V1/11-LIFECYCLE.md",
+      "line": 6,
+      "text": "> **2026-10-11 audit resolution:** Read this chapter with \u00a7\u00a728\u201334. For V1, OpenCode remains canonical for Session/Input/Message/Part/provider continuation. Rust OwnerLog is canonical only for HorizonCode-managed control-plane facts (Goal/Spec/Run/Task/Attempt, ToolBatch control metadata/correlation, effects/approvals/leases, recovery and evidence). Any older wording that makes a Rust Thread store the competing canonical conversational transcript is **superseded**. New agent/context/index/local-model/UI-performance/analytics contracts in \u00a7\u00a729\u201333 are additive normative requirements; they are not"
+    },
+    {
+      "path": "arch_V1/11-LIFECYCLE.md",
+      "line": 11,
+      "text": "- OpenCode Session is a continuing conversation aggregate; `SessionClosed` does not imply Run finished, and Run completion does not delete transcript. The older Rust canonical Thread migration path is recorded as superseded until parity gate."
+    },
+    {
+      "path": "arch_V1/11-LIFECYCLE.md",
+      "line": 99,
+      "text": "> **v2 ownership cutover annotation:** The v1 Rust-canonical-Thread ownership described in portions of this section is a historical target, not the current OpenCode-first design. Canonical conversational Session messages and provider continuation are targeted to remain in OpenCode. The Rust kernel remains authoritative for managed Run/Goal, effects and evidence, with the existing OwnerLog preserved as a verified primitive. The actual code cutover requires Session replay/tool/compaction parity; this architecture edit alone does not complete that migration. See [decisions](17-GOVERNANCE-DECISION"
+    },
+    {
+      "path": "arch_V1/02-DOMAIN.md",
+      "line": 4,
+      "text": "> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19\u201326. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit."
+    },
+    {
+      "path": "arch_V1/02-DOMAIN.md",
+      "line": 6,
+      "text": "> **2026-10-11 audit resolution:** Read this chapter with \u00a7\u00a728\u201334. For V1, OpenCode remains canonical for Session/Input/Message/Part/provider continuation. Rust OwnerLog is canonical only for HorizonCode-managed control-plane facts (Goal/Spec/Run/Task/Attempt, ToolBatch control metadata/correlation, effects/approvals/leases, recovery and evidence). Any older wording that makes a Rust Thread store the competing canonical conversational transcript is **superseded**. New agent/context/index/local-model/UI-performance/analytics contracts in \u00a7\u00a729\u201333 are additive normative requirements; they are not"
+    },
+    {
+      "path": "arch_V1/02-DOMAIN.md",
+      "line": 60,
+      "text": "A direct interactive Session is created/promoted/persisted by OpenCode. Horizon may record bounded ToolBatchControl and EffectIntent facts for its mutating tool operations WITHOUT creating a Rust Thread, Turn or canonical message aggregate. Ordinary pair coding does not fabricate a Goal/Run/Task just to log one tool. A managed Goal/Run pins its own criteria, Task/Attempt/Worker bindings and SessionLinks to one or more OpenCode Sessions. Provider turn completion does not imply Task PASS. Replaying a Session update never fabricates a managed effect receipt."
+    },
+    {
+      "path": "arch_V1/02-DOMAIN.md",
+      "line": 62,
+      "text": "Legacy ThreadV1/TurnV1 Rust-canonical design was superseded and preserved in the \u00a736 provenance archive. Section 12's legacy logical Thread schemas are non-operative historical input; new implementation must not instantiate those as production conversation truth. The only Rust-owned tool-batch facts are metadata and authorization transitions, not copied conversation parts."
+    },
+    {
+      "path": "arch_V1/01-SYSTEM.md",
+      "line": 4,
+      "text": "> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19\u201326. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit."
+    },
+    {
+      "path": "arch_V1/01-SYSTEM.md",
+      "line": 6,
+      "text": "> **2026-10-11 audit resolution:** Read this chapter with \u00a7\u00a728\u201334. For V1, OpenCode remains canonical for Session/Input/Message/Part/provider continuation. Rust OwnerLog is canonical only for HorizonCode-managed control-plane facts (Goal/Spec/Run/Task/Attempt, ToolBatch control metadata/correlation, effects/approvals/leases, recovery and evidence). Any older wording that makes a Rust Thread store the competing canonical conversational transcript is **superseded**. New agent/context/index/local-model/UI-performance/analytics contracts in \u00a7\u00a729\u201333 are additive normative requirements; they are not"
+    },
+    {
+      "path": "arch_V1/17-GOVERNANCE-DECISIONS.md",
+      "line": 4,
+      "text": "> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19\u201326. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit."
+    },
+    {
+      "path": "arch_V1/17-GOVERNANCE-DECISIONS.md",
+      "line": 96,
+      "text": "> **v2 ownership cutover annotation:** The v1 Rust-canonical-Thread ownership described in portions of this section is a historical target, not the current OpenCode-first design. Canonical conversational Session messages and provider continuation are targeted to remain in OpenCode. The Rust kernel remains authoritative for managed Run/Goal, effects and evidence, with the existing OwnerLog preserved as a verified primitive. The actual code cutover requires Session replay/tool/compaction parity; this architecture edit alone does not complete that migration. See [decisions](17-GOVERNANCE-DECISION"
+    },
+    {
+      "path": "arch_V1/17-GOVERNANCE-DECISIONS.md",
+      "line": 111,
+      "text": "| Canonical conversation (v2 supersedes historical v1 owner decision) | **OpenCode Session/input/Turn/message/Part and provider continuation remain canonical** | Rust Kernel stores managed Goal/Run/task/effects/evidence plus read-only Session event correlation; old Rust-canonical transcript proposal remains historical until tested cutover and must not be implemented as a competing owner |"
+    },
+    {
+      "path": "arch_V1/05-SECURITY.md",
+      "line": 4,
+      "text": "> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19\u201326. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit."
+    },
+    {
+      "path": "arch_V1/18-OPERATIONS-RELEASE.md",
+      "line": 4,
+      "text": "> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19\u201326. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit."
+    },
+    {
+      "path": "arch_V1/18-OPERATIONS-RELEASE.md",
+      "line": 6,
+      "text": "> **2026-10-11 audit resolution:** Read this chapter with \u00a7\u00a728\u201334. For V1, OpenCode remains canonical for Session/Input/Message/Part/provider continuation. Rust OwnerLog is canonical only for HorizonCode-managed control-plane facts (Goal/Spec/Run/Task/Attempt, ToolBatch control metadata/correlation, effects/approvals/leases, recovery and evidence). Any older wording that makes a Rust Thread store the competing canonical conversational transcript is **superseded**. New agent/context/index/local-model/UI-performance/analytics contracts in \u00a7\u00a729\u201333 are additive normative requirements; they are not"
+    },
+    {
+      "path": "arch_V1/18-OPERATIONS-RELEASE.md",
+      "line": 27,
+      "text": "> **v2 ownership cutover annotation:** The v1 Rust-canonical-Thread ownership described in portions of this section is a historical target, not the current OpenCode-first design. Canonical conversational Session messages and provider continuation are targeted to remain in OpenCode. The Rust kernel remains authoritative for managed Run/Goal, effects and evidence, with the existing OwnerLog preserved as a verified primitive. The actual code cutover requires Session replay/tool/compaction parity; this architecture edit alone does not complete that migration. See [decisions](17-GOVERNANCE-DECISION"
+    },
+    {
+      "path": "arch_V1/03-FLOWS.md",
+      "line": 4,
+      "text": "> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19\u201326. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit."
+    },
+    {
+      "path": "arch_V1/03-FLOWS.md",
+      "line": 79,
+      "text": "For a read-only response no Rust effect is required. Direct turns do not create managed Goal/Run/Task rows. An explicit managed run adds SessionLink correlation, Task state and independent end-state verification. Provider failure, malformed calls or partial stream dispatch ZERO unstarted tool calls; a true already-dispatched operation is reconciled, never blindly retried. Current Core host batch preflight exists, but Rust Guard/ExecutionHost universal routing remains P1.3 NOT IMPLEMENTED. The old sequence that asks Rust to persist a canonical input/Turn/Message is retained only in the \u00a736 prov"
+    },
+    {
+      "path": "arch_V1/24-LOCAL-CODE-AUDIT-AND-MIGRATION.md",
+      "line": 57,
+      "text": "| Session / prompts / tool turns | `packages/opencode/src/session/{session,prompt,processor,compaction}.ts`, `packages/core/src/session/runner/llm.ts` | Adapter preserving history and turn semantics | Rust canonical conversational message store |"
+    },
+    {
+      "path": "arch_V1/24-LOCAL-CODE-AUDIT-AND-MIGRATION.md",
+      "line": 124,
+      "text": "Use Ctrl+C to stop the diagnostic. An idle live watcher is **not** yet launched/managed automatically by the application supervisor. The follower does not replace the OpenCode Session DB, run models or execute any tools."
+    },
+    {
+      "path": "arch_V1/16-UX-SETTINGS-ECOSYSTEM.md",
+      "line": 4,
+      "text": "> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19\u201326. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit."
+    },
+    {
+      "path": "arch_V1/16-UX-SETTINGS-ECOSYSTEM.md",
+      "line": 6,
+      "text": "> **2026-10-11 audit resolution:** Read this chapter with \u00a7\u00a728\u201334. For V1, OpenCode remains canonical for Session/Input/Message/Part/provider continuation. Rust OwnerLog is canonical only for HorizonCode-managed control-plane facts (Goal/Spec/Run/Task/Attempt, ToolBatch control metadata/correlation, effects/approvals/leases, recovery and evidence). Any older wording that makes a Rust Thread store the competing canonical conversational transcript is **superseded**. New agent/context/index/local-model/UI-performance/analytics contracts in \u00a7\u00a729\u201333 are additive normative requirements; they are not"
+    },
+    {
+      "path": "arch_V1/09-SOURCE-MAP.md",
+      "line": 4,
+      "text": "> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19\u201326. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit."
+    },
+    {
+      "path": "arch_V1/04-STATE-EVENTS.md",
+      "line": 4,
+      "text": "> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19\u201326. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit."
+    },
+    {
+      "path": "arch_V1/04-STATE-EVENTS.md",
+      "line": 21,
+      "text": "| OpenCode EventV2 / Session / Message / Part | OpenCode Core | Conversational source of truth, prompt/input/turn/continuation and tool-call/result message parts. Rust MUST NOT create these as new canonical Thread streams |"
+    },
+    {
+      "path": "arch_V1/06-CAPABILITIES.md",
+      "line": 4,
+      "text": "> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19\u201326. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit."
+    },
+    {
+      "path": "arch_V1/28-COMPETITIVE-GAP-AUDIT.md",
+      "line": 108,
+      "text": "Several historical sections say Rust ThreadService owns canonical message/input/Turn transcript state and OpenCode Session is only a projection. The current OpenCode-first decision is the opposite for conversation content."
+    },
+    {
+      "path": "arch_V1/28-COMPETITIVE-GAP-AUDIT.md",
+      "line": 112,
+      "text": "Any historical text claiming production migration to a Rust canonical transcript is superseded. OwnerLog remains useful for Rust-owned control aggregates."
+    },
+    {
+      "path": "arch_V1/08-RECONCILIATION.md",
+      "line": 4,
+      "text": "> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19\u201326. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit."
+    },
+    {
+      "path": "arch_V1/08-RECONCILIATION.md",
+      "line": 8,
+      "text": "- Prior v1 design proposed Rust canonical Thread history and OpenCode SQL as a mere projection. Current v2 adopts OpenCode's mature Session history for conversations and Rust for durable managed Goal/Run/effects; this is a *prospective cutover*, not proof it is implemented."
+    },
+    {
+      "path": "arch_V1/08-RECONCILIATION.md",
+      "line": 46,
+      "text": "| Durable conversation | OpenCode Core Session/Input/Message/Part/provider continuation is canonical | Rust OwnerLog stores only managed Run/Task and ToolBatchControl/effect/evidence metadata; no duplicate transcript |"
+    },
+    {
+      "path": "arch_V1/08-RECONCILIATION.md",
+      "line": 151,
+      "text": "| Rust becomes canonical full conversation transcript store | **Rejected for V1.** OpenCode Session/Input/Message/Part/provider continuation stays canonical; Rust owns Horizon managed control facts only |"
+    },
+    {
+      "path": "arch_V1/34-DOCUMENT-LINE-AUDIT-LEDGER.md",
+      "line": 130,
+      "text": "| `08-RECONCILIATION.md` | NORMATIVE/HISTORICAL | old\u2192new decisions | Must record CR-01 explicitly and label previous Rust-canonical transcript proposal superseded. |"
+    },
+    {
+      "path": "arch_V1/34-DOCUMENT-LINE-AUDIT-LEDGER.md",
+      "line": 180,
+      "text": "| `docs/superpowers/specs/2026-10-09-horizon-p2-kernel-foundation-design.md` | HISTORICAL DESIGN | Read and banner verified. Old Rust-canonical transcript body is explicitly superseded; OwnerLog/durability/artifact/IPC work remains usable only for Rust-owned Horizon control aggregates. |"
+    },
+    {
+      "path": "arch_V1/27-IMPLEMENTATION-READINESS-AUDIT.md",
+      "line": 248,
+      "text": "The previous \u201cRust canonical Thread transcript\u201d direction is **not** an implementation"
+    },
+    {
+      "path": "arch_V1/25-DATA-AND-CONTROL-PLANE-CROSSWALK.md",
+      "line": 9,
+      "text": "- **DEC-V1-18 runtime gate OPEN:** The V1 owner mapping is settled: no Rust canonical Thread, OpenCode stores tool call/result Message/Part, and Rust ToolBatchControl stores bounded authorization/effect correlation for direct or managed Sessions. Exact payload and authenticated effect dispatch still require acceptance under P1.3; Session projection remains read-only until then."
+    },
+    {
+      "path": "arch_V1/25-DATA-AND-CONTROL-PLANE-CROSSWALK.md",
+      "line": 92,
+      "text": "Use Ctrl+C to stop the diagnostic. An idle live watcher is **not** yet launched/managed automatically by the application supervisor. The follower does not replace the OpenCode Session DB, run models or execute any tools."
+    },
+    {
+      "path": "arch_V1/10-DELIVERY.md",
+      "line": 4,
+      "text": "> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19\u201326. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit."
+    },
+    {
+      "path": "arch_V1/10-DELIVERY.md",
+      "line": 100,
+      "text": "- Original Rust-owned Thread migration steps are historical, preserved in the provenance archive (\u00a736)."
+    },
+    {
+      "path": "arch_V1/10-DELIVERY.md",
+      "line": 337,
+      "text": "Use Ctrl+C to stop the diagnostic. An idle live watcher is **not** yet launched/managed automatically by the application supervisor. The follower does not replace the OpenCode Session DB, run models or execute any tools."
+    },
+    {
+      "path": "arch_V1/10-DELIVERY.md",
+      "line": 355,
+      "text": "Use the `AGENTS.md` autonomous verified-slice loop: do not stop after one passing test; do not cross safety/budget/user-decision boundaries; continue to the next unblocked dependency and update the tracked handoff. Historical Rust-canonical Thread wording is superseded by adopted v2 ownership, but the existing Rust OwnerLog is retained."
+    },
+    {
+      "path": "arch_V1/GLOSSARY.md",
+      "line": 4,
+      "text": "> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19\u201326. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit."
+    },
+    {
+      "path": "arch_V1/32-TASK-BASED-AGENT-TEST-CATALOG.md",
+      "line": 484,
+      "text": "| AC-001 | legacy Rust-canonical conversation adapter is requested | no second text transcript/Thread owner; OpenCode owns canonical Session |"
+    },
+    {
+      "path": "arch_V1/README.md",
+      "line": 22,
+      "text": "The original 01\u201318 design contracts remain topic owners after their explicit reconciliation amendments. Conflicts are resolved first by adopted decisions in \u00a717 and the 2026-10-11 resolutions in \u00a7\u00a728\u201335, then by source-grounded integration chapters 19\u201327. Historical Rust-canonical transcript text is superseded by A-V2-11/\u00a734 CR-01. Mark any new contradiction in \u00a734 before coding. The uploaded comprehensive v2 source under `../docs/architecture-input/` is provenance only, not a competing architecture."
+    },
+    {
+      "path": "arch_V1/README.md",
+      "line": 72,
+      "text": "- [Control-plane OpenAPI](contracts-v2/control-api.openapi.json) \u2014 additive run/goal route skeletons; does not replace OpenCode HTTP Session API."
+    },
+    {
+      "path": "arch_V1/12-DOMAIN-SCHEMAS.md",
+      "line": 4,
+      "text": "> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19\u201326. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit."
+    },
+    {
+      "path": "arch_V1/12-DOMAIN-SCHEMAS.md",
+      "line": 6,
+      "text": "> **2026-10-11 audit resolution:** Read this chapter with \u00a7\u00a728\u201334. For V1, OpenCode remains canonical for Session/Input/Message/Part/provider continuation. Rust OwnerLog is canonical only for HorizonCode-managed control-plane facts (Goal/Spec/Run/Task/Attempt, ToolBatch control metadata/correlation, effects/approvals/leases, recovery and evidence). Any older wording that makes a Rust Thread store the competing canonical conversational transcript is **superseded**. New agent/context/index/local-model/UI-performance/analytics contracts in \u00a7\u00a729\u201333 are additive normative requirements; they are not"
+    },
+    {
+      "path": "arch_V1/12-DOMAIN-SCHEMAS.md",
+      "line": 292,
+      "text": "> **v2 ownership cutover annotation:** The v1 Rust-canonical-Thread ownership described in portions of this section is a historical target, not the current OpenCode-first design. Canonical conversational Session messages and provider continuation are targeted to remain in OpenCode. The Rust kernel remains authoritative for managed Run/Goal, effects and evidence, with the existing OwnerLog preserved as a verified primitive. The actual code cutover requires Session replay/tool/compaction parity; this architecture edit alone does not complete that migration. See [decisions](17-GOVERNANCE-DECISION"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-09-horizon-p2-kernel-foundation-design.md",
+      "line": 3,
+      "text": "> **SUPERSEDED OWNERSHIP NOTE \u2014 2026-10-11:** This document is retained as historical design/provenance. Its OwnerLog durability, artifact, handshake and recovery work remains useful for Rust-owned Horizon control aggregates, but its direction that Rust become the sole canonical **conversation transcript** owner is superseded by `arch_V1/17` A-V2-11 and `arch_V1/34` CR-01. V1 keeps OpenCode Session/Input/Message/Part/provider continuation canonical. Do **not** implement a competing Rust message transcript from this document."
+    },
+    {
+      "path": "docs/superpowers/plans/2026-10-09-horizon-p2-foundation.md",
+      "line": 11,
+      "text": "**Tech Stack:** Rust 2024, Cargo, existing bounded MessagePack codec, BLAKE3, canonical JSON, standard filesystem APIs, a private bundled-SQLite derived index, and targeted Rust unit/integration tests."
+    },
+    {
+      "path": "docs/superpowers/plans/2026-10-10-horizon-p2-thread-cutover.md",
+      "line": 3,
+      "text": "> **SUPERSEDED PLAN NOTE \u2014 2026-10-11:** Do not execute this plan as written. The full Rust canonical Thread transcript cutover is no longer the V1 target. Retain only tasks that remain valid for Rust-owned Horizon control-plane aggregates, private IPC, durability, effects/recovery and bounded OpenCode correlation under `arch_V1/17`, \u00a7\u00a728\u201334 and current `HANDOFF.md`."
+    },
+    {
+      "path": "docs/superpowers/plans/2026-10-10-horizon-p2-thread-cutover.md",
+      "line": 18,
+      "text": "**Architecture:** Rust `ThreadService` appends canonical owner records to OwnerLog V2;"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-10-10-horizon-p2-thread-cutover.md",
+      "line": 307,
+      "text": "- [ ] Replace canonical reads in `SessionStore.get/context/runnerContext/message` with"
+    },
+    {
+      "path": "AGENTS.md",
+      "line": 32,
+      "text": "Where historical v1 sections conflict with the OpenCode-first amendments, the adopted decisions in `17`, the source-grounded chapters `19\u201327`, and the 2026-10-11 audit resolutions `28\u201335` prevail. Read `34-DOCUMENT-LINE-AUDIT-LEDGER.md` for conflict disposition. Do not infer that historical Rust-canonical-transcript text is current or implemented; V1 keeps OpenCode canonical for conversation content and Rust for Horizon managed control/effects/evidence. Escalate a true unresolved choice through change control; do not silently invent a second authority."
+    },
+    {
+      "path": "HANDOFF.md",
+      "line": 74,
+      "text": "- **P2 \u2014 Durable Goal/Run kernel:** additive OwnerLog/domain control records for criteria, DAG, attempts, checkpoints, run/session correlation and final-revision evidence. **Do not create a Rust canonical conversation transcript**; OpenCode Session/message/provider continuation remains canonical."
+    },
+    {
+      "path": "HANDOFF.md",
+      "line": 136,
+      "text": "1. Old v1 `Rust ThreadService canonical transcript` language still exists in historical sections; v2 explicitly targets OpenCode canonical Session. A gated source/version parity transition is required."
+    },
+    {
+      "path": "IMPLEMENTER_PROMPT.md",
+      "line": 8,
+      "text": "3. Read the latest `CURRENT_RUN.md`, then inspect relevant implementation source and tests. Do not assume historical Rust-canonical Thread text is current. OpenCode Session/Input/Message/Part/provider continuation stays canonical in V1; Rust owns Horizon managed control/effects/recovery/evidence. Do not rebuild OpenCode providers, Session engine, or a second UI."
+    },
+    {
+      "path": "IMPLEMENTER_PROMPT.md",
+      "line": 27,
+      "text": "Use arch_V1/36-CONTRACT-CONVERGENCE-PLAN.md and 37-RUNTIME-SERVICE-LLD.md; \u00a733 is canonical tool naming, contracts-v2/capability-registry-v1.json is a design-only alias seed. Before implementing any affected adapter run python3 scripts/architecture/validate_convergence.py, inspect real source path, add TS/Rust cross-runtime fixtures and enforce current Guard/no bypass. No new Tauri/greenfield project structure, no Rust canonical Session text, no silent provider/model changes. Resume active P1.2-B then P1.3 as in HANDOFF; these docs do not claim P1.3 readiness."
+    }
+  ]
+}

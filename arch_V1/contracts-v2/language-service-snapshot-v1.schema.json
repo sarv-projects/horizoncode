@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LanguageServiceSnapshotV1",
+  "type": "object",
+  "properties": {
+    "source": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "editor"
+            },
+            "clientId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "serverName": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "clientId",
+            "serverName"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "supervised"
+            },
+            "executionId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "serverName": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "executionId",
+            "serverName"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "external"
+            },
+            "adapterId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "serverName": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "adapterId",
+            "serverName"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "workspaceId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "languageId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "rootUri": {
+      "type": "string",
+      "minLength": 1
+    },
+    "configurationDigest": {
+      "type": "string",
+      "minLength": 1
+    },
+    "serverVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "capabilitiesDigest": {
+      "type": "string",
+      "minLength": 1
+    },
+    "health": {
+      "type": "string",
+      "enum": [
+        "starting",
+        "healthy",
+        "degraded",
+        "failed"
+      ]
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "source",
+    "workspaceId",
+    "languageId",
+    "rootUri",
+    "configurationDigest",
+    "capabilitiesDigest",
+    "health",
+    "generation"
+  ],
+  "additionalProperties": false
+}

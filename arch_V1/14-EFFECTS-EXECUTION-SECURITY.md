@@ -391,7 +391,7 @@ Its process helper retains bounded stdout and stderr separately but kills only t
 direct child on watchdog timeout, and its outcome has no explicit truncation receipt;
 the adopted ExecutionHost contract requires observable truncation and process-tree lifecycle
 semantics before treating that helper as a production executor. See the revision-bound
-observations and exact ranges in [`09-SOURCE-MAP.md`](09-SOURCE-MAP.md#96-current-horizon-implementation-seams-inspected).
+observations and exact current source seams in 20-OPENCODE-INTEGRATION-LLD.md and the live source/tests.
 
 ## 14.6 Network, MCP and provider-hosted tools
 
@@ -589,3 +589,120 @@ must include the exact build/backend/OS version and test subject, plus:
 Unit tests and mock backends establish code paths only. They do not establish OS
 containment. Windows is the first-release acceptance target; Linux/macOS contracts
 remain separately reported and cannot inherit Windows evidence or vice versa.
+
+
+## 14.15 2026-10-11 effect coverage for new capability families
+
+The effect boundary applies uniformly to the expanded catalog (§33).
+
+### Agent/profile/skill/hook effects
+
+Creating or editing a profile/skill/hook definition is configuration persistence. Invoking
+one does **not** grant its declared permissions. Script resources, hook shell handlers and
+skill-provided commands become ordinary ToolIntents and require the same canonical resource
+resolution, Guard decision, one-use lease and settlement.
+
+### Browser/DOM effects
+
+Browser navigation, click/type/select, downloads, file uploads, clipboard, permissions and
+network requests are typed effect classes. DOM/page content is untrusted data. Browser handles
+bind to one browser/session/snapshot generation; stale handles cannot execute silently.
+
+### Local inference endpoint effects
+
+Connecting to an endpoint is a network operation governed by the selected provider profile and
+egress policy. A URL named “localhost” is resolved/validated at execution time; endpoint auth
+uses SecretRefs. Offline mode denies unapproved remote egress from provider, web, MCP, plugins,
+telemetry and embedding services.
+
+### Automation effects
+
+A schedule authorizes *when to request* an action, not the action's eventual authority.
+AutomationRun invokes the same ActionDescriptor → Guard/Effect path as interactive use. Stored
+approval cannot outlive its exact declared scope/revision/expiry.
+
+### Artifact/render effects
+
+Rendering an artifact is read-only only when the renderer is truly isolated from filesystem,
+network and process side effects. Mermaid/PDF/image/conversion helpers that spawn processes or
+read external resources run under ExecutionHost with explicit capability leases.
+
+### RepoIntel effects
+
+Reading/indexing source requires path read policy; filesystem watchers require watch
+capability. Index writes target Horizon-owned cache storage and cannot alter source. LSP,
+formatter or parser helper processes are ExecutionHost children and share process/resource
+ownership rules.
+
+### Context operations
+
+Trim/prune/compact/clear mutate the **context view**, not canonical conversation history.
+Explicit account/project data deletion is a separate high-impact operation with its own effect
+class and confirmation semantics.
+
+### Read-only/Plan is an effect policy
+
+A profile's `read_only`/Plan input mode resolves to an immutable effect constraint enforced after
+tool expansion and before ExecutionHost launch. The policy cannot be implemented only by denying
+`file.write`.
+
+Examples that are mutating unless proven otherwise:
+- shell redirection, `sed -i`, formatter `--write`, notebook execution with file writes;
+- Git commit/reset/checkout/merge/stash mutation;
+- package install/update and generated lockfiles;
+- database migrations/writes;
+- service/process start when it changes project/runtime state;
+- LSP workspace edits/code actions/executeCommand;
+- MCP/plugin/skill aliases that ultimately perform any of the above.
+
+For read-only mode, unknown/opaque effects deny or require an explicit permission-mode transition.
+A tool description, model explanation or shell command name cannot classify itself as read-only.
+
+### Language-service process boundary
+
+Editor-owned Pyright/rust-analyzer/tsserver/etc. are **external observed resources**, not
+ExecutionHost children. HorizonCode may query through an authenticated adapter but cannot kill,
+restart, reconfigure or inherit secrets from them.
+
+A Horizon-supervised language server:
+- launches through ExecutionHost;
+- receives only required workspace/read/env capabilities;
+- has bounded stdout/stderr/process lifetime;
+- gets its own resource identity/generation;
+- treats project-supplied binaries/config as untrusted executable inputs;
+- routes any mutating workspace edit back through ordinary ToolIntent/Guard.
+
+A language query result is data, not authority to apply the server's suggested code action.
+
+### Structured-call safety
+
+Malformed/truncated provider tool data never reaches Guard as a guessed valid intent.
+Adapters may perform representation-only normalization when semantically lossless; semantic
+repair produces a new proposal with a new identity. This prevents a weak/local model or gateway
+from turning an unterminated path/command into an unintended effect.
+
+## 14.16 Desktop, web search, DAP and REPL effect classification
+
+These are adopted capability families under A-V2-25 and use the same Guard/ExecutionHost.
+
+Desktop:
+- display/window/screenshot/AX queries are scoped reads;
+- pointer/keyboard/scroll/focus/clipboard writes are effects;
+- references are invalid after observation-generation change;
+- no unrestricted desktop Eval capability exists.
+
+Web search:
+- provider listing/status is read-only;
+- network search is a network action governed by provider/privacy/cost policy;
+- explicit user/provider policy is required before fallback that changes billing or authentication class.
+
+DAP:
+- start/attach/process control, breakpoint mutation, continue/step/pause and evaluate are effects;
+- stack/scopes/variables are scoped reads from a live adapter generation;
+- evaluate may be disabled entirely by policy and never grants ambient host shell authority.
+
+Persistent REPL:
+- start/reset/stop and code execution are controlled worker operations;
+- filesystem/network/process/tool callbacks are constrained by the REPL profile;
+- callback tool invocations resolve to canonical capabilities and cross Guard;
+- REPL state never carries raw kernel/SecretBroker authority across sessions.

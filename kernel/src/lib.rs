@@ -5,17 +5,21 @@
 //! immutable artifact-byte store, and an in-process startup-readiness gate. On Linux,
 //! private Unix peer authentication, first-message negotiation, READY-gated application
 //! RPC, redacted Session projection pages and bounded ACK delivery are connected and
-//! integration-tested. A Linux one-connection Session observer executable now assembles
-//! these pieces for one bounded page, but is not yet under an application-owned persistent
-//! host lifecycle. Artifact storage is not wired to a production owner/Guard
-//! authorization path. The Windows named-pipe peer-authentication adapter is partial and
-//! is not integrated into the Session RPC state machine; the request-cancellation registry
-//! remains an advisory primitive. Windows runtime, canonical owner lifecycle and managed
-//! process supervision remain unavailable.
+//! integration-tested. The Linux GNU package embeds the one-connection observer and
+//! supports a Guard-mediated, one-use `files.write` effect; other effect capabilities
+//! remain unavailable.
+//!
+//! Artifact storage is not wired to a production owner. The Windows named-pipe
+//! peer-authentication adapter is partial and is not integrated into the Session RPC
+//! state machine; request cancellation remains an advisory primitive. Windows runtime
+//! and managed worker/process supervision remain unavailable.
 
 // This bounded storage seam is intentionally not wired to a production owner yet.
 #[allow(dead_code)]
 pub(crate) mod artifact_store;
+pub mod guard;
+#[cfg(target_os = "linux")]
+pub mod effect_host;
 pub mod messagepack;
 pub mod owner_log;
 pub(crate) mod owner_log_index;

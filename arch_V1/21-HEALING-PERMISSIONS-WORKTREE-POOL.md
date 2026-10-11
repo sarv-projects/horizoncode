@@ -1,134 +1,106 @@
-# HEALING PERMISSIONS WORKTREE POOL — canonical v2 integration
+# 21. Reliability, permissions and bounded workspace pool
 
-> **Current repository binding (2026-10-10):** Permission states are ask/safe_auto/yolo_sandbox; no silent model fallback; three-dimensional workspace isolation covers source + process/ports + test DB. User-owned dirty work is never pool garbage.
+Status: normative reliability policy.
 
-## Imported v2 architectural basis
+## 21.1 Healing tiers
 
-# 11 — Reliability: four-tier healing, permissions, pooled workspaces, routing and completion
+L1 deterministic local repair:
+- retry safe reads;
+- refresh stale file/index/browser refs;
+- rebuild derived cache/index;
+- restart crashed disposable worker;
+- re-run deterministic validation.
 
-## 11.1 Review of the supplied four-tier self-healing hypothesis
+L2 selected-provider/runtime infrastructure recovery:
+- reconnect/re-auth when allowed;
+- same selected model/provider retry under bounded policy;
+- wait for rate window according to user policy.
 
-**Source of design:** the four levels in the user's message are a proposed architecture, NOT a verified implementation of Claude Code. Do not attribute a specific SHA-256 error clustering, EWMA, deterministic fallback waterfall, or self-modifying policy to Anthropic absent authoritative source. Source-grounded inspiration: public Claude Code docs describe memory, hooks, skills and permissions. Their memory is advisory context, not execution enforcement.
+L3 advisory learned patterns:
+- suggest known remediation with provenance;
+- never self-authorize policy/config changes.
 
-The four levels should be **orthogonal strategies governed by one coordinator** rather than a literal always-executed cascade: syntax failure goes L1; 429 goes L2; repeated resolved defect contributes an L3 candidate asynchronously; proposed heuristic config changes require L4 testing; *policy privilege changes are never self-applied.*
+L4 post-V1 adaptive changes:
+- sandboxed candidate generation/evaluation only;
+- explicit adoption gate.
 
-### L1: deterministic and cheap application-level repair
+## 21.2 Retry law
 
-`FailureNormalizer.normalize(diagnostic)` -> canonical `{kind, tool, code, fileRelative, symbol?, normalizedStack, buildFingerprint, revision, environment}`. Strip volatile timestamps/paths and PII before hashing; `signature = sha256(canonicalJson(stableFields))`. Preserve original logs in restricted artifacts. Same signature **twice in three attempts** is an escalation *signal*, not unconditional proof of a loop: only escalate when no new file/content hash, test observation or resolution evidence has appeared.
+Retry only when:
+- failure class is retryable;
+- target effect idempotency/reconciliation is understood;
+- budget/deadline permits;
+- retry cannot widen capability or silently change model/provider/cost.
 
-`PreflightPipeline.run(stage)` -> file patch syntax validation; parsed syntax via installed compiler/parser or tree-sitter; formatter dry run; relevant LSP diagnostics; impacted lint/check; targeted tests. Never use AST correctness as a substitute for runtime correctness; parsers often accept semantically wrong code. Apply mechanical fixes (formatter, safe import organizing) only if deterministic AND allowlisted. Ambiguous diagnostic -> make small context bundle for **user-selected model**, not assumed cheap different model.
+UNKNOWN non-idempotent effects are reconciled or escalated, not re-executed.
 
-`PatchCheckpoint.create()` stores `{baseRevision, stagedPatchDigest, previousGreenDigest, touchedHashes, acceptedCriterionIds}` in CAS. `rollbackFailedPatch()` may discard only a staged/owned patch if no newer user modifications; otherwise quarantine and propose 3-way reverse patch. Git *virtual trees* are valid for staging, but cannot reliably undo external DB calls, commands or deployed code. Never `git reset --hard` against user's working state.
+## 21.3 Permission modes
 
-`NoProgressDetector.observe(step)` uses weighted evidence: verified criterion improvement, changed relevant symbols/files, removed blocker, novel diagnostic or resolved error count. Rolling repeated-hash threshold, time deadline, tool-call count and user cap; classify `repeat_same_plan`, `no_new_evidence`, `over_budget`, `different_failure`, `working`. Do not stop useful retries simply because a stack trace signature repeats while affected state improves.
+Ask, Safe Auto and YOLO-in-sandbox are user experience policies over the same canonical Guard.
 
-### L2: provider and infrastructure availability
+Mode changes are explicit config actions. No mode grants secret access, production authority, unsupported sandbox or hidden paid routing.
 
-`ProviderCircuitBreaker`: per **endpoint + model + auth-profile** `{CLOSED,OPEN,HALF_OPEN}`. Record retryable 429/5xx/timeout separately from bad API key, invalid schema, context overflow, safety rejection, malformed tool response, and user cancellation. Only repeat idempotent inference calls when client has proved prior response was not committed or can reconcile provider request ID. Stream interruptions may have billable tokens and partial text—retain partial receipt and mark usage `unknown` if not provided.
+## 21.4 Worktree/resource pool
 
-EWMA for latency/error-rate: `s_t = α*x_t + (1-α)*s_(t-1)`; minimum sample count, cold-start baseline and breaker cooldown required. Separate input-length/streaming-mode buckets to avoid penalizing slow but normal local models. `OPEN` means unavailable at that endpoint; automatic retries of SAME selected model can occur with capped exponential backoff and jitter, but **model/provider switching requires explicit per-profile user opt-in**. The default is NO cross-model fallback. An explicitly configured fallback list can require `ask` before switching; show likely cost, data locality and output fidelity impacts.
+Use a worktree only when isolation benefits exceed integration/cleanup cost.
 
-### L3: empirical learner, optional local-first
+Pool record:
+- workspace/repo/base revision;
+- worktree path;
+- lease owner/run/task;
+- status FREE/LEASED/QUARANTINED;
+- dirty/untracked summary;
+- owned processes/ports/test DB;
+- last verified clean revision.
 
-`OutcomeMiner` records `ErrorSignature`, candidate resolution, repo/framework version, attempts, tests and failure rate. Only evidence-confirmed successful repairs enter `ResolutionPatternStore`. Deduplicate and keep confidence/provenance; avoid storing secret-bearing log strings. Project-specific facts outrank generalized similarity. Retrieval supplies a *suggestion* to the selected model, never a privileged tool directive. User can disable history learning and delete derived entries. Memory retention configurable by record count/bytes/TTL; do not blindly prune all records at 30 days when pinned project knowledge is still relevant.
+Rules:
+- hard maximum;
+- optional small idle warm minimum;
+- never delete dirty/user-owned state;
+- lease/fence before use;
+- release processes/ports first;
+- verify clean before returning to FREE;
+- quarantine ambiguity;
+- no per-subagent automatic worktree explosion.
 
-`ModelQualityEstimator` records context-size bucket, output truncation, format failures, tool schema error rate, time to first token, throughput and success **with sample sizes**. Do not assert e.g. “60% drop rate at 14k tokens” until supported by a statistically useful local sample. It may recommend a shorter context or compatibility harness, but may NOT silently change model.
+## 21.5 Parallelism
 
-### L4: sandboxed adaptive changes
+Parallelize independent work when:
+- write sets/resources do not conflict;
+- integration order is understood;
+- expected speedup exceeds orchestration/model/worktree cost.
 
-`HealingCandidate` has `{category:prompt_template|tool_hint|harness_decoder|diagnostic_rule|timeout_recommendation, diff, evidence, origin, scope, experimentId, decision}`. **Policy rules, allowed paths, elevated privileges, secret access, deployment approvals and sandbox strength are excluded** from automatic promotion. `CanaryEvaluator` runs against immutable benchmark fixtures and optional live *shadow* runs with no privileged write authority; compare false complete, regression, latency and measured consumption. `PromotionGate` requires configured evaluation coverage, minimum samples, no security regression, and human approval for any change affecting operations. Rollback candidate on worse metrics, retain provenance.
+Prefer single writer plus read-only reviewers for shared critical files.
 
-### Healing coordinator pseudocode
+## 21.6 Recovery coordinator
 
-```text
-onFailure(ctx, err):
-  cause = normalize(err); persist FailureObserved(cause)
-  if cause.kind in {policy_denied, invalid_user_scope, uncertain_external_effect}:
-      pause_or_block_with_explanation(); return
-  if cause.kind in {syntax, lint, deterministic_patch, test_failure}:
-      if safe_known_recipe(cause) and can_prove_scope():
-          staged = repair_in_owned_overlay(cause)
-          if verify(staged): accept_staged_only(); return
-      if no_progress_detected(): change_approach_or_request_user(); return
-      schedule_bounded_repair_on_same_selected_model(); return
-  if cause.kind in {rate_limited, endpoint_down, timeout}:
-      update_breaker(); if safe_retry_selected_model(): retry_with_jitter()
-      else pause_and_offer_manual_provider_choice(); return
-  if cause.kind in {context_overflow, malformed_tool}:
-      preserve_goal_and_evidence(); compact_or_change_harness_with_user_policy(); retry_bound(); return
-  if cause.kind == workspace_conflict: quarantine_stale_worker_and_integrate(); return
-  record_unknown(); show_actionable_error(); do_not_fake_completion()
-```
+For a failed operation:
+1. classify deterministic/provider/effect/resource/user-decision failure;
+2. inspect current owner state;
+3. perform cheapest safe healing tier;
+4. revalidate source generation/permissions;
+5. retry with same identity only when idempotent;
+6. otherwise create new Attempt/worker identity;
+7. stop at configured exhaustion and surface NeedsYou.
 
-## 11.2 Model and harness policy: no forced automatic routing
+## 21.7 Completion protection
 
-Settings modes:
-- `pinned`: exactly one selected provider/model/harness. **Default**. Same-endpoint retries allowed according to budget.
-- `manual-fallback`: when unavailable, UI displays explicit comparable choices; execution PAUSES. Never route without acceptance.
-- `user-defined-fallback`: optional ordered list of approved pairs `{provider,model,harness,authorization,dataLocality,costCeiling}`; may switch ONLY when profile explicitly allows that trigger. No global AI-chosen ranking.
-- `offline-only`: network egress blocked for model/agent tasks and relevant extensions; only reachable local endpoints permitted.
+Healing cannot turn a failed criterion into PASS. Verification remains independent and binds final revision.
 
-The scheduler may choose which *already configured agent profile* executes a task if the user selected delegation, but this is NOT automatic model routing. If a subagent profile points to a different model, display it in task creation/agent settings, inherit cost/data policy and never surprise-switch the main profile.
+## 21.8 Quota/cost protection
 
-`ModelSelectionChanged` must not rewrite existing Run configuration silently. Resume/new attempt snapshots new selection and records a provenance link; provider-native reasoning metadata may be incompatible across model switches, so don't replay opaque metadata blindly.
+Do not spend extra model calls merely to keep workers busy. Cache/reuse deterministic work and stop when objective already satisfied.
 
-## 11.3 Permission modes without repeated prompts
+Provider/model fallback is never inferred from quota pressure; it must be explicitly configured/authorized.
 
-| Mode | Behavior | Strict limits |
-|---|---|---|
-| `ask` | Interactive approval for non-read effects; support allow-once and scoped grant for task/session/project | deny out-of-scope and secret access, never invisible |
-| `safe-auto` | Pre-authorize bounded known-safe reads, test/lint, owned temporary writes and reversible scoped source patches | escalating effects, production changes, outside-root writes and destructive operations require approval |
-| `yolo-in-sandbox` | Skip *repetitive* prompts for in-sandbox developer actions within explicitly selected disposable workspace | MUST enforce sandbox policy, path/egress/secret confinement, resource budget, deny outside boundary; never equivalent to OS-wide root/superuser privileges |
+## 21.9 Acceptance
 
-Keep grant semantics `{effectType,rootGlobs,commands?,networkOrigins?,environment,principal,runId?,maxUses,expiresAt,riskCeiling,revocable}`. Permission precedence deny > organizational restrictions > project restrictions > explicit user grant > mode defaults. `ApprovalCacheKey = hash(principal, tool, actionTemplate, canonicalRoot, environment, riskClass, policyVersion)`, not just command name. Provide quick `Allow once`, `Allow for this task`, `Allow within project`, `Deny`, `View impact`, and `Revoke` in UI. Avoid thousands of approvals by grouping low-risk operations under a short-lived scoped lease, but show a visible audit feed. `YOLO` label MUST explain residual unsandboxed risk if strict confinement is unavailable; do not silently downgrade security.
-
-## 11.4 Multi-agent coordination model
-
-A task is eligible for parallelization when writes/resources are independent OR explicitly isolated. The conflict graph includes `{pathGlobs, repoRevision, exportedAPIs, ports, writableCaches, databases, runningServices, secretsRefs, browserProfiles, publishTargets, sharedFiles}`. Treat unknown predicted write sets conservatively; dynamically detect write/write conflict at effect broker when two workers touch the same revision. Scheduler estimates `parallelBenefit = sequentialCriticalPath - predictedParallelCriticalPath - setupCost - integrationCost - reworkRisk`. Only positive-benefit groups recommended; explicit user override cannot violate safety resource constraints.
-
-**Worker allocator:** `capacity`, `queue`, `fairness`, `maxConcurrentByProject`, `maxConcurrentByProvider`, `maxConcurrentByUser`, `agentCapabilities`. Prefer warm worker/process reuse where isolation permits, not arbitrary creation. When a worker crashes, lease fencing ensures no stale writes. Subagents return typed `ArtifactRef`, `EvidenceRef`, `PatchRef`, `BlockingQuestion`, `ResourceReceipt`, not prose alone. A parent task waits for each child result's accepted outcome or safely handles partial results.
-
-## 11.5 Reusable bounded worktree pool — exact algorithm
-
-Pool states: `CREATING`, `WARM_IDLE`, `LEASED`, `DIRTY_RECOVERABLE`, `QUARANTINED`, `RECLAIMING`, `DELETED`. Defaults suggested (configurable): `max_active=4`, `max_warm_idle=2`, `min_warm_idle=0`, idle TTL `20m`, total disk soft cap `5GiB` dedicated worktree data excluding shared read-only cache; numbers are product hypotheses, not universal constants.
-
-Acquire:
-1. lock pool project; reconcile exited PID/process-group and lease fence;
-2. choose `WARM_IDLE` whose repository ID/config/toolchain/base commit match and whose clean Git index/working tree AND untracked files verification pass;
-3. if none, and active+creating below caps and sufficient disk/inode budget, create linked worktree on unique internal branch/ref; otherwise queue;
-4. allocate port, test DB namespace, writable build/output cache and browser profile as **a single reservation manifest**. Roll back partially allocated resources on failure;
-5. bind `{taskId, attemptId, workerId, resourceId, epoch, leaseTTL, baseRevision, ownerUid}` and issue short-lived grant;
-6. assign to agent; ensure every tool call checks current fence.
-
-Release:
-1. fence old execution and stop attached process tree; wait for child cleanup and open-handle stabilization;
-2. gather Git dirty/untracked report and staged patch effects; preserve unmerged data and checkpoint artifacts;
-3. integration work happens on staging branch with three-way merge; run final integrated verification; do not modify user's branch until user policy allows;
-4. if all changes integrated/archived, strip task-generated directories and reset only **owned** worktree to prepared base; validate clean state and safe reference, transition `WARM_IDLE`;
-5. if unknown writes/processes/dirty patches remain -> `QUARANTINED`, not idle reuse; show recover/review/discard options;
-6. periodically retain up to `max_warm_idle`, reclaim clean idle after TTL/disk pressure; Git prune only after OS process and worktree metadata check.
-
-Heartbeats must not be sole cleanup authority (worker crash, machine crash); use startup recovery scan. Do not delete an entire worktree because a job finished if a dirty user change, unmerged agent result, or active child PID remains. Build caches shared read-only keyed by toolchain+lockfile; writable target/build dirs isolated with explicit eviction policy. Track disk use, inode use, clean/dirty state, lease epoch, reuse count, last verified base and cleanup outcomes.
-
-## 11.6 Parallel integration and retry
-
-Parallel agent tasks operate on pinned base snapshots; their proposed artifacts are merged into a fresh integration tree in dependency order. An API contract change can invalidate downstream tasks. On conflict, first use deterministic Git 3-way resolution only for provably independent hunks; otherwise invoke selected model on minimal conflict with both task intents and evidence. After merge, run cross-task checks and re-evaluate the whole goal. A successful subtask verification on earlier branch is stale for final integrated revision unless evidence explicitly remains valid.
-
-## 11.7 Durable goal based on Codex observations, strengthened
-
-`Goal` is a user-owned objective and `GoalRevision` immutable criteria; `Run` executes a version. `/goal` shows objective, status, criteria coverage, pending tasks, budget/time, open questions and evidence. `/goal edit` creates new revision and invalidates affected work. `/goal pause`, `/goal resume`, `/goal clear` have explicit semantics. Agent may call `propose_goal_complete(evidenceRefs)`, `report_goal_blocked(reason)` or `get_goal` but **NOT** `finalize_run` directly. Goal completion gate checks all mandatory criteria against final integrated revision, resolved effects, policy and no active workers. `goal complete` is derived from a successful Run, not a model signal. If user edits a goal while active, do not continue on obsolete approved scope.
-
-## 11.8 Critical invariants and recovery
-
-- No `GoalCompleted` without authoritative verification receipt and final integrated revision.
-- No effect after fence changes. Stale output can be preserved as artifact but NEVER applied.
-- No automatic paid-model switch or external-data transfer under pinned model.
-- No `WARM_IDLE` worktree with untracked writes or running processes.
-- No `yolo-in-sandbox` effect outside enforced sandbox. Refuse / ask for lower mode if sandbox unavailable.
-- No unbounded retries without measurable progress, current user budget, or explicit continuation consent.
-- No silent deletion of user modifications; quarantine is always preferred to destructive cleanup.
-- No agent-generated healing proposal can widen OS privileges, alter security policy or enable network egress automatically.
-- A provider timeout does not imply its request cost was zero, and an external tool timeout does not prove the effect did not happen.
-
-
----
+- crash worker and recover without duplicate effect;
+- stale worktree lease fenced;
+- dirty worktree quarantined;
+- max pool respected under many subagents;
+- user changes never cleaned;
+- UNKNOWN effect prevents blind retry;
+- rate-limit recovery does not switch provider;
+- repeated failures terminate at bounded policy;
+- no healing path changes security/config without authorization.

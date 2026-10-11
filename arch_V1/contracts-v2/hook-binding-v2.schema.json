@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HookBindingV2",
+  "type": "object",
+  "properties": {
+    "hookId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "event": {
+      "type": "string",
+      "enum": [
+        "session_start",
+        "session_resume",
+        "session_stop",
+        "agent_start",
+        "agent_stop",
+        "before_model_call",
+        "after_model_response",
+        "before_tool",
+        "after_tool",
+        "tool_failure",
+        "permission_denied",
+        "before_patch_commit",
+        "file_changed",
+        "before_compaction",
+        "after_compaction",
+        "before_verification",
+        "after_verification",
+        "before_release",
+        "after_release",
+        "run_blocked",
+        "checkpoint_created",
+        "recovery_started",
+        "recovery_finished"
+      ]
+    },
+    "required": {
+      "type": "boolean"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "blocking",
+        "advisory",
+        "async"
+      ]
+    },
+    "matcher": {
+      "type": "object",
+      "properties": {
+        "toolPattern": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pathGlob": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentPattern": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "timeoutMs": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "maxOutputBytes": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "hookId",
+    "event",
+    "required",
+    "mode",
+    "timeoutMs",
+    "maxOutputBytes"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CapabilityRegistryV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "canonical",
+    "aliases"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "canonical": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "effectClass",
+          "status",
+          "sealed"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "enum": [
+              "tool",
+              "agent",
+              "skill",
+              "job",
+              "action"
+            ]
+          },
+          "effectClass": {
+            "enum": [
+              "read_only",
+              "guarded_effect",
+              "control",
+              "unknown"
+            ]
+          },
+          "status": {
+            "enum": [
+              "designed",
+              "code_present",
+              "wired",
+              "tested",
+              "verified"
+            ]
+          },
+          "sealed": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "aliases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "alias",
+          "canonicalId",
+          "source"
+        ],
+        "properties": {
+          "alias": {
+            "type": "string",
+            "minLength": 1
+          },
+          "canonicalId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

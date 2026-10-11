@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WebSearchRequestV1",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "query": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20000
+    },
+    "providerId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "routeClass": {
+      "enum": [
+        "direct_search",
+        "grounded_model_search"
+      ]
+    },
+    "accountRef": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "costPolicy": {
+      "enum": [
+        "free_only",
+        "allow_configured_paid",
+        "unknown_denied"
+      ]
+    },
+    "maxResults": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "timeoutMs": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "domains": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "maxItems": 100
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "requestId",
+    "query",
+    "providerId",
+    "routeClass",
+    "costPolicy",
+    "maxResults",
+    "timeoutMs",
+    "domains"
+  ],
+  "additionalProperties": false
+}

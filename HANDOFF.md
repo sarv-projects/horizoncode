@@ -1,109 +1,219 @@
-# HorizonCode — Implementation Handoff
+# HorizonCode — implementation handoff
 
-**Updated:** 2026-10-10 · **Workspace:** `/home/sarvesh/business_Dev/agentx` · **Branch observed:** `main` · **Architecture authority:** `arch_V1/README.md` and adopted decisions in `arch_V1/17-GOVERNANCE-DECISIONS.md`.
+Updated: 2026-10-11
+Workspace: /home/sarvesh/business_Dev/agentx
+Observed branch/base at architecture consolidation: main / bf0399469470c6ffdcbe5421dc5c506db2d61fae.
+The working tree is intentionally dirty. Re-check status/head at session start.
 
-**Purpose:** Be the concise, durable starting point for any new coding-agent session. The historical `CURRENT_RUN.md` is extensive and locally ignored; consult only when tracing old evidence. This file must be refreshed after each verified implementation slice.
+## Architecture entrypoint
 
-## Mission
+Read:
+1. AGENTS.md
+2. arch_V1/README.md
+3. arch_V1/17-GOVERNANCE-DECISIONS.md
+4. arch_V1/10-DELIVERY.md
+5. this handoff
+6. current implementation plan: docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md
 
-Finish implementation of the OpenCode-first universal software-building/coding agent for non-developers and developers. Continue autonomously from gate to gate while work is safe and authorized; don't stop after one small patch. Requirements include fast direct editing, trusted tools, natural-language + visual building, durable managed goals, security, transparent cheap/free/local model selection, bounded parallel subagents, self-healing, verification, operation and export.
+Then load only the topic owner and local source/tests for the current slice.
 
-## Source-of-truth reading map
+The pre-consolidation architecture is preserved under docs/architecture-archive/2026-10-11-pre-lean-consolidation and is NON-NORMATIVE.
 
-**Start-up compulsory:** `AGENTS.md` → this file → `arch_V1/README.md` → `arch_V1/17-GOVERNANCE-DECISIONS.md` → `arch_V1/27-IMPLEMENTATION-READINESS-AUDIT.md` → `arch_V1/10-DELIVERY.md` → `arch_V1/24-LOCAL-CODE-AUDIT-AND-MIGRATION.md` → `CURRENT_RUN.md` last two dated sections.
+## Current ownership
 
-**Full architecture read once before broad changes:** `arch_V1/01-SYSTEM.md` through `arch_V1/26-UX-ACCEPTANCE-AND-RELEASE.md` plus `GLOSSARY.md`, `README.md`. For a slice, re-read its owning sections; do not replace those contracts with broad assumptions.
+- OpenCode Core: Session/Input/Message/Part/provider continuation and conversational tool results.
+- Rust kernel: managed Goal/Run/Task/Attempt, ToolBatch authorization/control, effects/leases/receipts, evidence/verification.
+- No Rust conversational transcript.
+- UI/index/analytics are derived.
+- Every effectful path ultimately uses Guard/ExecutionHost.
 
-**Specific contractual clusters:**
-- OpenCode reuse, provider/auth/session/model: 01, 06, 09, 19, 20, 24.
-- Run, context, events, lifecycle, API/data, IPC: 02–04, 11–13, 15, 20, 25.
-- Effects, permissions, environments, testing/recovery: 05, 14, 17, 18, 21, 23.
-- UI for novice/developer, picker, commands, skills/MCP, preview: 07, 16, 22, 26.
-- Implementation sequencing, source gaps and acceptance: 08, 10, 17, 23, 24, 27.
+## Current runtime status observed before this documentation-only consolidation
 
-## Repository facts — verified vs not
+Existing and source/test-backed:
+- OpenCode provider/LLM/Session/tool substrate is locally present.
+- Rust OwnerLog/protocol/transport/session projection primitives exist.
+- Linux local peer authentication and host/kernel hello/readiness path exist.
+- bounded Session subscription/page/ACK/replay primitives exist.
+- Core can launch the Rust supervisor in existing tests.
+- Core provider runner has a tested whole-response local-call staging barrier before Bun ToolRegistry dispatch.
 
-| Subsystem | Observed implementation status | Evidence / next check |
+Not complete:
+- production automatic Session lifecycle/cursor consumer acceptance across all paths;
+- active-turn crash-recovery/platform parity;
+- universal Rust Guard/EffectService/ExecutionHost mediation of every mutation path;
+- full managed Goal/Run runtime acceptance;
+- browser/desktop/web-search/DAP/REPL Horizon services;
+- final unified UX/artifact/platform/release acceptance.
+
+Catalog/schema presence for a feature means DESIGNED, not WIRED.
+
+## Last recorded runtime verification before consolidation
+
+From the prior handoff:
+- Rust kernel workspace: 148 tests passed; fmt, strict Clippy and binaries passed.
+- packages/core kernel projection integration: 5 tests / 52 assertions passed.
+- packages/core session runner: 91 tests / 296 assertions passed.
+- recorded provider fixture: 1 test / 15 assertions passed.
+- packages/opencode HTTP route fixture: 3 tests / 10 assertions passed; typechecks recorded passing.
+- full Core suite had 1146 passed and one parallel timeout that passed 10/10 when isolated.
+
+This consolidation changes architecture/docs/contracts only. Re-run relevant runtime tests after implementation changes and do not infer current pass from this historical evidence.
+
+## First implementation dependency
+
+### Gate P1.2-B — finish production Session observer lifecycle
+
+Owners/source:
+- packages/core/src/session/supervisor.ts
+- packages/core/src/session and public SessionV2 flow
+- packages/server composition
+- kernel/src/session_projection.rs
+- kernel/src subscription/handshake/supervisor/startup paths
+- existing Bun/Rust integration tests
+
+Required before close:
+- automatic lifecycle/cursor owner for relevant Session;
+- authenticated/versioned startup;
+- bounded redacted pages + exact completed-page ACK;
+- restart/resnapshot and retention gap;
+- active-turn crash/recovery proof;
+- no conversational write from Rust;
+- platform support stated truthfully.
+
+### Gate P1.3 — universal ToolBatch Guard
+
+Immediately after P1.2-B:
+- enumerate Core and legacy shell/edit/Git effects;
+- plugin/skill/hook/MCP;
+- LSP/DAP;
+- browser/desktop;
+- REPL;
+- settings/auth/network/provider-hosted paths;
+- external-agent effects.
+
+Collect and validate the complete provider local-tool batch before any effect. PREPARE in Rust, issue one-use lease, execute through authorized ExecutionHost, settle receipt/UNKNOWN. Disable effect paths that cannot be pre-authorized.
+
+Do not build effectful new OMP-inspired services before this boundary.
+
+## Subsequent order
+
+P2 managed control -> P3 coding/RepoIntel -> P4 LSP/DAP/REPL -> P5 browser/desktop/web search -> P6 agents/extensions/provider/settings UX -> P7 streaming/artifacts/analytics/automation -> P8 long-horizon/evaluation -> P9 release.
+
+Exact dependency/exit criteria: arch_V1/10-DELIVERY.md.
+
+## External source reuse
+
+Use arch_V1/42-EXTERNAL-SOURCE-PROVENANCE-REGISTER.md.
+
+The local Horizon base SHA above was not present on GitHub remote at audit time; do not fabricate a public tree URL. Remote main at that check was a22f810daa76f42e99a8e455af9e949bf9a4788e.
+
+OMP/OpenCode/competitor pins in 42 are source/reference evidence only.
+
+## Architecture consolidation note
+
+The 2026-10-11 cleanup:
+- archived the previous 46-document bodies before consolidation;
+- reduced 21 duplicate/research/audit chapters to non-normative compatibility stubs;
+- removed active competing conversation-owner state machines/schemas;
+- established one active topic owner per area;
+- added first-class desktop.*, web.search.*, debug.* and repl.* capability families;
+- added their service LLD, security/test contracts and machine schemas;
+- corrected first-party source provenance;
+- rewrote validators to prevent stale authority from returning.
+
+No runtime source was edited by this consolidation.
+
+## Final architecture-consolidation verification
+
+After the lean consolidation on 2026-10-11:
+- active normative architecture: 25 owner/index/glossary documents, 6,382 lines;
+- 21 duplicate/research/audit chapters are short non-normative compatibility stubs; full prior bodies preserved in docs/architecture-archive/2026-10-11-pre-lean-consolidation;
+- active stale ThreadService/ThreadStoreService/Rust-canonical-conversation terms: 0;
+- active normative references to compatibility stubs: 0;
+- actionable broken local Markdown links in regenerated repository manifest: 0;
+- JSON Schema files: 25;
+- canonical machine capability registry IDs: 223; §33 fenced public capability IDs checked: 203;
+- scripts/architecture/validate_convergence.py: 1,012 checks, 0 failures;
+- scripts/architecture/validate_external_sources.py: 413 checks, 0 failures;
+- existing Bun Core-to-Rust Session projection: 5 passed / 52 assertions;
+- existing Rust authenticated RPC ABI test: 2 passed / 0 failed;
+- git diff --check: passed.
+
+The contract-test runner explicitly warns that newly added service schemas are DESIGNED, not generated/wired real TS/Rust services yet. That work begins only at the dependency gates in §10/current plan.
+
+## Working-tree discipline
+
+Preserve every pre-existing modification/untracked file. No commit/push/reset/cleanup has been authorized by this handoff.
+
+## P1.2-B runtime inspection (2026-10-11)
+
+- `SessionSupervisor.node` is registered in Core/OpenCode composition, but the only `open()` callers are in `packages/core/test/kernel-projection-live.test.ts`; production code has no automatic per-Session lifecycle/cursor owner.
+- `Database.path()` and `Global.Path.state` provide existing source/state roots. No production resolver or provisioner supplies the observer executable or `hostBuildDigest`; the only observed executable is the local test build at `kernel/target/debug/session_supervisor`.
+- Rust `session_supervisor` is Linux/Unix-domain specific and serves bounded pages on explicit Subscribe. Existing process tests cover authenticated startup, ACK, restart/resnapshot and source read-only behavior; they do not prove automatic host lifecycle or crash recovery during an active provider turn.
+- Baseline on this work unit: `cd packages/core && bun test test/kernel-projection-live.test.ts` — 5 passed / 52 assertions; `cd kernel && cargo test -p horizoncode-kernel --test session_supervisor_process` — 8 passed.
+- At this inspection point P1.2-B remained open; production wiring and verification are recorded below.
+
+
+## P1.2-B production Session observer lifecycle — verified (2026-10-11)
+
+- `SessionExecutionLocal.node` is installed as the `SessionExecution.node` replacement in HTTP SessionV2 composition. Each local provider drain starts a scoped `SessionSupervisor.watchSession` against the exact `Database.Service.path`; the watcher ACKs bounded redacted pages, survives an active-turn sidecar kill, and performs a final catch-up scan after turn completion.
+- Bundled native Linux GNU packages compile the Rust observer with `--locked --offline --release`, embed the exact bytes and a SHA-256 manifest, and report unsupported package targets as unavailable. Runtime installation is owner-private and pin-verified. The host build digest is computed by the observer from the actual host executable, not a synthetic/test digest.
+- Retention-gap recovery removes only validated owner-private derived projection/cursor files after the old child scope exits. The Rust sidecar reconstructs the projection from the unchanged read-only EventV2 database. A repeated gap or unsafe state file fails closed.
+- SessionLink remains observational: the OpenCode Session ID owns the source stream, the configured database path selects the store, the durable cursor is `{seq,eventDigest}`, the lease/handshake bind epochs and process incarnation, and the Rust projection exposes only event/message/call identifiers. No Rust conversational writer or duplicate transcript was added.
+- Verification: `cd packages/core && bun test test/kernel-projection-live.test.ts test/session-runner-recorded.test.ts` — 8 passed / 91 assertions; `cd packages/core && bun run typecheck` — passed; `cd kernel && cargo test -p horizoncode-kernel --test session_supervisor_process` — 9 passed; `cd packages/opencode && bun run typecheck` — passed; `cd packages/opencode && bun run script/build.ts --single --skip-install --skip-embed-web-ui` — package build and `opencode --version` smoke passed. The generated Linux x64 GNU manifest SHA-256 matched `kernel/target/release/session_supervisor`.
+- Platform evidence is Linux x64 only. Linux arm64 is a supported build target when built natively but was not exercised; Windows, macOS, musl and cross-compiled observer targets are reported unavailable.
+- The task-created `packages/opencode/dist/` output was removed after verification. `kernel/target` was retained as a reusable 599 MiB build cache. Only the primary worktree was used. Existing user changes were preserved; no commit, push, reset, or broad cleanup was performed.
+
+The first bounded effect step is recorded below; P1.3 remains open until every active mutation origin uses the canonical Guard/ExecutionHost boundary.
+
+## P1.3 effect-entrypoint inventory (2026-10-11)
+
+This is an inventory of active source paths, not a claim that the P1.3 gate is implemented. “Permission” below means the existing TypeScript/OpenCode permission service, not Rust Guard. The two read-only scouts covered the independent extension and specialized-runtime slices; their findings were checked against the principal dispatch, ACP, composition and kernel sources listed here. No tests/builds were run for this inventory.
+
+| Origin | Active entrypoints and behavior | Current boundary/status |
 |---|---|---|
-| OpenCode provider/LLM/session/tool code | **Locally present** from pinned OpenCode; not rewritten | `packages/opencode/src`, `packages/core/src`, `packages/llm/src`; compare to `opencode/` pin before upstream edits |
-| Rust kernel OwnerLog/protocol/cancel/transport | **Code and tests exist; Linux Session observer is authenticated and process-tested**, but this is not yet the managed `hz-kernel` runtime | `kernel/src`, `kernel/tests`; full current counts in latest verification ledger |
-| Read-only Rust OpenCode Session projection | **Implemented and tested** | `kernel/src/session_projection.rs`, `kernel/src/bin/session_sync_probe.rs`, `kernel/tests/session_projection.rs` |
-| Live WAL Session event following | **Implemented as diagnostic follower, not automatically supervised** | `packages/core/test/kernel-projection-live.test.ts`; last run 3 Bun tests / 26 assertions |
-| OpenCode Session projection parity | **Actual `SessionV2.prompt` admission/promotion, one recorded complete provider turn, automatic compaction history and blocked-provider interruption history are verified through Rust projection/replay; restart recovery during an active turn remains open** | `packages/core/test/kernel-projection-live.test.ts`, `packages/core/test/session-runner-recorded.test.ts`, `packages/core/test/session-runner.test.ts`, `kernel/src/session_projection.rs` |
-| Linux local peer authentication | **Rust authenticates the Bun host executable; Core checks private socket owner/mode and binds Hello to a fresh nonce/incarnation** | `kernel/src/unix_peer.rs`, `packages/core/src/session/supervisor.ts`, process tests; Windows remains gated |
-| Linux startup-bound RPC connection | **Core Effect-scoped child launches the observer and waits for negotiated READY; Rust validates/replays source before READY** | `packages/core/src/session/supervisor.ts`, `packages/opencode/src/effect/app-runtime.ts`, Rust supervisor |
-| Bounded Session event pages | **Typed negotiated page-end/resnapshot controls, exact ACK cursor and `hasMore`; Core enforces next-sequence and oldest-first ACK** | Rust protocol/subscription and Core client; cross-runtime tests |
-| Kernel supervisor / authenticated IPC | **Linux Bun-to-Rust integration receives actual OpenCode prompt events, stops on Unsubscribe/scope interruption, checkpoints completed pages, and resumes after restart; service is registered in the HTTP root, while automatic Session lifecycle and native Windows remain open** | Core SessionSupervisor, Rust `session_supervisor`, server route composition and live projection tests |
-| Mediated tool/effect authorization across all paths | **Not implemented as complete enforced end-to-end boundary** | `packages/opencode/src/tool`, `packages/core/src`, `arch_V1/14-EFFECTS-EXECUTION-SECURITY.md` |
-| Goals/DAG/tasks/checkpoints/evidence/verification | **Architecture and prototype schema, not runtime acceptance** | `arch_V1/11–12`, 15, 20, 25, `contracts-v2/` |
-| Worktree leasing, parallel scheduler and self-heal | **Design only / implementation unverified** | `arch_V1/21`, 15, 23, 26 |
-| Unified Create/Develop/Delegate/Operate UI | **Design only for the new experience**, upstream app exists | `packages/app`, `packages/desktop`, `arch_V1/16`, 22, 26 |
-| Agent/model picker, local model harness, permissions UI | **Planned; upstream partial capabilities must be measured** | `arch_V1/16`, 21, 22 |
-| Skills/MCP ecosystem | **Upstream code exists; runtime configuration incomplete** | `.opencode/skills/effect/SKILL.md`, `.opencode/skills/rtl-aware-development/SKILL.md`; `.opencode/opencode.jsonc` has `"mcp": {}` at last inspection |
+| Legacy model tools | `packages/opencode/src/session/tools.ts` wraps model calls, runs plugin before/after hooks, then calls `item.execute(args, ctx)`; `ctx.ask` delegates to `Permission.Service`. `tool/registry.ts` loads builtins and dynamic plugin/local `.js`/`.ts` tools. Shell (`tool/shell.ts`), write/edit/patch, Git/VCS, format and PTY paths execute in Bun/host services. | Direct OpenCode execution after existing permission asks; no Rust Guard, lease, or ExecutionHost. Tool definitions/callbacks are not a complete-batch Rust admission. |
+| Plugins/hooks/workspaces | `plugin/index.ts`, `plugin/loader.ts`, `tool/registry.ts`, and plugin trigger callsites load/import arbitrary configured code; `control-plane/workspace-adapter-runtime.ts` invokes adapter callbacks. `control-plane/workspace.ts` passes `OPENCODE_AUTH_CONTENT` to workspace creation callbacks. | In-process plugin/adapter callbacks and host SDK/process/network access; no Guard/ExecutionHost. HTTP Authorization protects route ingress only. |
+| MCP and code mode | `mcp/index.ts` starts configured stdio child processes or remote HTTP/SSE clients; `mcp/catalog.ts` invokes `client.callTool`. `session/tools.ts` asks existing Permission before model MCP calls; MCP resource prompt attachment and resource-list paths also call clients directly. Experimental `tool/code-mode.ts` is one-shot confined interpretation with explicit MCP child calls, not a persistent REPL. | MCP tool effects are server-defined; current paths use SDK transports and existing TypeScript permission checks, not Rust mediation. |
+| Skills, subagents, ACP | Skill discovery (`skill/discovery.ts`) fetches configured remote indexes/files and writes local cache; `tool/skill.ts` loads content but does not execute skill scripts. `tool/task.ts` creates/resumes child OpenCode Sessions and background jobs; child tools reuse the legacy path. `opencode acp` accepts an external ACP client; `acp/service.ts` accepts client-provided local/remote MCP configs. `acp/permission.ts` can call the client's `writeTextFile` for an approved edit proposal before replying to Permission. | Direct host/network/cache or ACP-client effects. ACP is an ingress/Session adapter, not a separate external-agent launcher. No Rust Guard. |
+| LSP and search/fetch | `tool/lsp.ts` exposes query operations behind existing permission; `lsp/lsp.ts` starts configured child servers and `lsp/server.ts` may download/install language servers on first use. Legacy web-search/fetch tools use `HttpClient` after current permission; V2 Core web tools use `PermissionV2` and direct HTTP. | Local LSP tool is read/query-only, but server startup/install has process/network/global-file effects. Search/fetch are remote reads. No Rust Guard/ExecutionHost. |
+| HTTP/control plane, auth and provider network | OpenCode HTTP handlers cover session prompt/command/shell, MCP lifecycle/OAuth, provider OAuth, workspace adapters, config, project/VCS, PTY and related state changes. Shared server handlers include credentials, PTY and project-copy operations. Provider/plugin auth and integration callbacks make HTTP requests and persist credentials. Model/provider requests use TypeScript HTTP clients. | Auth middleware authenticates ingress; it is not action authorization by Guard. Effects remain in Bun/TypeScript/SDKs. No standalone named-tool HTTP execution endpoint was found in the inspected OpenCode routes. |
+| Core V2 runner and builtins | `packages/core/src/location-services.ts:42-79` mounts `BuiltInTools.node`, `ToolRegistry` and `SessionRunnerLLM`; `packages/core/src/session/runner/llm.ts` waits for terminal provider/step completion and validates every local call before settling any. `ToolRegistry.settle` invokes registered callbacks directly, then `ToolOutputStore.bound` may write oversized output to `Global.data`. Builtin FS/shell/network tools execute through TypeScript services; several call `PermissionV2.assert`. | This is a production model-tool path with the complete local-call validation barrier, but no Rust Guard/ExecutionHost. Keep the existing OpenCode `PermissionV2` behavior while adding the canonical Rust boundary; do not bypass it or activate a parallel tool runtime. |
+| Provider-executed tools | OpenAI Responses and Anthropic adapters decode hosted/web/file/code/computer/MCP/shell events as `providerExecuted`; Core runner skips local dispatch and persists their events/results. The inspected outbound request builders supplied ordinary request tool definitions, not hosted-tool descriptors. | Provider-side execution cannot be reversed or guarded after the returned event. Actual hosted-tool availability/configuration was not established; keep unavailable unless preauthorization is enforceable. |
+| Browser, desktop, DAP, REPL, connectors, external agents | No agent-facing browser/computer-control, DAP, persistent REPL, dedicated connector invoker, or external-agent launcher was found in the inspected OpenCode/Core/runtime. UI clipboard/window IPC is user-facing, not an agent computer-use surface. CodeMode is the one-shot MCP interpreter above; Task is an OpenCode child Session. | Catalog/service contracts are design status only; no runtime effect path to claim or migrate yet. |
+| Rust effect owner | `kernel/src/` currently contains protocol, owner-log, startup, artifact, Session projection and supervisor modules; it has no Guard/EffectService/ExecutionHost implementation. Generic `RpcRequestV1` types exist, but `kernel/src/bin/session_supervisor.rs` accepts only Session Subscribe/Unsubscribe controls. `packages/core/src/session/supervisor.ts` owns a per-Session/active-turn observer child. | Observer currently has read-only authority and no effect RPC. Keep that boundary until the canonical Rust Guard/EffectService/ExecutionHost is implemented within the single execution owner. Contract schemas under `arch_V1/contracts-v2/` are design inputs, not runtime proof. |
 
-The project is NOT complete. Docs and test harnesses do not imply shipping functionality. No live paid model calls are required for next gate.
+The first production integration should use the mounted Core V2 ToolBatch path and a bounded existing builtin (start with `files.write`), preserving OpenCode Session/provider ownership and validating the entire local batch before any mutation. Unsupported effectful siblings must deny the whole batch until routed. Keep the per-Session observer read-only; implement one Rust execution owner rather than another independent process manager. Unmediated hosted effects remain unavailable.
 
-## Latest verified test evidence
+At inventory time: the only current-tree worktree was the primary tree; existing user changes remain untouched. The already-running `scripts/build_full_catalog.py --only-source feed:skills-sh` process (PID 9427) was observed and left running. No task-created worktrees, builds or temporary resources were created.
 
-Last observed (2026-10-10):
-- `cargo fmt --manifest-path kernel/Cargo.toml --check`: passed. `cargo test --manifest-path kernel/Cargo.toml --workspace --locked --offline`: **148 passed** (71 unit + 11 owner-log golden + 25 recovery + 9 projection + 2 projection-subscription + 2 RPC delivery + 8 supervisor-process + 2 startup-session + 4 subscription-window + 5 supervisor-lease + 4 hello + 5 peer-auth). `cargo clippy --manifest-path kernel/Cargo.toml --all-targets --locked --offline -- -D warnings`: passed. `cargo build --manifest-path kernel/Cargo.toml --locked --offline --bins`: passed.
-- From `packages/core`: `bun test ./test/kernel-projection-live.test.ts`: **5 passed, 52 assertions**. Tests call actual `SessionV2.prompt({ resume: false })` and `SessionInput.promoteSteers`; the Bun Effect-scoped host launches the Rust supervisor, receives actual projected events, rejects a forged out-of-order ACK, resumes a completed-page cursor after child restart, replays an interrupted partial page, and rejects rollback, symlink and malformed checkpoints. `bun run typecheck`: passed.
-- From `packages/opencode`: `bun run typecheck`: passed. `bun test --timeout 30000 ./test/server/httpapi-cors.test.ts`: **3 passed, 10 assertions**, with `SessionSupervisor.node` in the active HTTP API root. Both tests were run without competing processes.
-- From `packages/core`: `bun test ./test/session-runner-recorded.test.ts`: **1 passed, 15 assertions**; an actual recorded Core provider turn was projected twice from exact EventV2 rows into Rust, retaining ordered event versions and message correlation while excluding prompt and answer text. `bun run typecheck`: passed after this test addition.
-- From `packages/core`: `bun test --timeout 30000 ./test/session-runner.test.ts`: **91 passed, 296 assertions**. Core now buffers local calls through provider `finish` plus `step-finish`, validates every call against its request-pinned registry, dispatches zero calls on provider failure/incompletion or any invalid sibling, and retains concurrent execution for valid batches. Recorded provider fixture passed **1 test / 15 assertions**; Core typecheck passed. This remains Bun ToolRegistry execution, not Rust Guard or the universal broker.
-- Full Core suite: **1146 passed, 1 timed out** across 148 files. `util.flock > refuses token mismatch release and recovers from stale` hit its 5-second limit during a parallel run following long process-contention tests; `bun test ./test/util/flock.test.ts` passed **10/10** when isolated. Keep the full-suite timeout visible.
-- Rust: workspace tests **148 passed**, format check, strict Clippy and both binaries passed on the last full run. Fixtures make no provider calls. Automatic Session lifecycle, a managed-control-plane consumer, native Windows and restart recovery during an active turn remain open. Compaction and interruption projection parity are now covered for the observed persisted histories.
-- Current working tree contains **uncommitted changes from prior architecture and bridge tasks**. Preserve all; inspect `git status` before editing or committing. No push was performed.
+## P1.3 first guarded Core V2 effect — implementation status (2026-10-11)
 
-## Immediate implementation — P1.2-B
+- `SessionRunnerLLM` collects and validates the full local provider-tool batch before settlement. Its turn digest binds the fixed `SessionRunnerLLM` identity, Session, agent, provider/model/variant, configured agent permissions, a content-addressed `PermissionV2.policySnapshotDigest`, and materialized tool definitions. `PermissionV2.policySnapshotDigest` hashes versioned JSON containing configured agent rules and canonically sorted saved project grants; saved row IDs are excluded. The snapshot is captured once per provider turn; effect-time `PermissionV2.assert` remains authoritative, including after an explicit `always` approval. This Core path has no selectable harness.
+- Core and Rust negotiate `effects.v2`. Rust `EffectHost` currently accepts only one `files.write` per batch, persists the turn-context digest with its challenge, and revalidates the Guard intent at approval, execution, and PREPARED recovery. Existing schema migration adds the digest column; legacy contextless PREPARED rows fail closed as UNKNOWN. Unsupported effects remain denied. A live integration test now sends the actual `SessionRunnerLLM`-generated digest through the Rust process supervisor and verifies a permitted file write, replay denial, and absence of the secret write payload from `effects.sqlite`.
+- This is not P1.3 acceptance. Legacy OpenCode tools/routes, MCP, plugins/hooks, LSP installs, auth/settings/network, and hosted/provider-side effects remain outside Rust Guard. Do not enable those paths based on this slice.
+- Verification: previous Core targeted Bun suite — 102 passed / 385 assertions; Core typecheck passed; `cargo test --manifest-path kernel/Cargo.toml --locked --offline` — 158 passed; `cargo test --manifest-path kernel/Cargo.toml --locked --offline --test session_supervisor_process` — 16 passed. Current `bun run typecheck` passed; `bun test test/permission.test.ts test/session-runner.test.ts` — 104 passed / 345 assertions (including stable/change-sensitive PermissionV2 digest and same-session Guard-context binding); isolated `bun test test/session-runner-recorded.test.ts` — 1 passed / 24 assertions; `bun test test/kernel-projection-live.test.ts -t "SessionRunner binds its generated context digest through Rust effects.v2"` — 1 passed / 9 assertions (real Core runner, built-in write, Rust supervisor, replay denial and no raw payload in `effects.sqlite`). A combined run initially timed out in that recorded observer test at its 30s outer bound while running concurrently with typecheck; its outer bound is now 60s (internal wait bounds total up to 50s), and the isolated rerun passed. Full Core suite — 1,137 passed, 6 skipped, 7 failed (3 `util.flock` timeouts, 2 Amazon Bedrock provider timeouts, 2 Google provider timeouts). Isolated `test/util/flock.test.ts` passed all 10 tests; isolated Amazon provider file failed during import with `Cannot access 'AmazonBedrockPlugin' before initialization`; Google isolation was not run. These are the exact observed suite results, not a green full-suite claim.
+- Latest disk check: 841 GiB free; shared `kernel/target` is 716 MiB and retained. No task-created worktrees or builds; subagents were read-only.
+- The existing source allowlist now exposes only `PermissionV2` and the Core test files touched by its required service-method migration; the rest of the local OpenCode base remains ignored.
+- Verification update: the extended command `cd packages/core && bun test test/kernel-projection-live.test.ts -t "SessionRunner binds its generated digest through Rust effects.v2 and denies multi-write batches"` passed — 1 test / 15 assertions. `cd packages/core && bun run typecheck` passed after the test edit. The live flow verifies the actual Runner-generated digest, a permitted single write, Rust denial of a two-write batch, no partial file writes, replay denial, and absence of raw request content in `effects.sqlite`.
+- Additional Core regression: `cd packages/core && bun test test/session-runner.test.ts -t "denies the complete batch when Rust effect preparation is unavailable"` passed — 1 test / 5 assertions. The test proves a supervisor/Rust preparation error denies both a local effectful write and its read-only sibling before settlement; Core typecheck passed after the test change.
+- The legacy files `packages/opencode/src/session/{llm.ts,tools.ts,processor.ts}` are currently ignored by `.gitignore:3` and absent from the tracked source allowlist. Any shippable legacy batch-dispatch implementation needs exact, narrow allowlist exceptions rather than invisible ignored-file edits.
+Next exact step: add narrow `.gitignore` exceptions for the legacy session dispatch files, then implement the complete-batch handoff under the current Gate 2 contract. Collect/validate the whole local tool batch before any callback can mutate, then route it through the Rust-supervised execution owner. Keep unsupported origins denied; do not wrap individual callbacks as single-operation batches.
+Pinned SDK finding: `opencode/package.json` and `opencode/bun.lock` pin `ai` 6.0.168. Its `run-tools-transformation.ts` parses each provider `tool-call` chunk and invokes the corresponding `tool.execute` immediately; the stream-level `onLanguageModelCallEnd` hook found in current docs is absent from this pinned version. `session/tools.ts` currently supplies those callbacks, while `session/llm.ts` uses SDK `streamText` and `processor.ts` consumes normalized events. Therefore legacy migration needs an explicit batch-dispatch seam, not a callback wrapper. No production path was enabled by this finding.
 
-**Outcome:** A production-shaped, authenticated, typed, locally supervised *read-only Session observer* that starts and stops reliably, subscribes/replays with bounded backpressure and healthy failure reporting, and integrates into the application without creating a competing conversation owner. Do not conflate this with secure tool authorization.
+## OMP upstream research — reference only
 
-1. **Session parity:** A disposable file-backed fixture calls public Core `SessionV2.prompt({ resume: false })`, promotes via `SessionInput.promoteSteers`, and checks Rust sees versioned `PromptAdmitted` → `Prompted` in order with stable IDs and no prompt text. Recorded Core runner tests also project one complete provider turn, automatic completed-summary compaction, and a blocked-provider interruption, checking event ordering, message correlation, redaction and replay idempotency. Move parity and restart recovery during an active turn remain open.
-2. **Authenticated RPC startup:** Linux `unix_peer.rs`, `rpc_handshake.rs` and `supervisor_session.rs` authenticate the host, negotiate protocol/features/nonce/incarnation, bind startup status to `StartupGate`, and gate app frames on READY. The Core client starts the binary, sends Hello, validates binding/features and waits for READY. Keep Windows runtime acceptance pending until tested natively.
-3. **Bounded event delivery:** `SessionProjection.subscription_cursor/page` and `AuthenticatedKernelSession.send_subscription_page` provide an exact-cursor bounded redacted page with ACK flow control. Negotiated `page_end` and `resnapshot_required` controls carry the acknowledged cursor/hasMore and requested/latest same-owner cursors; process tests prove the source refreshes between pages and no partial page escapes on retention loss.
-4. **Runnable supervisor and host lifecycle:** The Linux observer owns the authenticated listener, lease and read-only source/projection, validates/replays one Session before READY, and serves repeated cursor pages. Core launches it through `AppProcess`, negotiates Hello/features/READY, receives redacted events, enforces ACK order, and closes it from an Effect scope. The host atomically checkpoints only completed `page_end` cursors; interrupted pages replay safely. The service is composed in both CLI and HTTP server roots. **Next gate:** resolve explicit binary/state configuration and the real SessionV2-to-managed-control-plane consumer seam, then wire per-Session startup/shutdown/recovery.
-5. **Verification:** Rust covers source corruption/schema and alias failures before READY, unauthorized peers, incompatible hello, lease exclusion/restart/overflow, bounded flow control, cursor drift, cross-subscription ACK rejection, repeated delivery and typed retention gaps. Cross-runtime tests cover actual Bun child launch, Hello/READY, real EventV2 prompt events, redaction, ACK order, scope interruption and epoch restart. Core runner tests now cover recorded-turn, compaction and interrupted-event projection parity. P1.2-B remains open for automatic lifecycle/cursor ownership, move parity, crash recovery during an active provider turn and native platform acceptance.
-6. **Documentation and continuity:** Updated this slice in `arch_V1/13`, `24` and `27`. Continue updating `CURRENT_RUN.md` and this handoff after each verified slice, then proceed to P1.3 effect mediation only after P1.2-B acceptance.
+- The extension control center was source-checked at OMP commit `03929eb809b93997bb5ccb0ac042f5162a7ee2b6`. `/extensions` is a fullscreen TUI/native picker with provider tabs, extension inventory, filtering, per-kind inspector, provider and user-source switches, per-item disable, and MCP persistence plus live runtime reconciliation. It is a control surface, not the installer; marketplace install/remove/upgrade and plugin enablement live in separate `/marketplace`, `/plugins`, and Settings→Plugins flows.
+- Relevant sources: [`extension-dashboard.ts`](https://github.com/can1357/oh-my-pi/blob/03929eb809b93997bb5ccb0ac042f5162a7ee2b6/packages/tui/src/overlays/extensions/extension-dashboard.ts), [`dashboard-runtime.ts`](https://github.com/can1357/oh-my-pi/blob/03929eb809b93997bb5ccb0ac042f5162a7ee2b6/packages/coding-agent/src/modes/components/extensions/dashboard-runtime.ts), and [`plugin-manager-installer-plumbing.md`](https://github.com/can1357/oh-my-pi/blob/03929eb809b93997bb5ccb0ac042f5162a7ee2b6/docs/plugin-manager-installer-plumbing.md).
+- Security boundary: OMP documents plugin code as unsandboxed and imported in-process. Reuse the inventory/enablement UX pattern only; HorizonCode's Rust Guard/ExecutionHost remains mandatory for mutating plugin/MCP capabilities.
+- Catalog research: OMP `packages/catalog/src/model-manager.ts` already resolves bundled → cache → Models.dev fallback → provider discovery; it has a two-hour default cache TTL and additive-only Models.dev fallback support. `packages/catalog/src/provider-models/openai-compat.ts` owns the descriptor/mapping pipeline. Extend this existing OMP catalog path if integrating it; avoid a competing HorizonCode Models.dev polling/catalog pipeline. OMP `pi-ai`/`pi-catalog` behavior still requires local dependency/runtime and integration verification before adoption.
+- OpenCode free-model source verdict: the native client has a deliberate no-API-key selection path, but actual free-model eligibility is conditional on the selected model's server-side anonymous-access policy. No live inference call was made; source evidence follows.
 
-**Do not prematurely implement the entire execution broker inside a read-only event follower.** Finish P1.2-B with verified authentication and replay, then proceed to P1.3 effects mediation.
+## OpenCode free-model access without a provider API key — source verdict
 
-## Follow-on dependency order after P1.2-B
-
-- **P1.3 — Universal ToolIntent/effect broker:** enumerate *every* legacy and V2 effectful path (OpenCode shell, edit, Git, MCP/plugins, hosted tools, browser); mediate or explicitly disable bypass paths; per-mode OS-enforced scopes, idempotency, optimistic revisions, receipts and deny tests. Then single-agent end-to-end run with a local/free model where available.
-- **P2 — Durable Goal/Run kernel:** additive owner-log/domain projections, criteria, DAG, attempts, checkpoints, run/session link and final-revision evidence. Reconcile duplicate canonical Thread text before editing implementation.
-- **P3 — Reliable direct and managed coding:** repo intelligence, bounded context and compaction preservation, real tests/verification, recovery and stopping rules; do not substitute model 'done' for proof.
-- **P4 — Multi-agent scheduling:** only parallelize independent work when worthwhile. Bounded reusable worktree pool, lease fencing, service/ports/DB isolation, merging, integration tests and cleanup/quarantine.
-- **P5 — Model/harness/agent UX + local/free parity:** explicit provider/model selection (no silent routing), model capability probes, low-cost/local harness strategies, user-accessible permissions and diagnostics.
-- **P6 — Universal app-building UX:** adapt existing OpenCode app/desktop into three-pane Explorer/Work/Inspect plus Create/Develop/Delegate/Operate, visual source mapping, previews, novice explanations, editor/terminal review, accessibility.
-- **P7 — Ecosystem/operations:** audited skills/MCP/plugins/ACP/A2A as supported; deployment, backup/migration, app export, signed releases, platform compatibility, independent user acceptance, security and performance.
-- Real gate ordering follows `arch_V1/10-DELIVERY.md` and `23-ADOPTION-GATES-TESTS.md`; labels above describe implementation tracks, **not** a renumbering of the normative historical phase table.
-
-## Latest verified increment — compaction/interruption parity and Core dispatch barrier
-
-- `packages/core/test/session-runner.test.ts` now projects exact EventV2 rows from the real Core automatic compaction path and a real blocked-provider interruption. Rust preserves the compaction Started/Ended pairs and message IDs without summary/recent-turn content; interrupted projection exactly matches committed event order and does not invent `step.started` when cancellation precedes it.
-- Verification on 2026-10-10: compaction focused test **1 pass / 22 assertions**; interruption focused test **1 pass / 8 assertions**; Core typecheck passed. Exact test command and limits are recorded in `CURRENT_RUN.md`.
-- `packages/core/src/tool/tool.ts`, `tool/registry.ts`, and `session/runner/llm.ts` now schema-preflight complete local tool batches before execution. Provider failure, interruption, incomplete EOF/step, or one invalid call withholds all local siblings and settles their recorded calls as errors. The full Core runner file passed **91 tests / 296 assertions**, and the recorded HTTP fixture passed **1 / 15 assertions**.
-- This does not yet implement Rust ToolBatch ownership, Guard/resource/budget admission, ordered result acknowledgements or Rust ExecutionHost. Existing legacy, MCP, plugin and hosted paths remain outside an enforced universal broker.
-- Production source trace: the OpenCode HTTP root composes the V2 `/server` Session API (`packages/server/src/handlers/session.ts`) using `SessionV2`/`SessionExecutionLocal`, and the compatibility Instance Session API using `SessionPrompt`. `SessionSupervisor.node` is registered in the root graph, but no production Session/control-plane consumer owns its events; the service registration alone is not automatic lifecycle integration.
-- P1.3 source audit: Core V2 stages non-hosted calls through complete-response/schema validation. The compatibility Instance route sends built-in, plugin, MCP and custom tool callbacks through the AI SDK during the provider turn; explicit compatibility shell commands spawn directly through `SessionPrompt.shellImpl`; provider-executed tools cannot be intercepted after return. Existing host permission checks are not Rust Guard/lease enforcement. The exact path map and status are in `arch_V1/24`.
-- **Next task:** implement the Rust managed Thread/SessionLink owner adapter that consumes the redacted Session projection and admits a whole pinned ToolBatch to the canonical Thread owner stream. Derive actor/scope from authenticated host context and retain OpenCode as the only canonical conversation store. Then implement Guard → durable PREPARED EffectIntent → one-use lease → ExecutionHost → target reconciliation before connecting any effect path. Keep production route convergence and automatic observer startup gated until a real consumer exists and every effect bypass is mediated or unavailable. P1.2-B still needs automatic lifecycle/stop/recovery, move parity, active-turn restart recovery and native Windows acceptance.
-
-## Subagents, worktrees and cleanup
-
-Use subagents only if actually available and beneficial: one source/architecture investigator (read-only), one independent implementer per disjoint file group, one testing/security reviewer. Give each clear file ownership and completion artifacts. Integrator is the sole authority for cross-package merges, final test and handoff. Use real configured skills and MCPs only after capability discovery; `.opencode/opencode.jsonc` currently has no registered MCP server. Prefer simple single-checkout work for P1.2-B until worktree-pool semantics are verified. Worktrees created during this run require inventory, lease/owner, clean/dirt check, process and test DB cleanup, and safe reuse/quarantine. **Never delete dirty user changes.**
-
-## Working loop and checkpoint contract
-
-At startup: read `AGENTS.md`, this file, architecture index, current Git diff and source/test coverage. Announce one concrete gate; implement it. Every green slice: use the next unblocked dependency without asking the user for "continue"; record exact paths and test output; update statuses; clean created resources. If a blocker affects only one capability, move to another safe unblocked task. If forced to stop, give the next agent concrete next command, error, file, and remaining tests.
-
-**End-of-turn is not end-of-project.** Preserve resumption truth; do not promise a daemon or scheduled background work unless the coding agent actually controls an authorized persistent runner.
-
-## Current known open risks
-
-1. Old v1 `Rust ThreadService canonical transcript` language still exists in historical sections; v2 explicitly targets OpenCode canonical Session. A gated source/version parity transition is required.
-2. Existing provider/runner/tool paths may bypass a future Rust Guard until explicitly audited. No YOLO sandbox or permission enforcement may be advertised before full coverage.
-3. Some architecture contracts are broad but prototype-only: API skeletons lack production auth/request validation; 15-table SQL design was in-memory tested, not applied.
-4. Platform-specific Windows peer auth and live supervisor have not been proven in the new integrated runtime.
-5. Model billing/usage, self-healing and worktree pool are design hypotheses until measured against real failure modes.
-6. A broad repository `.gitignore` excludes files by default. Add the **narrowest** allowlist entries for each new source/test/handoff file, verify with `git status --short`, and do not use broad blanket unignore.
+- OpenCode `dev` client code sets provider `apiKey: "public"` when `OPENCODE_API_KEY`, a Console connection, and configured provider key are all absent. It disables models with any nonzero input cost. This confirms a deliberate no-key client path for zero-input-cost models.
+- Deterministic source tests at `opencode/packages/core/test/plugin/provider-opencode.test.ts:260-338` assert the `"public"` no-key client selection and paid-model filtering. The focused command `cd opencode/packages/core && bun test test/plugin/provider-opencode.test.ts -t "without credentials"` could not start: the extracted source tree has no resolvable `effect` package. No dependency installation or network call was attempted; this test evidence is not live gateway eligibility evidence.
+- The Zen gateway only routes a keyless generation when the selected deployed model entry has `allowAnonymous === true`; otherwise a missing key or `"public"` returns HTTP 401 `AuthError`. `allowAnonymous` is optional model metadata, and the catalog is loaded from deployment `Resource.ZEN_MODELS1..30` secrets, not source-controlled model entries. Thus no-key access is supported by the client but not guaranteed for every model or current service policy.
+- The official Zen docs describe signing in and obtaining an API key for ordinary Zen use. Runtime acceptance must use the actual OpenCode provider/model list with no key, then test a harmless prompt only against a currently discovered no-cost model after user authorization. No remote inference or credential use was attempted in this task.
+- Native adapter rule: use the official OpenCode runtime and its own provider list. Do not reproduce the `"public"` sentinel in HorizonCode, copy credentials, spoof client identity, promise anonymous availability, or silently fall back to a paid model. Surface 401/403 as restricted/ineligible.
+- Sources: [OpenCode native provider plugin](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/plugin/provider/opencode.ts), [Zen route gate](https://github.com/anomalyco/opencode/blob/dev/packages/console/app/src/routes/zen/util/handler.ts), [Zen model schema/catalog](https://github.com/anomalyco/opencode/blob/dev/packages/console/core/src/model.ts), [Zen docs](https://opencode.ai/docs/zen), and [Server API](https://opencode.ai/docs/server/).

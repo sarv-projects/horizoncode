@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "McpServerProfileV2",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 2
+    },
+    "serverId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source": {
+      "type": "string",
+      "enum": [
+        "user",
+        "project",
+        "plugin",
+        "managed"
+      ]
+    },
+    "transport": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "stdio"
+            },
+            "executableRef": {
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "executableRef",
+            "args"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "streamable_http",
+                "json_rpc_http"
+              ]
+            },
+            "url": {
+              "type": "string",
+              "pattern": "^https?://"
+            }
+          },
+          "required": [
+            "kind",
+            "url"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "auth": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "none"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "oauth"
+            },
+            "authProfileId": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "authProfileId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "headers"
+            },
+            "headerSecretRefs": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "headerSecretRefs"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "allowedToolPatterns": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "deniedToolPatterns": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "timeoutMs": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "maxResponseBytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "networkPolicyRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "trustClass": {
+      "type": "string",
+      "enum": [
+        "trusted_local",
+        "trusted_remote",
+        "untrusted"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "serverId",
+    "source",
+    "transport",
+    "auth",
+    "env",
+    "allowedToolPatterns",
+    "deniedToolPatterns",
+    "timeoutMs",
+    "maxResponseBytes",
+    "networkPolicyRef",
+    "trustClass"
+  ],
+  "additionalProperties": false
+}

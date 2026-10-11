@@ -2,7 +2,9 @@ import { HttpRecorder } from "@opencode-ai/http-recorder"
 import { HttpRecorderInternal } from "@opencode-ai/http-recorder/internal"
 import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
 import { Auth, LLMClient, RequestExecutor } from "@opencode-ai/llm/route"
+import { createHash } from "node:crypto"
 import { Database } from "@opencode-ai/core/database/database"
+import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -19,28 +21,41 @@ import { Snapshot } from "@opencode-ai/core/snapshot"
 import { Prompt } from "@opencode-ai/core/session/prompt"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
-import { SessionRunCoordinator } from "@opencode-ai/core/session/run-coordinator"
-import { SessionRunner } from "@opencode-ai/core/session/runner"
+import * as SessionExecutionLocal from "@opencode-ai/core/session/execution/local"
 import * as SessionRunnerLLM from "@opencode-ai/core/session/runner/llm"
 import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
+import { SessionInput } from "@opencode-ai/core/session/input"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionStore } from "@opencode-ai/core/session/store"
+import { buildLocationServiceMap, LocationServiceMap } from "@opencode-ai/core/location-services"
+import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
 import { Location } from "@opencode-ai/core/location"
+import { SystemContextBuiltIns } from "@opencode-ai/core/system-context/builtins"
 import { SystemContextRegistry } from "@opencode-ai/core/system-context/registry"
 import { SystemContext } from "@opencode-ai/core/system-context"
 import { SkillGuidance } from "@opencode-ai/core/skill/guidance"
 import { ReferenceGuidance } from "@opencode-ai/core/reference/guidance"
-import { describe, expect } from "bun:test"
+import { afterAll, describe as bunDescribe, expect } from "bun:test"
 import { Database as SQLite } from "bun:sqlite"
 import { eq } from "drizzle-orm"
-import { Effect, Layer } from "effect"
-import { mkdtempSync, rmSync } from "node:fs"
+import { Deferred, Effect, Fiber, Layer, Ref } from "effect"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { testEffect } from "./lib/effect"
+const describe = process.platform === "linux" ? bunDescribe : bunDescribe.skip
 
+const observerTestRoot = mkdtempSync(path.join(tmpdir(), "hc-recorded-session-observer-"))
+const recordedWorktree = path.join(observerTestRoot, "worktree")
+mkdirSync(recordedWorktree)
+const recordedDatabasePath = path.join(observerTestRoot, "opencode.db")
+const recordedDatabaseNode = makeGlobalNode({
+  service: Database.Service,
+  layer: Database.layerFromPath(recordedDatabasePath),
+  deps: [],
+})
 const cassette =
   process.env.RECORD === "true"
     ? HttpRecorderInternal.cassetteLayer("session-runner/openai-chat-streams-text", {
@@ -61,6 +76,7 @@ const permission = Layer.succeed(
     get: () => Effect.die("unused"),
     forSession: () => Effect.die("unused"),
     list: () => Effect.die("unused"),
+    policySnapshotDigest: () => Effect.succeed(`sha256:${"0".repeat(64)}`),
   }),
 )
 const model = OpenAIChat.route
@@ -70,38 +86,61 @@ const model = OpenAIChat.route
     generation: { maxTokens: 20, temperature: 0 },
   })
   .model({ id: "gpt-4o-mini" })
-const models = SessionRunnerModel.layerWith(() => Effect.succeed(model))
+let modelResolveHook: Effect.Effect<void> = Effect.void
+const models = SessionRunnerModel.layerWith(() => modelResolveHook.pipe(Effect.as(model)))
 const systemContext = AppNodeBuilder.build(SystemContextRegistry.node)
 const skillGuidance = Layer.mock(SkillGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) })
 const referenceGuidance = Layer.mock(ReferenceGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) })
 const config = Layer.succeed(Config.Service, Config.Service.of({ entries: () => Effect.succeed([]) }))
+const emptyToolRegistry = Layer.succeed(
+  ToolRegistry.Service,
+  ToolRegistry.Service.of({
+    register: () => Effect.void,
+    materialize: () =>
+      Effect.succeed({
+        definitions: [],
+        validate: () => Effect.succeed(undefined),
+        classify: (call) => ({ id: call.name, effectClass: "unknown" as const }),
+        settle: () => Effect.succeed({ result: { type: "error" as const, value: "tool execution disabled in cassette" } }),
+      }),
+  }),
+)
 const runnerLayer = AppNodeBuilder.build(SessionRunnerLLM.node, [
+  [Database.node, recordedDatabaseNode],
+  [ToolRegistry.node, emptyToolRegistry],
   [Snapshot.node, Snapshot.noopLayer],
   [LayerNodePlatform.llmClient, client],
   [SessionRunnerModel.node, models],
   [SystemContextRegistry.node, systemContext],
-  [Location.node, Location.boundNode({ directory: AbsolutePath.make("/project") })],
+  [Location.node, Location.boundNode({ directory: AbsolutePath.make(recordedWorktree) })],
   [SkillGuidance.node, skillGuidance],
   [ReferenceGuidance.node, referenceGuidance],
   [Config.node, config],
   [PermissionV2.node, permission],
   [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
 ])
-const execution = Layer.effect(
-  SessionExecution.Service,
-  Effect.gen(function* () {
-    const sessionRunner = yield* SessionRunner.Service
-    const coordinator = yield* SessionRunCoordinator.make<SessionV2.ID, SessionRunner.RunError>({
-      drain: (sessionID, force) => sessionRunner.run({ sessionID, force }),
-    })
-    return SessionExecution.Service.of({
-      active: coordinator.active,
-      resume: coordinator.run,
-      wake: coordinator.wake,
-      interrupt: coordinator.interrupt,
-    })
+const locationServices = buildLocationServiceMap([
+  [SessionRunnerLLM.node, runnerLayer],
+  [ToolRegistry.node, emptyToolRegistry],
+  [SystemContextBuiltIns.node, Layer.empty],
+])
+afterAll(() => rmSync(observerTestRoot, { recursive: true, force: true }))
+const observerBinary = path.resolve(import.meta.dir, "../../../kernel/target/debug/session_supervisor")
+const observerRuntime = Layer.succeed(
+  SessionSupervisor.RuntimeConfig,
+  SessionSupervisor.RuntimeConfig.of({
+    assetPath: observerBinary,
+    manifestJSON: JSON.stringify({
+      schemaVersion: 1,
+      status: "available",
+      binaryName: "session_supervisor",
+      target: `linux-${process.arch}-gnu`,
+      sha256: createHash("sha256").update(readFileSync(observerBinary)).digest("hex"),
+    }),
+    installRoot: path.join(observerTestRoot, "install"),
+    stateRoot: path.join(observerTestRoot, "state"),
   }),
-).pipe(Layer.provide(runnerLayer))
+)
 const it = testEffect(
   AppNodeBuilder.build(
     LayerNode.group([
@@ -117,21 +156,25 @@ const it = testEffect(
       ReferenceGuidance.node,
       Config.node,
       Snapshot.node,
-      SessionRunnerLLM.node,
+      SessionExecution.node,
+      SessionSupervisor.node,
       SessionV2.node,
     ]),
     [
+      [Database.node, recordedDatabaseNode],
       [LayerNodePlatform.llmClient, client],
       [PermissionV2.node, permission],
       [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
       [SessionRunnerModel.node, models],
       [SystemContextRegistry.node, systemContext],
-      [Location.node, Location.boundNode({ directory: AbsolutePath.make("/project") })],
+      [Location.node, Location.boundNode({ directory: AbsolutePath.make(recordedWorktree) })],
       [SkillGuidance.node, skillGuidance],
       [ReferenceGuidance.node, referenceGuidance],
       [Config.node, config],
       [Snapshot.node, Snapshot.noopLayer],
-      [SessionExecution.node, execution],
+      [SessionExecution.node, SessionExecutionLocal.node],
+      [LocationServiceMap.node, locationServices],
+      [SessionSupervisor.runtimeConfigNode, observerRuntime],
     ],
   ),
 )
@@ -139,12 +182,13 @@ const sessionID = SessionV2.ID.make("ses_runner_recorded")
 const rustProbe = path.resolve(import.meta.dir, "../../../kernel/target/debug/session_sync_probe")
 
 describe("SessionRunnerLLM recorded", () => {
-  it.effect("executes one recorded V2 prompt through the recorded HTTP transport", () =>
+  it.live("recovers the pinned observer during an active recorded provider turn", () =>
     Effect.gen(function* () {
-      const { db } = yield* Database.Service
+      const database = yield* Database.Service
+      const { db } = database
       yield* db
         .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make(recordedWorktree), sandboxes: [] })
         .onConflictDoNothing()
         .run()
         .pipe(Effect.orDie)
@@ -154,7 +198,7 @@ describe("SessionRunnerLLM recorded", () => {
           id: sessionID,
           project_id: Project.ID.global,
           slug: "test",
-          directory: "/project",
+          directory: recordedWorktree,
           title: "test",
           version: "test",
         })
@@ -167,16 +211,142 @@ describe("SessionRunnerLLM recorded", () => {
         prompt: Prompt.make({ text: "Say hello in one short sentence." }),
         resume: false,
       })
+      const events = yield* EventV2.Service
+      yield* SessionInput.promoteSteers(db, events, sessionID, Number.MAX_SAFE_INTEGER)
+      const store = yield* SessionStore.Service
+      const projectionDeadline = Date.now() + 5_000
+      let projected = yield* store.context(sessionID)
+      while (!projected.some((message) => message.type === "user") && Date.now() < projectionDeadline) {
+        yield* Effect.sleep("10 millis")
+        projected = yield* store.context(sessionID)
+      }
+      expect(projected[0]).toMatchObject({ type: "user", text: "Say hello in one short sentence." })
 
-      yield* session.resume(sessionID)
+      const observer = yield* SessionSupervisor.Service
+      const observerSessionState = path.join(
+        observerTestRoot,
+        "state",
+        `s-${createHash("sha256").update(sessionID).digest("hex").slice(0, 20)}`,
+      )
+      const epochPath = path.join(observerSessionState, "supervisor.epoch")
+      const observerExecutable = path.join(
+        observerTestRoot,
+        "install",
+        `session_supervisor-${createHash("sha256").update(readFileSync(observerBinary)).digest("hex")}`,
+      )
+      const modelGate = yield* Deferred.make<void>()
+      const modelResolving = yield* Deferred.make<void>()
+      modelResolveHook = Deferred.succeed(modelResolving, undefined).pipe(Effect.andThen(Deferred.await(modelGate)))
+      const run = yield* session.resume(sessionID).pipe(Effect.forkChild)
+      let runJoined = false
+      try {
+        yield* Deferred.await(modelResolving)
+        const startupDeadline = Date.now() + 15_000
+        while (!existsSync(epochPath) && Date.now() < startupDeadline) yield* Effect.sleep("10 millis")
+        expect(existsSync(epochPath)).toBeTrue()
+        let observerPID: number | undefined
+        const processDeadline = Date.now() + 15_000
+        while (observerPID === undefined && Date.now() < processDeadline) {
+          for (const entry of readdirSync("/proc")) {
+            if (!/^[0-9]+$/.test(entry)) continue
+            try {
+              if (readlinkSync(path.join("/proc", entry, "exe")) === observerExecutable) {
+                observerPID = Number(entry)
+                break
+              }
+            } catch {}
+          }
+          if (observerPID === undefined) yield* Effect.sleep("10 millis")
+        }
+        expect(observerPID).toBeDefined()
+        if (observerPID === undefined) throw new Error("running pinned Session observer process was not found")
+        process.kill(observerPID, "SIGKILL")
+        const recoveryDeadline = Date.now() + 15_000
+        while (Date.now() < recoveryDeadline) {
+          try {
+            if (readFileSync(epochPath, "utf8") === "2") break
+          } catch {}
+          yield* Effect.sleep("10 millis")
+        }
+        expect(readFileSync(epochPath, "utf8")).toBe("2")
+        modelResolveHook = Effect.void
+        yield* Deferred.succeed(modelGate, undefined)
+        yield* Fiber.join(run)
+        runJoined = true
+      } finally {
+        if (!runJoined) yield* Fiber.interrupt(run)
+        modelResolveHook = Effect.void
+        yield* Deferred.succeed(modelGate, undefined)
+      }
+      const acknowledged = JSON.parse(
+        readFileSync(path.join(observerSessionState, `session-${sessionID}.cursor`), "utf8"),
+      ) as { readonly seq: string }
+      expect(acknowledged.seq).toBe("6")
 
-      const messages = yield* session.context(sessionID)
-      expect(messages).toHaveLength(2)
-      expect(messages[0]).toMatchObject({ id: prompt.id, type: "user", text: "Say hello in one short sentence." })
-      expect(messages[1]).toMatchObject({ type: "assistant", agent: "build", finish: "stop" })
-      expect(messages[1]?.type === "assistant" ? messages[1].content : []).toMatchObject([
-        { type: "text", text: "Hello!" },
-      ])
+      const observerEpochBeforeResnapshot = Number(readFileSync(epochPath, "utf8"))
+      const observerProjectionPath = path.join(observerSessionState, "session-projection.sqlite")
+      const projectionDB = new SQLite(observerProjectionPath, { strict: true })
+      let staleCursor: {
+        readonly ownerKind: string
+        readonly ownerId: string
+        readonly seq: string
+        readonly eventDigest: string
+      }
+      try {
+        const receipt = projectionDB
+          .query("SELECT event_hash FROM hc_session_receipts WHERE session_id = ? AND seq = ?")
+          .get(sessionID, 4) as { readonly event_hash: string } | null
+        expect(receipt?.event_hash).toBeDefined()
+        if (!receipt) throw new Error("observer projection receipt was not found")
+        staleCursor = {
+          ownerKind: "session",
+          ownerId: sessionID,
+          seq: "5",
+          eventDigest: `blake3:${receipt.event_hash}`,
+        }
+        const removed = projectionDB
+          .query("DELETE FROM hc_session_receipts WHERE session_id = ? AND seq = ?")
+          .run(sessionID, 4)
+        expect(removed.changes).toBe(1)
+      } finally {
+        projectionDB.close()
+      }
+      writeFileSync(
+        path.join(observerSessionState, `session-${sessionID}.cursor`),
+        JSON.stringify(staleCursor),
+        { mode: 0o600 },
+      )
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const turnComplete = yield* Ref.make(true)
+          const supervisorReady = yield* Deferred.make<void>()
+          yield* observer.watchSession(sessionID, database.path, recordedWorktree, turnComplete, supervisorReady)
+          yield* Deferred.await(supervisorReady)
+        }),
+      )
+      const rebuiltCursor = JSON.parse(
+        readFileSync(path.join(observerSessionState, `session-${sessionID}.cursor`), "utf8"),
+      ) as { readonly seq: string }
+      expect(rebuiltCursor.seq).toBe("6")
+      expect(readFileSync(epochPath, "utf8")).toBe(String(observerEpochBeforeResnapshot + 2))
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const restarted = yield* observer.openForSession(sessionID, database.path)
+          expect(restarted.status).toBe("available")
+          if (restarted.status !== "available") return
+          yield* Effect.tryPromise({ try: () => restarted.client.subscribe(), catch: (error) => error as Error })
+          const page = yield* Effect.tryPromise({
+            try: () => restarted.client.receive(),
+            catch: (error) => error as Error,
+          })
+          expect(page).toMatchObject({ kind: "page_end", through: { seq: "6" }, hasMore: false })
+        }),
+      )
+      expect(readFileSync(path.join(observerSessionState, "supervisor.epoch"), "utf8")).toBe(
+        String(observerEpochBeforeResnapshot + 3),
+      )
+
       expect(
         (yield* db
           .select({ type: EventTable.type })
@@ -198,6 +368,8 @@ describe("SessionRunnerLLM recorded", () => {
         .where(eq(EventTable.aggregate_id, sessionID))
         .orderBy(EventTable.seq)
         .all()
+      const answerEvent = sourceEvents.find((event) => event.type === "session.next.text.ended.1")
+      expect(JSON.stringify(answerEvent?.data)).toContain("Hello!")
 
       const projectionDirectory = mkdtempSync(path.join(tmpdir(), "hc-recorded-turn-projection-"))
       const sourcePath = path.join(projectionDirectory, "opencode-events.db")
@@ -256,5 +428,6 @@ describe("SessionRunnerLLM recorded", () => {
         rmSync(projectionDirectory, { recursive: true, force: true })
       }
     }),
+    60_000,
   )
 })

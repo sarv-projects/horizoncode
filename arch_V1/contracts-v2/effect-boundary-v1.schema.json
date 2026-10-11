@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EffectBoundaryV1",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "effectId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "capabilityId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "phase": {
+      "enum": [
+        "proposed",
+        "prepared",
+        "authorized",
+        "leased",
+        "executing",
+        "observed",
+        "settled",
+        "denied",
+        "expired",
+        "cancelled",
+        "failed",
+        "unknown"
+      ]
+    },
+    "argumentsDigest": {
+      "type": "string",
+      "minLength": 1
+    },
+    "targetRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scopeRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "policyEpoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "expectedSourceRevision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "leaseId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "resultClass": {
+      "enum": [
+        "none",
+        "succeeded",
+        "failed",
+        "unknown"
+      ]
+    },
+    "receiptRef": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "effectId",
+    "capabilityId",
+    "phase",
+    "argumentsDigest",
+    "targetRef",
+    "scopeRef",
+    "policyEpoch",
+    "resultClass"
+  ],
+  "additionalProperties": false
+}

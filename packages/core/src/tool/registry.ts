@@ -7,10 +7,10 @@ import { PermissionV2 } from "../permission"
 import { SessionMessage } from "../session/message"
 import { SessionSchema } from "../session/schema"
 import { ToolOutputStore } from "../tool-output-store"
-import { Wildcard } from "../util/wildcard"
 import { ApplicationTools } from "./application-tools"
-import { definition, permission, settle, validate as validateInput, validateName, type AnyTool, type RegistrationError } from "./tool"
 import { Tools } from "./tools"
+import { Wildcard } from "../util/wildcard"
+import { capability, definition, permission, settle, validate as validateInput, validateName, type AnyTool, type Capability, type EffectAdmission, type RegistrationError } from "./tool"
 import { makeLocationNode } from "../effect/app-node"
 
 export type ExecuteInput = {
@@ -18,6 +18,7 @@ export type ExecuteInput = {
   readonly agent: AgentV2.ID
   readonly assistantMessageID: SessionMessage.ID
   readonly call: ToolCall
+  readonly effect?: EffectAdmission
 }
 
 export interface Interface {
@@ -30,6 +31,8 @@ export interface Materialization {
   readonly definitions: ReadonlyArray<ToolDefinition>
   /** Validate a completed call against the registration pinned into this materialization. */
   readonly validate: (call: ToolCall) => Effect.Effect<string | undefined>
+  /** Resolve the canonical capability and fail-closed effect class for one completed call. */
+  readonly classify: (call: ToolCall) => Capability
   readonly settle: (input: ExecuteInput) => Effect.Effect<Settlement, ToolOutputStore.Error>
 }
 
@@ -66,6 +69,7 @@ const registryLayer = Layer.effect(
         agent: input.agent,
         assistantMessageID: input.assistantMessageID,
         toolCallID: input.call.id,
+        ...(input.effect ? { effect: input.effect } : {}),
       }).pipe(
         Effect.map((output) => ({ output })),
         Effect.catchTag("LLM.ToolFailure", (failure) =>
@@ -122,6 +126,10 @@ const registryLayer = Layer.effect(
               Effect.as(undefined),
               Effect.catchTag("LLM.ToolFailure", (failure) => Effect.succeed(failure.message)),
             )
+          },
+          classify: (call) => {
+            const registration = registrations.get(call.name)
+            return registration ? capability(registration.tool, call.name) : { id: call.name, effectClass: "unknown" }
           },
           settle: (input) => {
             const registration = registrations.get(input.call.name)

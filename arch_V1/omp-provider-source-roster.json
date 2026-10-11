@@ -1,0 +1,422 @@
+{
+  "upstream": "https://github.com/can1357/oh-my-pi",
+  "sha": "eec114a9226da698ebc015fd8996a8ca3bc4625c",
+  "source_tree_sha": "dc40d501d1ced2a263076b5ebd369a54af101c68",
+  "source_engine_registry": "packages/coding-agent/src/web/search/provider.ts",
+  "engine_count": 20,
+  "engines": [
+    "perplexity",
+    "zai",
+    "exa",
+    "tinyfish",
+    "jina",
+    "kagi",
+    "tavily",
+    "firecrawl",
+    "brave",
+    "kimi",
+    "parallel",
+    "synthetic",
+    "ollama",
+    "searxng",
+    "duckduckgo",
+    "google",
+    "ecosia",
+    "startpage",
+    "mojeek",
+    "public"
+  ],
+  "grounding_count": 6,
+  "grounding": [
+    "gemini",
+    "anthropic",
+    "codex",
+    "xai",
+    "openrouter",
+    "openai"
+  ],
+  "model_kinds": [
+    "chat",
+    "tiny",
+    "image",
+    "tts",
+    "stt",
+    "search",
+    "judge",
+    "embedding",
+    "rerank",
+    "video"
+  ],
+  "catalog_rule_file_count": 92,
+  "catalog_rule_files": [
+    {
+      "id": "abliteration",
+      "path": "packages/catalog/src/compat/rules/providers/abliteration.kdl"
+    },
+    {
+      "id": "aiand",
+      "path": "packages/catalog/src/compat/rules/providers/aiand.kdl"
+    },
+    {
+      "id": "aimlapi",
+      "path": "packages/catalog/src/compat/rules/providers/aimlapi.kdl"
+    },
+    {
+      "id": "alibaba-coding-plan",
+      "path": "packages/catalog/src/compat/rules/providers/alibaba-coding-plan.kdl"
+    },
+    {
+      "id": "alibaba-token-plan",
+      "path": "packages/catalog/src/compat/rules/providers/alibaba-token-plan.kdl"
+    },
+    {
+      "id": "amazon-bedrock",
+      "path": "packages/catalog/src/compat/rules/providers/amazon-bedrock.kdl"
+    },
+    {
+      "id": "anthropic",
+      "path": "packages/catalog/src/compat/rules/providers/anthropic.kdl"
+    },
+    {
+      "id": "apple",
+      "path": "packages/catalog/src/compat/rules/providers/apple.kdl"
+    },
+    {
+      "id": "azure",
+      "path": "packages/catalog/src/compat/rules/providers/azure.kdl"
+    },
+    {
+      "id": "baseten",
+      "path": "packages/catalog/src/compat/rules/providers/baseten.kdl"
+    },
+    {
+      "id": "bedrock-mantle",
+      "path": "packages/catalog/src/compat/rules/providers/bedrock-mantle.kdl"
+    },
+    {
+      "id": "cerebras",
+      "path": "packages/catalog/src/compat/rules/providers/cerebras.kdl"
+    },
+    {
+      "id": "charm-hyper",
+      "path": "packages/catalog/src/compat/rules/providers/charm-hyper.kdl"
+    },
+    {
+      "id": "cline-pass",
+      "path": "packages/catalog/src/compat/rules/providers/cline-pass.kdl"
+    },
+    {
+      "id": "cloudflare-ai-gateway",
+      "path": "packages/catalog/src/compat/rules/providers/cloudflare-ai-gateway.kdl"
+    },
+    {
+      "id": "commandcode",
+      "path": "packages/catalog/src/compat/rules/providers/commandcode.kdl"
+    },
+    {
+      "id": "coralbricks",
+      "path": "packages/catalog/src/compat/rules/providers/coralbricks.kdl"
+    },
+    {
+      "id": "coreweave",
+      "path": "packages/catalog/src/compat/rules/providers/coreweave.kdl"
+    },
+    {
+      "id": "cursor",
+      "path": "packages/catalog/src/compat/rules/providers/cursor.kdl"
+    },
+    {
+      "id": "deepinfra",
+      "path": "packages/catalog/src/compat/rules/providers/deepinfra.kdl"
+    },
+    {
+      "id": "deepseek",
+      "path": "packages/catalog/src/compat/rules/providers/deepseek.kdl"
+    },
+    {
+      "id": "devin",
+      "path": "packages/catalog/src/compat/rules/providers/devin.kdl"
+    },
+    {
+      "id": "factory-droid",
+      "path": "packages/catalog/src/compat/rules/providers/factory-droid.kdl"
+    },
+    {
+      "id": "firepass",
+      "path": "packages/catalog/src/compat/rules/providers/firepass.kdl"
+    },
+    {
+      "id": "fireworks",
+      "path": "packages/catalog/src/compat/rules/providers/fireworks.kdl"
+    },
+    {
+      "id": "github-copilot",
+      "path": "packages/catalog/src/compat/rules/providers/github-copilot.kdl"
+    },
+    {
+      "id": "gitlab-duo-agent",
+      "path": "packages/catalog/src/compat/rules/providers/gitlab-duo-agent.kdl"
+    },
+    {
+      "id": "gitlab-duo",
+      "path": "packages/catalog/src/compat/rules/providers/gitlab-duo.kdl"
+    },
+    {
+      "id": "gmi-cloud",
+      "path": "packages/catalog/src/compat/rules/providers/gmi-cloud.kdl"
+    },
+    {
+      "id": "google-antigravity",
+      "path": "packages/catalog/src/compat/rules/providers/google-antigravity.kdl"
+    },
+    {
+      "id": "google-gemini-cli",
+      "path": "packages/catalog/src/compat/rules/providers/google-gemini-cli.kdl"
+    },
+    {
+      "id": "google-vertex",
+      "path": "packages/catalog/src/compat/rules/providers/google-vertex.kdl"
+    },
+    {
+      "id": "google",
+      "path": "packages/catalog/src/compat/rules/providers/google.kdl"
+    },
+    {
+      "id": "groq",
+      "path": "packages/catalog/src/compat/rules/providers/groq.kdl"
+    },
+    {
+      "id": "helmcode",
+      "path": "packages/catalog/src/compat/rules/providers/helmcode.kdl"
+    },
+    {
+      "id": "huggingface",
+      "path": "packages/catalog/src/compat/rules/providers/huggingface.kdl"
+    },
+    {
+      "id": "image-tokenization",
+      "path": "packages/catalog/src/compat/rules/providers/image-tokenization.kdl"
+    },
+    {
+      "id": "kilo",
+      "path": "packages/catalog/src/compat/rules/providers/kilo.kdl"
+    },
+    {
+      "id": "kimi-code",
+      "path": "packages/catalog/src/compat/rules/providers/kimi-code.kdl"
+    },
+    {
+      "id": "litellm",
+      "path": "packages/catalog/src/compat/rules/providers/litellm.kdl"
+    },
+    {
+      "id": "llama.cpp",
+      "path": "packages/catalog/src/compat/rules/providers/llama.cpp.kdl"
+    },
+    {
+      "id": "lm-studio",
+      "path": "packages/catalog/src/compat/rules/providers/lm-studio.kdl"
+    },
+    {
+      "id": "local",
+      "path": "packages/catalog/src/compat/rules/providers/local.kdl"
+    },
+    {
+      "id": "meta",
+      "path": "packages/catalog/src/compat/rules/providers/meta.kdl"
+    },
+    {
+      "id": "minimax-code-cn",
+      "path": "packages/catalog/src/compat/rules/providers/minimax-code-cn.kdl"
+    },
+    {
+      "id": "minimax-code",
+      "path": "packages/catalog/src/compat/rules/providers/minimax-code.kdl"
+    },
+    {
+      "id": "minimax",
+      "path": "packages/catalog/src/compat/rules/providers/minimax.kdl"
+    },
+    {
+      "id": "mistral",
+      "path": "packages/catalog/src/compat/rules/providers/mistral.kdl"
+    },
+    {
+      "id": "moonshot",
+      "path": "packages/catalog/src/compat/rules/providers/moonshot.kdl"
+    },
+    {
+      "id": "muse-code",
+      "path": "packages/catalog/src/compat/rules/providers/muse-code.kdl"
+    },
+    {
+      "id": "nanogpt",
+      "path": "packages/catalog/src/compat/rules/providers/nanogpt.kdl"
+    },
+    {
+      "id": "native-tools",
+      "path": "packages/catalog/src/compat/rules/providers/native-tools.kdl"
+    },
+    {
+      "id": "novita",
+      "path": "packages/catalog/src/compat/rules/providers/novita.kdl"
+    },
+    {
+      "id": "nvidia",
+      "path": "packages/catalog/src/compat/rules/providers/nvidia.kdl"
+    },
+    {
+      "id": "ollama-cloud",
+      "path": "packages/catalog/src/compat/rules/providers/ollama-cloud.kdl"
+    },
+    {
+      "id": "ollama",
+      "path": "packages/catalog/src/compat/rules/providers/ollama.kdl"
+    },
+    {
+      "id": "openai-codex",
+      "path": "packages/catalog/src/compat/rules/providers/openai-codex.kdl"
+    },
+    {
+      "id": "openai",
+      "path": "packages/catalog/src/compat/rules/providers/openai.kdl"
+    },
+    {
+      "id": "opencode-go",
+      "path": "packages/catalog/src/compat/rules/providers/opencode-go.kdl"
+    },
+    {
+      "id": "opencode-zen",
+      "path": "packages/catalog/src/compat/rules/providers/opencode-zen.kdl"
+    },
+    {
+      "id": "openrouter",
+      "path": "packages/catalog/src/compat/rules/providers/openrouter.kdl"
+    },
+    {
+      "id": "output-limits",
+      "path": "packages/catalog/src/compat/rules/providers/output-limits.kdl"
+    },
+    {
+      "id": "qianfan",
+      "path": "packages/catalog/src/compat/rules/providers/qianfan.kdl"
+    },
+    {
+      "id": "qwen-portal",
+      "path": "packages/catalog/src/compat/rules/providers/qwen-portal.kdl"
+    },
+    {
+      "id": "sakana",
+      "path": "packages/catalog/src/compat/rules/providers/sakana.kdl"
+    },
+    {
+      "id": "siliconflow-cn",
+      "path": "packages/catalog/src/compat/rules/providers/siliconflow-cn.kdl"
+    },
+    {
+      "id": "siliconflow",
+      "path": "packages/catalog/src/compat/rules/providers/siliconflow.kdl"
+    },
+    {
+      "id": "singularityapi-dev",
+      "path": "packages/catalog/src/compat/rules/providers/singularityapi-dev.kdl"
+    },
+    {
+      "id": "singularityapi-tech",
+      "path": "packages/catalog/src/compat/rules/providers/singularityapi-tech.kdl"
+    },
+    {
+      "id": "snowflake",
+      "path": "packages/catalog/src/compat/rules/providers/snowflake.kdl"
+    },
+    {
+      "id": "stepfun",
+      "path": "packages/catalog/src/compat/rules/providers/stepfun.kdl"
+    },
+    {
+      "id": "synthetic",
+      "path": "packages/catalog/src/compat/rules/providers/synthetic.kdl"
+    },
+    {
+      "id": "together",
+      "path": "packages/catalog/src/compat/rules/providers/together.kdl"
+    },
+    {
+      "id": "tool-free-history",
+      "path": "packages/catalog/src/compat/rules/providers/tool-free-history.kdl"
+    },
+    {
+      "id": "tool-result-images",
+      "path": "packages/catalog/src/compat/rules/providers/tool-result-images.kdl"
+    },
+    {
+      "id": "typesafe",
+      "path": "packages/catalog/src/compat/rules/providers/typesafe.kdl"
+    },
+    {
+      "id": "umans",
+      "path": "packages/catalog/src/compat/rules/providers/umans.kdl"
+    },
+    {
+      "id": "venice",
+      "path": "packages/catalog/src/compat/rules/providers/venice.kdl"
+    },
+    {
+      "id": "vercel-ai-gateway",
+      "path": "packages/catalog/src/compat/rules/providers/vercel-ai-gateway.kdl"
+    },
+    {
+      "id": "vllm",
+      "path": "packages/catalog/src/compat/rules/providers/vllm.kdl"
+    },
+    {
+      "id": "wafer-serverless",
+      "path": "packages/catalog/src/compat/rules/providers/wafer-serverless.kdl"
+    },
+    {
+      "id": "web",
+      "path": "packages/catalog/src/compat/rules/providers/web.kdl"
+    },
+    {
+      "id": "xai-oauth",
+      "path": "packages/catalog/src/compat/rules/providers/xai-oauth.kdl"
+    },
+    {
+      "id": "xai",
+      "path": "packages/catalog/src/compat/rules/providers/xai.kdl"
+    },
+    {
+      "id": "xiaomi-token-plan-ams",
+      "path": "packages/catalog/src/compat/rules/providers/xiaomi-token-plan-ams.kdl"
+    },
+    {
+      "id": "xiaomi-token-plan-cn",
+      "path": "packages/catalog/src/compat/rules/providers/xiaomi-token-plan-cn.kdl"
+    },
+    {
+      "id": "xiaomi-token-plan-sgp",
+      "path": "packages/catalog/src/compat/rules/providers/xiaomi-token-plan-sgp.kdl"
+    },
+    {
+      "id": "xiaomi",
+      "path": "packages/catalog/src/compat/rules/providers/xiaomi.kdl"
+    },
+    {
+      "id": "yolo-auto",
+      "path": "packages/catalog/src/compat/rules/providers/yolo-auto.kdl"
+    },
+    {
+      "id": "zai",
+      "path": "packages/catalog/src/compat/rules/providers/zai.kdl"
+    },
+    {
+      "id": "zenmux",
+      "path": "packages/catalog/src/compat/rules/providers/zenmux.kdl"
+    },
+    {
+      "id": "zhipu-coding-plan",
+      "path": "packages/catalog/src/compat/rules/providers/zhipu-coding-plan.kdl"
+    }
+  ],
+  "limitations": "Catalog rule files can be behavior-only/pseudoproviders; cannot imply real selectable or credentialed provider, and engine adapters can require auth, costs or fail."
+}

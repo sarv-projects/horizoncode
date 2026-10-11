@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UiStreamEventV2",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 2
+    },
+    "eventId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cursor": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lane": {
+      "type": "string",
+      "enum": [
+        "durable",
+        "ephemeral"
+      ]
+    },
+    "threadId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "executionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timestamp": {
+      "type": "number",
+      "minimum": 0
+    },
+    "payload": {},
+    "subscriptionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ownerEpoch": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "eventId",
+    "cursor",
+    "lane",
+    "kind",
+    "timestamp",
+    "payload"
+  ],
+  "additionalProperties": false
+}

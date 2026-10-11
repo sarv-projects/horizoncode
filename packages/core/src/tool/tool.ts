@@ -6,11 +6,26 @@ import type { AgentV2 } from "../agent"
 import type { SessionMessage } from "../session/message"
 import type { SessionSchema } from "../session/schema"
 
+export type EffectClass = "read_only" | "control" | "effect" | "unknown"
+
+export type Capability = {
+  readonly id: string
+  readonly effectClass: EffectClass
+}
+
+export type EffectAdmission = {
+  readonly challengeID: string
+  readonly effectID: string
+  readonly target: string
+  readonly resource: string
+}
+
 export interface Context {
   readonly sessionID: SessionSchema.ID
   readonly agent: AgentV2.ID
   readonly assistantMessageID: SessionMessage.ID
   readonly toolCallID: string
+  readonly effect?: EffectAdmission
 }
 
 export type SchemaType<A> = Schema.Codec<A, any, never, never>
@@ -46,6 +61,7 @@ type Config<
   readonly input: Input
   readonly output: Output
   readonly structured?: Structured
+  readonly capability?: Capability
   readonly toStructuredOutput?: (input: {
     readonly input: Schema.Schema.Type<Input>
     readonly output: Output["Encoded"]
@@ -62,6 +78,7 @@ type Config<
 
 type Runtime = {
   readonly permission?: string
+  readonly capability?: Capability
   readonly definition: (name: string) => ToolDefinition
   readonly validate: (input: unknown) => Effect.Effect<void, ToolFailure>
   readonly settle: (call: ToolCall, context: Context) => Effect.Effect<ToolOutput, ToolFailure>
@@ -77,6 +94,7 @@ export function make<
   const tool = Object.freeze({}) as Definition<Input, Structured>
   const definitions = new Map<string, ToolDefinition>()
   runtimes.set(tool, {
+    capability: config.capability,
     definition: (name) => {
       const cached = definitions.get(name)
       if (cached) return cached
@@ -152,6 +170,8 @@ export const withPermission = <Input extends SchemaType<any>, Output extends Sch
 }
 
 export const permission = (tool: AnyTool, name: string) => runtimeOf(tool).permission ?? name
+export const capability = (tool: AnyTool, name: string): Capability =>
+  runtimeOf(tool).capability ?? { id: name, effectClass: "unknown" }
 export const definition = (name: string, tool: AnyTool) => runtimeOf(tool).definition(name)
 export const validate = (tool: AnyTool, input: unknown) => runtimeOf(tool).validate(input)
 export const settle = (tool: AnyTool, call: ToolCall, context: Context) => runtimeOf(tool).settle(call, context)

@@ -1,0 +1,1663 @@
+{
+  "schemaVersion": 1,
+  "canonical": [
+    {
+      "id": "agents.cancel",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "agents.capabilities",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "agents.graph",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "agents.inspect",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "agents.list",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "agents.message",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "agents.result",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "agents.spawn",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "agents.wait",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "approvals.pending",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "approvals.respond",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "artifacts.export",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "artifacts.inspect",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "artifacts.list",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "artifacts.read_range",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "artifacts.search_text",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "automations.create",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "automations.disable",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "automations.enable",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "automations.history",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "automations.inspect",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "automations.list",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "automations.run_now",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "automations.update",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "benchmark.run",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "browser.assert",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "browser.back",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "browser.console",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "browser.navigate",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "browser.network_errors",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "browser.open",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "browser.reload",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "browser.screenshot",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "browser.snapshot",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "browser.wait",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "budget.status",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "build.detect",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "build.run",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "builtin.architect",
+      "kind": "agent",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": true
+    },
+    {
+      "id": "builtin.browser-qa",
+      "kind": "agent",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": true
+    },
+    {
+      "id": "builtin.build",
+      "kind": "agent",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": true
+    },
+    {
+      "id": "builtin.explorer",
+      "kind": "agent",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": true
+    },
+    {
+      "id": "builtin.history-search",
+      "kind": "agent",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": true
+    },
+    {
+      "id": "builtin.horizon-docs",
+      "kind": "skill",
+      "effectClass": "control",
+      "status": "code_present",
+      "sealed": true
+    },
+    {
+      "id": "builtin.librarian",
+      "kind": "agent",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": true
+    },
+    {
+      "id": "builtin.looker",
+      "kind": "agent",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": true
+    },
+    {
+      "id": "builtin.plan",
+      "kind": "agent",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": true
+    },
+    {
+      "id": "builtin.reviewer",
+      "kind": "agent",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": true
+    },
+    {
+      "id": "builtin.system-operator",
+      "kind": "agent",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": true
+    },
+    {
+      "id": "builtin.test-debugger",
+      "kind": "agent",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": true
+    },
+    {
+      "id": "builtin.verifier",
+      "kind": "agent",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": true
+    },
+    {
+      "id": "checkpoint.create",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "checkpoint.list",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "checkpoint.restore",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "checkpoint.restore_preview",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "connectors.invoke",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "connectors.list",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "connectors.status",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "context.add_ref",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "context.clear",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "context.compact",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "context.compact_preview",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "context.entries",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "context.prune",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "context.prune_preview",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "context.remove_ref",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "context.status",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "context.trim",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "context.trim_preview",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "coverage.read",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "debug.attach",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "debug.breakpoint.remove",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "debug.breakpoint.set",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "debug.breakpoints",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "debug.continue",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "debug.evaluate",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "debug.pause",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "debug.scopes",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "debug.stack",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "debug.start",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "debug.step.into",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "debug.step.out",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "debug.step.over",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "debug.stop",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "debug.variables",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "definitions.find",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "desktop.ax.query",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "desktop.click",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "desktop.clipboard.read",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "desktop.clipboard.write",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "desktop.displays",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "desktop.focus",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "desktop.key",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "desktop.pointer.move",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "desktop.scroll",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "desktop.snapshot",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "desktop.type",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "desktop.windows",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "diagnostics.get",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "docs.external.read",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "docs.external.search",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "docs.horizon.read",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "docs.horizon.search",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "dom.click",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "dom.get",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "dom.query",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "dom.select",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "dom.source_candidates",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "dom.type",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "events.tail",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "evidence.list",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "files.create",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "files.delete",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "files.move",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "files.patch",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "files.read",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "files.read_range",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "files.stat",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "files.watch",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "files.write",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "format.apply",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "format.check",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "git.branch.create",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "git.branch.list",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "git.branch.switch",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "git.commit",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "git.conflicts",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "git.diff",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "git.log",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "git.merge_stage",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "git.restore_selected",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "git.show",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "git.status",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "git.worktree.acquire",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "git.worktree.list",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "git.worktree.release",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "glob.search",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "goal.clear",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "goal.pause",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "goal.propose",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "goal.resume",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "goal.revise",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "goal.status",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "healing.status",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "history.attach",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "history.read_range",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "history.search",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "job.commit_message.generate",
+      "kind": "job",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": true
+    },
+    {
+      "id": "job.context.prune_propose",
+      "kind": "job",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": true
+    },
+    {
+      "id": "job.context.summarize",
+      "kind": "job",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": true
+    },
+    {
+      "id": "job.context.trim",
+      "kind": "job",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": true
+    },
+    {
+      "id": "job.query.rewrite",
+      "kind": "job",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": true
+    },
+    {
+      "id": "job.title.generate",
+      "kind": "job",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": true
+    },
+    {
+      "id": "language.diagnostics",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "language.sources",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "language.status",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "lint.run",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "mcp.invoke",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "mcp.server_status",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "mcp.servers",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "mcp.tools",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "permissions.explain",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "permissions.request",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "permissions.status",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "ports.release",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "ports.reserve",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "preview.start",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "preview.status",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "preview.stop",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "process.inspect_owned",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "process.list_owned",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "process.stop_owned",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "references.find",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "repl.execute",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "repl.output_range",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "repl.reset",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "repl.start",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "repl.status",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "repl.stop",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "repo.dependencies",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "repo.detect",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "repo.impact",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "repo.status",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "repo.tree",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "resources.status",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "run.cancel",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "run.pause",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "run.resume",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "run.status",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "run.verify",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "services.start_local",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "services.stop_local",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "skills.inspect",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "skills.invoke",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "skills.load",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "skills.search",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "symbols.outline",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "symbols.read",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "symbols.search",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "tasks.block",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "tasks.inspect",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "tasks.list",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "tasks.propose",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "tasks.verify",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "terminal.cancel",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "terminal.input",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "terminal.output_range",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "terminal.run",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "terminal.search",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "terminal.start",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "terminal.status",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "test.discover",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "test.run",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "test.run_related",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "tests.related",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "text.find_exact",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "text.search",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "tools.search",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "trace.inspect",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "usage.status",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "web.search",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "web.search.inspect_provider",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "web.search.providers",
+      "kind": "tool",
+      "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    }
+  ],
+  "aliases": [
+    {
+      "alias": "agent.cancel",
+      "canonicalId": "agents.cancel",
+      "source": "legacy-proposal-22"
+    },
+    {
+      "alias": "agent.delegate",
+      "canonicalId": "agents.spawn",
+      "source": "legacy-proposal-22"
+    },
+    {
+      "alias": "agent.join",
+      "canonicalId": "agents.wait",
+      "source": "legacy-proposal-22"
+    },
+    {
+      "alias": "context.retrieve",
+      "canonicalId": "history.search",
+      "source": "legacy-proposal-22"
+    },
+    {
+      "alias": "exec.build",
+      "canonicalId": "build.run",
+      "source": "legacy-proposal-22"
+    },
+    {
+      "alias": "exec.format",
+      "canonicalId": "format.apply",
+      "source": "legacy-proposal-22"
+    },
+    {
+      "alias": "exec.lint",
+      "canonicalId": "lint.run",
+      "source": "legacy-proposal-22"
+    },
+    {
+      "alias": "exec.pty",
+      "canonicalId": "terminal.start",
+      "source": "legacy-proposal-22"
+    },
+    {
+      "alias": "exec.shell",
+      "canonicalId": "terminal.run",
+      "source": "legacy-proposal-22"
+    },
+    {
+      "alias": "exec.test",
+      "canonicalId": "test.run",
+      "source": "legacy-proposal-22"
+    },
+    {
+      "alias": "fs.apply_patch",
+      "canonicalId": "files.patch",
+      "source": "legacy-proposal-22"
+    },
+    {
+      "alias": "fs.diff",
+      "canonicalId": "git.diff",
+      "source": "legacy-proposal-22"
+    },
+    {
+      "alias": "fs.grep",
+      "canonicalId": "text.search",
+      "source": "legacy-proposal-22"
+    },
+    {
+      "alias": "fs.read",
+      "canonicalId": "files.read",
+      "source": "legacy-proposal-22"
+    },
+    {
+      "alias": "fs.stage_patch",
+      "canonicalId": "files.patch",
+      "source": "legacy-proposal-22"
+    },
+    {
+      "alias": "impact.analyze",
+      "canonicalId": "repo.impact",
+      "source": "legacy-proposal-22"
+    },
+    {
+      "alias": "preview.map_element",
+      "canonicalId": "dom.source_candidates",
+      "source": "legacy-proposal-22"
+    },
+    {
+      "alias": "repo.references",
+      "canonicalId": "references.find",
+      "source": "legacy-proposal-22"
+    },
+    {
+      "alias": "repo.symbol",
+      "canonicalId": "symbols.search",
+      "source": "legacy-proposal-22"
+    }
+  ]
+}

@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ToolBatchControlV1",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "batchId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "providerResponseRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "providerResponseDigest": {
+      "type": "string",
+      "minLength": 1
+    },
+    "toolRegistryGeneration": {
+      "type": "string",
+      "minLength": 1
+    },
+    "policyEpoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "status": {
+      "enum": [
+        "collecting",
+        "validated",
+        "admitted",
+        "executing",
+        "settling",
+        "settled",
+        "rejected",
+        "cancelled",
+        "unknown_reconciliation"
+      ]
+    },
+    "calls": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "callId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "capabilityId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "schemaDigest": {
+            "type": "string",
+            "minLength": 1
+          },
+          "argumentsDigest": {
+            "type": "string",
+            "minLength": 1
+          },
+          "effectClass": {
+            "enum": [
+              "read_only",
+              "control",
+              "guarded_effect"
+            ]
+          }
+        },
+        "required": [
+          "callId",
+          "capabilityId",
+          "schemaDigest",
+          "argumentsDigest",
+          "effectClass"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "effectRefs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "batchId",
+    "sessionId",
+    "providerResponseRef",
+    "providerResponseDigest",
+    "toolRegistryGeneration",
+    "policyEpoch",
+    "status",
+    "calls",
+    "effectRefs"
+  ],
+  "additionalProperties": false
+}

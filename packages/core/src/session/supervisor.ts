@@ -1,16 +1,17 @@
 /**
- * Effect-scoped client for the Linux read-only Session observer.
+ * Effect-scoped client for the Rust Session supervisor.
  *
- * OpenCode keeps owning Session rows, messages, provider continuation and EventV2. This
- * module starts the Rust projection observer, negotiates its private MessagePack channel,
- * and forwards only bounded metadata events to its caller.
+ * OpenCode owns Session rows, messages, provider continuation and EventV2. Rust
+ * projects Session events and owns authorized ToolBatch effects, durable intents,
+ * execution and settlement.
  */
 
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import {
   closeSync,
   existsSync,
   fsyncSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -23,19 +24,25 @@ import {
 import { createConnection, type Socket } from "node:net"
 import { dirname, join } from "node:path"
 import { pack, unpack } from "msgpackr"
-import { Context, Effect, Layer, Schema } from "effect"
+import { Context, Deferred, Effect, Layer, Ref, Schema } from "effect"
 import type * as Scope from "effect/Scope"
 import * as ChildProcess from "effect/unstable/process/ChildProcess"
 import type { ChildProcessHandle } from "effect/unstable/process/ChildProcessSpawner"
 import { LayerNode } from "../effect/layer-node"
+import { Database } from "../database/database"
+import { Global } from "../global"
+
 import { AppProcess } from "../process"
+
+declare const OPENCODE_SESSION_OBSERVER_ASSET: string
+declare const OPENCODE_SESSION_OBSERVER_MANIFEST: string
 
 const PROTOCOL = 1
 const MAX_FRAME_BYTES = 8 * 1024 * 1024
 const MAX_PENDING_BYTES = MAX_FRAME_BYTES * 2 + 8
 const MAX_PENDING_MESSAGES = 128
 const PAGE_CONTROL_FEATURE = "session.events.page-control.v1"
-const REQUIRED_FEATURES = ["session.events.v1", PAGE_CONTROL_FEATURE] as const
+const REQUIRED_FEATURES = ["session.events.v1", PAGE_CONTROL_FEATURE, "effects.v2"] as const
 const BASE_DIGEST = `blake3:${"0".repeat(64)}`
 
 export type Cursor = {
@@ -67,6 +74,32 @@ export type ResnapshotRequired = {
   readonly latest: Cursor
 }
 
+
+export type GuardedToolCall = {
+  readonly callID: string
+  readonly capabilityID: string
+  readonly arguments: unknown
+}
+
+export type EffectChallenge = {
+  readonly challengeID: string
+  readonly effectID: string
+  readonly target: string
+  readonly resource: string
+  readonly existed: boolean
+}
+
+export type EffectAdmission =
+  | { readonly status: "admitted"; readonly challenge: EffectChallenge }
+  | { readonly status: "denied"; readonly reason: string }
+
+export type EffectReceipt = {
+  readonly effectID: string
+  readonly receiptDigest: string
+  readonly target: string
+  readonly resource: string
+  readonly existed: boolean
+}
 export type ServerMessage = SessionEvent | PageEnd | ResnapshotRequired
 
 export type OpenOptions = {
@@ -79,7 +112,39 @@ export type OpenOptions = {
   readonly sessionID: string
   readonly hostBuildDigest: string
   readonly startupTimeoutMs?: number
+  /** Canonical root that bounds Rust-owned effects for this Session. */
+  readonly workspaceRoot?: string
 }
+
+export type SessionSupervisorManifest =
+  | {
+      readonly schemaVersion: 1
+      readonly status: "available"
+      readonly binaryName: "session_supervisor"
+      readonly target: string
+      readonly sha256: string
+    }
+  | {
+      readonly schemaVersion: 1
+      readonly status: "unavailable"
+      readonly target: string
+      readonly reason: string
+    }
+
+export interface RuntimeConfigOptions {
+  readonly assetPath?: string
+  readonly manifestJSON?: string
+  readonly installRoot: string
+  readonly stateRoot: string
+}
+
+export type SessionSupervisorStart =
+  | { readonly status: "available"; readonly client: SessionSupervisorClient }
+  | { readonly status: "unavailable"; readonly reason: string }
+
+export class RuntimeConfig extends Context.Service<RuntimeConfig, RuntimeConfigOptions>()(
+  "@opencode/SessionSupervisorRuntime",
+) {}
 
 export class SessionSupervisorError extends Schema.TaggedErrorClass<SessionSupervisorError>()(
   "SessionSupervisorError",
@@ -101,6 +166,7 @@ export interface SessionSupervisorClient {
   readonly ack: (event: SessionEvent) => Promise<void>
   readonly unsubscribe: () => Promise<void>
   readonly stop: () => Promise<void>
+  readonly request: (serviceID: string, operation: string, body: Record<string, unknown>) => Promise<Record<string, unknown>>
 }
 
 export interface Interface {
@@ -111,12 +177,216 @@ export interface Interface {
   readonly open: (
     options: OpenOptions,
   ) => Effect.Effect<SessionSupervisorClient, SessionSupervisorError, Scope.Scope>
+  /** Resolve the bundled observer, install it privately and start one Session-owned process. */
+  readonly openForSession: (
+    sessionID: string,
+    source: string,
+    workspaceRoot?: string,
+  ) => Effect.Effect<SessionSupervisorStart, SessionSupervisorError, Scope.Scope>
+  readonly prepareToolBatch: (input: {
+    readonly sessionID: string
+    readonly batchID: string
+    readonly turnContextDigest: string
+    readonly calls: ReadonlyArray<GuardedToolCall>
+  }) => Effect.Effect<EffectAdmission, SessionSupervisorError>
+  readonly approveEffect: (input: { readonly sessionID: string; readonly challengeID: string }) => Effect.Effect<void, SessionSupervisorError>
+  readonly executeWrite: (input: {
+    readonly sessionID: string
+    readonly challengeID: string
+    readonly content: string
+  }) => Effect.Effect<EffectReceipt, SessionSupervisorError>
+  /** Keep one observer alive for the active provider turn and recover transport restarts. */
+  readonly watchSession: (
+    sessionID: string,
+    source: string,
+    workspaceRoot: string,
+    turnComplete: Ref.Ref<boolean>,
+    ready: Deferred.Deferred<void>,
+  ) => Effect.Effect<void, never, Scope.Scope>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionSupervisor") {}
 
 function fail(stage: string, reason: string) {
   return new SessionSupervisorError({ stage, reason })
+}
+
+function parseManifest(input: string): SessionSupervisorManifest {
+  let value: Record<string, unknown>
+  try {
+    value = record(JSON.parse(input))
+  } catch {
+    throw fail("manifest", "embedded observer manifest is malformed")
+  }
+  if (value.schemaVersion !== 1 || typeof value.status !== "string" || typeof value.target !== "string") {
+    throw fail("manifest", "embedded observer manifest has an unsupported shape")
+  }
+  if (value.status === "unavailable") {
+    if (typeof value.reason !== "string" || value.reason.length === 0) {
+      throw fail("manifest", "unavailable observer manifest must include a reason")
+    }
+    return {
+      schemaVersion: 1,
+      status: "unavailable",
+      target: value.target,
+      reason: value.reason,
+    }
+  }
+  if (
+    value.status !== "available" ||
+    value.binaryName !== "session_supervisor" ||
+    !/^linux-(x64|arm64)-gnu$/.test(value.target) ||
+    typeof value.sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/.test(value.sha256)
+  ) {
+    throw fail("manifest", "available observer manifest is invalid")
+  }
+  return {
+    schemaVersion: 1,
+    status: "available",
+    binaryName: "session_supervisor",
+    target: value.target,
+    sha256: value.sha256,
+  }
+}
+
+function ensurePrivateDirectory(path: string, stage: string) {
+  if (!path.startsWith("/")) throw fail(stage, "directory path must be absolute")
+  const parentPath = dirname(path)
+  try {
+    const parent = lstatSync(parentPath)
+    if (
+      realpathSync(parentPath) !== parentPath ||
+      !parent.isDirectory() ||
+      parent.isSymbolicLink() ||
+      (process.getuid && parent.uid !== process.getuid()) ||
+      (parent.mode & 0o022) !== 0
+    ) {
+      throw fail(stage, "directory parent is not owned and protected")
+    }
+    try {
+      mkdirSync(path, { mode: 0o700 })
+    } catch (error) {
+      if (!error || typeof error !== "object" || !("code" in error) || error.code !== "EEXIST") throw error
+    }
+    const stat = lstatSync(path)
+    if (
+      realpathSync(path) !== path ||
+      !stat.isDirectory() ||
+      stat.isSymbolicLink() ||
+      (process.getuid && stat.uid !== process.getuid()) ||
+      (stat.mode & 0o077) !== 0
+    ) {
+      throw fail(stage, "directory must be owner-only and non-symlinked")
+    }
+  } catch (error) {
+    if (error instanceof SessionSupervisorError) throw error
+    throw fail(stage, "directory is unavailable or unsafe")
+  }
+  return path
+}
+
+function sessionStateDirectory(stateRoot: string, sessionID: string) {
+  const root = ensurePrivateDirectory(stateRoot, "state")
+  return ensurePrivateDirectory(
+    join(root, `s-${createHash("sha256").update(sessionID).digest("hex").slice(0, 20)}`),
+    "state",
+  )
+}
+
+function resetSessionObserverMetadata(stateRoot: string, sessionID: string) {
+  const stateDirectory = sessionStateDirectory(stateRoot, sessionID)
+  const files = [
+    "session-projection.sqlite",
+    "session-projection.sqlite-wal",
+    "session-projection.sqlite-shm",
+    "session-projection.sqlite-journal",
+    `session-${sessionID}.cursor`,
+  ]
+  for (const name of files) {
+    const filePath = join(stateDirectory, name)
+    try {
+      const stat = lstatSync(filePath)
+      if (
+        !stat.isFile() ||
+        stat.isSymbolicLink() ||
+        stat.nlink !== 1 ||
+        (process.getuid && stat.uid !== process.getuid()) ||
+        (stat.mode & 0o077) !== 0 ||
+        realpathSync(filePath) !== filePath
+      ) {
+        throw fail("resnapshot", "observer metadata is not a private regular file")
+      }
+      unlinkSync(filePath)
+    } catch (error) {
+      if (error instanceof SessionSupervisorError) throw error
+      if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") {
+        throw fail("resnapshot", "observer metadata could not be safely reset")
+      }
+    }
+  }
+  const directory = openSync(stateDirectory, "r")
+  try {
+    fsyncSync(directory)
+  } finally {
+    closeSync(directory)
+  }
+}
+
+
+async function installBundledBinary(
+  assetPath: string,
+  expectedDigest: string,
+  installRoot: string,
+): Promise<string> {
+  const bytes = await Bun.file(assetPath).bytes()
+  const actualDigest = createHash("sha256").update(bytes).digest("hex")
+  if (actualDigest !== expectedDigest) throw fail("pin", "embedded observer does not match its SHA-256 manifest")
+
+  ensurePrivateDirectory(installRoot, "install")
+  const target = join(installRoot, `session_supervisor-${expectedDigest}`)
+  const verify = () => {
+    const stat = lstatSync(target)
+    if (
+      !stat.isFile() ||
+      stat.isSymbolicLink() ||
+      stat.nlink !== 1 ||
+      (process.getuid && stat.uid !== process.getuid()) ||
+      (stat.mode & 0o077) !== 0 ||
+      (stat.mode & 0o100) === 0 ||
+      stat.size !== bytes.length ||
+      realpathSync(target) !== target ||
+      createHash("sha256").update(readFileSync(target)).digest("hex") !== expectedDigest
+    ) {
+      throw fail("install", "installed observer is not the pinned owner-only executable")
+    }
+    return target
+  }
+  if (existsSync(target)) return verify()
+
+  const temporary = `${target}.${randomUUID()}.tmp`
+  try {
+    const descriptor = openSync(temporary, "wx", 0o700)
+    try {
+      writeFileSync(descriptor, bytes)
+      fsyncSync(descriptor)
+    } finally {
+      closeSync(descriptor)
+    }
+    try {
+      linkSync(temporary, target)
+    } catch (error) {
+      if (!error || typeof error !== "object" || !("code" in error) || error.code !== "EEXIST") throw error
+    }
+  } catch (error) {
+    if (error instanceof SessionSupervisorError) throw error
+    throw fail("install", "could not atomically install the pinned observer")
+  } finally {
+    try {
+      unlinkSync(temporary)
+    } catch {}
+  }
+  return verify()
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -126,9 +396,9 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
-function stringField(value: Record<string, unknown>, key: string): string {
+function stringField(value: Record<string, unknown>, key: string, maxBytes = 256): string {
   const field = value[key]
-  if (typeof field !== "string" || field.length === 0 || Buffer.byteLength(field, "utf8") > 256) {
+  if (typeof field !== "string" || field.length === 0 || Buffer.byteLength(field, "utf8") > maxBytes) {
     throw fail("protocol", `invalid ${key}`)
   }
   return field
@@ -214,6 +484,28 @@ function writeCheckpoint(path: string, value: Cursor) {
   }
 }
 
+type DecodedRpcResponse =
+  | { readonly requestID: string; readonly outcome: "ok"; readonly body: Record<string, unknown> }
+  | { readonly requestID: string; readonly outcome: "error"; readonly message: string }
+
+function decodeRpcResponse(input: unknown): DecodedRpcResponse {
+  const response = record(input)
+  if (response.kind !== "response" || response.protocol !== PROTOCOL)
+    throw fail("protocol", "incompatible RPC response")
+  const requestID = stringField(response, "requestId")
+  if (response.outcome === "error") {
+    const error = record(response.error)
+    return { requestID, outcome: "error", message: stringField(error, "message") }
+  }
+  if (response.outcome !== "ok") throw fail("protocol", "RPC response has an invalid outcome")
+  return { requestID, outcome: "ok", body: record(response.body) }
+}
+type PendingRpc = {
+  readonly resolve: (value: Record<string, unknown>) => void
+  readonly reject: (error: SessionSupervisorError) => void
+  readonly timer: NodeJS.Timeout
+}
+
 function decodeServerMessage(input: unknown): ServerMessage {
   const message = record(input)
   const kind = stringField(message, "kind")
@@ -295,6 +587,9 @@ class MessageChannel {
 
   end() {
     this.#socket.end()
+  }
+  isClosed() {
+    return this.#closed !== undefined
   }
 
   destroy() {
@@ -499,6 +794,8 @@ class SessionSupervisorClientImpl implements SessionSupervisorClient {
   #lastCursor: Cursor | undefined
   #lastDelivered: Cursor | undefined
   #pending: SessionEvent[] = []
+  #pendingRequests = new Map<string, PendingRpc>()
+  #expiredRequestIDs: string[] = []
   #closed = false
   #stopPromise: Promise<void> | undefined
 
@@ -540,30 +837,99 @@ class SessionSupervisorClientImpl implements SessionSupervisorClient {
 
   async receive(): Promise<ServerMessage> {
     if (!this.#subscribed || this.#closed) throw fail("subscription", "no active subscription")
-    const message = decodeServerMessage(await this.#channel.receive())
-    if (message.subscriptionId !== this.subscriptionId) throw fail("protocol", "message belongs to another subscription")
-    if (message.kind === "event") {
-      if (message.cursor.ownerKind !== "session" || message.cursor.ownerId !== this.#sessionID) {
-        throw fail("protocol", "event is outside the configured Session")
+    while (true) {
+      let value: unknown
+      try {
+        value = await this.#channel.receive()
+      } catch (error) {
+        this.#closed = true
+        this.#rejectPendingRequests("transport", "kernel RPC channel closed")
+        throw error
       }
-      if (this.#pending.length >= 64) throw fail("backpressure", "server exceeded the 64-event delivery window")
-      const prior = this.#lastDelivered ?? this.#lastCursor
-      if (!prior || BigInt(message.cursor.seq) !== BigInt(prior.seq) + 1n) {
-        throw fail("protocol", "event cursor is not the exact next sequence")
+      const raw = record(value)
+      if (raw.kind === "response") {
+        const response = decodeRpcResponse(raw)
+        const pending = this.#pendingRequests.get(response.requestID)
+        if (!pending) {
+          const expired = this.#expiredRequestIDs.indexOf(response.requestID)
+          if (expired >= 0) {
+            this.#expiredRequestIDs.splice(expired, 1)
+            continue
+          }
+          throw fail("protocol", "response has no matching RPC request")
+        }
+        clearTimeout(pending.timer)
+        this.#pendingRequests.delete(response.requestID)
+        if (response.outcome === "error") pending.reject(fail("effect", response.message))
+        else pending.resolve(response.body)
+        continue
       }
-      this.#lastDelivered = message.cursor
-      this.#pending.push(message)
+      const message = decodeServerMessage(raw)
+      if (message.subscriptionId !== this.subscriptionId)
+        throw fail("protocol", "message belongs to another subscription")
+      if (message.kind === "event") {
+        if (message.cursor.ownerKind !== "session" || message.cursor.ownerId !== this.#sessionID) {
+          throw fail("protocol", "event is outside the configured Session")
+        }
+        if (this.#pending.length >= 64) throw fail("backpressure", "server exceeded the 64-event delivery window")
+        const prior = this.#lastDelivered ?? this.#lastCursor
+        if (!prior || BigInt(message.cursor.seq) !== BigInt(prior.seq) + 1n) {
+          throw fail("protocol", "event cursor is not the exact next sequence")
+        }
+        this.#lastDelivered = message.cursor
+        this.#pending.push(message)
+        return message
+      }
+      if (message.kind === "page_end") {
+        if (this.#pending.length > 0 || !this.#lastCursor || !sameCursor(message.through, this.#lastCursor)) {
+          throw fail("protocol", "page ended before contiguous acknowledgments")
+        }
+        writeCheckpoint(this.#checkpointPath, message.through)
+        return message
+      }
+      this.#closed = true
+      this.#rejectPendingRequests("resnapshot", "Session supervisor requires a fresh snapshot")
       return message
     }
-    if (message.kind === "page_end") {
-      if (this.#pending.length > 0 || !this.#lastCursor || !sameCursor(message.through, this.#lastCursor)) {
-        throw fail("protocol", "page ended before contiguous acknowledgments")
-      }
-      writeCheckpoint(this.#checkpointPath, message.through)
-      return message
+  }
+  async request(serviceID: string, operation: string, body: Record<string, unknown>) {
+    if (this.#closed) throw fail("effect", "Session supervisor channel is closed")
+    if (!serviceID || serviceID.length > 128 || !operation || operation.length > 128)
+      throw fail("effect", "RPC service or operation is invalid")
+    if (this.#pendingRequests.size >= 16) throw fail("effect", "too many pending kernel requests")
+    const requestID = `req_${randomUUID().replaceAll("-", "")}`
+    let resolve!: (value: Record<string, unknown>) => void
+    let reject!: (error: SessionSupervisorError) => void
+    const response = new Promise<Record<string, unknown>>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise
+      reject = rejectPromise
+    })
+    // A scoped shutdown can reject an in-flight RPC after its Effect caller was interrupted.
+    void response.catch(() => undefined)
+    const timer = setTimeout(() => {
+      this.#pendingRequests.delete(requestID)
+      this.#expiredRequestIDs.push(requestID)
+      if (this.#expiredRequestIDs.length > 64) this.#expiredRequestIDs.shift()
+      reject(fail("effect", "kernel request timed out"))
+    }, 30_000)
+    this.#pendingRequests.set(requestID, { resolve, reject, timer })
+    try {
+      await this.#channel.send({
+        protocol: PROTOCOL,
+        kind: "request",
+        requestId: requestID,
+        serviceId: serviceID,
+        operation,
+        deadlineUnixMs: BigInt(Date.now() + 30_000),
+        traceId: randomUUID(),
+        body,
+      })
+    } catch (error) {
+      clearTimeout(timer)
+      this.#pendingRequests.delete(requestID)
+      reject(error instanceof SessionSupervisorError ? error : fail("transport", "could not send kernel request"))
     }
-    this.#closed = true
-    return message
+    return response
   }
 
   async ack(event: SessionEvent) {
@@ -577,7 +943,9 @@ class SessionSupervisorClientImpl implements SessionSupervisorClient {
   }
 
   async unsubscribe() {
-    if (this.#closed) {
+    if (this.#closed || this.#channel.isClosed()) {
+      this.#closed = true
+      this.#rejectPendingRequests("effect", "Session supervisor channel closed")
       await this.#waitForChildExit()
       return
     }
@@ -586,6 +954,7 @@ class SessionSupervisorClientImpl implements SessionSupervisorClient {
       await this.#channel.send({ kind: "unsubscribe", subscriptionId: this.subscriptionId })
     }
     this.#closed = true
+    this.#rejectPendingRequests("effect", "Session supervisor channel closed")
     this.#channel.end()
     await this.#waitForChildExit()
   }
@@ -593,12 +962,22 @@ class SessionSupervisorClientImpl implements SessionSupervisorClient {
   stop() {
     if (this.#stopPromise) return this.#stopPromise
     this.#stopPromise = (this.#closed ? this.#waitForChildExit() : this.unsubscribe()).catch(async () => {
+      this.#rejectPendingRequests("transport", "Session supervisor stopped")
       this.#channel.destroy()
       await this.#terminateChild()
     })
     return this.#stopPromise
   }
 
+  #rejectPendingRequests(stage: string, reason: string) {
+    if (this.#pendingRequests.size === 0) return
+    const error = fail(stage, reason)
+    for (const pending of this.#pendingRequests.values()) {
+      clearTimeout(pending.timer)
+      pending.reject(error)
+    }
+    this.#pendingRequests.clear()
+  }
   async #waitForChildExit() {
     const exit = Effect.runPromise(this.#child.exitCode).then(() => true, () => true)
     const exited = await Promise.race([exit, new Promise<false>((resolve) => setTimeout(() => resolve(false), 1_500))])
@@ -616,10 +995,101 @@ class SessionSupervisorClientImpl implements SessionSupervisorClient {
   }
 }
 
+function consumeClient(
+  client: SessionSupervisorClient,
+  turnComplete: Ref.Ref<boolean>,
+): Effect.Effect<void, SessionSupervisorError> {
+  return Effect.gen(function* () {
+    let completedPass = false
+    while (true) {
+      yield* Effect.tryPromise({
+        try: () => client.subscribe(),
+        catch: (error) =>
+          error instanceof SessionSupervisorError
+            ? error
+            : fail("subscription", "could not subscribe to Session events"),
+      })
+      let pageComplete = false
+      let hasMore = false
+      while (!pageComplete) {
+        const message = yield* Effect.tryPromise({
+          try: () => client.receive(),
+          catch: (error) =>
+            error instanceof SessionSupervisorError ? error : fail("transport", "could not receive Session events"),
+        })
+        if (message.kind === "event") {
+          yield* Effect.tryPromise({
+            try: () => client.ack(message),
+            catch: (error) =>
+              error instanceof SessionSupervisorError ? error : fail("ack", "could not acknowledge Session event"),
+          })
+          continue
+        }
+        if (message.kind === "resnapshot_required") {
+          return yield* Effect.fail(
+            fail(
+              "resnapshot",
+              `acknowledged cursor ${message.requested.seq} is no longer retained; latest is ${message.latest.seq}`,
+            ),
+          )
+        }
+        pageComplete = true
+        hasMore = message.hasMore
+      }
+      if (hasMore) continue
+      if (yield* Ref.get(turnComplete)) {
+        if (completedPass) return
+        completedPass = true
+        continue
+      }
+      completedPass = false
+      yield* Effect.sleep("250 millis")
+    }
+  })
+}
+
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const appProcess = yield* AppProcess.Service
+    const runtime = yield* RuntimeConfig
+    const activeClients = new Map<string, SessionSupervisorClient>()
+    const hostDigestCache = new Map<string, Effect.Effect<string, SessionSupervisorError>>()
+    const getHostBuildDigest = (binary: string) =>
+      Effect.gen(function* () {
+        let cached = hostDigestCache.get(binary)
+        if (!cached) {
+          cached = yield* Effect.cached(
+            Effect.gen(function* () {
+              const hostExecutable = yield* Effect.try({
+                try: () => realpathSync(globalThis.process.execPath),
+                catch: () => fail("host-digest", "host executable path is unavailable"),
+              })
+              const output = yield* appProcess
+                .run(
+                  ChildProcess.make(binary, [`--digest-host-executable=${hostExecutable}`], {
+                    stdin: "ignore",
+                    stdout: "pipe",
+                    stderr: "pipe",
+                    extendEnv: false,
+                  }),
+                  { timeout: "15 seconds", maxOutputBytes: 128, maxErrorBytes: 1024 },
+                )
+                .pipe(Effect.mapError((error) => fail("host-digest", error.message)))
+              const result = yield* AppProcess.requireSuccess(output).pipe(
+                Effect.mapError((error) => fail("host-digest", error.message)),
+              )
+              const digest = result.stdout.toString("utf8").trim()
+              if (!/^blake3:[0-9a-f]{64}$/.test(digest)) {
+                return yield* Effect.fail(fail("host-digest", "observer returned a non-canonical BLAKE3 digest"))
+              }
+              return digest
+            }),
+          )
+          hostDigestCache.set(binary, cached)
+        }
+        return yield* cached
+      })
     const open = Effect.fn("SessionSupervisor.open")(function* (options: OpenOptions) {
       if (!options.binary.startsWith("/") || !options.source.startsWith("/")) {
         return yield* Effect.fail(fail("configuration", "binary and source paths must be absolute"))
@@ -637,11 +1107,20 @@ const layer = Layer.effect(
         return yield* Effect.fail(fail("configuration", "cannot create supervisor state directory"))
       }
       let binary: string
+      let workspaceRoot: string | undefined
       try {
         binary = realpathSync(options.binary)
         realpathSync(options.source)
+        if (options.workspaceRoot !== undefined) {
+          if (!options.workspaceRoot.startsWith("/"))
+            return yield* Effect.fail(fail("configuration", "workspace root must be absolute"))
+          workspaceRoot = realpathSync(options.workspaceRoot)
+          const rootStat = lstatSync(workspaceRoot)
+          if (!rootStat.isDirectory() || rootStat.isSymbolicLink())
+            return yield* Effect.fail(fail("configuration", "workspace root is not a canonical directory"))
+        }
       } catch {
-        return yield* Effect.fail(fail("configuration", "binary or OpenCode source path is unavailable"))
+        return yield* Effect.fail(fail("configuration", "binary, source, or workspace root is unavailable"))
       }
       try {
         validateStateDirectory(stateDirectory)
@@ -650,7 +1129,7 @@ const layer = Layer.effect(
       }
       const nonce = randomUUID()
       const incarnation = randomUUID()
-      const socketPath = join(stateDirectory, `session-${nonce}.sock`)
+      const socketPath = join(stateDirectory, `s-${nonce.slice(0, 16)}.sock`)
       try {
         validateSocketPath(socketPath)
       } catch (error) {
@@ -665,6 +1144,7 @@ const layer = Layer.effect(
         `--nonce=${nonce}`,
         `--incarnation=${incarnation}`,
       ]
+      if (workspaceRoot) args.push(`--workspace-root=${workspaceRoot}`)
       const child = yield* appProcess.spawn(
         ChildProcess.make(binary, args, {
           stdin: "ignore",
@@ -682,10 +1162,289 @@ const layer = Layer.effect(
       )
       return client
     })
-    return Service.of({ open })
+    const openForSession = Effect.fn("SessionSupervisor.openForSession")(function* (
+      sessionID: string,
+      source: string,
+      workspaceRoot?: string,
+    ) {
+      if (!/^ses_[a-zA-Z0-9_-]{1,128}$/.test(sessionID)) {
+        return yield* Effect.fail(fail("configuration", "Session ID is invalid"))
+      }
+      if (source === ":memory:") {
+        return {
+          status: "unavailable" as const,
+          reason: "in-memory EventV2 databases cannot be observed by the Rust sidecar",
+        }
+      }
+      if (!source.startsWith("/")) {
+        return yield* Effect.fail(fail("configuration", "OpenCode source path must be absolute"))
+      }
+      if (!runtime.manifestJSON) {
+        return {
+          status: "unavailable" as const,
+          reason: "this host build has no pinned Session observer manifest",
+        }
+      }
+      const manifest = yield* Effect.try({
+        try: () => parseManifest(runtime.manifestJSON!),
+        catch: (error) => (error instanceof SessionSupervisorError ? error : fail("manifest", "cannot read observer manifest")),
+      })
+      if (manifest.status === "unavailable") return { status: "unavailable" as const, reason: manifest.reason }
+      const target = `linux-${process.arch}-gnu`
+      if (process.platform !== "linux" || manifest.target !== target) {
+        return {
+          status: "unavailable" as const,
+          reason: `pinned observer target ${manifest.target} does not match runtime ${process.platform}-${process.arch}`,
+        }
+      }
+      if (!runtime.assetPath) {
+        return yield* Effect.fail(fail("manifest", "available observer manifest has no embedded executable"))
+      }
+      const binary = yield* Effect.tryPromise({
+        try: () => installBundledBinary(runtime.assetPath!, manifest.sha256, runtime.installRoot),
+        catch: (error) =>
+          error instanceof SessionSupervisorError ? error : fail("install", "embedded observer is unavailable"),
+      })
+      const stateDirectory = yield* Effect.try({
+        try: () => sessionStateDirectory(runtime.stateRoot, sessionID),
+        catch: (error) =>
+          error instanceof SessionSupervisorError ? error : fail("state", "Session state path is unsafe"),
+      })
+      const hostBuildDigest = yield* getHostBuildDigest(binary)
+      const client = yield* open({ binary, source, stateDirectory, sessionID, hostBuildDigest, workspaceRoot })
+      return { status: "available" as const, client }
+    })
+    const prepareToolBatch = Effect.fn("SessionSupervisor.prepareToolBatch")(function* (input: {
+      readonly sessionID: string
+      readonly batchID: string
+      readonly turnContextDigest: string
+      readonly calls: ReadonlyArray<GuardedToolCall>
+    }) {
+      const client = activeClients.get(input.sessionID)
+      if (!client) return yield* Effect.fail(fail("effect", "no active Rust effect owner for this Session"))
+      const response = yield* Effect.tryPromise({
+        try: () =>
+          client.request("effects.v2", "prepare_tool_batch", {
+            sessionId: input.sessionID,
+            batchId: input.batchID,
+            turnContextDigest: input.turnContextDigest,
+            calls: input.calls.map((call) => ({
+              callId: call.callID,
+              capabilityId: call.capabilityID,
+              arguments: call.arguments,
+            })),
+          }),
+        catch: (error) =>
+          error instanceof SessionSupervisorError ? error : fail("effect", "Rust effect preparation failed"),
+      })
+      if (response.status === "denied") {
+        const reason = response.reason
+        return {
+          status: "denied" as const,
+          reason:
+            typeof reason === "string" && Buffer.byteLength(reason, "utf8") <= 512
+              ? reason
+              : "Guard denied the complete tool batch",
+        }
+      }
+      if (response.status !== "needs_approval" || typeof response.existed !== "boolean") {
+        return yield* Effect.fail(fail("protocol", "Rust returned an invalid effect challenge"))
+      }
+      const challenge = yield* Effect.try({
+        try: () => ({
+          challengeID: stringField(response, "challengeId"),
+          effectID: stringField(response, "effectId"),
+          target: stringField(response, "target", 4096),
+          resource: stringField(response, "resource", 4096),
+          existed: response.existed as boolean,
+        }),
+        catch: (error) =>
+          error instanceof SessionSupervisorError ? error : fail("protocol", "Rust returned an invalid effect challenge"),
+      })
+      return { status: "admitted" as const, challenge }
+    })
+    const approveEffect = Effect.fn("SessionSupervisor.approveEffect")(function* (input: {
+      readonly sessionID: string
+      readonly challengeID: string
+    }) {
+      const client = activeClients.get(input.sessionID)
+      if (!client) return yield* Effect.fail(fail("effect", "no active Rust effect owner for this Session"))
+      const response = yield* Effect.tryPromise({
+        try: () =>
+          client.request("effects.v2", "resolve_approval", {
+            sessionId: input.sessionID,
+            challengeId: input.challengeID,
+            approved: true,
+          }),
+        catch: (error) =>
+          error instanceof SessionSupervisorError ? error : fail("effect", "Rust effect approval failed"),
+      })
+      if (response.status !== "approved") return yield* Effect.fail(fail("authorization", "Rust rejected effect approval"))
+    })
+    const executeWrite = Effect.fn("SessionSupervisor.executeWrite")(function* (input: {
+      readonly sessionID: string
+      readonly challengeID: string
+      readonly content: string
+    }) {
+      const client = activeClients.get(input.sessionID)
+      if (!client) return yield* Effect.fail(fail("effect", "no active Rust effect owner for this Session"))
+      const response = yield* Effect.tryPromise({
+        try: () =>
+          client.request("effects.v2", "execute_write", {
+            sessionId: input.sessionID,
+            challengeId: input.challengeID,
+            content: input.content,
+          }),
+        catch: (error) =>
+          error instanceof SessionSupervisorError ? error : fail("effect", "Rust effect execution failed"),
+      })
+      if (response.status !== "settled" || typeof response.existed !== "boolean") {
+        return yield* Effect.fail(fail("protocol", "Rust returned an invalid write receipt"))
+      }
+      const receipt = yield* Effect.try({
+        try: () => {
+          const receiptDigest = stringField(response, "receiptDigest")
+          if (!/^blake3:[0-9a-f]{64}$/.test(receiptDigest)) {
+            throw fail("protocol", "Rust returned a non-canonical effect receipt digest")
+          }
+          return {
+            effectID: stringField(response, "effectId"),
+            receiptDigest,
+            target: stringField(response, "target", 4096),
+            resource: stringField(response, "resource", 4096),
+            existed: response.existed as boolean,
+          }
+        },
+        catch: (error) =>
+          error instanceof SessionSupervisorError ? error : fail("protocol", "Rust returned an invalid write receipt"),
+      })
+      return receipt
+    })
+    const watchSession = Effect.fn("SessionSupervisor.watchSession")(function* (
+      sessionID: string,
+      source: string,
+      workspaceRoot: string,
+      turnComplete: Ref.Ref<boolean>,
+      ready: Deferred.Deferred<void>,
+    ) {
+      let completedTurnRestarts = 0
+      let resnapshotAttempts = 0
+      while (true) {
+        const outcome = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const started = yield* openForSession(sessionID, source, workspaceRoot)
+            if (started.status === "unavailable") {
+              yield* Deferred.succeed(ready, undefined)
+              return started
+            }
+            activeClients.set(sessionID, started.client)
+            yield* Deferred.succeed(ready, undefined)
+            yield* consumeClient(started.client, turnComplete).pipe(
+              Effect.ensuring(
+                Effect.sync(() => {
+                  if (activeClients.get(sessionID) === started.client) activeClients.delete(sessionID)
+                }),
+              ),
+            )
+            return { status: "caught-up" as const }
+          }),
+        ).pipe(Effect.catch((error) => Effect.succeed({ status: "failed" as const, error })))
+        yield* Deferred.succeed(ready, undefined)
+        if (outcome.status === "unavailable") {
+          yield* Effect.logWarning("Session observer unavailable", { sessionID, reason: outcome.reason })
+          return
+        }
+        if (outcome.status === "caught-up") return
+        if (outcome.error.stage === "resnapshot") {
+          if (resnapshotAttempts > 0) {
+            yield* Effect.logWarning("Session observer stopped after repeated retention gaps", {
+              sessionID,
+              reason: outcome.error.reason,
+            })
+            return
+          }
+          resnapshotAttempts++
+          const reset = yield* Effect.try({
+            try: () => resetSessionObserverMetadata(runtime.stateRoot, sessionID),
+            catch: (error) =>
+              error instanceof SessionSupervisorError
+                ? error
+                : fail("resnapshot", "could not securely reset observer metadata"),
+          }).pipe(
+            Effect.map(() => ({ status: "reset" as const })),
+            Effect.catch((error) => Effect.succeed({ status: "failed" as const, error })),
+          )
+          if (reset.status === "failed") {
+            yield* Effect.logWarning("Session observer could not safely resnapshot", {
+              sessionID,
+              reason: reset.error.reason,
+            })
+            return
+          }
+          yield* Effect.logWarning("Session observer rebuilding its read-only projection", {
+            sessionID,
+            reason: outcome.error.reason,
+          })
+          continue
+        }
+        const turnFinished = yield* Ref.get(turnComplete)
+        const retryable = outcome.error.stage === "startup" || outcome.error.stage === "transport"
+        if (retryable) {
+          if (turnFinished) {
+            if (outcome.error.stage === "startup" || completedTurnRestarts > 0) {
+              yield* Effect.logWarning("Session observer stopped after turn completion", {
+                sessionID,
+                stage: outcome.error.stage,
+                reason: outcome.error.reason,
+              })
+              return
+            }
+            completedTurnRestarts++
+          }
+          yield* Effect.logWarning("Session observer restarting after transport failure", {
+            sessionID,
+            stage: outcome.error.stage,
+            reason: outcome.error.reason,
+          })
+          yield* Effect.sleep("1 second")
+          continue
+        }
+        yield* Effect.logWarning("Session observer stopped", {
+          sessionID,
+          stage: outcome.error.stage,
+          reason: outcome.error.reason,
+        })
+        return
+      }
+    })
+    return Service.of({ open, openForSession, prepareToolBatch, approveEffect, executeWrite, watchSession })
+  }),
+)
+const runtimeConfigLayer = Layer.succeed(
+  RuntimeConfig,
+  RuntimeConfig.of({
+    assetPath:
+      typeof OPENCODE_SESSION_OBSERVER_ASSET === "undefined" ? undefined : OPENCODE_SESSION_OBSERVER_ASSET,
+    manifestJSON:
+      typeof OPENCODE_SESSION_OBSERVER_MANIFEST === "undefined"
+        ? undefined
+        : OPENCODE_SESSION_OBSERVER_MANIFEST,
+    installRoot: join(Global.Path.bin, "session-observer"),
+    stateRoot: join(Global.Path.state, "session-observer"),
   }),
 )
 
-export const node = LayerNode.make({ service: Service, layer, deps: [AppProcess.node] })
+export const runtimeConfigNode = LayerNode.make({
+  service: RuntimeConfig,
+  layer: runtimeConfigLayer,
+  deps: [],
+})
 
-export const SessionSupervisor = { Service, node }
+export const node = LayerNode.make({
+  service: Service,
+  layer,
+  deps: [AppProcess.node, runtimeConfigNode],
+})
+
+export const SessionSupervisor = { Service, RuntimeConfig, runtimeConfigNode, node }
+

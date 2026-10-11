@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AutomationV2",
+  "type": "object",
+  "properties": {
+    "automationId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "scope": {
+      "type": "string",
+      "enum": [
+        "project",
+        "workspace"
+      ]
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "schedule": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "cron"
+            },
+            "expression": {
+              "type": "string",
+              "minLength": 1
+            },
+            "timezone": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "expression",
+            "timezone"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "event"
+            },
+            "event": {
+              "type": "string",
+              "minLength": 1
+            },
+            "matcher": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "event"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "actionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "arguments": {},
+    "agentProfileId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "permissionPolicyRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "concurrency": {
+      "type": "string",
+      "enum": [
+        "skip",
+        "queue_one",
+        "queue_all"
+      ]
+    },
+    "missedRunPolicy": {
+      "type": "string",
+      "enum": [
+        "skip",
+        "run_once"
+      ]
+    },
+    "budgetRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "queueLimit": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "dstPolicy": {
+      "type": "string",
+      "enum": [
+        "skip_nonexistent",
+        "next_valid",
+        "first_ambiguous",
+        "second_ambiguous",
+        "both"
+      ]
+    }
+  },
+  "required": [
+    "automationId",
+    "scope",
+    "name",
+    "enabled",
+    "schedule",
+    "actionId",
+    "arguments",
+    "permissionPolicyRef",
+    "concurrency",
+    "missedRunPolicy",
+    "budgetRef"
+  ],
+  "additionalProperties": false
+}

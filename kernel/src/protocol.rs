@@ -13,6 +13,7 @@ use std::io::{Read, Write};
 
 pub const PROTOCOL_V1: u16 = 1;
 pub const FEATURE_SESSION_PAGE_CONTROL_V1: &str = "session.events.page-control.v1";
+pub const FEATURE_EFFECTS_V2: &str = "effects.v2";
 pub const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 pub const MAX_EVENT_PAYLOAD_BYTES: usize = 256 * 1024;

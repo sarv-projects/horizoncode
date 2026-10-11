@@ -36,6 +36,8 @@ import { SessionRunCoordinator } from "@opencode-ai/core/session/run-coordinator
 import { SessionRunner } from "@opencode-ai/core/session/runner"
 import * as SessionRunnerLLM from "@opencode-ai/core/session/runner/llm"
 import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
+import { SessionSupervisor, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
+import type { GuardedToolCall } from "@opencode-ai/core/session/supervisor"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { ApplicationTools } from "@opencode-ai/core/tool/application-tools"
 import { AgentV2 } from "@opencode-ai/core/agent"
@@ -114,6 +116,11 @@ const recoveryModel = Model.make({
 })
 const authorizations: Tool.Context[] = []
 const executions: string[] = []
+const effectBatches: GuardedToolCall[][] = []
+const effectTurnContextDigests: string[] = []
+let rustEffectHostUnavailable = false
+const defaultPermissionPolicyDigest = `sha256:${"0".repeat(64)}`
+let permissionPolicyDigest = defaultPermissionPolicyDigest
 const permission = Layer.succeed(
   PermissionV2.Service,
   PermissionV2.Service.of({
@@ -123,12 +130,40 @@ const permission = Layer.succeed(
     get: () => Effect.die("unused"),
     forSession: () => Effect.die("unused"),
     list: () => Effect.die("unused"),
+    policySnapshotDigest: () => Effect.succeed(permissionPolicyDigest),
+  }),
+)
+const supervisor = Layer.succeed(
+  SessionSupervisor.Service,
+  SessionSupervisor.Service.of({
+    open: () => Effect.die("unused"),
+    openForSession: () => Effect.succeed({ status: "unavailable", reason: "unused" }),
+    prepareToolBatch: (input) =>
+      Effect.sync(() => {
+        effectBatches.push([...input.calls])
+        effectTurnContextDigests.push(input.turnContextDigest)
+      }).pipe(
+        Effect.andThen(() =>
+          rustEffectHostUnavailable
+            ? Effect.fail(
+                new SessionSupervisorError({
+                  stage: "effect",
+                  reason: "no active Rust effect owner",
+                }),
+              )
+            : Effect.succeed({ status: "denied" as const, reason: "denied by test Guard" }),
+        ),
+      ),
+    approveEffect: () => Effect.die("unused"),
+    executeWrite: () => Effect.die("unused"),
+    watchSession: () => Effect.void,
   }),
 )
 const echo = Layer.effectDiscard(
   ToolRegistry.Service.use((registry) =>
     registry.register({
       echo: Tool.make({
+        capability: { id: "test.echo", effectClass: "read_only" },
         description: "Echo text",
         input: Schema.Struct({ text: Schema.String }),
         output: Schema.Struct({ text: Schema.String }),
@@ -147,6 +182,7 @@ const echo = Layer.effectDiscard(
           }).pipe(Effect.ensuring(Effect.sync(() => activeToolExecutions--))),
       }),
       defect: Tool.make({
+        capability: { id: "test.defect", effectClass: "read_only" },
         description: "Fail unexpectedly",
         input: Schema.Struct({}),
         output: Schema.Struct({}),
@@ -232,6 +268,7 @@ const config = Layer.succeed(
 const runnerLayer = AppNodeBuilder.build(SessionRunnerLLM.node, [
   [Snapshot.node, Snapshot.noopLayer],
   [LayerNodePlatform.llmClient, client],
+  [SessionSupervisor.node, supervisor],
   [SessionRunnerModel.node, models],
   [SystemContextRegistry.node, systemContext],
   [Location.node, Location.boundNode({ directory: AbsolutePath.make("/project") })],
@@ -276,12 +313,14 @@ const it = testEffect(
       Snapshot.node,
       SessionRunnerLLM.node,
       SessionExecution.node,
+      SessionSupervisor.node,
       SessionV2.node,
     ]),
     [
       [LayerNodePlatform.llmClient, client],
       [PermissionV2.node, permission],
       [SessionRunnerModel.node, models],
+      [SessionSupervisor.node, supervisor],
       [SystemContextRegistry.node, systemContext],
       [Location.node, Location.boundNode({ directory: AbsolutePath.make("/project") })],
       [SkillGuidance.node, skillGuidance],
@@ -324,6 +363,10 @@ const setup = Effect.gen(function* () {
   modelResolveHook = Effect.void
   currentModel = model
   skillBaselines.clear()
+  effectBatches.length = 0
+  effectTurnContextDigests.length = 0
+  permissionPolicyDigest = defaultPermissionPolicyDigest
+  rustEffectHostUnavailable = false
   responses = undefined
   streamFailure = undefined
   responseStream = undefined
@@ -580,6 +623,7 @@ describe("SessionRunnerLLM", () => {
       const contexts: Tool.Context[] = []
       yield* applicationTools.register({
         application_context: Tool.make({
+          capability: { id: "test.application-context", effectClass: "read_only" },
           description: "Read application context",
           input: Schema.Struct({ query: Schema.String }),
           output: Schema.Struct({ answer: Schema.String }),
@@ -627,6 +671,165 @@ describe("SessionRunnerLLM", () => {
       ])
     }),
   )
+
+  it.effect("denies the entire ToolBatch before settling any sibling when Rust Guard rejects it", () =>
+    Effect.gen(function* () {
+      yield* setup
+      executions.length = 0
+      const session = yield* SessionV2.Service
+      const registry = yield* ToolRegistry.Service
+      let effectSettlements = 0
+      yield* registry.register({
+        write: Tool.make({
+          capability: { id: "files.write", effectClass: "effect" },
+          description: "Write one file",
+          input: Schema.Struct({ path: Schema.String, content: Schema.String }),
+          output: Schema.Struct({ written: Schema.Boolean }),
+          execute: () =>
+            Effect.sync(() => {
+              effectSettlements++
+              return { written: true }
+            }),
+        }),
+      })
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Write and echo" }), resume: false })
+      responses = [
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.toolCall({ id: "call-write", name: "write", input: { path: "denied.txt", content: "blocked" } }),
+          LLMEvent.toolCall({ id: "call-echo", name: "echo", input: { text: "sibling" } }),
+          LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+          LLMEvent.finish({ reason: "tool-calls" }),
+        ],
+        [],
+      ]
+
+      yield* session.resume(sessionID)
+
+      expect(effectBatches).toEqual([
+        [
+          { callID: "call-write", capabilityID: "files.write", arguments: { path: "denied.txt", content: "blocked" } },
+          { callID: "call-echo", capabilityID: "test.echo", arguments: { text: "sibling" } },
+        ],
+      ])
+      expect(effectSettlements).toBe(0)
+      expect(executions).toEqual([])
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Write and echo" },
+        {
+          type: "assistant",
+          content: [
+            { type: "tool", id: "call-write", state: { status: "error", error: { message: "denied by test Guard" } } },
+            { type: "tool", id: "call-echo", state: { status: "error", error: { message: "denied by test Guard" } } },
+          ],
+        },
+      ])
+
+      const initialDigest = effectTurnContextDigests[0]
+      expect(initialDigest).toMatch(/^sha256:[a-f0-9]{64}$/)
+      permissionPolicyDigest = `sha256:${"1".repeat(64)}`
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Write and echo again" }),
+        resume: false,
+      })
+      responses = [
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.toolCall({
+            id: "call-write-again",
+            name: "write",
+            input: { path: "denied-again.txt", content: "blocked again" },
+          }),
+          LLMEvent.toolCall({ id: "call-echo-again", name: "echo", input: { text: "sibling again" } }),
+          LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+          LLMEvent.finish({ reason: "tool-calls" }),
+        ],
+        [],
+      ]
+      yield* session.resume(sessionID)
+      expect(effectTurnContextDigests).toHaveLength(2)
+      expect(effectTurnContextDigests[1]).not.toBe(initialDigest)
+    }),
+  )
+  it.effect("denies the complete batch when Rust effect preparation is unavailable", () =>
+    Effect.gen(function* () {
+      yield* setup
+      executions.length = 0
+      const session = yield* SessionV2.Service
+      const registry = yield* ToolRegistry.Service
+      let effectSettlements = 0
+      yield* registry.register({
+        write: Tool.make({
+          capability: { id: "files.write", effectClass: "effect" },
+          description: "Write one file",
+          input: Schema.Struct({ path: Schema.String, content: Schema.String }),
+          output: Schema.Struct({ written: Schema.Boolean }),
+          execute: () =>
+            Effect.sync(() => {
+              effectSettlements++
+              return { written: true }
+            }),
+        }),
+      })
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Write and echo while Rust is unavailable" }),
+        resume: false,
+      })
+      rustEffectHostUnavailable = true
+      responses = [
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.toolCall({
+            id: "call-write-offline",
+            name: "write",
+            input: { path: "offline.txt", content: "must not be written" },
+          }),
+          LLMEvent.toolCall({
+            id: "call-echo-offline",
+            name: "echo",
+            input: { text: "must not run" },
+          }),
+          LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+          LLMEvent.finish({ reason: "tool-calls" }),
+        ],
+        [],
+      ]
+
+      yield* session.resume(sessionID)
+
+      expect(effectBatches).toHaveLength(1)
+      expect(effectBatches[0]).toHaveLength(2)
+      expect(effectSettlements).toBe(0)
+      expect(executions).toEqual([])
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Write and echo while Rust is unavailable" },
+        {
+          type: "assistant",
+          content: [
+            {
+              type: "tool",
+              id: "call-write-offline",
+              state: {
+                status: "error",
+                error: { message: expect.stringContaining("Rust Guard unavailable") },
+              },
+            },
+            {
+              type: "tool",
+              id: "call-echo-offline",
+              state: {
+                status: "error",
+                error: { message: expect.stringContaining("Rust Guard unavailable") },
+              },
+            },
+          ],
+        },
+      ])
+    }),
+  )
+
 
   it.effect("starts a real runner turn after default prompt recording", () =>
     Effect.gen(function* () {
@@ -2936,6 +3139,7 @@ describe("SessionRunnerLLM", () => {
       yield* registry.register({
         blocked: Tool.make({
           description: "Fail because policy blocked execution",
+          capability: { id: "test.blocked", effectClass: "read_only" },
           input: Schema.Struct({}),
           output: Schema.Struct({}),
           execute: () =>
@@ -2985,6 +3189,7 @@ describe("SessionRunnerLLM", () => {
       yield* registry.register({
         declined: Tool.make({
           description: "Fail because the user declined approval",
+          capability: { id: "test.declined", effectClass: "read_only" },
           input: Schema.Struct({}),
           output: Schema.Struct({}),
           execute: () => Effect.die(new PermissionV2.DeclinedError()),
@@ -3029,6 +3234,7 @@ describe("SessionRunnerLLM", () => {
       yield* registry.register({
         corrected: Tool.make({
           description: "Fail with user correction feedback",
+          capability: { id: "test.corrected", effectClass: "read_only" },
           input: Schema.Struct({}),
           output: Schema.Struct({}),
           execute: () =>
@@ -3079,6 +3285,7 @@ describe("SessionRunnerLLM", () => {
       yield* registry.register({
         question: Tool.make({
           description: "Ask the user",
+          capability: { id: "test.question", effectClass: "control" },
           input: Schema.Struct({}),
           output: Schema.Struct({}),
           execute: (_, context) =>

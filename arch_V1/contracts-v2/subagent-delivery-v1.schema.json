@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SubagentDeliveryV1",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "deliveryId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "parentExecutionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "childExecutionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "messageId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "payloadRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "payloadDigest": {
+      "type": "string",
+      "minLength": 1
+    },
+    "replyTo": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "task",
+        "question",
+        "response",
+        "progress",
+        "result",
+        "cancel"
+      ]
+    },
+    "ackState": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "delivered",
+        "acknowledged",
+        "expired",
+        "unknown"
+      ]
+    },
+    "ownerEpoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "expiresAt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "authorityDigest": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "deliveryId",
+    "requestId",
+    "parentExecutionId",
+    "childExecutionId",
+    "messageId",
+    "payloadRef",
+    "payloadDigest",
+    "kind",
+    "ackState",
+    "ownerEpoch",
+    "sequence",
+    "authorityDigest"
+  ],
+  "additionalProperties": false
+}

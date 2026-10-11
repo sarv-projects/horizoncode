@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/context-ledger-v2",
+  "title": "ContextLedgerV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "threadId",
+    "epochId",
+    "modelContextLimit",
+    "reservedOutputTokens",
+    "entries",
+    "tokenTotal",
+    "generation"
+  ],
+  "properties": {
+    "threadId": {
+      "type": "string"
+    },
+    "epochId": {
+      "type": "string"
+    },
+    "modelContextLimit": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "reservedOutputTokens": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "tokenTotal": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "entryId",
+          "kind",
+          "sourceRef",
+          "trust",
+          "protection",
+          "cacheClass",
+          "inclusionReason",
+          "tokenCount"
+        ],
+        "properties": {
+          "entryId": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "system",
+              "developer",
+              "user",
+              "assistant",
+              "thinking",
+              "tool",
+              "subagent",
+              "artifact",
+              "file",
+              "image",
+              "document",
+              "memory",
+              "summary",
+              "marker"
+            ]
+          },
+          "sourceRef": {
+            "type": "string"
+          },
+          "trust": {
+            "enum": [
+              "system",
+              "user",
+              "project",
+              "external",
+              "derived"
+            ]
+          },
+          "protection": {
+            "enum": [
+              "required",
+              "protected",
+              "prunable",
+              "rebuildable"
+            ]
+          },
+          "cacheClass": {
+            "enum": [
+              "static",
+              "history",
+              "attachment",
+              "turn",
+              "none"
+            ]
+          },
+          "inclusionReason": {
+            "type": "string"
+          },
+          "tokenCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "contentDigest": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "lastMarker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "previousEpochId",
+        "newEpochId",
+        "action",
+        "at"
+      ],
+      "properties": {
+        "previousEpochId": {
+          "type": "string"
+        },
+        "newEpochId": {
+          "type": "string"
+        },
+        "action": {
+          "enum": [
+            "clear",
+            "compact",
+            "resume",
+            "manual"
+          ]
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}

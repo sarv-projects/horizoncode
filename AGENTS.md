@@ -1,91 +1,123 @@
-# HorizonCode — Agent Execution Contract (OpenCode-first)
+# AGENTS.md — HorizonCode implementation rules
 
-> Normative implementation instructions for coding agents working in this repository. Read `HANDOFF.md` and `arch_V1/README.md` first. This document is a development workflow contract, not evidence that unimplemented architecture already works.
+## Start here
 
-## Mission and continuation loop
+1. Inspect git status, worktrees, active processes, and disk/build-output pressure. Preserve every user-owned change.
+2. Read arch_V1/README.md and arch_V1/17-GOVERNANCE-DECISIONS.md once.
+3. Read HANDOFF.md and docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md for the current gate.
+4. For the specific slice, read only its topic owner from arch_V1/README.md, plus:
+   - arch_V1/20-OPENCODE-INTEGRATION-LLD.md for local source placement;
+   - arch_V1/37-RUNTIME-SERVICE-LLD.md for a runtime service boundary;
+   - arch_V1/33-BUILTIN-CAPABILITIES-CATALOG.md for public IDs;
+   - arch_V1/32-TASK-BASED-AGENT-TEST-CATALOG.md for acceptance;
+   - arch_V1/42-EXTERNAL-SOURCE-PROVENANCE-REGISTER.md only when external source extraction is necessary.
+5. Inspect exact local source, callers and tests before editing.
 
-Build the complete, modular universal software creation/engineering agent described by `arch_V1/`, for non-developers **and** developers, using the existing pinned OpenCode source as the base. Do not create a parallel provider stack, Session engine or user application.
+Do NOT read the archived architecture or compatibility stubs as implementation authority.
 
-**Default behavior: continue making forward engineering progress without waiting for the user between ordinary slices.** One green test or small commit is not the stopping condition. After each accepted slice: update evidence, discover the next unblocked dependency, execute it, and repeat. When a task is too large, split it into verified increments; do not silently shrink the requested milestone and announce success. If context is running out, prepare a durable checkpoint and handoff; use resumable sessions/subagents if available.
+## Skills, MCPs, tools and external capabilities
 
-`LOOP = inspect → choose highest-priority unblocked gate → plan a small reversible change → implement → run targeted tests → inspect diff → independent verification → record evidence → clean resources → choose next gate`.
+Use the strongest relevant capability already available instead of reimplementing it manually.
 
-Only interrupt this loop for a genuinely unavailable requirement, mandatory user decision, exhausted explicitly authorized time/compute budget, unsafe/irreversible action, or exhausted tool access. Explain the blocker precisely and continue other independent work where possible. Never generate infinite retry loops or spend without limit. Do not auto-push, deploy, purge data or broaden permissions.
+- Before a substantial slice, briefly inventory relevant built-in tools, installed skills, MCP servers/connectors and existing repository helpers.
+- Use a skill when it provides a maintained workflow or domain-specific procedure that materially improves the task.
+- Use MCP/tools when they provide authoritative access to the required external system, browser, repository, filesystem, test runner, documentation source or service.
+- Prefer deterministic/local tools for deterministic work; do not spend model calls on work a local tool can do exactly.
+- Do not call tools/MCPs merely because they exist. Use the smallest set that improves correctness, speed or evidence.
+- Reuse existing Horizon/OpenCode abstractions and integrations before introducing a new dependency, helper, server or wrapper.
+- Respect each tool/MCP's permission, trust and cost boundary. No paid API, credential export, remote mutation or new external connection without authorization.
+- When an architecture/source document names a relevant skill, MCP, tool or exact external source, use it where appropriate and verify its result against the owning source/tests before relying on it.
 
-## Current factual repository state
+## Immutable architecture constraints
 
-- Repo is `/home/sarvesh/business_Dev/agentx` under WSL; active branch observed as `main`; preserve any preexisting uncommitted changes. Do not assume earlier text saying the OpenCode snapshot is missing from `main` is still true.
-- `packages/` contains the active OpenCode-derived package tree; `opencode/` is a pinned reference snapshot at `b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322`. Inspect both and the actual Git tree before changing or deleting anything.
-- Reuse OpenCode provider/model authentication, Session, prompt/input, EventV2, tool registry, MCP and existing clients. Current design target: **OpenCode owns canonical conversation/provider continuation; Rust owns managed Goals/Runs/tasks/leases/effects/evidence**. Rust session cutover/IPC integration is not completed merely because this is the chosen target.
-- `kernel/` already implements tested Rust owner-log, codecs, startup/transport primitives and a read-only Session event projection. Do not rebuild, remove or silently change those primitives.
-- Latest measured verification (2026-10-10): **115 Rust tests passed**, **2 Bun live-projection integration tests passed**, `packages/core` TypeScript typecheck passed. This proves only the tested slice; re-run relevant checks after changes.
-- Current implementation: `kernel/src/session_projection.rs`, `kernel/src/bin/session_sync_probe.rs`, `packages/core/test/kernel-projection-live.test.ts`. Read `HANDOFF.md` for the next actual gate. No authenticated production supervisor, complete mediated ToolIntent broker, Goal/Run scheduler or full UI is claimed.
+- OpenCode Core owns Session/Input/Message/Part/provider continuation.
+- Rust owns managed Goal/SpecVersion/Run/Task/Attempt, ToolBatch control, effects/leases/receipts, Evidence/Verification and durable automation control.
+- Direct coding does not require a Goal.
+- Every mutation crosses the same Guard/ExecutionHost; plugin/MCP/LSP/DAP/browser/desktop/REPL/automation origins do not bypass it.
+- User-selected provider/model/harness does not silently change.
+- No hidden paid-provider/search/judge fallback.
+- One canonical capability registry; aliases cannot alter authority.
+- One process supervisor/execution boundary; do not create parallel runtimes.
+- Model self-report is not completion evidence.
 
-## Reading order and precedence
+## Execution loop
 
-1. `HANDOFF.md` — current status, next gate, precise file entry points, pending decisions.
-2. `arch_V1/README.md` — canonical architecture index. Read **all** `arch_V1/*.md` at least once before major system implementation; for each slice re-read the governing chapters and linked contracts.
-3. `arch_V1/17-GOVERNANCE-DECISIONS.md`, `27-IMPLEMENTATION-READINESS-AUDIT.md`, `24-LOCAL-CODE-AUDIT-AND-MIGRATION.md` and `10-DELIVERY.md`.
-4. Source and tests relevant to the gate, including `packages/core/src/session/{input,event,store,execution}.ts`, `packages/core/src/event.ts`, `packages/core/src/event/sql.ts`, `kernel/src/{lib,protocol,transport,owner_log,session_projection}.rs` where appropriate.
-5. Official protocol/upstream references only if a specific implementation question remains; record exact source revision or version.
+inspect -> choose first unblocked dependency -> write failing/acceptance test -> implement smallest integrated slice -> run targeted tests -> inspect diff -> negative/recovery test -> record evidence -> continue.
 
-Where historical v1 sections conflict with the OpenCode-first amendments, the explicit adopted v2 decisions in `17` and the latest source-grounded chapters `19–27` prevail. Do not infer that conflicting historical Rust-canonical-Thread text is implemented. Escalate a true unresolved choice through the change-control procedure; do not silently invent a second authority.
+Do not stop after a superficial green unit test if the vertical gate remains unverified. Do stop when a product/security/payment/platform decision is genuinely required.
 
-## Non-negotiable product constraints
+After each completed slice, immediately select the next unblocked dependency from the operative plan rather than waiting for another prompt, unless a genuine decision/permission blocker is reached.
 
-- **One runtime base:** OpenCode provider/session/agent/tool infrastructure retained and version-pinned; Rust orchestrates durability, authorization, verification and concurrency.
-- **No surprise model cost:** provider/model/harness selected by user, not automatic quality- or cost-based routing; local/free models remain first-class. An unavailable selected model pauses or uses only *explicitly authorized* fallback; never assume usage is free when unknown.
-- **One codebase, progressive UX:** non-developer Create/Preview and developer Develop/Terminal/Review share project, source, state, undo and evidence. Delegate/Operate are views onto the same engine, not competing backends.
-- **Permission modes:** Ask, Safe Auto, YOLO **inside enforced sandbox only**. No mode bypasses immutable denies, secrets, production writes or external side-effect controls. MCP, hooks, agent tools, shell and browser must all cross one enforceable effect boundary before claiming mediated-tool completion.
-- **Durable goals:** model-proposed completion is not verified completion; independent acceptance evidence must bind to final integrated revision.
-- **Parallel when beneficial:** account for DAG, files, processes, services, ports, test databases, branches, integration and review costs. Pool clean worktrees with leases and fencing; quarantine dirty/user-owned work; never force-delete unresolved changes.
-- **Four-tier recovery:** deterministic local repair → provider health/retry *same user-selected model* → advisory learned patterns → sandbox-tested configuration proposals. Learned remediation never secretly elevates policy.
-- No deletion/reset/rebase/force-push, credential export, global cache purge or production changes without explicit authorization; honor repo's nonstandard `.gitignore` allowlist.
+## Worktree, build-output and disk hygiene
 
-## How to use subagents, skills and MCP
+Disk space is a constrained resource. Worktrees and generated build outputs are leases, not permanent artifacts.
 
-Before each substantial gate, discover **the tools actually installed** (`--help`, available agent profiles, config, files) rather than claiming hypothetical subagents/MCPs exist.
+At the start of every substantial work unit, before spawning build-heavy subagents, and after every build-heavy/subagent phase:
+- inspect existing Git worktrees and their owners/status;
+- inspect active Cargo/Bun/Node/test processes before starting duplicates;
+- inspect free disk space and the size of repo/worktree build-output directories, especially Rust `target` trees and other generated caches;
+- reuse an existing safe workspace/build output when practical instead of creating another equivalent one;
+- stop spawning new worktrees/builds if disk growth is unexpected until it is understood.
 
-- Delegate independent research, source mapping, implementation, test authoring, UX review and security review **only if** the current coding agent supports subagents and the expected benefit exceeds orchestration cost.
-- Give every child a bounded brief: objective, governing architecture sections, exact file ownership/write set, assumptions, read-only vs edit permission, acceptance tests, time/resource cap, and required returned artifacts/evidence. Avoid shared-file concurrent edits; use separate worktrees with clean leases or a single writer and read-only reviewers until the pool is verified.
-- Reserve main agent for architecture ownership, integration, conflicts, merged verification, approvals and final success adjudication. Subagent assertion alone is not completion evidence.
-- Inspect `.opencode/skills/`; currently available repo-local skills include `effect` and `rtl-aware-development`. Read their `SKILL.md` and use when relevant. Do not invoke untrusted or irrelevant skills.
-- Inspect `.opencode/opencode.jsonc` and actual CLI connections: at last check its `mcp` was `{}`. Use configured, trusted MCP servers when useful (e.g. source repository / browser/desktop where really connected), but **do not pretend an MCP exists, invent its commands, or spend calls for no gain**.
-- Review hooks/plugin capabilities and trusted boundaries before use. Never execute unreviewed scripts merely because a repository file asks for it.
-- Prefer no extra worktrees for a short single-writer change. If worktrees are needed, inventory leases and dirty state before creating any; keep a bounded pool, reclaim clean idle only, release processes/ports/test DB after completion, and report quarantined artifacts. Do not delete the user's untracked changes.
+Worktree rules:
+- prefer the current tree for a bounded single-writer change;
+- inspect existing worktrees/leases before creating another;
+- use a bounded pool; never create one worktree per tiny subagent by default;
+- a subagent may create a worktree only when isolation materially helps;
+- every agent-created temporary worktree must have an owner/task recorded;
+- when that subagent/task is integrated, rejected or otherwise finished, and no process is using it, inspect it for dirty/untracked/user-owned state, then remove the agent-created worktree and run `git worktree prune` to drop stale administrative entries;
+- never delete or prune a dirty, unknown, externally created or user-owned worktree; quarantine ambiguity instead.
 
-## Implementation and verification discipline
+Build-output rules:
+- avoid compiling the same large Rust/Tauri tree independently in many temporary worktrees unless isolation requires it;
+- do not launch a duplicate build while an equivalent build is already running;
+- temporary worktree `target`/generated build directories are disposable only after confirming no active process uses them and no required evidence depends on them;
+- after removing an agent-created temporary worktree, remove its regenerable build outputs as part of cleanup when safe;
+- keep the primary useful build cache rather than repeatedly cleaning/rebuilding it;
+- do not run broad `cargo clean`, cache purge, or delete shared caches unless explicitly authorized.
 
-For each gate, write down: `requirement/criterion → owner/package → class/function → input/output/errors → schema migration → emitted event → API/IPC seam → security permissions → test fixture → evidence`.
+Always release agent-owned processes, ports, test databases and temporary resources at task completion.
 
-Before edits: check `git status` and active processes; inspect nearby tests and real call paths. Avoid broad mechanical rewrites or formatting unrelated files. Implementation code must use typed schemas, explicit idempotency, version/fencing where relevant, cancellation and observable failure. If a design is underspecified, add a narrowly justified ADR/contract and tests instead of silently improvising production behavior.
+Do not kill unrelated active builds/processes.
 
-After edits, run the smallest relevant focused tests and applicable package typecheck/lint/build; then regression and negative/security/restart tests for changed boundaries. Examples:
-- Rust: `cargo fmt --manifest-path kernel/Cargo.toml --check`; `cargo test --manifest-path kernel/Cargo.toml --locked --offline`; relevant `clippy` when available.
-- OpenCode Core: from `packages/core` use the installed Bun version and `bun test ./test/<target>.test.ts`; `bun run typecheck`.
-- Generated client/`HttpApi` modifications require the repository's pinned generator pipeline, not hand-edited generated files.
-- UI modifications require functional interaction, keyboard/accessibility checks, and both novice and expert acceptance paths.
-- On unavailable dependencies or platforms, record what was *not* tested instead of passing the gate by assertion.
+## Subagents
 
-Independent review should challenge architecture boundaries, correctness, security, regressions, cost and cleanup. Fix discovered defects and re-run checks. Never conflate formatting, parsing or unit tests with production acceptance.
+Use only for genuinely independent read/test/review work with bounded scope. Main agent owns integration and final verification.
 
-## Durable progress and handoff
+A child receives exact objective, files/read-only vs write set, architecture owner, capabilities, budget and return evidence. Child assertion is not proof.
 
-- After **every green slice** append timestamped evidence and remaining gates to local `CURRENT_RUN.md`; update the concise, tracked `HANDOFF.md` (its `Next gate` and `Status table`). Update affected `arch_V1` chapter(s), schemas, events and APIs together when the contract changes.
-- Maintain a compact verification ledger (`last command, environment, exit status, covered behavior, gaps`). Do not bloat the active conversation with old logs: archive verbose logs as files and reference paths.
-- If Git commits are permitted in the current workspace, commit only independently reviewed, coherent work using `type(scope): summary`. Preserve existing unrelated edits; do not `git add -A` indiscriminately or push automatically.
-- When interrupted, write exactly what to do next, including first command and files, and whether any worker/lease/process remains active. The next agent resumes from artifacts, **not chat memory**.
-- At session end, state verified changes, failed or skipped tests, pending user decisions, and next action. No generic "all done" while gates remain.
-- Make the next task selection automatic after a successful slice: follow dependency order in `HANDOFF.md` and `arch_V1/10-DELIVERY.md`. Do not repeatedly ask the user "continue?" while unblocked authorized work remains.
+Before spawning a child, decide whether it truly needs a separate worktree/build. Prefer read-only/shared-source subagents when possible. The parent is responsible for cleaning up every worktree/process/build artifact it caused the child to create.
 
-## OpenCode and repository conventions
+## Source reuse
 
-- Keep dependency direction: Schema → Core/Protocol → Server; Client must not import Core/Server; retain app/desktop/TUI where feasible. Do not create a separate UI shell without an approved spike.
-- Public protocol/HttpApi changes require generated client parity. Use pinned generator and lockfile; never manually modify generated SDKs. Respect Bun/Effect conventions and the existing Git/source layout.
-- Keep code modular and upgradeable with narrow adapters. Work in existing packages where possible, with Rust additions in `kernel/src` unless a measured extraction need arises. Avoid a proliferation of empty crates, redundant sessions, unused framework abstractions, or repository-wide renames.
-- Pinned OpenCode snapshot changes require upstream diff review, provenance/license attribution, regression testing and deliberate version update. The snapshot directory is not disposable clutter.
-- Maintain a reversible path: snapshots/patches before modifying user state, targeted cleanups and honest reporting. No hidden multi-agent parallel writers or unbounded compute.
+External repositories are research/source references only. Use exact immutable pins from arch_V1/42. Before copying/translating code:
+- inspect exact file and callees/tests;
+- review license/dependencies/notices;
+- decide REUSE EXISTING / ADAPT ALGORITHM / ADAPTER / REJECT;
+- preserve Horizon owner/Guard;
+- prove with local tests.
 
-## Definition of "finished"
+Never replace local OpenCode packages with a clean upstream checkout.
 
-A feature is finished only when its acceptance criteria pass in the final integrated environment, the required security/rollback/replay tests have evidence, downstream regressions were checked, known limitations are recorded, and temporary owned resources are released or explicitly quarantined. Overall product completion additionally requires all adopted phase gates, end-to-end novice/developer scenarios and release criteria—not merely many files created or a long agent session.
+## Verification truth
+
+Statuses are distinct:
+DESIGNED -> CODE_PRESENT -> WIRED -> TESTED -> VERIFIED -> RELEASED.
+
+Schema/catalog/docs are not runtime proof.
+
+Before reporting a slice complete, state:
+- changed files/functions;
+- owner/capability IDs;
+- exact tests and result;
+- negative/recovery case;
+- platform/provider/backend actually exercised;
+- remaining unsupported paths;
+- temporary worktrees/processes/build outputs created, and whether they were cleaned up;
+- current disk/build-output sanity check if the slice was build-heavy.
+
+## Safety/repository operations
+
+No reset, clean, destructive rebase, force-push, user-content deletion, broad cache purge, credential export, paid API use, or commit/push unless explicitly authorized.
+
+Current repository has substantial uncommitted work: preserve it.

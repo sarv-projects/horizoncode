@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionLinkV1",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sourceStoreId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sourceEpoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "sourceCursor": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sourceDigest": {
+      "type": "string",
+      "minLength": 1
+    },
+    "redactionProfile": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ownerEpoch": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "sessionId",
+    "sourceStoreId",
+    "sourceEpoch",
+    "sourceCursor",
+    "sourceDigest",
+    "ownerEpoch"
+  ],
+  "additionalProperties": false
+}

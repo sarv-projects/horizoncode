@@ -1,281 +1,142 @@
 # 3. End-to-end flows
 
+Status: normative V1 flows.
 
-> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19–26. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
+## 3.1 Startup
 
-## 2026-10-10 OpenCode-first reconciliation
-### Flow F-V2-01: existing OpenCode interactive change
-1. Composer parses typed references and chosen `agentId/providerId/modelId/harnessId`; pin immutable attempt configuration.
-2. UI calls OpenCode Session admission with idempotent prompt ID; new managed goal only when the user chooses Delegate or explicitly invokes /goal.
-3. The OpenCode turn stream persists messages/parts. Every effectful tool proposal becomes Rust `ToolIntentRequested`.
-4. Kernel Guard classifies scope, permission mode, version and user grants. On approval, dispatch the constrained operation; persist effect and tool result.
-5. OpenCode receives an opaque receipt plus bounded output; the UI reconciles progress from both event streams with cursors.
-6. If the user pauses, stop new tool admissions, settle open effects, snapshot state; session and run may be resumed independently.
-### Flow F-V2-02: managed goal
-GoalRevision approved -> validate measurable criteria -> DAG -> critical path/resource conflict check -> lease task/worktree/test DB/port -> OpenCode attempt -> broker effects -> independent test and evidence -> integrate -> reverify final revision -> finalize. A model's done signal only moves Attempt to DONE_PROPOSED.
-### Flow F-V2-03: nondeveloper visual creation
-Plain-language intent -> trusted scaffold selection -> preview worker and isolated data -> element-selection-to-source anchor -> staged patch -> browser journey -> approval (only if policy requires) -> source commit -> optional release prep -> explicit publish approval -> postdeploy probes.
-### Flow F-V2-04: provider limit
-429/5xx/timeout -> classify -> circuit-breaker and bounded same-model retry -> PAUSED_PROVIDER or NEEDS_YOU. **Do not** switch to another provider/model unless explicit user action pins a new selection. Offline local mode must not call paid provider spontaneously.
-### Flow F-V2-05: worker crash and reuse
-Detect missed lease heartbeat -> fence execution -> reconcile effects from snapshots/remote receipts -> quarantine dirty worktree -> restart only replay-safe attempt -> new epoch -> build fresh bounded context packet -> no duplicate side effects.
-### Failure contracts
-Every flow reports typed `blocked`, `inconclusive`, `failed` or `succeeded` with links to evidence; never mark success just because the model or command returned successfully.
+1. Load config/state/credential references.
+2. Start/compose existing OpenCode host surfaces.
+3. Start authenticated Rust kernel.
+4. Negotiate version/features/incarnation.
+5. Recover Rust-owned state and Session observer cursors.
+6. Start derived/index/worker services lazily.
+7. Expose only capabilities whose required owners/backends are ready.
 
----
+## 3.2 Direct coding turn
 
-These flows define the adopted v1 contract across the OpenCode-derived host and Rust
-kernel. Stream chunks and UI render state are not durable business facts. All durable
-mutations are owner-authenticated, schema-validated, idempotent and ordered within the
-owning stream.
+1. User submits to OpenCode Session.
+2. ContextService compiles bounded context.
+3. User-selected provider/model/harness is pinned for the turn.
+4. Provider streams canonical Message/Parts.
+5. Local tool calls are collected through response completion.
+6. Entire batch validates.
+7. Read-only calls execute through scoped adapters.
+8. Effectful calls cross kernel Guard/ExecutionHost.
+9. Results are recorded in OpenCode.
+10. UI renders derived status/evidence.
 
-## 3.1 Startup and composition
+No Goal required.
 
-1. `hzcode` validates its configured state root and acquires/supervises `hz-kernel`.
-2. Host and kernel exchange a `KernelHelloV1` containing protocol versions, build
-   digests, instance nonce and capability features. Incompatible mandatory versions
-   stop startup; optional features are explicitly unavailable.
-3. Kernel validates event-log heads, rebuilds projections if needed, acquires a new
-   supervisor owner epoch, reconciles outstanding launches/effects/workspace leases,
-   and only then advertises service readiness.
-4. Host loads the composition lock, verifies plugin bytes/provenance and schema/API
-   compatibility, resolves dependency graph/cardinality, and activates pinned service
-   generations in topological order.
-5. Required sealed system-service failure stops startup or fences the affected
-   capability. Optional presentation failure degrades that surface with a visible
-   diagnostic; it never creates fake authority.
-6. TUI/web/desktop/SDK clients connect through the OpenCode-derived public API. They
-   obtain a snapshot cursor and then subscribe to durable projections/events.
+## 3.3 Effectful action
 
-No worker is dispatched merely because the UI or host process booted. A missing kernel
-means canonical writes and effectful operations are unavailable, not silently hosted
-in an in-memory fallback.
+Action from UI/model/plugin/MCP/LSP/DAP/browser/desktop/REPL/automation:
+1. resolve canonical capability/action and alias;
+2. validate schema/scope/source generation;
+3. canonicalize target;
+4. check budget/cost/network/secret policy;
+5. Guard decides deny/approval/admit;
+6. PREPARE EffectIntent and one-use lease;
+7. authorized worker executes;
+8. capture target observation;
+9. settle receipt or UNKNOWN;
+10. attach result/evidence to owning workflow.
 
-## 3.2 Direct interactive Thread
+## 3.4 Managed goal
 
-Direct mode stays lightweight: no Goal/Run/Task DAG is created for ordinary pair
-coding. It still uses the same durable Thread owner and effect guard as managed work.
+1. User drafts objective/criteria/budget.
+2. System prepares reviewable Goal/SpecVersion without effects.
+3. User accepts SpecVersion.
+4. Rust starts Run and creates dependency tasks.
+5. Scheduler leases resources/workspaces and dispatches bounded attempts.
+6. Effects use the same Guard as direct mode.
+7. Integration produces a known final revision.
+8. Independent verifier checks acceptance/evidence.
+9. Run becomes SUCCEEDED/FAILED/NEEDS_YOU/CANCELLED.
 
-```mermaid
-sequenceDiagram
-  actor U as User
-  participant UI as OpenTUI/Solid client
-  participant H as OpenCode-derived host
-  participant K as Rust kernel / ThreadService
-  participant C as Context composer
-  participant R as OpenCode Core V2 runner
-  participant P as packages/llm provider implementation
-  participant G as Guard / Effect owner
-  participant X as ExecutionHost
+## 3.5 Subagent
 
-  U->>UI: submit prompt (steer or queue)
-  UI->>H: generated app API request + delivery_id
-  H->>K: admit ThreadInput
-  K-->>H: durable InputAdmitted + cursor
-  H->>K: claim/promote input at safe boundary
-  K-->>H: Turn + pinned profile/route/context refs
-  H->>C: build deterministic ContextPacket
-  C->>K: commit ContextEpoch/source digests
-  K-->>C: accepted packet digest
-  H->>R: execute one provider turn
-  R->>P: one provider request for this turn
-  P-->>R: stream response and tool-call events
-  R-->>UI: ephemeral text/reasoning deltas
-  R->>R: collect and validate the entire tool batch
-  R->>K: admit batch with toolset/profile/policy digests
-  K->>G: authorize each call and resource
-  G->>X: prepare, execute, observe, settle admitted effects
-  X-->>K: receipts or UNKNOWN
-  K-->>R: ordered bounded model-visible results
-  R->>P: next provider turn if allowed
-  R->>K: commit final/incomplete assistant message and Turn state
-  K-->>UI: durable state cursor
-```
+1. Parent chooses specialist/profile because task separation is beneficial.
+2. Kernel/host allocates bounded child dispatch: objective, criteria, refs, capabilities, path, budget.
+3. Child works in leased scope.
+4. Child returns SubagentDelivery/evidence.
+5. Parent/integrator verifies and integrates; child does not mark canonical Task PASS.
 
-`steer` inputs become eligible at the next safe provider-turn boundary. `queue` inputs
-remain FIFO until the current continuation would otherwise become idle, promoting one
-at a time. Durable admission precedes advisory wake; the model-visible message is only
-created at promotion. On a host disconnect, the kernel preserves admitted input and
-reports the actual execution state.
+## 3.6 Context pressure
 
-Context is checked against the pinned route/token budget before provider dispatch. A
-local overflow runs the bounded ContextService pressure policy or fails before sending.
-An explicit terminal pre-content `PROMPT_TOO_LONG` rejection preserves its failed
-ProviderAttempt, then may use the same bounded recovery and a new request digest/attempt
-ID on the same pinned route. Unknown acceptance or partial content is never resent.
-For a direct Turn, capture the owner-built checkpoint immediately before its first
-mutating ToolBatch/effect; `/rewind turn|files` previews exact owner-scoped restoration
-and never rolls back external effects or Thread history.
+1. Detect pressure with measured/estimated token data.
+2. Preserve safety/spec/current-task/protected refs.
+3. trim/prune/compact according to explicit semantics.
+4. canonical history remains unchanged.
+5. rebuild context packet and continue selected model.
 
-### Whole-response tool admission is a required adaptation
+No silent model switch.
 
-While streaming, the host may render text deltas and collect tool-call fragments, but
-must not execute any tool call. After the provider signals a complete response, it:
+## 3.7 Repository change
 
-1. assembles every call and validates every argument against the pinned tool schema;
-2. checks call count, aggregate bytes, deadlines, duplicate IDs and allowed toolset;
-3. rejects the batch with zero unstarted effects if any structural check fails;
-4. sends the complete admitted batch to the kernel before execution;
-5. lets the kernel authorize and schedule calls by declared resource conflicts;
-6. holds downstream calls behind a `question`/approval barrier and serializes
-   conflicting writes or shell operations.
+1. identify exact/symbol target;
+2. inspect relevant source;
+3. produce patch with source revision/stale guard;
+4. Guard effect;
+5. apply through canonical file tool;
+6. diagnostics/related tests;
+7. inspect diff/evidence;
+8. managed mode verifies criteria.
 
-If a stream terminates before a complete response, no collected call is dispatched.
-The current pinned Core runner dispatches non-hosted `tool-call` events during stream
-consumption; adopted v1 requires changing that seam. `providerExecuted` calls are
-not allowed in guarded v1 Turns: they execute outside the kernel before local Guard can
-authorize them. Provide a local mediated equivalent or report the provider capability
-unavailable. This is a compatibility reduction, not an existing OpenCode guarantee.
+Hashline/native editing is an implementation strategy inside the same files.patch contract.
 
-## 3.3 Effectful tool call
+## 3.8 LSP/DAP
 
-```text
-model call
-  → host normalizes schema and resource hints
-  → kernel derives principal and canonical action
-  → resource resolver pins exact workspace/resource revision
-  → BudgetService commits hard reservation (direct Thread/Turn or managed owner)
-  → Guard returns ALLOW | ASK | DENY
-  → ASK creates durable exact approval challenge; no dispatch until resolved
-  → kernel commits EffectIntent PREPARED with reservation and Guard receipt
-  → kernel issues one-use capability lease bound to that intent
-  → ExecutionHost prepares and kernel commits its lease-bound receipt
-  → ExecutionHost launches with fence, capability set and bounded limits
-  → host observation/output is captured to bounded artifacts
-  → effect owner records SUCCESS | FAILURE | UNKNOWN
-  → audit chain records security-relevant linked facts
-  → result is returned to the pinned Thread/Turn as untrusted tool content
-```
+LSP:
+query diagnostics/symbols -> prepare versioned edit -> Guard mutation -> apply through file capability -> re-diagnose.
 
-The effect request carries `delivery_id`, Thread/Turn/Run/Task/Attempt references,
-tool-call identity, canonical action, argument digest, resource digest, expected
-workspace revision. The initial submission does not supply authority: the kernel
-issues the capability lease after PREPARED and attaches it only to executor dispatch.
-Identity and authority are derived at the
-ingress; the model cannot assert an approval, policy, principal, workspace fence or
-secret scope. An approval is bound to displayed-content, policy and resource-state
-digests and expires. Timeout after possible dispatch produces `UNKNOWN` until target
-state is reconciled.
+DAP:
+start/attach Guarded session -> breakpoint/step/read variables -> optional guarded evaluate -> terminate/reconcile.
 
-## 3.4 Managed Run
+Debugger cannot bypass ExecutionHost.
 
-```mermaid
-flowchart TD
-  A[Original user request] --> B[Goal draft]
-  B --> C[Read-only preparation]
-  C --> D[SpecVersion + Task DAG + verification plan]
-  D --> E[Exact review bundle]
-  E --> F{User confirms this digest?}
-  F -->|No| G[Keep inert / revise new version]
-  F -->|Yes| H[Reserve budgets and commit GoalActivated]
-  H --> I[Create durable dispatch outbox entries]
-  I --> J[Claim eligible Task and prepare Attempt]
-  J --> K[Lease fenced workspace]
-  K --> L[Launch WorkerExecution]
-  L --> M[Collect receipts and candidate revision]
-  M --> N[Deterministic integration or Needs You]
-  N --> O[Independent verifier on integrated revision set]
-  O --> P{Current Evidence satisfies required scenarios?}
-  P -->|No| Q[Fail / needs review / new bounded Attempt]
-  P -->|Yes| R[RunController records Task PASS]
-  R --> S{All required tasks and run conditions pass?}
-  S -->|No; eligible remaining wave| U[Commit run/next_wave_started after safety revalidation]
-  U --> I
-  S -->|No; unresolved blocker| V[Wait / needs review; no dispatch]
-  S -->|Yes| T[Awaiting acceptance / completion]
-```
+## 3.9 Persistent REPL
 
-Preparation is read-only and produces an immutable proposed `SpecVersion`, DAG,
-resource scopes, budgets and verification plan. User confirmation names the exact
-digest. No worker starts before that durable activation point. Each Task has bounded
-attempt count, limits, read/write scopes, dependency IDs, profile revision, route
-snapshot and verification criteria.
+start bounded Python/JS worker -> execute chunks preserving worker state -> bounded outputs/artifacts -> any tool callback routes through canonical action/Guard -> reset/stop or idle expiry.
 
-## 3.5 Dispatch, worker, integration, verification
+## 3.10 Browser
 
-- `AttemptDispatchPlanned` and its outbox entry commit before process launch.
-- Dispatcher claims one stable outbox ID, prepares execution, records launch identity,
-  then observes the process. A crash after possible launch triggers reconciliation by
-  exact process/workspace identity; never spawn a duplicate blindly.
-- Native worker uses the same OpenCode-derived Thread runtime bound to a child Thread,
-  immutable profile revision, TaskPackage, ContextPacket, workspace fence, permission
-  ceiling and reserved budget. External ACP/CLI workers use capability handshakes and
-  explicit limits; hidden internal tool coverage is reported as unknown.
-- Candidate changes are not merged in finish order. Integration follows the stable DAG
-  topological order and Task ID; conflict becomes `NEEDS_YOU`, not an assumed safe
-  model merge.
-- Verifier is read-only with respect to the subject under verification. Evidence binds
-  approved SpecVersion, every integrated repository revision, workspace manifest,
-  toolchain/environment, policy and scenario versions. Kernel accepts `Task PASS` only
-  when evidence is current and complete.
-- Run completion requires all mandatory Tasks to have current PASS, required workspace
-  integrations and effects settled, required audit receipts, the active spec matching
-  evidence, and no unresolved blocker.
+observe tab/DOM/ARIA/screenshot -> pin generation -> validate action -> Guard mutation -> execute -> re-observe.
 
-Each next wave explicitly returns Run VERIFYING to EXECUTING through RunController;
-Task PASS is not replaced by worker finish. A known terminal Attempt failure with no
-retry commits `task/execution_failed`; unknown effects/launches keep work nonterminal.
-Direct native delegation instead uses `DirectWorkerBindingV1`/`DirectTaskPackageV1`
-and ThreadService's DirectDelegation record, not this managed Task/Attempt flow.
+Stale refs cause re-observation.
 
-## 3.6 Subagent selection
+## 3.11 Desktop
 
-1. honor explicit user profile selection;
-2. honor a Task-pinned profile assignment;
-3. evaluate profiles in `automatic` mode with deterministic category/path/language and
-   capability matching;
-4. dispatch only a unique eligible winner after runtime, model, reasoning, loadout,
-   required lifecycle-hook availability/compatibility, turn/tool/token/wall-time limits,
-   authority, workspace conflict, concurrency and budget checks;
-5. otherwise use enabled `builtin.general` or ask/remain local.
+capture displays/windows/AX -> pin geometry/generation -> Guard input/focus/clipboard mutation -> execute -> recapture evidence.
 
-Manual-only profiles never auto-launch. Model cost, subscription credit, and latency do
-not select a profile or silently downgrade model/reasoning. Parent/profile/Task/policy
-authority is intersected; a child can narrow but not widen. Every invocation pins the
-profile revision (including its limits), loadout/runtime/effective-authority/context
-digests, resolved lifecycle-hook-set digest and budget reservation.
+Unsupported OS feature reports unavailable.
 
-## 3.7 Plugin install, activation and update
+## 3.12 Web search
 
-```text
-discover → inspect provenance/license → stage exact bytes → validate manifest,
-digest and signatures → review capabilities → configure → probe → enable → activate
-```
+validate query/privacy -> select explicitly allowed provider route -> show auth/cost class -> request -> return bounded source-provenance results -> optional extraction with network policy.
 
-A failed stage remains disabled. Composition rejects dependency cycles and duplicate
-single-cardinality service providers before activation. `READY → DRAINING → DISABLED`
-is required for normal disable/update; already pinned operations continue on the old
-generation. Emergency quarantine revokes capabilities and explicitly fails/reconciles
-affected operations. No plugin command callback receives arbitrary shell authority;
-all UI entry points resolve to one typed ActionDescriptor.
+No hidden paid fallback.
 
-## 3.8 Legacy Session import and cutover
+## 3.13 Artifact rendering
 
-1. Take a stable, read-only snapshot of the legacy Session store and record its source
-   identity and digest.
-2. Import each Session once, allocate a kernel `ThreadId`, and persist the unique
-   `(source_store_id, legacy_session_id) → thread_id` alias before exposing the Thread.
-3. Import ordered messages, tool history, fork links, attachments and compaction
-   metadata with source provenance. Missing parent or attachment data is represented as
-   unavailable; the importer does not invent it.
-4. Initialize in-flight provider requests as `UNKNOWN_ACCEPTANCE` and pending legacy tool
-   effects to `UNKNOWN`; do not replay either. Historical results remain untrusted
-   conversation content and do not imply Guard mediation.
-5. Verify per-Thread counts/digests and the source-to-Thread alias set, then switch
-   application reads/writes to `ThreadStoreService` and leave the old store read-only.
-6. Keep the source snapshot for rollback and retention. Removing it requires a separate
-   accepted migration record and must not remove canonical Thread history.
+provider streams source text -> stable-prefix UI -> recognize SVG/Mermaid/table only when safe -> isolated bounded render -> generation check -> display derived result with source fallback.
 
-An interrupted import resumes by the stored alias and digest; a conflicting source
-digest refuses automatic continuation. Rollback changes the application cutover, not
-the imported event history, and never makes both stores writable.
+Durable export is separate Guarded action.
 
-The importer uses §§11–12's historical initialization payloads and linked owner
-receipts, not fabricated historical Guard grants/budget reservations. Initial import
-admission establishes identities; final completion checks every required receipt before
-exposure/cutover. Uncertain imported operations cannot dispatch from import replay.
+## 3.14 Automation
 
-## Pinned implementation references
+scheduler claims occurrence -> checks live executor and action version -> dispatches canonical action under ordinary authorization -> records outcome/retry/missed policy.
 
-- [Core V2 runner and streaming tool-call handling](https://github.com/anomalyco/opencode/blob/b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322/packages/core/src/session/runner/llm.ts#L241-L281)
-- [Legacy session LLM runtime selection](https://github.com/anomalyco/opencode/blob/b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322/packages/opencode/src/session/llm.ts#L224-L279)
+## 3.15 Recovery
+
+On crash/restart:
+- recover canonical owners first;
+- restore Session observer from completed ACK;
+- fence stale epochs/leases;
+- reconcile PREPARED/EXECUTING effects;
+- re-open derived services;
+- resume only safe/idempotent work;
+- surface NEEDS_YOU for irreducible uncertainty.
+
+## 3.16 Stop
+
+Stop when objective satisfied and verified, user cancels/pauses, required authority/secret/payment/platform decision is missing, budget is exhausted, or unsafe UNKNOWN/retry exhaustion requires review.

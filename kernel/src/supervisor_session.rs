@@ -9,8 +9,9 @@ use std::fmt;
 use std::io::{self, Write};
 
 use crate::protocol::{
-    CursorV1, FEATURE_SESSION_PAGE_CONTROL_V1, HandshakePolicy, RpcControlV1, RpcMessageV1,
-    RpcRequestV1, read_message, write_message,
+    CursorV1, ErrorCategoryV1, FEATURE_SESSION_PAGE_CONTROL_V1, HandshakePolicy, RetryClassV1,
+    RpcControlV1, RpcMessageV1, RpcOutcomeV1, RpcRequestV1, RpcResponseV1, TypedErrorV1,
+    read_message, write_message,
 };
 use crate::rpc_handshake::{HelloExchangeError, HelloOutcome, serve_authenticated_unix_hello};
 use crate::session_projection::{
@@ -191,9 +192,7 @@ impl<'lease> AuthenticatedKernelSession<'lease> {
         self.stream.flush().map_err(SupervisorSessionError::Io)
     }
 
-    /// Deliver one bounded metadata-only page and wait for contiguous client ACKs.
-    /// This method does not follow new OpenCode events; the caller must resync the
-    /// projection and request the next page when `has_more` or a later poll says so.
+    /// Deliver a page while retaining a rejecting handler for interleaved requests.
     pub fn send_subscription_page(
         &mut self,
         projection: &SessionProjection,
@@ -201,6 +200,45 @@ impl<'lease> AuthenticatedKernelSession<'lease> {
         after: &CursorV1,
         capacity: usize,
     ) -> Result<SessionPageDelivery, SupervisorSessionError> {
+        self.send_subscription_page_with_requests(
+            projection,
+            subscription_id,
+            after,
+            capacity,
+            |request| RpcResponseV1 {
+                request_id: request.request_id,
+                outcome: RpcOutcomeV1::Error,
+                owner_cursor: None,
+                receipt_digest: None,
+                body: None,
+                error: Some(TypedErrorV1 {
+                    code: "unsupported_interleaved_request".to_owned(),
+                    category: ErrorCategoryV1::Capability,
+                    message: "request is not supported by this supervisor operation".to_owned(),
+                    retry_class: RetryClassV1::Never,
+                    retry_after_ms: None,
+                    owner_cursor: None,
+                    subject_ids: Vec::new(),
+                    details: None,
+                }),
+            },
+        )
+    }
+
+    /// Deliver one bounded metadata-only page and wait for contiguous client ACKs.
+    /// Application requests arriving while waiting for ACKs are serialized through the
+    /// supplied handler and answered before ACK delivery resumes.
+    pub fn send_subscription_page_with_requests<F>(
+        &mut self,
+        projection: &SessionProjection,
+        subscription_id: &str,
+        after: &CursorV1,
+        capacity: usize,
+        mut request_handler: F,
+    ) -> Result<SessionPageDelivery, SupervisorSessionError>
+    where
+        F: FnMut(RpcRequestV1) -> RpcResponseV1,
+    {
         self.startup
             .admit_application_rpc()
             .map_err(SupervisorSessionError::Startup)?;
@@ -232,32 +270,39 @@ impl<'lease> AuthenticatedKernelSession<'lease> {
             self.write_application_message(&RpcMessageV1::Event(Box::new(event)))?;
             delivered += 1;
         }
-        let mut ack_frames = 0usize;
-        let ack_frame_limit = delivered.saturating_mul(2).max(1);
+        let mut application_frames = 0usize;
+        let application_frame_limit = delivered.saturating_mul(2).max(1);
         while window.buffered() > 0 {
             let message = self.next_application_message()?;
-            let RpcMessageV1::Control(control) = message else {
-                return Err(SupervisorSessionError::UnexpectedControl);
-            };
-            let RpcControlV1::Ack {
-                subscription_id: ack_subscription,
-                through,
-            } = *control
-            else {
-                return Err(SupervisorSessionError::UnexpectedControl);
-            };
-            if ack_subscription != subscription_id {
-                return Err(SupervisorSessionError::WrongSubscription);
-            }
-            ack_frames += 1;
-            if ack_frames > ack_frame_limit {
+            application_frames += 1;
+            if application_frames > application_frame_limit {
                 return Err(SupervisorSessionError::AckBudgetExceeded);
             }
-            match window
-                .ack(&through)
-                .map_err(SupervisorSessionError::Subscription)?
-            {
-                AckResult::Advanced { .. } | AckResult::Duplicate => {}
+            match message {
+                RpcMessageV1::Request(request) => {
+                    let response = request_handler(*request);
+                    self.write_application_message(&RpcMessageV1::Response(Box::new(response)))?;
+                    continue;
+                }
+                RpcMessageV1::Control(control) => {
+                    let RpcControlV1::Ack {
+                        subscription_id: ack_subscription,
+                        through,
+                    } = *control
+                    else {
+                        return Err(SupervisorSessionError::UnexpectedControl);
+                    };
+                    if ack_subscription != subscription_id {
+                        return Err(SupervisorSessionError::WrongSubscription);
+                    }
+                    match window
+                        .ack(&through)
+                        .map_err(SupervisorSessionError::Subscription)?
+                    {
+                        AckResult::Advanced { .. } | AckResult::Duplicate => {}
+                    }
+                }
+                _ => return Err(SupervisorSessionError::UnexpectedControl),
             }
         }
         let cursor = window.acknowledged_cursor().clone();

@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BrowserActionV1",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "contextRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "navigate",
+        "click",
+        "type",
+        "select",
+        "scroll",
+        "snapshot",
+        "screenshot",
+        "wait",
+        "assert",
+        "close"
+      ]
+    },
+    "origin": {
+      "type": "string",
+      "minLength": 1
+    },
+    "elementRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "expectedGeneration": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "arguments": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "effectContextRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "deadlineMs": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "requestId",
+    "contextRef",
+    "action",
+    "expectedGeneration",
+    "arguments",
+    "deadlineMs"
+  ],
+  "additionalProperties": false
+}

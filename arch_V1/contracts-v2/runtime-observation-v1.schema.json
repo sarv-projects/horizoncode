@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/runtime-observation-v1",
+  "title": "RuntimeObservationV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "observationId",
+    "recordedAt",
+    "scope",
+    "metric",
+    "valueKind",
+    "unit",
+    "source"
+  ],
+  "properties": {
+    "observationId": {
+      "type": "string"
+    },
+    "recordedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workspaceId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "agentId": {
+          "type": "string"
+        },
+        "providerId": {
+          "type": "string"
+        },
+        "modelId": {
+          "type": "string"
+        }
+      }
+    },
+    "metric": {
+      "enum": [
+        "latency",
+        "ttft",
+        "tps",
+        "input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "cost",
+        "tool_success",
+        "retry",
+        "context_pressure",
+        "index_query",
+        "ipc",
+        "guard",
+        "dispatch",
+        "render_frame",
+        "memory_bytes",
+        "cpu_time"
+      ]
+    },
+    "stage": {
+      "type": "string"
+    },
+    "valueKind": {
+      "enum": [
+        "measured",
+        "estimated",
+        "unknown"
+      ]
+    },
+    "value": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "unit": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "method": {
+      "type": "string"
+    },
+    "correlationId": {
+      "type": "string"
+    }
+  }
+}

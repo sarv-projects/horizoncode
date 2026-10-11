@@ -1,54 +1,26 @@
 # HorizonCode
 
-HorizonCode v1 is a rebuild targeting the pinned OpenCode source revision
-[`b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322`](https://github.com/anomalyco/opencode/tree/b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322).
-That is the intended implementation base, **not** the parent of the current HorizonCode
-Git history and not evidence of HorizonCode implementation or acceptance.
+HorizonCode is an OpenCode-derived coding-agent system focused on fast direct coding plus optional durable managed work, strong effect mediation, repository intelligence, extensible agents/tools and progressive TUI/web/desktop UX.
 
-## Architecture upgrade, 2026-10-10
+## Implementation entrypoints
 
-The authoritative OpenCode-first architecture is [arch_V1/README.md](arch_V1/README.md), including its new 19–26 chapters. Existing pinned provider/session files and Rust kernel primitives have been inspected; the source tree has **not** yet passed end-to-end integration. OpenCode owns the conversational Session under the *proposed, gated* v2 cutover; Rust owns managed goals, effects, leases and evidence. Models remain user-pinned and free/local operation is a first-class path. The preceding bootstrap descriptions below are historical until superseded by the new phase plan.
+- AGENTS.md — execution discipline.
+- HANDOFF.md — current code status and first unfinished gate.
+- arch_V1/README.md — lean architecture index and authority rules.
+- arch_V1/17-GOVERNANCE-DECISIONS.md — frozen ownership/product decisions.
+- arch_V1/10-DELIVERY.md — dependency order.
+- docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md — operative checklist.
 
-## Repository status
+Do not implement from archived research/audit/history. Pre-consolidation documents are preserved under docs/architecture-archive/2026-10-11-pre-lean-consolidation.
 
-- Root commit `0009178` (`docs: add finalized HorizonCode v1 architecture`) was the
-  docs-only bootstrap baseline. The `p2-foundation` work adds the verified pinned OpenCode
-  source under `opencode/` without rewriting HorizonCode history; until that branch is
-  merged and pushed, `main` and fresh clones do not contain the source snapshot. This
-  subdirectory snapshot is not an OpenCode-derived root Git base and does not by itself
-  establish a reproducible build or release.
-- `origin` is the only configured remote; no OpenCode `upstream` remote is configured.
-- The prior Horizon archive gate and OpenCode-derived root-base gate remain incomplete.
-  The pinned source tree and byte-level path inventory are verified; baseline build,
-  generated-output, full path-disposition, dependency/bundled-asset license, and release
-  review gates remain open.
-  See [`arch_V1/10-DELIVERY.md`](arch_V1/10-DELIVERY.md) for status and evidence
-  requirements. This repository is not a verified HorizonCode runtime or release.
+## Core law
 
-## Architecture authority
+OpenCode owns canonical conversational Session/message/provider continuation. Rust owns managed Goal/Run/effects/leases/evidence. Direct coding stays lightweight. Every mutation uses the same Guard/ExecutionHost. User-selected provider/model/harness and cost policy do not silently change.
 
-[`arch_V1/README.md`](arch_V1/README.md) is the entry point to the finalized, self-contained
-v1 architecture. **Only `arch_V1/` is normative.** OpenCode source is an implementation
-reference, not an architecture authority; historical HorizonCode `ARCH/` documents and
-`crates/` are not active guidance. Prior Git metadata and archive refs were purged, so
-historical source must not be presumed locally recoverable. Consider any recovered
-component for porting only after verifying its source and recording the required owner,
-interface, disposition, impact, and tests in the migration matrix in
-[`arch_V1/10-DELIVERY.md`](arch_V1/10-DELIVERY.md).
+## Current focus
 
-Open P0 and capability-specific decisions are documented in
-[`arch_V1/10-DELIVERY.md`](arch_V1/10-DELIVERY.md) and
-[`arch_V1/17-GOVERNANCE-DECISIONS.md`](arch_V1/17-GOVERNANCE-DECISIONS.md). Keep gated
-capabilities unavailable and claims evidence-based; architecture finalization alone
-does not establish implementation, security, platform readiness, acceptance, or release
-readiness. Current working-copy handoff details are in [`CURRENT_RUN.md`](CURRENT_RUN.md).
+Finish P1.2-B production Session observer lifecycle, then P1.3 universal effect mediation before wiring new privileged subsystems. See HANDOFF.md for exact source/test evidence.
 
-## Development guidance
+## External sources
 
-See [`AGENTS.md`](AGENTS.md) for repository-state cautions and applicable OpenCode
-working conventions. The pinned source snapshot is included only on the P2 work branch
-until merge; implementation and release acceptance remain evidence-gated.
-
-## Implementer entry point
-
-See [AGENTS.md](AGENTS.md), [HANDOFF.md](HANDOFF.md), [implementation prompt](IMPLEMENTER_PROMPT.md), and [architecture audit](arch_V1/27-IMPLEMENTATION-READINESS-AUDIT.md). The active baseline is OpenCode-first; verified Session projection tests are not evidence that the full coding agent is production-ready.
+Use arch_V1/42-EXTERNAL-SOURCE-PROVENANCE-REGISTER.md for exact immutable external pins and reuse rules. Source inspection is not runtime integration or redistribution clearance.

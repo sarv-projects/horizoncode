@@ -1,14 +1,17 @@
-//! One-connection Linux Session observer endpoint.
+//! One-connection Linux Session observer and guarded ToolBatch effect endpoint.
 //!
 //! The process owns a private supervisor lease, opens OpenCode SQLite read-only, validates
-//! the EventV2 contract, and serves one authenticated bounded Subscribe page. It stores
-//! only projection metadata and never invokes OpenCode providers or writes the source DB.
+//! the EventV2 contract, and serves authenticated Session pages plus approved workspace
+//! file writes. It never invokes OpenCode providers or writes the source DB.
 //!
 //! Usage: session_supervisor --source=FILE --state-dir=DIR --socket=PATH --host-exe=FILE
 //!                         --session=ID --nonce=VALUE --incarnation=VALUE
+//!                         [--workspace-root=DIR]
 
+use horizoncode_kernel::effect_host::EffectHost;
 use horizoncode_kernel::protocol::{
-    FEATURE_SESSION_PAGE_CONTROL_V1, HandshakePolicy, RpcControlV1, RpcMessageV1,
+    FEATURE_EFFECTS_V2, FEATURE_SESSION_PAGE_CONTROL_V1, HandshakePolicy, RpcControlV1,
+    RpcMessageV1,
 };
 use horizoncode_kernel::session_projection::{SessionProjection, SubscriptionPageError};
 use horizoncode_kernel::supervisor_lease::SupervisorLease;
@@ -24,6 +27,29 @@ use std::process::ExitCode;
 const PAGE_CAPACITY: usize = 64;
 const SYNC_BATCH: usize = 512;
 
+fn digest_host_executable(path: &str) -> Result<String, String> {
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        return Err("host executable path must be absolute".to_owned());
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|error| format!("host executable: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("host executable must be a regular non-symlink file".to_owned());
+    }
+    let mut file = fs::File::open(path).map_err(|error| format!("open host executable: {error}"))?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = std::io::Read::read(&mut file, &mut buffer)
+            .map_err(|error| format!("read host executable: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(format!("blake3:{}", hasher.finalize().to_hex()))
+}
+
 #[derive(Debug)]
 struct Options {
     source: PathBuf,
@@ -33,6 +59,7 @@ struct Options {
     session_id: String,
     nonce: String,
     incarnation: String,
+    workspace_root: Option<PathBuf>,
 }
 
 fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
@@ -46,7 +73,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
             .ok_or_else(|| "arguments must start with --".to_owned())?;
         if !matches!(
             key,
-            "source" | "state-dir" | "socket" | "host-exe" | "session" | "nonce" | "incarnation"
+            "source" | "state-dir" | "socket" | "host-exe" | "session" | "nonce" | "incarnation" | "workspace-root"
         ) || value.is_empty()
             || fields.insert(key.to_owned(), value.to_owned()).is_some()
         {
@@ -66,6 +93,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
         session_id: take(&mut fields, "session")?,
         nonce: take(&mut fields, "nonce")?,
         incarnation: take(&mut fields, "incarnation")?,
+        workspace_root: fields.remove("workspace-root").map(PathBuf::from),
     };
     if !fields.is_empty() {
         return Err("unexpected supervisor argument".to_owned());
@@ -74,8 +102,12 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
         || !options.state_dir.is_absolute()
         || !options.socket.is_absolute()
         || !options.host_exe.is_absolute()
+        || options
+            .workspace_root
+            .as_ref()
+            .is_some_and(|path| !path.is_absolute())
     {
-        return Err("database, state, socket and executable paths must be absolute".to_owned());
+        return Err("database, state, socket, executable and workspace paths must be absolute".to_owned());
     }
     Ok(options)
 }
@@ -172,6 +204,7 @@ fn run(options: Options) -> Result<(), String> {
         return Err("state directory must be canonical".to_owned());
     }
     let lease = SupervisorLease::acquire(&state_dir).map_err(|error| error.to_string())?;
+    let mut effects = EffectHost::open(&state_dir, options.workspace_root.as_deref())?;
     let (source_path, source) = ensure_source(&options.source)?;
     if fs::canonicalize(options.socket.parent().ok_or("socket path has no parent")?)
         .map_err(|error| format!("socket parent: {error}"))?
@@ -216,20 +249,24 @@ fn run(options: Options) -> Result<(), String> {
         supported_features: BTreeSet::from([
             "session.events.v1".to_owned(),
             FEATURE_SESSION_PAGE_CONTROL_V1.to_owned(),
+            FEATURE_EFFECTS_V2.to_owned(),
         ]),
         expected_supervisor_nonce: options.nonce,
         expected_host_process_incarnation: Some(options.incarnation),
     };
     let mut session = AuthenticatedKernelSession::new(channel);
-    match session
+    let effect_feature_enabled = match session
         .negotiate(&policy)
         .map_err(|error| format!("negotiate host protocol: {error}"))?
     {
-        horizoncode_kernel::rpc_handshake::HelloOutcome::Negotiated(_) => {}
+        horizoncode_kernel::rpc_handshake::HelloOutcome::Negotiated(result) => result
+            .enabled_features
+            .iter()
+            .any(|feature| feature.as_str() == FEATURE_EFFECTS_V2),
         horizoncode_kernel::rpc_handshake::HelloOutcome::Rejected(error) => {
             return Err(format!("host protocol rejected: {}", error.code));
         }
-    }
+    };
     session
         .canonical_state_validated()
         .map_err(|error| error.to_string())?;
@@ -252,60 +289,84 @@ fn run(options: Options) -> Result<(), String> {
             Err(SupervisorSessionError::Closed) => return Ok(()),
             Err(error) => return Err(error.to_string()),
         };
-        let RpcMessageV1::Control(control) = message else {
-            return Err("Session observer accepts only Subscribe controls".to_owned());
-        };
-        match *control {
-            RpcControlV1::Unsubscribe { subscription_id }
-                if active_subscription.as_deref() == Some(&subscription_id) =>
-            {
-                return Ok(());
+        match message {
+            RpcMessageV1::Request(request) => {
+                let response = effects.handle_request(&options.session_id, &request, effect_feature_enabled);
+                session
+                    .write_application_message(&RpcMessageV1::Response(Box::new(response)))
+                    .map_err(|error| error.to_string())?;
             }
-            RpcControlV1::Subscribe {
-                subscription_id,
-                owner_kind,
-                owner_id,
-                after: Some(after),
-            } => {
-                if owner_kind != "session" || owner_id != options.session_id {
-                    return Err("Subscribe owner is outside the validated Session scope".to_owned());
-                }
-                if active_subscription
-                    .as_ref()
-                    .is_some_and(|active| active != &subscription_id)
+            RpcMessageV1::Control(control) => match *control {
+                RpcControlV1::Unsubscribe { subscription_id }
+                    if active_subscription.as_deref() == Some(&subscription_id) =>
                 {
-                    return Err("connection cannot change its subscription identity".to_owned());
+                    return Ok(());
                 }
-                active_subscription = Some(subscription_id.clone());
-                sync_session(&mut projection, &source, &options.session_id)?;
-                match session.send_subscription_page(
-                    &projection,
-                    &subscription_id,
-                    &after,
-                    PAGE_CAPACITY,
-                ) {
-                    Ok(_) => {}
-                    Err(SupervisorSessionError::ProjectionSubscription(
-                        SubscriptionPageError::ResnapshotRequired,
-                    )) => {
-                        let latest = projection
-                            .subscription_cursor(&options.session_id)
-                            .map_err(|error| error.to_string())?;
-                        session
-                            .send_resnapshot_required(&subscription_id, &after, &latest)
-                            .map_err(|error| error.to_string())?;
-                        return Ok(());
+                RpcControlV1::Subscribe {
+                    subscription_id,
+                    owner_kind,
+                    owner_id,
+                    after: Some(after),
+                } => {
+                    if owner_kind != "session" || owner_id != options.session_id {
+                        return Err("Subscribe owner is outside the validated Session scope".to_owned());
                     }
-                    Err(error) => return Err(error.to_string()),
+                    if active_subscription
+                        .as_ref()
+                        .is_some_and(|active| active != &subscription_id)
+                    {
+                        return Err("connection cannot change its subscription identity".to_owned());
+                    }
+                    active_subscription = Some(subscription_id.clone());
+                    sync_session(&mut projection, &source, &options.session_id)?;
+                    match session.send_subscription_page_with_requests(
+                        &projection,
+                        &subscription_id,
+                        &after,
+                        PAGE_CAPACITY,
+                        |request| effects.handle_request(&options.session_id, &request, effect_feature_enabled),
+                    ) {
+                        Ok(_) => {}
+                        Err(SupervisorSessionError::ProjectionSubscription(
+                            SubscriptionPageError::ResnapshotRequired,
+                        )) => {
+                            let latest = projection
+                                .subscription_cursor(&options.session_id)
+                                .map_err(|error| error.to_string())?;
+                            session
+                                .send_resnapshot_required(&subscription_id, &after, &latest)
+                                .map_err(|error| error.to_string())?;
+                            return Ok(());
+                        }
+                        Err(error) => return Err(error.to_string()),
+                    }
                 }
-            }
-            _ => return Err("Session observer expected Subscribe or matching Unsubscribe".into()),
+                _ => {
+                    return Err("Session observer expected Subscribe or matching Unsubscribe".into());
+                }
+            },
+            _ => return Err("supervisor expected an application request or control".to_owned()),
         }
     }
 }
 
 fn main() -> ExitCode {
-    let options = match parse(std::env::args().skip(1)) {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if let [argument] = args.as_slice()
+        && let Some(path) = argument.strip_prefix("--digest-host-executable=")
+    {
+        return match digest_host_executable(path) {
+            Ok(digest) => {
+                println!("{digest}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("host executable digest failed: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    let options = match parse(args) {
         Ok(options) => options,
         Err(error) => {
             eprintln!("session supervisor arguments rejected: {error}");
