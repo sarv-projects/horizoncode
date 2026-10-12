@@ -46,7 +46,7 @@ independent proof and acceptance decision.
 ## 2.4 Effects
 
 ToolBatchControl:
-authorization/control record for one complete OpenCode provider-response tool batch.
+authorization/control record for one complete provider-response tool batch in the owning Session backend.
 
 EffectIntent:
 immutable intended external/local mutation with canonical target/args/source preconditions.
@@ -150,7 +150,7 @@ versioned schedule/action definition; occurrence execution still uses Guard.
 
 ## 2.11 Ownership summary
 
-OpenCode owns conversation.
+Each conversation has exactly one backend owner: HorizonCode direct Core or an explicitly selected native backend.
 Rust owns managed control/effects/leases/evidence.
 Host registries own configuration/presentation.
 Derived services own rebuildable indexes/observations.

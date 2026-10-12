@@ -15,7 +15,7 @@ Every Rust-owned aggregate transition carries:
 
 Version mismatch, unknown state, unknown effect class or stale epoch fails closed.
 
-OpenCode Session/message/provider continuation state remains inside OpenCode. Rust may observe source IDs/cursors but does not re-own that lifecycle.
+Direct HorizonCode Session/message continuation stays inside the owning OpenCode-derived Core. Provider-specific continuation state stays behind the selected provider transport seam; Rust may observe bounded source IDs/cursors but does not re-own either lifecycle.
 
 ## 11.2 Goal and SpecVersion
 
@@ -80,7 +80,7 @@ Rules:
 
 ## 11.6 ToolBatchControl
 
-ToolBatchControl is Rust control metadata tied to one complete OpenCode provider response. It is not a message transcript.
+ToolBatchControl is Rust control metadata tied to one complete provider response for the owning Session. It is not a message transcript.
 
 States:
 COLLECTING -> VALIDATED -> ADMITTED -> EXECUTING -> SETTLING -> SETTLED
@@ -88,7 +88,7 @@ or REJECTED, CANCELLED, UNKNOWN_RECONCILIATION.
 
 Rules:
 - no effectful member executes before the complete batch validates and is admitted;
-- each call references OpenCode Session/message/call IDs and immutable argument/schema digests;
+- each call references the owning backend's mapped Session/message/call IDs and immutable argument/schema digests;
 - conversational tool result Part remains OpenCode-owned;
 - Rust records only authorization/control/result-correlation facts;
 - UNKNOWN cannot be converted to success by model text.

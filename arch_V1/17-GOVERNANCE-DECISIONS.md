@@ -6,8 +6,8 @@ Status: normative and frozen for V1 implementation. This file resolves product/o
 
 | ID | Decision | Consequence |
 |---|---|---|
-| A-V2-01 | OpenCode is the provider/session/tooling substrate | No greenfield provider/session rewrite |
-| A-V2-02 | OpenCode owns conversational state; Rust owns Horizon managed control/effects | No Rust transcript store |
+| A-V2-01 | The pinned OpenCode-derived host is the current session/tooling substrate; direct provider transport is replaceable only through A-V2-27 | No greenfield session/tool rewrite or competing conversation owner |
+| A-V2-02 | Every conversation has one backend owner: HorizonCode direct Core or an explicitly selected native backend; Rust owns Horizon managed control/effects | No Rust transcript store or dual conversation owner |
 | A-V2-03 | User pins provider/model/harness | No hidden quality/cost/subscription routing |
 | A-V2-04 | Ask, Safe Auto, YOLO-in-sandbox are presentation modes over one Guard | No mode bypasses immutable denies |
 | A-V2-05 | Worktrees are pooled, leased, capped and quarantined when dirty | No unbounded worktree creation/deletion |
@@ -16,7 +16,7 @@ Status: normative and frozen for V1 implementation. This file resolves product/o
 | A-V2-08 | Completion requires independent evidence against final integrated revision | Model self-report cannot PASS a Run |
 | A-V2-09 | Existing kernel primitives are preserved and adapted | No wholesale Rust rewrite |
 | A-V2-10 | OpenCode source is pinned until an explicit upgrade experiment | No automatic dev/main tracking |
-| A-V2-11 | OpenCode Session/Input/Message/Part/provider continuation is canonical | Rust stores only bounded correlation/control refs |
+| A-V2-11 | HorizonCode direct Session/Input/Message/Part continuation remains the canonical direct conversation, derived from OpenCode; native adapters own only their separate sessions | Rust stores only bounded correlation/control refs |
 | A-V2-12 | Rich AgentProfile plus a small specialist set; maintenance remains jobs | Do not make every task an agent |
 | A-V2-13 | ContextLedger with distinct trim/prune/compact/clear | Canonical history is not deleted to fit context |
 | A-V2-14 | Symbol-first RepoIntel; embeddings optional | Opening a repo never requires embeddings |
@@ -37,11 +37,11 @@ Status: normative and frozen for V1 implementation. This file resolves product/o
 
 | Aggregate/data | Canonical writer |
 |---|---|
-| Session, Input, Message, Part, conversational tool result, provider continuation | OpenCode Core |
+| Direct Session, Input, Message, Part, conversational tool result/continuation | HorizonCode Core (OpenCode-derived) |
 | Goal, SpecVersion, Run, Task, Attempt, managed verification | Rust managed control |
 | ToolBatch authorization/control metadata, EffectIntent, one-use lease, EffectReceipt | Rust Guard/EffectService/ExecutionHost |
 | Provider/model/harness configuration and credentials references | Existing OpenCode/Horizon config plus SecretBroker |
-| Context view/selection metadata | ContextService; canonical conversation remains OpenCode |
+| Context view/selection metadata | ContextService; direct history remains HorizonCode Core, separate native OpenCode sessions remain upstream-owned |
 | Repo index/symbol generations | RepoIntel/indexd derived store |
 | UI stream/render state | Derived UI projection only |
 | Durable artifact bytes/metadata | Artifact store |
@@ -106,3 +106,13 @@ A true conflict is resolved by changing this file and the single topic owner, no
 If a decision needs product/security/platform input, mark only that capability unavailable and continue unrelated work.
 
 Historical architecture is preserved under docs/architecture-archive and cannot be used as implementation authority.
+
+## 17.7 Approved staged provider migration and brand identity (2026-10-12)
+
+Decision A-V2-27 amends only the future provider-transport direction under A-V2-01; the existing OpenCode-derived implementation stays canonical until tested migration. This is a DESIGN decision, not evidence of working integration.
+- Direct mode: one HorizonCode Core session owner, with OMP pi-ai and pi-catalog as candidate inference, auth, model-compatibility, catalog and cost layers underneath. Do not adopt OMP AgentSession or its own tool/history owner.
+- Native OpenCode mode: separate official installed OpenCode runtime via documented API/SDK/ACP. OpenCode owns that session; HorizonCode holds links, events and verified outcome. Exactly one conversation owner per session; no silent session transfer or double writes.
+- Model pricing from one catalog enriched by Models.dev: record source, freshness, cache rates, effective charges and UNKNOWN vs FREE. No competing catalog or hidden fallback.
+- OpenCode Go follows documented third-party access. Zen promotional free-tier eligibility is independently restricted and not guaranteed. Never spoof a native client or bypass provider access gates.
+- Public npm package and primary CLI: horizoncode. Optional command alias: hzcode. Retain upstream @opencode-ai internal import names until a separately validated migration. No premature npm publication.
+- Required gates: repeatable checkout, bounded test/build, real Guard mediation, native adapter lifecycle, streaming, cost accuracy, explicit permissions and independent outcome verification.

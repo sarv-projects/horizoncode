@@ -1,7 +1,7 @@
 # 14. Effects, execution, security and extension trust
 
 
-> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and source-backed integration chapters 19–26. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
+> **Authoritative integration amendment, 2026-10-10:** This chapter is read with the v2 decisions in `17-GOVERNANCE-DECISIONS.md` and the active implementation/service chapters 20 and 37. Older designs of a competing Rust canonical Session, automatic model selection or unconstrained agents are superseded **only where explicitly contradicted**. Existing code does not become implemented by this edit.
 
 ## 2026-10-10 OpenCode-first reconciliation
 ### Concrete effect broker guards
@@ -460,8 +460,9 @@ MCP server, route/operation digest, destination, Run/profile if any, purpose, ex
 and single-use/request limit. The broker rechecks the current secret version and
 lease state immediately before use; rotation/revocation makes older unconsumed leases
 fail closed. The candidate path, if DEC-V1-06 selects byte delivery, is
-an in-process host `packages/llm` request bound to the authorized route; only the
-minimum credential bytes are delivered in memory for that request. The OpenCode-derived host is therefore
+an in-process trusted ProviderTransport request bound to the authorized route; the current
+implementation is `packages/llm`, and a future A-V2-27 transport must satisfy the same boundary.
+Only the minimum credential bytes are delivered in memory for that request. The HorizonCode host is therefore
 explicitly credential-bearing. A trusted first-party host adapter may access the
 per-request value; arbitrary extensions, skills, tools, provider plugins and child
 processes may not. If a feature technically requires child delivery, the approval UI

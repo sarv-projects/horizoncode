@@ -5,7 +5,7 @@ Status: normative V1 presentation/performance contract.
 ## 31.1 Streaming lanes
 
 Separate:
-- canonical OpenCode message/provider stream;
+- owning Session message stream plus provider/adapter events;
 - durable Rust control/effect events;
 - ephemeral UI paint/progress events;
 - analytics observations.

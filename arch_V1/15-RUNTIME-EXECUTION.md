@@ -6,7 +6,7 @@ Status: normative current-only runtime behavior.
 
 Direct Session:
 - ordinary pair coding;
-- OpenCode Session/provider loop remains canonical;
+- HorizonCode direct Session/continuation remains canonical; provider transport is replaceable only behind that owner per A-V2-27;
 - no mandatory Goal/Run/Task;
 - still uses capability scopes, complete ToolBatch barrier and Guard for effects.
 
@@ -14,20 +14,20 @@ Managed Run:
 - explicit objective/spec/criteria/budgets;
 - Rust control state;
 - scheduling/delegation/recovery/verification;
-- references one or more OpenCode Sessions without owning their transcript.
+- references one or more backend-owned Sessions through SessionLink without owning their transcript.
 
 ## 15.2 Provider turn
 
-1. Build context from canonical OpenCode history plus selected ContextLedger refs.
+1. Build context from canonical direct HorizonCode/OpenCode-derived history plus selected ContextLedger refs.
 2. Pin provider/model/harness/tool-registry generation and permission/cost policy for the turn.
-3. Start provider request through packages/llm.
-4. Stream text/thinking into canonical OpenCode message parts and derived UI.
+3. Start provider request through the configured ProviderTransport (current `packages/llm`; future verified A-V2-27 OMP adapter).
+4. Stream text/thinking into canonical direct Session message parts and derived UI.
 5. Collect local tool calls until the provider response/step is complete.
 6. Validate every call against request-pinned schemas.
 7. If any call is malformed or response incomplete/failed, dispatch no local effect.
 8. Read-only calls may execute through scoped fast paths after validation.
 9. Effectful batch crosses Rust Guard/ExecutionHost.
-10. Persist conversational tool results in OpenCode.
+10. Persist conversational tool results through the owning direct Session service.
 
 ## 15.3 Context compile
 
@@ -206,3 +206,8 @@ Use measured budgets in 31 and release tests in 32.
 Exact package/function seams live in 20 and service interfaces in 37. Current implementation status lives in HANDOFF.md.
 
 Historical competing conversation-owner runtime designs are archived and are not V1 authority.
+
+## 15.18 Future provider/adapter execution boundary
+
+Staged OMP provider integration replaces only transport/catalog functions under the existing direct-session owner. Use a reversible feature gate; prove tool-call batching, auth, streaming, cancellation, compaction, usage, retries and Guard enforcement with each provider. Never attach a second full OMP coding runtime.
+The separate official OpenCode runtime adapter has its own native sessions and process supervision. HorizonCode records session links and event projections only; reconnect after restart, distinguish permission requests, and fail clearly for restricted free models. Mode changes start a new explicit session rather than rewriting a live conversation.

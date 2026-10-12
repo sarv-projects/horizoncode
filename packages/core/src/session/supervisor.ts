@@ -201,8 +201,8 @@ export interface Interface {
     source: string,
     workspaceRoot: string,
     turnComplete: Ref.Ref<boolean>,
-    ready: Deferred.Deferred<void>,
-  ) => Effect.Effect<void, never, Scope.Scope>
+    ready: Deferred.Deferred<void, SessionSupervisorError>,
+  ) => Effect.Effect<void, SessionSupervisorError, Scope.Scope>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionSupervisor") {}
@@ -210,6 +210,33 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Se
 function fail(stage: string, reason: string) {
   return new SessionSupervisorError({ stage, reason })
 }
+
+// Nested scopes from one backend share a lease; a second backend fails closed.
+export type ExecutionOwnerKind = "core-v2" | "opencode-v1"
+const activeExecutionOwners = new Map<string, { kind: ExecutionOwnerKind; count: number }>()
+export const acquireExecutionOwner = Effect.fn("SessionSupervisor.acquireExecutionOwner")(function* (
+  sessionID: string,
+  kind: ExecutionOwnerKind,
+) {
+  yield* Effect.acquireRelease(
+    Effect.suspend(() => {
+      const current = activeExecutionOwners.get(sessionID)
+      if (current && current.kind !== kind) {
+        return Effect.fail(fail("ownership", "another execution already owns this Session"))
+      }
+      if (current) current.count += 1
+      else activeExecutionOwners.set(sessionID, { kind, count: 1 })
+      return Effect.void
+    }),
+    () =>
+      Effect.sync(() => {
+        const current = activeExecutionOwners.get(sessionID)
+        if (!current || current.kind !== kind) return
+        if (current.count > 1) current.count -= 1
+        else activeExecutionOwners.delete(sessionID)
+      }),
+  )
+})
 
 function parseManifest(input: string): SessionSupervisorManifest {
   let value: Record<string, unknown>
@@ -1054,6 +1081,7 @@ const layer = Layer.effect(
     const appProcess = yield* AppProcess.Service
     const runtime = yield* RuntimeConfig
     const activeClients = new Map<string, SessionSupervisorClient>()
+    const activeWatchers = new Set<string>()
     const hostDigestCache = new Map<string, Effect.Effect<string, SessionSupervisorError>>()
     const getHostBuildDigest = (binary: string) =>
       Effect.gen(function* () {
@@ -1320,12 +1348,12 @@ const layer = Layer.effect(
       })
       return receipt
     })
-    const watchSession = Effect.fn("SessionSupervisor.watchSession")(function* (
+    const watchSessionLoop = Effect.fn("SessionSupervisor.watchSession.loop")(function* (
       sessionID: string,
       source: string,
       workspaceRoot: string,
       turnComplete: Ref.Ref<boolean>,
-      ready: Deferred.Deferred<void>,
+      ready: Deferred.Deferred<void, SessionSupervisorError>,
     ) {
       let completedTurnRestarts = 0
       let resnapshotAttempts = 0
@@ -1417,6 +1445,24 @@ const layer = Layer.effect(
         return
       }
     })
+    const watchSession = Effect.fn("SessionSupervisor.watchSession")(function* (
+      sessionID: string,
+      source: string,
+      workspaceRoot: string,
+      turnComplete: Ref.Ref<boolean>,
+      ready: Deferred.Deferred<void, SessionSupervisorError>,
+    ) {
+      if (activeWatchers.has(sessionID)) {
+        const error = fail("ownership", "another Rust observer already owns this Session")
+        yield* Deferred.fail(ready, error)
+        return yield* Effect.fail(error)
+      }
+      activeWatchers.add(sessionID)
+      return yield* Effect.ensuring(
+        watchSessionLoop(sessionID, source, workspaceRoot, turnComplete, ready),
+        Effect.sync(() => activeWatchers.delete(sessionID)),
+      )
+    })
     return Service.of({ open, openForSession, prepareToolBatch, approveEffect, executeWrite, watchSession })
   }),
 )
@@ -1446,5 +1492,5 @@ export const node = LayerNode.make({
   deps: [AppProcess.node, runtimeConfigNode],
 })
 
-export const SessionSupervisor = { Service, RuntimeConfig, runtimeConfigNode, node }
+export const SessionSupervisor = { Service, RuntimeConfig, runtimeConfigNode, node, acquireExecutionOwner }
 

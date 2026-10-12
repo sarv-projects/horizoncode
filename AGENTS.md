@@ -30,7 +30,7 @@ Use the strongest relevant capability already available instead of reimplementin
 
 ## Immutable architecture constraints
 
-- OpenCode Core owns Session/Input/Message/Part/provider continuation.
+- HorizonCode direct-session Core currently derives from OpenCode and owns direct conversation/continuation; a separate official native OpenCode backend owns only its own native sessions.
 - Rust owns managed Goal/SpecVersion/Run/Task/Attempt, ToolBatch control, effects/leases/receipts, Evidence/Verification and durable automation control.
 - Direct coding does not require a Goal.
 - Every mutation crosses the same Guard/ExecutionHost; plugin/MCP/LSP/DAP/browser/desktop/REPL/automation origins do not bypass it.

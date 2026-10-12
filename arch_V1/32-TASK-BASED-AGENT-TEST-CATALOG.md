@@ -481,7 +481,7 @@ These are acceptance cases against the actual future service implementations, no
 
 | ID | Scenario | Required acceptance |
 |---|---|---|
-| AC-001 | legacy Rust-canonical conversation adapter is requested | no second text transcript/Thread owner; OpenCode owns canonical Session |
+| AC-001 | legacy Rust-canonical conversation adapter is requested | no second text transcript/Thread owner; the selected Session backend remains canonical |
 | AC-002 | fs.stage_patch alias requests denied path | resolved files.patch Guard deny; no direct legacy handler |
 | AC-003 | unknown alias or unclassified effect attempts to execute | typed deny, no tool invocation |
 | AC-004 | user plugin attempts to shadow sealed builtin.horizon-docs ID | rejects/requires disambiguation; product sealed skill remains intact |
@@ -545,3 +545,16 @@ Persistent REPL:
 
 These tests supplement, not replace, the universal effect-bypass and recovery suites.
 
+## 32.29 Future product acceptance cases
+
+NOVICE-01: create preview, click-select element, make a focused change, inspect diff and undo.
+NOVICE-02: approved deployment with verified external URL, credential boundary and rollback; fail if hosting is absent.
+RELIABILITY-01: crash and resume without rerunning already-committed writes; preserve decisions across compaction.
+RELIABILITY-02: reject unknown shell/MCP/plugin/browser/desktop actions and aliases without a Guard lease.
+VERIFY-01: build succeeds but regression test fails; agent must not declare success.
+COST-01: count retries/subagents and actual vs estimated provider costs; unknown is never free.
+PROVIDERS-01: direct compatible model, local model, official OpenCode session and denied promotional Zen path.
+ISOLATION-01: no double session owner or host effects without Guard across backends.
+VISUAL-01: chart, SVG, Mermaid, image and log streaming remains bounded, usable and accessible.
+GIT-01: clean-clone reconstruction and runnable checks; root typecheck must pass before release.
+Each case records exact revision, task, environment, model/account, acceptance criteria, observed outcome and costs.

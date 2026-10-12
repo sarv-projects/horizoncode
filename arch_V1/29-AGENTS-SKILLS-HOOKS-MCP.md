@@ -14,7 +14,7 @@ The system therefore separates five concepts:
 4. **Hook** — a lifecycle reaction with bounded effects and explicit blocking/advisory semantics.
 5. **Maintenance job** — a small deterministic or model-assisted job that does not deserve a child session.
 
-OpenCode remains the V1 session/provider substrate. HorizonCode profile resolution adapts to it and to external adapters; it does not fork a second provider stack.
+The OpenCode-derived host remains the current V1 direct-session substrate. Provider transport may migrate only through A-V2-27 beneath that owner; profile resolution does not create a second session/tool runtime.
 
 ## 29.2 AgentProfileV2
 
@@ -563,3 +563,4 @@ The operative interfaces and typed failure conventions are in §37. New machine-
 External products can inspire profile, provider, skill, hook or MCP behavior only through 42 source provenance. Their registries are not imported as competing runtime authorities.
 
 All extension-visible actions resolve to canonical 33 capability IDs and cross 14 Guard for effects. Provider/model/harness configuration remains owned by existing OpenCode/Horizon config services. Current implementation status belongs in HANDOFF.md.
+DOFF.md.

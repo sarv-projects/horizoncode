@@ -5,7 +5,7 @@ Status: normative V1 flows.
 ## 3.1 Startup
 
 1. Load config/state/credential references.
-2. Start/compose existing OpenCode host surfaces.
+2. Start/compose HorizonCode host surfaces derived from the pinned OpenCode base.
 3. Start authenticated Rust kernel.
 4. Negotiate version/features/incarnation.
 5. Recover Rust-owned state and Session observer cursors.
@@ -14,10 +14,10 @@ Status: normative V1 flows.
 
 ## 3.2 Direct coding turn
 
-1. User submits to OpenCode Session.
+1. User submits to a direct HorizonCode Session.
 2. ContextService compiles bounded context.
 3. User-selected provider/model/harness is pinned for the turn.
-4. Provider streams canonical Message/Parts.
+4. The configured provider transport (current OpenCode-derived host; future A-V2-27 adapter when verified) streams canonical Message/Parts.
 5. Local tool calls are collected through response completion.
 6. Entire batch validates.
 7. Read-only calls execute through scoped adapters.
@@ -137,6 +137,42 @@ On crash/restart:
 - resume only safe/idempotent work;
 - surface NEEDS_YOU for irreducible uncertainty.
 
-## 3.16 Stop
+## 3.16 Native OpenCode backend
+
+1. User explicitly starts a native OpenCode-backed Session rather than converting a live direct Session.
+2. HorizonCode version-probes and starts or attaches to the supported official OpenCode runtime.
+3. OpenCode owns its native Session, provider request, native tool protocol and persistence.
+4. HorizonCode records only the bounded SessionLink/event/progress/permission projection needed for UX and verification.
+5. Mutating integrations exposed through HorizonCode require equivalent Guard policy; unsupported native effects are reported unavailable rather than bypassed.
+6. Cancellation/restart reconnects by native Session ID and version-compatible protocol.
+7. Restricted/free-model eligibility errors surface unchanged; no client spoofing or paid fallback.
+
+## 3.17 Visual edit
+
+1. Start a local preview through an approved process capability.
+2. Capture route, DOM/ARIA, source-map and build generation.
+3. User clicks/selects an element; map it to a stable visual target and source candidates with confidence.
+4. User describes the desired change.
+5. Agent inspects exact source and produces a focused patch.
+6. Patch crosses the ordinary file Guard/ExecutionHost.
+7. Rebuild/reload and re-observe the same behavior.
+8. Run targeted regression checks; show diff/evidence and offer focused undo.
+
+Pixel selection alone is never treated as guaranteed source mapping.
+
+## 3.18 Deploy and verify
+
+1. Detect deployment target and required account/config without exposing secrets to the model.
+2. Show provider, environment, estimated/known cost class and requested external effects.
+3. User explicitly approves credential use and deployment effect.
+4. Execute through an authorized deployment adapter; capture logs/artifacts.
+5. Obtain the resulting URL/revision and perform bounded health plus critical-path checks.
+6. Compare observable result with accepted criteria.
+7. Mark deployment successful only after verification; otherwise surface failure/UNKNOWN.
+8. Record rollback target and support guarded rollback.
+
+A successful local build or upload command alone is not deployment completion.
+
+## 3.19 Stop
 
 Stop when objective satisfied and verified, user cancels/pauses, required authority/secret/payment/platform decision is missing, budget is exhausted, or unsafe UNKNOWN/retry exhaustion requires review.

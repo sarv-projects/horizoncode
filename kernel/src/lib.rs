@@ -17,9 +17,9 @@
 // This bounded storage seam is intentionally not wired to a production owner yet.
 #[allow(dead_code)]
 pub(crate) mod artifact_store;
-pub mod guard;
 #[cfg(target_os = "linux")]
 pub mod effect_host;
+pub mod guard;
 pub mod messagepack;
 pub mod owner_log;
 pub(crate) mod owner_log_index;

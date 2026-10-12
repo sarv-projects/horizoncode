@@ -16,7 +16,7 @@ A research report, audit snapshot, archived plan, source repository, test result
 
 ## Core ownership law
 
-- OpenCode Core owns conversational Session/Input/Message/Part, provider continuation, and conversational tool-call/result parts.
+- HorizonCode direct Core (derived from the pinned OpenCode base) owns direct conversational Session/Input/Message/Part/continuation and conversational tool-call/result parts; an optional native adapter owns only its separate upstream OpenCode sessions.
 - Rust kernel owns Horizon managed Goal/SpecVersion/Run/Task/Attempt, ToolBatch authorization/control facts, EffectIntent/lease/receipt, Evidence/Verification, resource leases, and durable automation control.
 - UI, plugins, agents, MCPs, LSP/DAP, browser/desktop backends, and external workers are never independent authorities.
 - Ordinary direct coding does not require a Goal or managed Run.

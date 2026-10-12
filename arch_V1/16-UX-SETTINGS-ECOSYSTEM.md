@@ -204,3 +204,11 @@ Required end-to-end cases:
 - TUI and desktop expose equivalent underlying action/state.
 
 Source inspiration may come from OMP or other products through 42, but this document is the only normative UI contract.
+
+## 16.14 Built for the Future: verifiable beginner and expert flows
+
+Brand: HorizonCode - Built for the Future. The public npm name is planned as horizoncode, with hzcode as optional short CLI alias.
+A user should understand: what the agent is doing, what changed, what was tested, what it costs and how to undo it. Beginner and expert UIs share one session/runtime, not separate engines.
+Beginner journey: describe app -> approve a clear plan -> build -> inspect live preview -> select a visual element for change -> validate interaction/regression -> guided deployment with approved credentials -> verify public URL -> support rollback. No deployment success claim after compilation alone.
+Provider UI distinguishes authorized API keys/subscriptions, legitimate free offers, local models and the separate native OpenCode backend. Show restricted-model eligibility; unknown pricing is never free.
+Selectively evaluate OMP SVG/Markdown/chart/model-picker UI patterns, with bounded rendering, accessibility and without importing an alternate session/control layer.

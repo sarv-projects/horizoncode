@@ -9,7 +9,7 @@ Status: normative source-placement map. Always inspect the live source before ed
 | packages/core/src/session | canonical Session/input/event/store/provider-turn behavior |
 | packages/core/src/tool | canonical host tool definitions/registry |
 | packages/core/src/horizon | Horizon host integration/services |
-| packages/llm/src | provider/model/protocol transport |
+| packages/llm/src | current provider/model/protocol transport; replaceable only through A-V2-27 |
 | packages/opencode/src | compatibility/legacy OpenCode features that must be audited for bypass |
 | packages/schema/src | shared OpenCode/Horizon host types where already established |
 | packages/server/src | public API composition |
@@ -19,13 +19,13 @@ Status: normative source-placement map. Always inspect the live source before ed
 | kernel/src | Rust managed control, private protocol and future effect host |
 | indexd/src | derived repository intelligence |
 
-Do not invent a second Tauri app, provider SDK, Session store or general process supervisor.
+Do not invent a parallel direct-session/provider runtime, second Session store or general process supervisor. Provider transport may migrate only through A-V2-27, and the separately sanctioned native OpenCode adapter keeps its own explicit backend ownership.
 
 ## 20.2 Canonical integration seams
 
 ### Session/provider
 
-Keep OpenCode SessionV2 and packages/llm. Horizon adds observation/correlation and guarded tool execution, not another transcript.
+Keep the existing SessionV2/direct continuation owner. `packages/llm` is the current provider transport, not a permanent authority: A-V2-27 may replace transport/catalog beneath the same Session owner. Horizon adds observation/correlation and guarded tool execution, never another direct transcript.
 
 The provider runner must:
 - pin tool registry per request;
@@ -116,7 +116,7 @@ Preferred adaptation:
 - OMP browser/desktop lifecycle ideas behind Horizon Guard;
 - OMP UI/render ideas inside existing TUI/app owners.
 
-Never copy OMP Session/provider authority, unrestricted Eval, unbounded queues or hidden paid routing.
+Never copy OMP AgentSession/history/tool authority, unrestricted Eval, unbounded queues or hidden paid routing. Direct inference transport/catalog may be selectively adapted only through A-V2-27.
 
 ## 20.7 Required implementation evidence
 
@@ -130,3 +130,7 @@ Each integration slice records:
 - known unsupported paths.
 
 Current progress belongs in HANDOFF.md.
+
+## 20.8 OMP transport vs native OpenCode adapter
+
+Keep one canonical owner per conversation. The direct Core session may call a selective OMP pi-ai/pi-catalog transport, but must never import OMP AgentSession or a second tool executor. The native OpenCode adapter is an independent process/client for the official upstream binary, with version probe, health, session linking, event stream, cancellation, approval, restart and error handling. Test both modes without dual ownership. No free-Zen client impersonation. See decision A-V2-27 and session/Guard acceptance gates before enabling effects.

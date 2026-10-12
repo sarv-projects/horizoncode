@@ -5,19 +5,19 @@ Status: normative V1 process/ownership architecture.
 ## 1.1 Product shape
 
 HorizonCode is an OpenCode-derived coding-agent product with:
-- existing OpenCode provider, Session, tool and application surfaces retained;
+- existing OpenCode-derived Session, tool and application surfaces retained while provider transport remains an explicit replaceable seam;
 - a supervised Rust kernel for managed control, authorization, recovery and verification;
 - one progressive UX across TUI, web and desktop;
 - optional supervised workers for index/LSP/DAP/browser/desktop/REPL/rendering/external agents.
 
-The product is one engine. Create/Develop/Delegate/Operate views do not own separate runtimes.
+The product has one HorizonCode control plane. Create/Develop/Delegate/Operate views do not own separate runtimes; an explicitly selected native backend may own its own external Session without becoming a second Horizon control plane.
 
 ## 1.2 Process topology
 
 User/TUI/Web/Desktop/CLI
--> OpenCode public API/Core
--> packages/llm provider transport
--> canonical OpenCode Session/messages
+-> HorizonCode public API/Core (OpenCode-derived)
+-> provider transport seam (current packages/llm; staged OMP pi-ai/pi-catalog candidate)
+-> canonical direct HorizonCode Session/messages
 -> complete local tool-batch staging
 -> Rust kernel Guard/EffectService/ExecutionHost for effects
 -> supervised workers/OS targets.
@@ -41,8 +41,8 @@ Derived services:
 
 | Domain | Owner |
 |---|---|
-| Session/Input/Message/Part/provider continuation | OpenCode Core |
-| Provider/model/account transport/config | existing OpenCode/Horizon host |
+| Direct Session/Input/Message/Part/continuation | HorizonCode Core (OpenCode-derived) |
+| Provider/model/account transport/config | HorizonCode host; current OpenCode-derived implementation, staged A-V2-27 adapter seam |
 | Goal/SpecVersion/Run/Task/Attempt | Rust kernel |
 | ToolBatch authorization/control refs | Rust kernel |
 | Effects/leases/receipts | Rust Guard/EffectService/ExecutionHost |

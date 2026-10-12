@@ -163,10 +163,12 @@ fn ready_host(
     let Some(RpcMessageV1::HelloResult(result)) = read_message(&mut host).unwrap() else {
         panic!("expected negotiated hello result");
     };
-    assert!(result
-        .enabled_features
-        .iter()
-        .any(|feature| feature.as_str() == FEATURE_EFFECTS_V2));
+    assert!(
+        result
+            .enabled_features
+            .iter()
+            .any(|feature| feature.as_str() == FEATURE_EFFECTS_V2)
+    );
     let statuses = (0..5)
         .map(|_| read_message(&mut host).unwrap().unwrap())
         .collect::<Vec<_>>();
@@ -197,10 +199,12 @@ fn ready_observer_without_effect_feature(
     let Some(RpcMessageV1::HelloResult(result)) = read_message(&mut host).unwrap() else {
         panic!("expected observer hello result");
     };
-    assert!(!result
-        .enabled_features
-        .iter()
-        .any(|feature| feature.as_str() == FEATURE_EFFECTS_V2));
+    assert!(
+        !result
+            .enabled_features
+            .iter()
+            .any(|feature| feature.as_str() == FEATURE_EFFECTS_V2)
+    );
     for _ in 0..5 {
         read_message(&mut host).unwrap().unwrap();
     }
@@ -621,7 +625,10 @@ fn prepare_body_with_context(path: &str, content: &str, turn_context_digest: &st
     value_map([
         ("sessionId", Value::String("ses_process".into())),
         ("batchId", Value::String("batch_effect".into())),
-        ("turnContextDigest", Value::String(turn_context_digest.into())),
+        (
+            "turnContextDigest",
+            Value::String(turn_context_digest.into()),
+        ),
         (
             "calls",
             Value::Array(vec![tool_call(path, content, "files.write")]),
@@ -695,7 +702,10 @@ fn effects_rpc_requires_one_approved_bound_write_and_fails_closed_on_paths_and_r
         ),
     );
     assert_eq!(invalid_context.outcome, RpcOutcomeV1::Error);
-    assert_eq!(invalid_context.error.as_ref().unwrap().code, "invalid_effect_request");
+    assert_eq!(
+        invalid_context.error.as_ref().unwrap().code,
+        "invalid_effect_request"
+    );
     assert!(!invalid_context_target.exists());
 
     let unsupported = send_effect_request(
@@ -704,7 +714,10 @@ fn effects_rpc_requires_one_approved_bound_write_and_fails_closed_on_paths_and_r
         value_map([
             ("sessionId", Value::String("ses_process".into())),
             ("batchId", Value::String("batch_unsupported".into())),
-            ("turnContextDigest", Value::String(TEST_TURN_CONTEXT_DIGEST.into())),
+            (
+                "turnContextDigest",
+                Value::String(TEST_TURN_CONTEXT_DIGEST.into()),
+            ),
             (
                 "calls",
                 Value::Array(vec![tool_call("unsupported.txt", "secret", "files.patch")]),
@@ -721,7 +734,10 @@ fn effects_rpc_requires_one_approved_bound_write_and_fails_closed_on_paths_and_r
         value_map([
             ("sessionId", Value::String("ses_process".into())),
             ("batchId", Value::String("batch_multiple".into())),
-            ("turnContextDigest", Value::String(TEST_TURN_CONTEXT_DIGEST.into())),
+            (
+                "turnContextDigest",
+                Value::String(TEST_TURN_CONTEXT_DIGEST.into()),
+            ),
             (
                 "calls",
                 Value::Array(vec![
@@ -741,7 +757,10 @@ fn effects_rpc_requires_one_approved_bound_write_and_fails_closed_on_paths_and_r
         value_map([
             ("sessionId", Value::String("ses_process".into())),
             ("batchId", Value::String("batch_malformed".into())),
-            ("turnContextDigest", Value::String(TEST_TURN_CONTEXT_DIGEST.into())),
+            (
+                "turnContextDigest",
+                Value::String(TEST_TURN_CONTEXT_DIGEST.into()),
+            ),
             (
                 "calls",
                 Value::Array(vec![value_map([
@@ -817,9 +836,11 @@ fn effects_rpc_requires_one_approved_bound_write_and_fails_closed_on_paths_and_r
         ])
     );
     let persisted = fs::read(directory.0.join("effects.sqlite")).unwrap();
-    assert!(!persisted
-        .windows(content.len())
-        .any(|window| window == content.as_bytes()));
+    assert!(
+        !persisted
+            .windows(content.len())
+            .any(|window| window == content.as_bytes())
+    );
     let stored_content_digest: String = Connection::open(directory.0.join("effects.sqlite"))
         .unwrap()
         .query_row(
@@ -854,10 +875,10 @@ fn effects_rpc_requires_one_approved_bound_write_and_fails_closed_on_paths_and_r
     );
     assert_eq!(approved.outcome, RpcOutcomeV1::Ok);
     assert_eq!(response_string(&approved, "status"), "approved");
-    assert_eq!(approved.body.as_ref().unwrap(), &value_map([(
-        "status",
-        Value::String("approved".into())
-    )]));
+    assert_eq!(
+        approved.body.as_ref().unwrap(),
+        &value_map([("status", Value::String("approved".into()))])
+    );
 
     let wrong_content = send_effect_request(
         &mut host,
@@ -970,7 +991,10 @@ fn effects_rpc_requires_one_approved_bound_write_and_fails_closed_on_paths_and_r
         execute_body("ses_process", &existing_bom_challenge, existing_bom_content),
     );
     assert_eq!(existing_bom_settled.outcome, RpcOutcomeV1::Ok);
-    assert_eq!(fs::read(&existing_bom_target).unwrap(), b"\xef\xbb\xbfreplacement");
+    assert_eq!(
+        fs::read(&existing_bom_target).unwrap(),
+        b"\xef\xbb\xbfreplacement"
+    );
 
     let input_bom_target = workspace.join("input-bom.txt");
     fs::write(&input_bom_target, b"old without BOM").unwrap();
@@ -1132,15 +1156,28 @@ fn effect_recovery_settles_matching_prepared_and_blocks_mismatched_target() {
         )
         .unwrap();
     let workspace_metadata = fs::metadata(&workspace).unwrap();
-    let workspace_binding =
-        guard::workspace_binding(&workspace, workspace_metadata.dev(), workspace_metadata.ino());
+    let workspace_binding = guard::workspace_binding(
+        &workspace,
+        workspace_metadata.dev(),
+        workspace_metadata.ino(),
+    );
     let content_digest = format!(
         "blake3:{}",
         blake3::hash(b"not persisted test content").to_hex()
     );
     for (challenge_id, effect_id, path, digest) in [
-        ("prepared_done", "effect_done", "reconciled.txt", &after_digest),
-        ("prepared_unknown", "effect_unknown", "unknown.txt", &wrong_digest),
+        (
+            "prepared_done",
+            "effect_done",
+            "reconciled.txt",
+            &after_digest,
+        ),
+        (
+            "prepared_unknown",
+            "effect_unknown",
+            "unknown.txt",
+            &wrong_digest,
+        ),
     ] {
         let target = workspace.join(path);
         let argument_digest = guard::argument_digest(
@@ -1241,7 +1278,6 @@ fn effect_recovery_settles_matching_prepared_and_blocks_mismatched_target() {
     assert!(child.0.wait().unwrap().success());
 }
 
-
 #[test]
 fn legacy_effect_schema_migrates_and_blocks_contextless_prepared_write() {
     let directory = TestDir::new();
@@ -1316,7 +1352,12 @@ fn legacy_effect_schema_migrates_and_blocks_contextless_prepared_write() {
         Some(&workspace),
     );
     wait_socket(&directory.0.join("session.sock"));
-    let host = ready_host(&directory.0, &binary, "nonce_legacy_effects", "inc_legacy_effects");
+    let host = ready_host(
+        &directory.0,
+        &binary,
+        "nonce_legacy_effects",
+        "inc_legacy_effects",
+    );
     let effects_db = Connection::open(directory.0.join("effects.sqlite")).unwrap();
     let migrated: (String, Option<String>, String) = effects_db
         .query_row(

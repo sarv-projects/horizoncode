@@ -4,9 +4,9 @@ Status: normative current V1 composition.
 
 ## 13.1 Processes
 
-1. OpenCode host/API process
-   - canonical Session/provider loop;
-   - existing provider/auth/tool registries;
+1. HorizonCode host/API process (OpenCode-derived)
+   - canonical direct Session/continuation loop;
+   - current provider/auth/tool registries behind an explicit provider-transport seam;
    - TUI/web/desktop/server composition;
    - host-local read/query adapters.
 
@@ -27,7 +27,7 @@ Status: normative current V1 composition.
    - external agent adapters.
    Workers never receive authority beyond explicit lease/capability scope.
 
-No second provider loop, Session database, effect engine or desktop shell is introduced.
+In direct mode, no second provider loop, Session database, effect engine or desktop shell is introduced. A-V2-27's optional native OpenCode backend is an explicit external Session owner behind an adapter, not a second direct-mode Horizon runtime.
 
 ## 13.2 Startup
 
@@ -66,7 +66,7 @@ Unknown message/version/oversize payload fails closed.
 
 ## 13.4 Session observation
 
-The host exposes/read-mediates OpenCode Session events. Rust projection is read-only.
+The host exposes/read-mediates events from the owning Session backend. The current direct source is OpenCode-derived; a native adapter maps its separate upstream Session stream. Rust projection is read-only.
 
 Subscription contract:
 - SessionLink identity;
@@ -98,8 +98,8 @@ No Bun/worker/plugin side-channel may perform the same effect outside this path.
 
 | Service | Owner/process |
 |---|---|
-| Session/provider runner | OpenCode Core |
-| Provider/model/account registry | Existing OpenCode/Horizon host |
+| Direct Session/continuation runner | HorizonCode Core (OpenCode-derived) |
+| Provider/model/account registry/transport | HorizonCode host; current OpenCode-derived path, staged A-V2-27 migration |
 | Action/tool presentation catalog | Host projection from canonical capability registry |
 | ContextService | Host-facing service; canonical conversation remains OpenCode |
 | RepoIntel | indexd/host derived service |

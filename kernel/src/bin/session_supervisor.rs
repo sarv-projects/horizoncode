@@ -32,11 +32,13 @@ fn digest_host_executable(path: &str) -> Result<String, String> {
     if !path.is_absolute() {
         return Err("host executable path must be absolute".to_owned());
     }
-    let metadata = fs::symlink_metadata(path).map_err(|error| format!("host executable: {error}"))?;
+    let metadata =
+        fs::symlink_metadata(path).map_err(|error| format!("host executable: {error}"))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err("host executable must be a regular non-symlink file".to_owned());
     }
-    let mut file = fs::File::open(path).map_err(|error| format!("open host executable: {error}"))?;
+    let mut file =
+        fs::File::open(path).map_err(|error| format!("open host executable: {error}"))?;
     let mut hasher = blake3::Hasher::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
@@ -73,7 +75,14 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
             .ok_or_else(|| "arguments must start with --".to_owned())?;
         if !matches!(
             key,
-            "source" | "state-dir" | "socket" | "host-exe" | "session" | "nonce" | "incarnation" | "workspace-root"
+            "source"
+                | "state-dir"
+                | "socket"
+                | "host-exe"
+                | "session"
+                | "nonce"
+                | "incarnation"
+                | "workspace-root"
         ) || value.is_empty()
             || fields.insert(key.to_owned(), value.to_owned()).is_some()
         {
@@ -107,7 +116,9 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
             .as_ref()
             .is_some_and(|path| !path.is_absolute())
     {
-        return Err("database, state, socket, executable and workspace paths must be absolute".to_owned());
+        return Err(
+            "database, state, socket, executable and workspace paths must be absolute".to_owned(),
+        );
     }
     Ok(options)
 }
@@ -291,7 +302,8 @@ fn run(options: Options) -> Result<(), String> {
         };
         match message {
             RpcMessageV1::Request(request) => {
-                let response = effects.handle_request(&options.session_id, &request, effect_feature_enabled);
+                let response =
+                    effects.handle_request(&options.session_id, &request, effect_feature_enabled);
                 session
                     .write_application_message(&RpcMessageV1::Response(Box::new(response)))
                     .map_err(|error| error.to_string())?;
@@ -309,7 +321,9 @@ fn run(options: Options) -> Result<(), String> {
                     after: Some(after),
                 } => {
                     if owner_kind != "session" || owner_id != options.session_id {
-                        return Err("Subscribe owner is outside the validated Session scope".to_owned());
+                        return Err(
+                            "Subscribe owner is outside the validated Session scope".to_owned()
+                        );
                     }
                     if active_subscription
                         .as_ref()
@@ -324,7 +338,13 @@ fn run(options: Options) -> Result<(), String> {
                         &subscription_id,
                         &after,
                         PAGE_CAPACITY,
-                        |request| effects.handle_request(&options.session_id, &request, effect_feature_enabled),
+                        |request| {
+                            effects.handle_request(
+                                &options.session_id,
+                                &request,
+                                effect_feature_enabled,
+                            )
+                        },
                     ) {
                         Ok(_) => {}
                         Err(SupervisorSessionError::ProjectionSubscription(
@@ -342,7 +362,9 @@ fn run(options: Options) -> Result<(), String> {
                     }
                 }
                 _ => {
-                    return Err("Session observer expected Subscribe or matching Unsubscribe".into());
+                    return Err(
+                        "Session observer expected Subscribe or matching Unsubscribe".into(),
+                    );
                 }
             },
             _ => return Err("supervisor expected an application request or control".to_owned()),

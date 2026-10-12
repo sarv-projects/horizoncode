@@ -46,6 +46,26 @@ STUBS=[
 for name in ACTIVE+STUBS:
     check((A/name).is_file(),'missing architecture document '+name)
 
+# Root workspace identity is HorizonCode-owned; pinned vendor packages retain upstream IDs.
+root_package=load(R/'package.json')
+check(root_package.get('private') is True,'root workspace must stay private')
+check(root_package.get('name')=='horizoncode-workspace','root workspace name drifted from horizoncode-workspace')
+repository=root_package.get('repository')
+repository_url=repository.get('url') if isinstance(repository,dict) else repository
+check(repository_url=='https://github.com/sarv-projects/horizoncode.git','root repository URL is not HorizonCode')
+scripts=root_package.get('scripts',{})
+check(scripts.get('horizon:push-gate')=='bash scripts/architecture/run_push_gate.sh','root push-gate script missing')
+check(scripts.get('horizon:full-gate')=='bash scripts/architecture/run_full_gate.sh','root full-gate script missing')
+
+flow_text=(A/'03-FLOWS.md').read_text()
+for heading in [
+    '## 3.16 Native OpenCode backend',
+    '## 3.17 Visual edit',
+    '## 3.18 Deploy and verify',
+    '## 3.19 Stop',
+]:
+    check(heading in flow_text,'required end-to-end flow missing: '+heading)
+
 # Active authority contains no stale conversation-owner vocabulary or proposal-status conflict.
 banned=[
  r'\bThreadService\b',r'\bThreadStoreService\b',r'Rust[- ]canonical Thread',
@@ -55,6 +75,11 @@ for name in ACTIVE:
     text=(A/name).read_text()
     for pat in banned:
         check(not re.search(pat,text,re.I),'stale active authority '+name+' / '+pat)
+    section_ids=re.findall(r'^##\s+(\d+\.\d+)\b',text,re.M)
+    duplicates=sorted({sid for sid in section_ids if section_ids.count(sid)>1})
+    check(not duplicates,'duplicate numbered section in '+name+': '+','.join(duplicates))
+    section_order=[tuple(map(int,sid.split('.'))) for sid in section_ids]
+    check(section_order==sorted(section_order),'out-of-order numbered sections in '+name)
 
 # Stubs must be short, unmistakably non-normative and archive-backed.
 archive=R/'docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1'

@@ -1,5 +1,7 @@
 # HorizonCode
 
+**Built for the Future. The whole codebase. The whole job.**
+
 HorizonCode is an OpenCode-derived coding-agent system focused on fast direct coding plus optional durable managed work, strong effect mediation, repository intelligence, extensible agents/tools and progressive TUI/web/desktop UX.
 
 ## Implementation entrypoints
@@ -15,11 +17,11 @@ Do not implement from archived research/audit/history. Pre-consolidation documen
 
 ## Core law
 
-OpenCode owns canonical conversational Session/message/provider continuation. Rust owns managed Goal/Run/effects/leases/evidence. Direct coding stays lightweight. Every mutation uses the same Guard/ExecutionHost. User-selected provider/model/harness and cost policy do not silently change.
+In direct mode, HorizonCode Core (derived from the pinned OpenCode base) owns canonical conversational Session/message continuation. Rust owns managed Goal/Run/effects/leases/evidence. Provider transport is replaceable only behind that session owner; A-V2-27 defines the staged OMP candidate and separate native OpenCode mode. Direct coding stays lightweight. Every mutation uses the same Guard/ExecutionHost. User-selected provider/model/harness and cost policy do not silently change.
 
 ## Current focus
 
-Finish P1.2-B production Session observer lifecycle, then P1.3 universal effect mediation before wiring new privileged subsystems. See HANDOFF.md for exact source/test evidence.
+P1.2-B observer lifecycle is verified for the currently claimed local scope. P1.3 universal effect mediation is the active gate. Clean-clone hydration, targeted Guard tests, and the full 36-package Turbo typecheck pass locally. Integration, security, CI and release gates remain open. See HANDOFF.md.
 
 ## External sources
 

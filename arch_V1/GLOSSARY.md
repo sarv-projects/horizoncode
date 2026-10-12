@@ -4,8 +4,8 @@ Status: normative terminology only. Ownership is defined by 01/02/17.
 
 | Term | Meaning |
 |---|---|
-| Session | OpenCode-owned durable conversation identity and its Input/Message/Part/provider continuation. |
-| SessionLink | Bounded Rust correlation to an OpenCode Session/source cursor/epoch; never a second transcript. |
+| Session | Durable conversation identity owned by its selected backend: HorizonCode Core for direct Sessions, or official OpenCode for explicitly native OpenCode Sessions. |
+| SessionLink | Bounded Rust correlation to a backend-owned Session/source cursor/epoch; never a second transcript. |
 | Direct Session | Ordinary pair-coding flow without mandatory Goal/Run/Task. Effects still use Guard. |
 | Goal | Durable managed objective. |
 | SpecVersion | Immutable reviewed scope/constraints/acceptance/budget for a managed Run. |
@@ -13,7 +13,7 @@ Status: normative terminology only. Ownership is defined by 01/02/17.
 | Task | Dependency-scoped managed work unit with acceptance criteria. |
 | Attempt | One bounded execution strategy for a Task. |
 | WorkerExecution | Concrete leased process/agent/workspace incarnation; not correctness evidence. |
-| ToolBatchControl | Rust authorization/control facts for the complete tool-call set in one OpenCode provider response. |
+| ToolBatchControl | Rust authorization/control facts for the complete local tool-call set in one owning provider response. |
 | EffectIntent | Durable exact intended mutation with target/args/source/policy bindings. |
 | ExecutionLease | One-use authority for exactly one prepared effect. |
 | EffectReceipt | Target observation/outcome for an effect, including FAILED/UNKNOWN. |

@@ -1,13 +1,27 @@
-# HorizonCode source allowlist: keep the local OpenCode base and workspace out of commits
-# unless a path is explicitly in implementation scope. Add narrow parent and file rules.
+# HorizonCode overlay model.
+# opencode/ is the tracked pinned upstream snapshot. The root workspace is hydrated
+# from it; byte-identical root copies stay ignored to avoid duplicate commits.
+# Every HorizonCode delta MUST be explicitly Git-visible and is enforced by
+# scripts/architecture/audit_overlay_visibility.py.
 *
 !/.gitignore
+!/package.json
 # Deepwork progress stays local and is visible to repository tools via .ignore.
 .slim/deepwork/
 !/AGENTS.md
+!/.husky/
+!/.husky/pre-push
+!/.github/
+!/.github/workflows/
+!/.github/workflows/horizoncode-full-validation.yml
 !/IMPLEMENTER_PROMPT.md
 !/HANDOFF.md
 !/README.md
+!/SECURITY.md
+!/CONTRIBUTING.md
+!/CONTEXT.md
+!/STATS.md
+!/bun.lock
 !/.opencode/
 !/.opencode/skills/
 !/.opencode/skills/horizon-docs/
@@ -19,6 +33,9 @@
 !/docs/
 !/docs/architecture-input/
 !/docs/architecture-archive/
+!/docs/architecture-archive/2026-10-12-pre-repo-audit-HANDOFF.md
+!/docs/architecture-archive/2026-10-12-superseded-thread-memory-schema-prototypes/
+!/docs/architecture-archive/2026-10-12-superseded-thread-memory-schema-prototypes/**
 !/docs/architecture-archive/2026-10-11-pre-lean-consolidation/
 !/docs/architecture-archive/2026-10-11-pre-lean-consolidation/**
 !/docs/architecture-input/universal-software-agent-v2-source.md
@@ -32,6 +49,7 @@
 !/packages/
 !/packages/core/
 !/packages/core/package.json
+!/packages/core/tsconfig.json
 !/packages/core/src/
 !/packages/core/src/database/
 !/packages/core/src/database/database.ts
@@ -47,6 +65,7 @@
 !/packages/core/test/kernel-projection-live.test.ts
 !/packages/core/test/session-runner-recorded.test.ts
 !/packages/core/test/session-runner.test.ts
+!/packages/core/test/session-runner-tool-registry.test.ts
 !/packages/core/test/permission.test.ts
 !/packages/core/test/tool-apply-patch.test.ts
 !/packages/core/test/tool-bash.test.ts
@@ -63,37 +82,68 @@
 !/packages/core/src/session/runner/
 !/packages/core/src/session/execution/
 !/packages/core/src/session/execution/local.ts
+!/packages/core/src/session/execution.ts
+!/packages/core/src/session.ts
 !/packages/core/src/session/runner/llm.ts
 !/packages/core/src/tool/
 !/packages/core/src/tool/tool.ts
 !/packages/core/src/tool/registry.ts
+!/packages/core/src/tool/glob.ts
+!/packages/core/src/tool/read.ts
+!/packages/core/src/tool/write.ts
+!/packages/core/src/tool/skill.ts
+!/packages/core/src/tool/grep.ts
+!/packages/core/src/tool/question.ts
 !/packages/opencode/
 !/packages/opencode/script/
 !/packages/opencode/script/build.ts
 !/packages/opencode/src/
 !/packages/opencode/src/effect/
 !/packages/opencode/src/effect/app-runtime.ts
+!/packages/opencode/src/session/
+!/packages/opencode/src/session/run-state.ts
+!/packages/opencode/src/session/prompt.ts
+!/packages/opencode/src/session/tools.ts
+!/packages/opencode/src/session/llm.ts
+!/packages/opencode/src/session/tool-batch.ts
+!/packages/opencode/src/tool/
+!/packages/opencode/src/tool/tool.ts
+!/packages/opencode/src/tool/write.ts
+!/packages/opencode/src/tool/read.ts
+!/packages/opencode/src/tool/glob.ts
+!/packages/opencode/src/tool/grep.ts
+!/packages/opencode/src/tool/registry.ts
 !/packages/opencode/src/server/
 !/packages/opencode/src/server/routes/
 !/packages/opencode/src/server/routes/instance/
 !/packages/opencode/src/server/routes/instance/httpapi/
+!/packages/opencode/src/server/routes/instance/httpapi/groups/
+!/packages/opencode/src/server/routes/instance/httpapi/groups/session.ts
+!/packages/opencode/src/server/routes/instance/httpapi/handlers/
+!/packages/opencode/src/server/routes/instance/httpapi/handlers/session.ts
+!/packages/opencode/src/server/routes/instance/httpapi/handlers/session-errors.ts
 !/packages/opencode/src/server/routes/instance/httpapi/server.ts
 !/packages/opencode/test/
 !/packages/opencode/test/server/
 !/packages/opencode/test/server/httpapi-cors.test.ts
+!/packages/opencode/test/server/httpapi-public-openapi.test.ts
+!/packages/opencode/test/server/httpapi-session.test.ts
+!/packages/opencode/test/session/
+!/packages/opencode/test/session/run-state-owner.test.ts
+!/packages/opencode/test/session/prompt.test.ts
+!/packages/opencode/test/session/tool-batch.test.ts
+!/packages/opencode/test/session/tools.test.ts
+!/packages/opencode/test/tool/
+!/packages/opencode/test/tool/write.test.ts
 !/packages/schema/
 !/packages/schema/src/
 !/packages/schema/src/composition-v1.ts
 !/packages/schema/src/event-payload-v1.ts
-!/packages/schema/src/memory-v1.ts
 !/packages/schema/src/repo-intelligence-v1.ts
-!/packages/schema/src/thread-v1.ts
 !/packages/schema/test/
 !/packages/schema/test/composition-v1.test.ts
 !/packages/schema/test/event-payload-v1.test.ts
-!/packages/schema/test/memory-v1.test.ts
 !/packages/schema/test/repo-intelligence-v1.test.ts
-!/packages/schema/test/thread-v1.test.ts
 !/kernel/
 !/kernel/Cargo.toml
 !/kernel/Cargo.lock
@@ -102,6 +152,8 @@
 !/kernel/src/owner_log_index.rs
 !/kernel/src/lib.rs
 !/kernel/src/artifact_store.rs
+!/kernel/src/guard.rs
+!/kernel/src/effect_host.rs
 !/kernel/src/messagepack.rs
 !/kernel/src/protocol.rs
 !/kernel/src/rpc_handshake.rs
@@ -176,6 +228,11 @@ tsconfig.tsbuildinfo
 !/docs/architecture-input/2026-10-11-superseded-contract-excerpts.md
 !/scripts/
 !/scripts/architecture/
+!/scripts/architecture/bootstrap_source.py
+!/scripts/architecture/run_push_gate.sh
+!/scripts/architecture/run_full_gate.sh
+!/scripts/architecture/audit_overlay_visibility.py
+!/scripts/architecture/audit_workspace_packages.py
 !/scripts/architecture/validate_convergence.py
 !/scripts/architecture/run_contract_tests.py
 !/scripts/architecture/audit_repository.py

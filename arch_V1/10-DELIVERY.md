@@ -129,4 +129,4 @@ Remote/cloud continuation, shared live collaboration, autonomous self-improvemen
 
 ## 10.13 Current gate
 
-Do not encode current progress here. HANDOFF.md is the bounded status checkpoint. The implementation agent starts from its first incomplete dependency, currently P1.2-B then P1.3 unless source/tests prove those gates complete.
+Do not encode current progress here. HANDOFF.md is the bounded status checkpoint. The implementation agent starts from its first incomplete dependency, currently P1.3 after checking current source/tests prove those gates complete.

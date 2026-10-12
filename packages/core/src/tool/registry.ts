@@ -115,8 +115,14 @@ const registryLayer = Layer.effect(
           const registration = entries.at(-1)?.registration
           if (registration) registrations.set(name, registration)
         }
-        for (const [name, registration] of registrations)
-          if (whollyDisabled(permission(registration.tool, name), permissions)) registrations.delete(name)
+        for (const [name, registration] of registrations) {
+          if (
+            capability(registration.tool, name).effectClass === "unknown" ||
+            whollyDisabled(permission(registration.tool, name), permissions)
+          ) {
+            registrations.delete(name)
+          }
+        }
         return {
           definitions: Array.from(registrations, ([name, registration]) => definition(name, registration.tool)),
           validate: (call) => {

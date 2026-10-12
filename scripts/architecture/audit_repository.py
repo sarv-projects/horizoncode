@@ -35,7 +35,7 @@ def main():
   if istext:line_count+=lines;text_files+=1
   else:nontext_files+=1
   coverage.append({'path':filename,'size':size,'sha256':h.hexdigest(),'lines':lines})
-  if path.suffix.lower()=='.md':
+  if path.suffix.lower() in {'.md','.mdx'}:
    md_count+=1
    content=path.read_text(encoding='utf-8',errors='replace')
    for n,line in enumerate(content.splitlines(),1):
@@ -55,6 +55,8 @@ def main():
        kind='archived-normative-excerpt'
       elif filename.startswith(('opencode/packages/opencode/test/fixture/','packages/opencode/test/fixture/')):
        kind='upstream-test-fixture'
+      elif filename.startswith('opencode/'):
+       kind='pinned-upstream-document'
       elif filename.startswith('.opencode/references/'):
        kind='vendored-reference'
       else:

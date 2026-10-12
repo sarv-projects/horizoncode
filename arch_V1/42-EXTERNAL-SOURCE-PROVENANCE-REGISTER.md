@@ -280,7 +280,7 @@ External source inspection does not authorize code copy. Review exact file licen
 
 ## 42.3 Mandatory upstream-to-Horizon implementation procedure
 
-1. **Authority first:** read adopted §17, §§01–05, 12–14, §20, §24 and §33 before a path is mutated. OpenCode Core V2 owns Session/Input/Message/Part and provider continuation; Rust OwnerLog/Guard owns managed Goal/Run/Task/effects/evidence. Direct Sessions do NOT require a Goal.
+1. **Authority first:** read adopted §17, §§01–05, 12–14, §20, §24 and §33 before a path is mutated. HorizonCode direct Core (OpenCode-derived) owns Session/Input/Message/Part/continuation; provider transport follows A-V2-27; Rust OwnerLog/Guard owns managed Goal/Run/Task/effects/evidence. Direct Sessions do NOT require a Goal.
 2. **Current code first:** inspect live modified files with git status, exact source and tests; locate the current handler using rg/grep. An architecture spec is NOT evidence the function exists. Build a file- and function-level map Existing → Adapt → Proposed, source revision, and owner before changing anything.
 3. **Pinned source only:** open the exact external URLs above and follow imported callees, test fixtures, schemas, error handlers and platform branches at the same immutable commit; do not assume a standalone file has all required behavior.
 4. **Decide formally:** REUSE EXISTING, PORT ALGORITHM, IMPLEMENT ADAPTER, EXPERIMENT, or REJECT. For any code copy/translation, inspect the exact file's license, exceptions, transitive dependency closure, attribution and platform compatibility.
@@ -313,3 +313,7 @@ The user repository also contains these **untracked/ignored source reference tre
 
 A second mechanical inventory [ignored-reference-source-manifest.json](ignored-reference-source-manifest.json) reads and hashes 27,271 files in these three local trees and counts 5,919,094 source/text lines (177 + 158 + 4,083 Markdown documents respectively). Reproduce using python3 scripts/architecture/audit_local_reference_copies.py --write. Generated caches, node_modules, target, dist, vendor and symlinks were excluded. This is source-data coverage, NOT semantic understanding or evidence that local code matches the pinned remote. Do not delete or rewrite these user-owned reference copies without explicit permission.
 
+## 42.8 OMP provider and visual candidates (future A-V2-27)
+
+Selected OMP code examined: packages/catalog/src/model-manager.ts, model-cache.ts, models.ts, pricing.ts; packages/ai/src/stream.ts, auth/select.ts, auth/cascade.ts, providers/inference-headers.ts; packages/coding-agent/src/config/model-registry.ts, model-resolver.ts; packages/tui/src/chat/figure-markdown.ts, svg-figure.ts, table-chart.ts, charts/chart-plan.ts, overlays/model-hub.ts; packages/coding-agent/src/tools/browser/tab-supervisor.ts and tools/computer/supervisor.ts.
+Adopt selectively: provider/model/auth/pricing and bounded visual UX. Reject duplication of OMP AgentSession, tool policy, host permissions or worktree authority. The registered immutable OMP commit remains the implementation pin until formally updated. This list is a bounded source review, not proof that every upstream file was read; code ports require full dependency/license/compatibility review. Native OpenCode backend uses official documented SDK/server APIs and cannot promise third-party promotional free model entitlement.

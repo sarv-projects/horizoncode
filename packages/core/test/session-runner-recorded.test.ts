@@ -30,8 +30,12 @@ import { SessionInput } from "@opencode-ai/core/session/input"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionStore } from "@opencode-ai/core/session/store"
 import { buildLocationServiceMap, LocationServiceMap } from "@opencode-ai/core/location-services"
-import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
+import { SessionSupervisor, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
 import { Location } from "@opencode-ai/core/location"
+import { InstanceRef } from "../../opencode/src/effect/instance-ref"
+import { BackgroundJob } from "../../opencode/src/background/job"
+import { SessionRunState } from "../../opencode/src/session/run-state"
+import { SessionStatus } from "../../opencode/src/session/status"
 import { SystemContextBuiltIns } from "@opencode-ai/core/system-context/builtins"
 import { SystemContextRegistry } from "@opencode-ai/core/system-context/registry"
 import { SystemContext } from "@opencode-ai/core/system-context"
@@ -40,7 +44,7 @@ import { ReferenceGuidance } from "@opencode-ai/core/reference/guidance"
 import { afterAll, describe as bunDescribe, expect } from "bun:test"
 import { Database as SQLite } from "bun:sqlite"
 import { eq } from "drizzle-orm"
-import { Deferred, Effect, Fiber, Layer, Ref } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Ref } from "effect"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -141,41 +145,56 @@ const observerRuntime = Layer.succeed(
     stateRoot: path.join(observerTestRoot, "state"),
   }),
 )
+
+const legacyRunStateLayer = LayerNode.compile(SessionRunState.node, [
+  [
+    BackgroundJob.node,
+    Layer.mock(BackgroundJob.Service, {
+      list: () => Effect.succeed([]),
+      cancel: () => Effect.succeed(undefined),
+    }),
+  ],
+  [SessionStatus.node, Layer.mock(SessionStatus.Service, { set: () => Effect.void })],
+])
+
 const it = testEffect(
-  AppNodeBuilder.build(
-    LayerNode.group([
-      Database.node,
-      EventV2.node,
-      SessionProjector.node,
-      SessionStore.node,
-      AgentV2.node,
-      ToolRegistry.node,
-      SessionRunnerModel.node,
-      SystemContextRegistry.node,
-      SkillGuidance.node,
-      ReferenceGuidance.node,
-      Config.node,
-      Snapshot.node,
-      SessionExecution.node,
-      SessionSupervisor.node,
-      SessionV2.node,
-    ]),
-    [
-      [Database.node, recordedDatabaseNode],
-      [LayerNodePlatform.llmClient, client],
-      [PermissionV2.node, permission],
-      [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
-      [SessionRunnerModel.node, models],
-      [SystemContextRegistry.node, systemContext],
-      [Location.node, Location.boundNode({ directory: AbsolutePath.make(recordedWorktree) })],
-      [SkillGuidance.node, skillGuidance],
-      [ReferenceGuidance.node, referenceGuidance],
-      [Config.node, config],
-      [Snapshot.node, Snapshot.noopLayer],
-      [SessionExecution.node, SessionExecutionLocal.node],
-      [LocationServiceMap.node, locationServices],
-      [SessionSupervisor.runtimeConfigNode, observerRuntime],
-    ],
+  Layer.merge(
+    AppNodeBuilder.build(
+      LayerNode.group([
+        Database.node,
+        EventV2.node,
+        SessionProjector.node,
+        SessionStore.node,
+        AgentV2.node,
+        ToolRegistry.node,
+        SessionRunnerModel.node,
+        SystemContextRegistry.node,
+        SkillGuidance.node,
+        ReferenceGuidance.node,
+        Config.node,
+        Snapshot.node,
+        SessionExecution.node,
+        SessionSupervisor.node,
+        SessionV2.node,
+      ]),
+      [
+        [Database.node, recordedDatabaseNode],
+        [LayerNodePlatform.llmClient, client],
+        [PermissionV2.node, permission],
+        [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
+        [SessionRunnerModel.node, models],
+        [SystemContextRegistry.node, systemContext],
+        [Location.node, Location.boundNode({ directory: AbsolutePath.make(recordedWorktree) })],
+        [SkillGuidance.node, skillGuidance],
+        [ReferenceGuidance.node, referenceGuidance],
+        [Config.node, config],
+        [Snapshot.node, Snapshot.noopLayer],
+        [SessionExecution.node, SessionExecutionLocal.node],
+        [LocationServiceMap.node, locationServices],
+        [SessionSupervisor.runtimeConfigNode, observerRuntime],
+      ],
+    ),
+    legacyRunStateLayer,
   ),
 )
 const sessionID = SessionV2.ID.make("ses_runner_recorded")
@@ -241,6 +260,43 @@ describe("SessionRunnerLLM recorded", () => {
       let runJoined = false
       try {
         yield* Deferred.await(modelResolving)
+        const legacyRunState = yield* SessionRunState.Service
+        const legacyAttempt = yield* legacyRunState
+          .ensureRunning(
+            sessionID,
+            Effect.die("V1 interrupt hook must not run while V2 owns the Session"),
+            Effect.die("V1 work ran while V2 owns the Session"),
+          )
+          .pipe(
+            Effect.provideService(InstanceRef, {
+              directory: recordedWorktree,
+              worktree: recordedWorktree,
+              project: {
+                id: Project.ID.global,
+                worktree: recordedWorktree,
+                time: { created: 0, updated: 0 },
+                sandboxes: [],
+              },
+            }),
+            Effect.exit,
+          )
+        expect(Exit.isFailure(legacyAttempt)).toBe(true)
+        if (Exit.isFailure(legacyAttempt)) {
+          expect(Option.getOrUndefined(Cause.findErrorOption(legacyAttempt.cause))).toMatchObject({
+            _tag: "SessionBusyError",
+            sessionID,
+          })
+        }
+        const duplicateOwner = yield* SessionSupervisor.acquireExecutionOwner(sessionID, "opencode-v1").pipe(
+          Effect.exit,
+        )
+        expect(Exit.isFailure(duplicateOwner)).toBe(true)
+        if (Exit.isFailure(duplicateOwner)) {
+          expect(Option.getOrUndefined(Cause.findErrorOption(duplicateOwner.cause))).toMatchObject({
+            stage: "ownership",
+            reason: "another execution already owns this Session",
+          })
+        }
         const startupDeadline = Date.now() + 15_000
         while (!existsSync(epochPath) && Date.now() < startupDeadline) yield* Effect.sleep("10 millis")
         expect(existsSync(epochPath)).toBeTrue()
@@ -319,7 +375,7 @@ describe("SessionRunnerLLM recorded", () => {
       yield* Effect.scoped(
         Effect.gen(function* () {
           const turnComplete = yield* Ref.make(true)
-          const supervisorReady = yield* Deferred.make<void>()
+          const supervisorReady = yield* Deferred.make<void, SessionSupervisorError>()
           yield* observer.watchSession(sessionID, database.path, recordedWorktree, turnComplete, supervisorReady)
           yield* Deferred.await(supervisorReady)
         }),

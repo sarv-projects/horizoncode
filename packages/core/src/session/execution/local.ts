@@ -7,7 +7,7 @@ import { SessionSchema } from "../schema"
 import { SessionStore } from "../store"
 import { SessionExecution } from "../execution"
 import { Database } from "../../database/database"
-import { SessionSupervisor } from "../supervisor"
+import { SessionSupervisor, SessionSupervisorError } from "../supervisor"
 
 /** Current-process routing for implicit-local Locations. Future remote placement belongs here. */
 const layer = Layer.effect(
@@ -17,14 +17,15 @@ const layer = Layer.effect(
     const locations = yield* LocationServiceMap.Service
     const supervisor = yield* SessionSupervisor.Service
     const database = yield* Database.Service
-    const coordinator = yield* SessionRunCoordinator.make<SessionSchema.ID, SessionRunner.RunError>({
+    const coordinator = yield* SessionRunCoordinator.make<SessionSchema.ID, SessionExecution.Error>({
       drain: Effect.fnUntraced(function* (sessionID: SessionSchema.ID, force) {
         const session = yield* store.get(sessionID)
         if (!session) return yield* Effect.die(`Session not found: ${sessionID}`)
         return yield* Effect.scoped(
           Effect.gen(function* () {
+            yield* SessionSupervisor.acquireExecutionOwner(sessionID, "core-v2")
             const turnComplete = yield* Ref.make(false)
-            const supervisorReady = yield* Deferred.make<void>()
+            const supervisorReady = yield* Deferred.make<void, SessionSupervisorError>()
             const watcher = yield* supervisor
               .watchSession(sessionID, database.path, session.location.directory, turnComplete, supervisorReady)
               .pipe(Effect.forkScoped({ startImmediately: true }))

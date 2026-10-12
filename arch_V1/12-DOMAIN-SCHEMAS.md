@@ -4,7 +4,7 @@ Status: normative schema ownership. This chapter intentionally does not duplicat
 
 ## 12.1 Schema law
 
-- OpenCode types are canonical for Session/Input/Message/Part/provider continuation.
+- HorizonCode direct Session/Input/Message/Part types remain derived from the pinned OpenCode schema; provider-specific continuation stays behind the selected transport and is represented only through canonical turn/model snapshots where required.
 - Horizon schemas contain only managed control, authorization, derived context/index/UI, extension and artifact records.
 - Cross-process contracts are versioned and size-bounded.
 - One machine schema or generated source owns each wire shape; Markdown examples never become a second schema.

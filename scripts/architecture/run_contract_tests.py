@@ -10,6 +10,8 @@ R=Path(__file__).resolve().parents[2]
 env=dict(os.environ)
 env['PATH']='/home/sarvesh/.cargo/bin:/home/sarvesh/.bun/bin:'+env.get('PATH','')
 tests=[
+ ('SOURCE_OVERLAY_VISIBILITY',['python3','scripts/architecture/audit_overlay_visibility.py'],R,45),
+ ('WORKSPACE_PACKAGE_MANIFESTS',['python3','scripts/architecture/audit_workspace_packages.py'],R,45),
  ('ARCHITECTURE_SCHEMA_REGISTRY',['python3','scripts/architecture/validate_convergence.py'],R,45),
  ('PINNED_SOURCE_IMPLEMENTATION_HANDOFF',['python3','scripts/architecture/validate_external_sources.py'],R,45),
  ('EXISTING_TS_RUST_SESSION_INTEROP',['bun','test','./test/kernel-projection-live.test.ts'],R/'packages/core',120),

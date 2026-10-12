@@ -17,7 +17,7 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { DateTime, Deferred, Effect, Exit, Fiber, Layer, Ref, Stream } from "effect"
+import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Stream } from "effect"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Database } from "@opencode-ai/core/database/database"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
@@ -36,7 +36,7 @@ import { SessionID } from "@opencode-ai/schema/session-id"
 import { SessionMessage } from "@opencode-ai/schema/session-message"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { Prompt } from "@opencode-ai/core/session/prompt"
-import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
+import { SessionSupervisor, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
 
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { Config } from "@opencode-ai/core/config"
@@ -305,7 +305,7 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
           Effect.gen(function* () {
             const supervisor = yield* SessionSupervisor.Service
             const turnComplete = yield* Ref.make(false)
-            const ready = yield* Deferred.make<void>()
+            const ready = yield* Deferred.make<void, SessionSupervisorError>()
             const watcher = yield* Effect.forkScoped(
               supervisor.watchSession(sessionID, source, workspace, turnComplete, ready),
             )
@@ -495,11 +495,24 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
             const database = yield* Database.Service
             const runner = yield* SessionRunner.Service
             const turnComplete = yield* Ref.make(false)
-            const ready = yield* Deferred.make<void>()
+            const ready = yield* Deferred.make<void, SessionSupervisorError>()
             const watcher = yield* Effect.forkScoped(
               supervisor.watchSession(sessionID, database.path, workspace, turnComplete, ready),
             )
             yield* Deferred.await(ready)
+            const duplicateReady = yield* Deferred.make<void, SessionSupervisorError>()
+            const duplicate = yield* Effect.exit(
+              supervisor.watchSession(sessionID, database.path, workspace, turnComplete, duplicateReady),
+            ).pipe(Effect.timeoutOption("2 seconds"))
+            expect(Option.isSome(duplicate)).toBe(true)
+            if (Option.isNone(duplicate)) return yield* Effect.die("duplicate observer did not fail promptly")
+            expect(Exit.isFailure(duplicate.value)).toBe(true)
+            if (Exit.isFailure(duplicate.value)) {
+              expect(Option.getOrUndefined(Cause.findErrorOption(duplicate.value.cause))).toMatchObject({
+                stage: "ownership",
+                reason: "another Rust observer already owns this Session",
+              })
+            }
             yield* runner.run({ sessionID, force: true })
             yield* Ref.set(turnComplete, true)
             yield* Fiber.join(watcher)
@@ -547,7 +560,7 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
             }
 
             const replayTurnComplete = yield* Ref.make(false)
-            const replayReady = yield* Deferred.make<void>()
+            const replayReady = yield* Deferred.make<void, SessionSupervisorError>()
             const replayWatcher = yield* Effect.forkScoped(
               supervisor.watchSession(sessionID, database.path, workspace, replayTurnComplete, replayReady),
             )
@@ -862,3 +875,47 @@ test("bundled Session observer refuses a sidecar that differs from its manifest"
     rmSync(directory, { recursive: true, force: true })
   }
 }, 30000)
+
+test("a Session has one process-wide execution owner class with scope-based recovery", async () => {
+  const ownerID = SessionID.make("ses_process_execution_owner")
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* SessionSupervisor.acquireExecutionOwner(ownerID, "core-v2")
+        const nested = yield* Effect.scoped(
+          SessionSupervisor.acquireExecutionOwner(ownerID, "core-v2"),
+        ).pipe(Effect.exit)
+        expect(Exit.isSuccess(nested)).toBe(true)
+        const conflict = yield* Effect.scoped(
+          SessionSupervisor.acquireExecutionOwner(ownerID, "opencode-v1"),
+        ).pipe(Effect.exit)
+        expect(Exit.isFailure(conflict)).toBe(true)
+        if (Exit.isFailure(conflict)) {
+          const error = Cause.findErrorOption(conflict.cause)
+          expect(Option.getOrUndefined(error)).toMatchObject({
+            stage: "ownership",
+            reason: "another execution already owns this Session",
+          })
+        }
+      }),
+    ),
+  )
+  await Effect.runPromise(Effect.scoped(SessionSupervisor.acquireExecutionOwner(ownerID, "opencode-v1")))
+
+  const interruptedID = SessionID.make("ses_process_execution_owner_cancel")
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>()
+        const holder = yield* Effect.gen(function* () {
+          yield* SessionSupervisor.acquireExecutionOwner(interruptedID, "core-v2")
+          yield* Deferred.succeed(entered, undefined)
+          yield* Effect.never
+        }).pipe(Effect.scoped, Effect.forkScoped)
+        yield* Deferred.await(entered)
+        yield* Fiber.interrupt(holder)
+        yield* Effect.scoped(SessionSupervisor.acquireExecutionOwner(interruptedID, "opencode-v1"))
+      }),
+    ),
+  )
+})
