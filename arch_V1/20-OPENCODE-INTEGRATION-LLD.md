@@ -138,3 +138,20 @@ Keep one canonical owner per conversation. The direct Core session may call a se
 ## 20.10 Optional Settings / Experimental metadata implementation seam (A-V2-29)
 
 Feature exposure is a **projection of existing OpenCode/Horizon settings and §33 canonical capability metadata**, not an extra registry or authorization owner. Extend the existing config/settings descriptor materialization (locate live source/callers first) with `FeatureExposureV1` release class, optional setting ID, eligibility, scope, apply boundary, capability links and current resolved state. Reuse existing TUI settings/command discovery and the app/desktop settings presentation; no new store or independent toggle dispatch. One config change propagates to all surfaces; Guard/capability availability remains authoritative at action time. Do not create toggles for proposal-only services that appear executable. Required tests: §32 FEAT-001..010.
+
+### 20.10.1 Source-bound Settings and Experimental integration audit (2026-10-14)
+
+Current PR branch has first-party changed overlays in `packages/core/`, `packages/opencode/` and the Rust kernel, plus pinned source `opencode/packages/`. `scripts/architecture/bootstrap_source.py --apply` hydrates missing root `packages/*` files from that source, preserving root overrides. Inspect the **hydrated root implementation and overlay visibility** before editing; do not assume each snapshot file is already present as a tracked root file.
+
+| Source inspected | Existing owner/role | Missing feature-exposure work |
+|---|---|---|
+| `opencode/packages/core/src/config.ts` and `config/experimental.ts` | Core V2 config and narrow experimental policy schema | Derived descriptor/effective-state resolver; eligibility/precedence |
+| `opencode/packages/core/src/v1/config/config.ts` and `v1/config/migrate.ts` | Legacy config and migration | Preserve/translate intended legacy experimental settings; current migration forwards policies only |
+| `opencode/packages/opencode/src/config/config.ts` and `effect/runtime-flags.ts` | Instance config writes and environment controls | Per-feature explicit opt-in, blocked/locked sources; inherited broad `OPENCODE_EXPERIMENTAL` must not grant new Horizon experiment |
+| `opencode/packages/opencode/src/server/routes/instance/httpapi/groups/config.ts` and `handlers/config.ts` | Existing read/update API | Expose derived effective state and safe updates without new policy authority |
+| `opencode/packages/app/src/context/settings.tsx` | GUI-local persisted `settings.v3` | Keep presentation-only prefs separate from backend execution configuration |
+| `opencode/packages/app/src/components/settings-v2/dialog-settings-v2.tsx` | GUI settings tabs | Add Features/Experimental UI from server-derived snapshot |
+| `opencode/packages/tui/src/app.tsx`, `component/command-palette.tsx`, `component/dialog-status.tsx` | Existing TUI commands and status | Keyboard-reachable optional Settings; class/effective-state labels and disabled reasons from one projection |
+| `opencode/packages/tui/src/config/index.tsx`, `opencode/packages/core/src/flag/flag.ts` | TUI preferences and inherited env flags | Not independent runtime authorization or substitute for Settings |
+
+Implement first the actual config/flag inventory and read-only derived exposure; then safe persistence with revision/conflict semantics; finally actionable TUI/GUI controls and capability gating. Do not build a second feature registry or accept a GUI-local switch as approval of backend effects. Runtime acceptance is §32 FEAT-001..014, not mere schema validation.
