@@ -1,20 +1,17 @@
-//! One-connection Linux Session observer and guarded ToolBatch effect endpoint.
+//! Per-Session Linux projection and bounded ACK delivery worker.
 //!
-//! The process owns a private supervisor lease, opens OpenCode SQLite read-only, validates
-//! the EventV2 contract, and serves authenticated Session pages plus approved workspace
-//! file writes. It never invokes OpenCode providers or writes the source DB.
+//! The host kernel exclusively owns guarded effects and terminal execution. This process
+//! validates the source EventV2 contract, writes only the Session projection, and serves
+//! authenticated projection pages.
 //!
 //! Usage: session_supervisor --source=FILE --state-dir=DIR --socket=PATH --host-exe=FILE
-//!                         --session=ID --nonce=VALUE --incarnation=VALUE
-//!                         [--workspace-root=DIR]
+//!                         --session=ID --nonce=VALUE --incarnation=VALUE --owner-epoch=N
 
-use horizoncode_kernel::effect_host::EffectHost;
 use horizoncode_kernel::protocol::{
-    FEATURE_EFFECTS_V2, FEATURE_SESSION_PAGE_CONTROL_V1, HandshakePolicy, RpcControlV1,
-    RpcMessageV1,
+    ErrorCategoryV1, FEATURE_SESSION_PAGE_CONTROL_V1, HandshakePolicy, RpcControlV1,
+    RpcMessageV1, RpcOutcomeV1, RpcRequestV1, RpcResponseV1, RetryClassV1, TypedErrorV1,
 };
 use horizoncode_kernel::session_projection::{SessionProjection, SubscriptionPageError};
-use horizoncode_kernel::supervisor_lease::SupervisorLease;
 use horizoncode_kernel::supervisor_session::{AuthenticatedKernelSession, SupervisorSessionError};
 use horizoncode_kernel::unix_peer::{UnixPeerListener, UnixPeerPolicy};
 use rusqlite::{Connection, OpenFlags};
@@ -61,7 +58,7 @@ struct Options {
     session_id: String,
     nonce: String,
     incarnation: String,
-    workspace_root: Option<PathBuf>,
+    owner_epoch: u64,
 }
 
 fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
@@ -75,14 +72,8 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
             .ok_or_else(|| "arguments must start with --".to_owned())?;
         if !matches!(
             key,
-            "source"
-                | "state-dir"
-                | "socket"
-                | "host-exe"
-                | "session"
-                | "nonce"
-                | "incarnation"
-                | "workspace-root"
+            "source" | "state-dir" | "socket" | "host-exe" | "session" | "nonce"
+                | "incarnation" | "owner-epoch"
         ) || value.is_empty()
             || fields.insert(key.to_owned(), value.to_owned()).is_some()
         {
@@ -102,23 +93,19 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
         session_id: take(&mut fields, "session")?,
         nonce: take(&mut fields, "nonce")?,
         incarnation: take(&mut fields, "incarnation")?,
-        workspace_root: fields.remove("workspace-root").map(PathBuf::from),
+        owner_epoch: take(&mut fields, "owner-epoch")?
+            .parse::<u64>()
+            .ok()
+            .filter(|epoch| *epoch > 0)
+            .ok_or_else(|| "owner epoch must be a positive integer".to_owned())?,
     };
-    if !fields.is_empty() {
-        return Err("unexpected supervisor argument".to_owned());
-    }
-    if !options.source.is_absolute()
+    if !fields.is_empty()
+        || !options.source.is_absolute()
         || !options.state_dir.is_absolute()
         || !options.socket.is_absolute()
         || !options.host_exe.is_absolute()
-        || options
-            .workspace_root
-            .as_ref()
-            .is_some_and(|path| !path.is_absolute())
     {
-        return Err(
-            "database, state, socket, executable and workspace paths must be absolute".to_owned(),
-        );
+        return Err("database, state, socket, and executable paths must be absolute".to_owned());
     }
     Ok(options)
 }
@@ -208,14 +195,32 @@ fn sync_session(
     }
 }
 
+fn unsupported_request(request: RpcRequestV1) -> RpcResponseV1 {
+    RpcResponseV1 {
+        request_id: request.request_id,
+        outcome: RpcOutcomeV1::Error,
+        owner_cursor: None,
+        receipt_digest: None,
+        body: None,
+        error: Some(TypedErrorV1 {
+            code: "unsupported_interleaved_request".to_owned(),
+            category: ErrorCategoryV1::Capability,
+            message: "requests are routed to the host kernel, not the Session projection worker".to_owned(),
+            retry_class: RetryClassV1::Never,
+            retry_after_ms: None,
+            owner_cursor: None,
+            subject_ids: Vec::new(),
+            details: None,
+        }),
+    }
+}
+
 fn run(options: Options) -> Result<(), String> {
     let state_dir = fs::canonicalize(&options.state_dir)
         .map_err(|error| format!("state directory: {error}"))?;
     if state_dir != options.state_dir {
         return Err("state directory must be canonical".to_owned());
     }
-    let lease = SupervisorLease::acquire(&state_dir).map_err(|error| error.to_string())?;
-    let mut effects = EffectHost::open(&state_dir, options.workspace_root.as_deref())?;
     let (source_path, source) = ensure_source(&options.source)?;
     if fs::canonicalize(options.socket.parent().ok_or("socket path has no parent")?)
         .map_err(|error| format!("socket parent: {error}"))?
@@ -260,29 +265,26 @@ fn run(options: Options) -> Result<(), String> {
         supported_features: BTreeSet::from([
             "session.events.v1".to_owned(),
             FEATURE_SESSION_PAGE_CONTROL_V1.to_owned(),
-            FEATURE_EFFECTS_V2.to_owned(),
         ]),
         expected_supervisor_nonce: options.nonce,
         expected_host_process_incarnation: Some(options.incarnation),
+        owner_epoch: options.owner_epoch,
     };
     let mut session = AuthenticatedKernelSession::new(channel);
-    let effect_feature_enabled = match session
+    match session
         .negotiate(&policy)
         .map_err(|error| format!("negotiate host protocol: {error}"))?
     {
-        horizoncode_kernel::rpc_handshake::HelloOutcome::Negotiated(result) => result
-            .enabled_features
-            .iter()
-            .any(|feature| feature.as_str() == FEATURE_EFFECTS_V2),
+        horizoncode_kernel::rpc_handshake::HelloOutcome::Negotiated(_) => {}
         horizoncode_kernel::rpc_handshake::HelloOutcome::Rejected(error) => {
             return Err(format!("host protocol rejected: {}", error.code));
         }
-    };
+    }
     session
         .canonical_state_validated()
         .map_err(|error| error.to_string())?;
     session
-        .owner_epoch_acquired(&lease)
+        .owner_epoch_acquired(options.owner_epoch)
         .map_err(|error| error.to_string())?;
     session
         .recovery_reconciled()
@@ -302,8 +304,7 @@ fn run(options: Options) -> Result<(), String> {
         };
         match message {
             RpcMessageV1::Request(request) => {
-                let response =
-                    effects.handle_request(&options.session_id, &request, effect_feature_enabled);
+                let response = unsupported_request(request);
                 session
                     .write_application_message(&RpcMessageV1::Response(Box::new(response)))
                     .map_err(|error| error.to_string())?;
@@ -333,18 +334,11 @@ fn run(options: Options) -> Result<(), String> {
                     }
                     active_subscription = Some(subscription_id.clone());
                     sync_session(&mut projection, &source, &options.session_id)?;
-                    match session.send_subscription_page_with_requests(
+                    match session.send_subscription_page(
                         &projection,
                         &subscription_id,
                         &after,
                         PAGE_CAPACITY,
-                        |request| {
-                            effects.handle_request(
-                                &options.session_id,
-                                &request,
-                                effect_feature_enabled,
-                            )
-                        },
                     ) {
                         Ok(_) => {}
                         Err(SupervisorSessionError::ProjectionSubscription(

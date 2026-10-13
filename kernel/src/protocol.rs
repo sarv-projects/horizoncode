@@ -15,7 +15,9 @@ pub const PROTOCOL_V1: u16 = 1;
 pub const FEATURE_SESSION_PAGE_CONTROL_V1: &str = "session.events.page-control.v1";
 pub const FEATURE_EFFECTS_V2: &str = "effects.v2";
 pub const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
-pub const MAX_BODY_BYTES: usize = 1024 * 1024;
+/// Bounded for the largest base64-encoded `files.patch` preimage/postimage batch
+/// while remaining below the 8 MiB transport frame ceiling.
+pub const MAX_BODY_BYTES: usize = 6 * 1024 * 1024;
 pub const MAX_EVENT_PAYLOAD_BYTES: usize = 256 * 1024;
 pub const MAX_ERROR_BYTES: usize = 64 * 1024;
 pub const MAX_ARTIFACT_CHUNK_BODY_BYTES: usize = 768 * 1024;
@@ -108,6 +110,8 @@ pub struct KernelHelloResultV1 {
     pub unavailable_optional_features: Vec<String>,
     pub supervisor_nonce: String,
     pub process_incarnation: String,
+    /// Positive durable epoch held by the canonical host kernel owner.
+    pub owner_epoch: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -533,7 +537,11 @@ fn validate_hello_result(result: &KernelHelloResultV1) -> Result<(), ProtocolErr
         "processIncarnation",
         &result.process_incarnation,
         MAX_IDENTIFIER_BYTES,
-    )
+    )?;
+    if result.owner_epoch == 0 || result.owner_epoch > MAX_SAFE_INTEGER {
+        return Err(invalid("ownerEpoch", "must be a positive safe integer"));
+    }
+    Ok(())
 }
 
 fn validate_features(field: &'static str, features: &[String]) -> Result<(), ProtocolError> {
@@ -699,6 +707,7 @@ pub struct HandshakePolicy {
     pub supported_features: BTreeSet<String>,
     pub expected_supervisor_nonce: String,
     pub expected_host_process_incarnation: Option<String>,
+    pub owner_epoch: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -718,6 +727,8 @@ pub fn negotiate_hello(
     validate_hello(hello)?;
     if policy.min_protocol == 0
         || policy.min_protocol > policy.max_protocol
+        || policy.owner_epoch == 0
+        || policy.owner_epoch > MAX_SAFE_INTEGER
         || hello.supervisor_nonce != policy.expected_supervisor_nonce
         || policy
             .expected_host_process_incarnation
@@ -818,6 +829,7 @@ pub fn validate_hello_result_binding(
 pub fn hello_result_for(
     hello: &KernelHelloV1,
     negotiated: &NegotiatedProtocol,
+    owner_epoch: u64,
 ) -> Result<KernelHelloResultV1, ProtocolError> {
     let result = KernelHelloResultV1 {
         protocol: negotiated.protocol,
@@ -825,6 +837,7 @@ pub fn hello_result_for(
         unavailable_optional_features: negotiated.unavailable_optional_features.clone(),
         supervisor_nonce: hello.supervisor_nonce.clone(),
         process_incarnation: hello.process_incarnation.clone(),
+        owner_epoch,
     };
     validate_hello_result_binding(hello, &result)?;
     Ok(result)
@@ -914,6 +927,7 @@ fn message_to_value(message: &RpcMessageV1) -> Value {
                 "processIncarnation",
                 string(&result.process_incarnation),
             );
+            put(&mut map, "ownerEpoch", number(result.owner_epoch));
         }
         RpcMessageV1::HelloRejected(rejected) => {
             put(&mut map, "kind", string("hello_rejected"));
@@ -1085,6 +1099,7 @@ fn value_to_message(value: Value) -> Result<RpcMessageV1, ProtocolError> {
                     "processIncarnation",
                     MAX_IDENTIFIER_BYTES,
                 )?,
+                owner_epoch: take_u64(&mut map, "ownerEpoch")?,
             })))
         }
         "hello_rejected" => Ok(RpcMessageV1::HelloRejected(Box::new(
@@ -1544,9 +1559,10 @@ mod tests {
             supported_features: BTreeSet::from(["threads.v1".to_owned(), "memory.v1".to_owned()]),
             expected_supervisor_nonce: "nonce-1".to_owned(),
             expected_host_process_incarnation: Some("inc-1".to_owned()),
+            owner_epoch: 7,
         };
         let negotiated = negotiate_hello(&host, &policy).unwrap();
-        hello_result_for(&host, &negotiated).unwrap()
+        hello_result_for(&host, &negotiated, policy.owner_epoch).unwrap()
     }
 
     #[test]
@@ -1564,6 +1580,7 @@ mod tests {
             ),
             ("supervisorNonce".to_owned(), string("nonce-1")),
             ("processIncarnation".to_owned(), string("inc-1")),
+            ("ownerEpoch".to_owned(), number(7)),
         ]));
 
         assert!(decode_message(&wire).is_ok());
@@ -1604,7 +1621,7 @@ mod tests {
         let messages = [
             (
                 RpcMessageV1::HelloResult(Box::new(hello_result())),
-                "86af656e61626c6564466561747572657392aa746872656164732e7631a96d656d6f72792e7631a46b696e64ac68656c6c6f5f726573756c74b270726f63657373496e6361726e6174696f6ea5696e632d31a870726f746f636f6c01af73757065727669736f724e6f6e6365a76e6f6e63652d31bb756e617661696c61626c654f7074696f6e616c466561747572657391a86f746865722e7631",
+                "87af656e61626c6564466561747572657392aa746872656164732e7631a96d656d6f72792e7631a46b696e64ac68656c6c6f5f726573756c74aa6f776e657245706f636807b270726f63657373496e6361726e6174696f6ea5696e632d31a870726f746f636f6c01af73757065727669736f724e6f6e6365a76e6f6e63652d31bb756e617661696c61626c654f7074696f6e616c466561747572657391a86f746865722e7631",
             ),
             (
                 RpcMessageV1::HelloRejected(Box::new(KernelHelloRejectedV1 {
@@ -1762,6 +1779,7 @@ mod tests {
             ),
             ("supervisorNonce".to_owned(), string("nonce-1")),
             ("processIncarnation".to_owned(), string("inc-1")),
+            ("ownerEpoch".to_owned(), number(7)),
         ]);
         assert!(decode_message(&wire_message(wrong_protocol.clone())).is_err());
 
@@ -1984,6 +2002,7 @@ mod tests {
             supported_features: BTreeSet::from(["threads.v1".to_owned(), "memory.v1".to_owned()]),
             expected_supervisor_nonce: "nonce-1".to_owned(),
             expected_host_process_incarnation: Some("host-inc-1".to_owned()),
+            owner_epoch: 7,
         };
         let negotiated = negotiate_hello(&host, &policy).unwrap();
         assert_eq!(negotiated.protocol, 1);

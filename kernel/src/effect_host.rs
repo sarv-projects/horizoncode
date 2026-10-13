@@ -1,7 +1,8 @@
-//! Durable, fail-closed executor for the first ToolBatch filesystem effect.
+//! Durable, fail-closed executor for ToolBatch filesystem effects.
 //!
-//! Approval records contain only identifiers, paths, BLAKE3 digests and decisions. The
-//! UTF-8 content is supplied again at execution time and is never persisted.
+//! Approval records contain only identifiers, paths, BLAKE3 digests and decisions. Write
+//! content is supplied again at execution time; patch content is canonical base64 decoded
+//! to exact postimage bytes. Neither is persisted.
 
 use crate::guard;
 use crate::messagepack::Value;
@@ -116,6 +117,23 @@ struct Challenge {
     expires_at_ms: u64,
     status: String,
     after_digest: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct PatchTarget {
+    operation: String,
+    relative_path: String,
+    requested_path: String,
+    target: String,
+    resource: String,
+    existed: bool,
+    requested_executable: Option<bool>,
+    before_mode: Option<u32>,
+    mode: Option<u32>,
+    before_digest: Option<String>,
+    after_digest: Option<String>,
+    content_digest: Option<String>,
+    content: Option<Vec<u8>>,
 }
 
 /// The only Rust owner of guarded filesystem mutation for this supervisor process.
@@ -267,13 +285,118 @@ impl ExecutionHost {
         Ok(lease_id)
     }
 
+    fn apply_patch(&self, lease: ExecutionLease, challenge_id: &str, targets: &[PatchTarget]) -> io::Result<String> {
+        let lease_id = lease.consume(challenge_id)?;
+        let mut opened = Vec::with_capacity(targets.len());
+        for target in targets {
+            let (parent, name) = open_parent(&self.root_handle, Path::new(&target.relative_path))?;
+            let existing = open_target_for_update(parent.as_raw_fd(), &name, target.existed)?;
+            let actual = match existing.as_ref() {
+                Some(file) => {
+                    let metadata = file.metadata()?;
+                    let actual_mode = metadata.mode() & 0o777;
+                    if metadata.len() > 2 * 1024 * 1024 || metadata.mode() & 0o7000 != 0 || Some(actual_mode) != target.before_mode {
+                        return Err(io::Error::new(io::ErrorKind::InvalidData, "patch preimage mode or size changed"));
+                    }
+                    digest_file(file)?
+                }
+                None => {
+                    if target.before_mode.is_some() {
+                        return Err(io::Error::new(io::ErrorKind::InvalidData, "patch preimage mode changed"));
+                    }
+                    String::new()
+                }
+            };
+            if actual != target.before_digest.clone().unwrap_or_default() {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "patch preimage changed"));
+            }
+            if target.operation == "write" && target.mode.is_none_or(|mode| mode & !0o777 != 0) {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid patch mode"));
+            }
+            if target.operation == "delete" && target.mode.is_some() {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "delete has a mode"));
+            }
+            opened.push((parent, name, existing));
+        }
+        for (target, (parent, name, existing)) in targets.iter().zip(opened) {
+            if target.operation == "delete" {
+                if target.existed && unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) } < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            } else {
+                let bytes = target.content.as_deref().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing patch content"))?;
+                let mode = target.mode.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing patch mode"))?;
+                match existing {
+                    Some(mut file) => {
+                        file.set_len(0)?;
+                        file.seek(SeekFrom::Start(0))?;
+                        file.write_all(bytes)?;
+                        file.set_permissions(fs::Permissions::from_mode(mode))?;
+                        file.sync_all()?;
+                    }
+                    None => {
+                        let mut file = open_new_target(parent.as_raw_fd(), &name)?;
+                        file.write_all(bytes)?;
+                        file.set_permissions(fs::Permissions::from_mode(mode))?;
+                        file.sync_all()?;
+                    }
+                }
+            }
+            parent.sync_all()?;
+        }
+        Ok(lease_id)
+    }
+    fn target_mode(&self, relative: &Path) -> io::Result<u32> {
+        let (parent, name) = open_parent(&self.root_handle, relative)?;
+        if !inspect_target(parent.as_raw_fd(), &name)? {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "target is missing"));
+        }
+        let fd = unsafe {
+            libc::openat(parent.as_raw_fd(), name.as_ptr(),
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        };
+        if fd < 0 { return Err(io::Error::last_os_error()); }
+        let file = unsafe { File::from_raw_fd(fd) };
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.nlink() != 1 || metadata.mode() & 0o7000 != 0 {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "unsafe target mode"));
+        }
+        Ok(metadata.mode() & 0o777)
+    }
+
+
+    fn read_target_bytes(&self, relative: &Path) -> io::Result<(Vec<u8>, u32)> {
+        let (parent, name) = open_parent(&self.root_handle, relative)?;
+        if !inspect_target(parent.as_raw_fd(), &name)? {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "target is missing"));
+        }
+        let fd = unsafe {
+            libc::openat(parent.as_raw_fd(), name.as_ptr(),
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        };
+        if fd < 0 { return Err(io::Error::last_os_error()); }
+        let mut file = unsafe { File::from_raw_fd(fd) };
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.nlink() != 1 || metadata.mode() & 0o7000 != 0
+            || metadata.len() > 2 * 1024 * 1024
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "unsafe or oversized target"));
+        }
+        let mode = metadata.mode() & 0o777;
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        file.take(2 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+        if bytes.len() > 2 * 1024 * 1024 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "oversized target"));
+        }
+        Ok((bytes, mode))
+    }
     fn digest(&self, relative: &Path) -> io::Result<String> {
         read_target_digest(&self.root_handle, relative)
     }
 }
 
 impl EffectHost {
-    /// Open durable effect state and reconcile every unresolved PREPARED write before READY.
+    /// Open durable effect state and reconcile every unresolved PREPARED effect before READY.
     pub fn open(state_dir: &Path, workspace_root: Option<&Path>) -> Result<Self, String> {
         let execution = workspace_root.map(ExecutionHost::open).transpose()?;
         let database_path = state_dir.join(EFFECTS_DB);
@@ -315,6 +438,24 @@ impl EffectHost {
                     lease_id TEXT,
                     receipt_digest TEXT,
                     turn_context_digest TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS patch_targets (
+                    challenge_id TEXT NOT NULL,
+                    ordinal INTEGER NOT NULL,
+                    operation TEXT NOT NULL,
+                    relative_path TEXT NOT NULL,
+                    requested_path TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    resource TEXT NOT NULL,
+                    existed INTEGER NOT NULL CHECK (existed IN (0, 1)),
+                    before_digest TEXT,
+                    after_digest TEXT,
+                    content_digest TEXT,
+                    requested_executable INTEGER,
+                    before_mode INTEGER,
+                    mode INTEGER,
+                    PRIMARY KEY (challenge_id, ordinal),
+                    UNIQUE (challenge_id, relative_path)
                 );",
             )
             .map_err(|_| "effect database schema could not be initialized".to_owned())?;
@@ -331,6 +472,16 @@ impl EffectHost {
                     "ALTER TABLE effect_challenges ADD COLUMN turn_context_digest TEXT NOT NULL DEFAULT '';",
                 )
                 .map_err(|_| "effect database schema could not be upgraded".to_owned())?;
+        }
+        for column in ["requested_executable", "before_mode", "mode"] {
+            let present: i64 = connection.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('patch_targets') WHERE name=?1",
+                [column], |row| row.get(0),
+            ).map_err(|_| "patch target schema could not be inspected".to_owned())?;
+            if present == 0 {
+                connection.execute_batch(&format!("ALTER TABLE patch_targets ADD COLUMN {column} INTEGER;"))
+                    .map_err(|_| "patch target schema could not be upgraded".to_owned())?;
+            }
         }
         let mut host = Self {
             connection,
@@ -359,6 +510,7 @@ impl EffectHost {
                 "prepare_tool_batch" => self.prepare_tool_batch(process_session_id, &request.body),
                 "resolve_approval" => self.resolve_approval(process_session_id, &request.body),
                 "execute_write" => self.execute_write(process_session_id, &request.body),
+                "execute_patch" => self.execute_patch(process_session_id, &request.body),
                 _ => Err(Failure::Invalid),
             }
         };
@@ -407,10 +559,15 @@ impl EffectHost {
             _ => return Err(Failure::Invalid),
         };
         let call = strict_map(&calls[0], &["callId", "capabilityId", "arguments"])?;
+        let capability_id = text(call, "capabilityId")?;
         let call_id = text(call, "callId")?;
         validate_identifier(call_id)?;
-        let capability_id = text(call, "capabilityId")?;
-        if capability_id != "files.write" {
+        if capability_id == guard::FILES_PATCH_ID {
+            return self.prepare_patch(
+                session_id, batch_id, call_id, turn_context_digest, &calls[0],
+            );
+        }
+        if capability_id != guard::FILES_WRITE_ID {
             return Ok(denied_batch("unsupported_capability"));
         }
         let arguments = strict_map(
@@ -504,6 +661,271 @@ impl EffectHost {
         ]))
     }
 
+    fn prepare_patch(
+        &mut self,
+        session_id: &str,
+        batch_id: &str,
+        call_id: &str,
+        turn_context_digest: &str,
+        call: &Value,
+    ) -> Result<Value, Failure> {
+        let call = strict_map(call, &["callId", "capabilityId", "arguments"])?;
+        if text(call, "callId")? != call_id || text(call, "capabilityId")? != guard::FILES_PATCH_ID {
+            return Err(Failure::Invalid);
+        }
+        let arguments = strict_map(call.get("arguments").ok_or(Failure::Invalid)?, &["operations"])?;
+        let values = match arguments.get("operations") {
+            Some(Value::Array(values)) if !values.is_empty() && values.len() <= 64 => values,
+            Some(Value::Array(_)) => return Ok(denied_batch("invalid_operation_count")),
+            _ => return Err(Failure::Invalid),
+        };
+        let execution = match self.execution.as_ref() {
+            Some(execution) => execution,
+            None => return Ok(denied_batch("workspace_root_unconfigured")),
+        };
+        let mut targets = Vec::with_capacity(values.len());
+        let mut paths = std::collections::HashSet::new();
+        let mut total_bytes = 0usize;
+        for value in values {
+            let map = match value { Value::Map(map) => map, _ => return Err(Failure::Invalid) };
+            let operation = text(map, "operation")?;
+            if operation == "write" {
+                strict_map_optional(value, &["operation", "path", "expectedBeforeBase64", "contentBase64"], &["executable"])?;
+            } else if operation == "delete" {
+                strict_map(value, &["operation", "path", "expectedBeforeBase64"])?;
+            } else {
+                return Ok(denied_batch("unsupported_operation"));
+            }
+            let path = text(map, "path")?;
+            let expected_before = match map.get("expectedBeforeBase64") {
+                Some(Value::Nil) => None,
+                Some(Value::String(encoded)) => Some(decode_canonical_base64(encoded).ok_or(Failure::Invalid)?),
+                _ => return Err(Failure::Invalid),
+            };
+            if expected_before.as_ref().is_some_and(|bytes| bytes.len() > 2 * 1024 * 1024) {
+                return Ok(denied_batch("patch_too_large"));
+            }
+            total_bytes = total_bytes.checked_add(expected_before.as_ref().map_or(0, Vec::len)).ok_or(Failure::Invalid)?;
+            if total_bytes > 4 * 1024 * 1024 { return Ok(denied_batch("patch_too_large")); }
+            let content = if operation == "write" {
+                let encoded = text(map, "contentBase64")?;
+                let decoded = decode_canonical_base64(encoded).ok_or(Failure::Invalid)?;
+                if decoded.len() > 2 * 1024 * 1024 { return Ok(denied_batch("patch_too_large")); }
+                total_bytes = total_bytes.checked_add(decoded.len()).ok_or(Failure::Invalid)?;
+                if total_bytes > 4 * 1024 * 1024 { return Ok(denied_batch("patch_too_large")); }
+                Some(decoded)
+            } else { None };
+            if operation == "delete" && expected_before.is_none() {
+                return Ok(denied_batch("delete_requires_preimage"));
+            }
+            let (relative, relative_text) = match normalize_workspace_path(execution.root(), path) {
+                Ok(path) => path,
+                Err(_) => return Ok(denied_batch("path_outside_or_unsafe")),
+            };
+            if !paths.insert(relative_text.clone()) { return Ok(denied_batch("duplicate_path")); }
+            let existed = match execution.inspect(&relative) {
+                Ok(existed) => existed,
+                Err(_) => return Ok(denied_batch("path_unavailable_or_unsafe")),
+            };
+            let requested_executable = match map.get("executable") {
+                None => None,
+                Some(Value::Bool(executable)) => Some(*executable),
+                Some(_) => return Err(Failure::Invalid),
+            };
+            let (before_bytes, before_mode) = if existed {
+                let (bytes, mode) = execution.read_target_bytes(&relative).map_err(map_io_failure)?;
+                (Some(bytes), Some(mode))
+            } else { (None, None) };
+            if before_bytes != expected_before { return Ok(denied_batch("stale_preimage")); }
+            let before_digest = before_bytes.as_deref().map(digest_bytes);
+            let mode = if operation == "write" {
+                Some(match requested_executable {
+                    Some(true) => 0o755,
+                    Some(false) => 0o644,
+                    None => before_mode.unwrap_or(0o644),
+                })
+            } else { None };
+            targets.push(PatchTarget {
+                operation: operation.to_owned(), relative_path: relative_text.clone(),
+                requested_path: path.to_owned(),
+                target: execution.root().join(&relative).to_string_lossy().into_owned(),
+                resource: relative_text, existed, requested_executable, before_mode, mode, before_digest,
+                content_digest: content.as_deref().map(|bytes| digest_bytes(bytes)),
+                after_digest: content.as_deref().map(|bytes| digest_bytes(bytes)), content,
+            });
+        }
+        let canonical = patch_manifest_digest(&targets);
+        let challenge_id = random_id("ch")?;
+        let effect_id = random_id("eff")?;
+        let expires_at_ms = now_ms()?.checked_add(CHALLENGE_TTL_MS).ok_or(Failure::Unavailable)?;
+        let Some(argument_digest) = guard_patch_intent(
+            execution,session_id,batch_id,call_id,&canonical,turn_context_digest,&challenge_id,&targets,
+        ) else { return Ok(denied_batch("guard_denied")); };
+        let first = &targets[0];
+        let transaction = self.connection.transaction().map_err(|_| Failure::Unavailable)?;
+        transaction.execute(
+            "INSERT INTO effect_challenges (challenge_id,effect_id,session_id,batch_id,call_id,capability_id,relative_path,requested_path,target,resource,existed,argument_digest,content_digest,expires_at_ms,status,approved,after_digest,lease_id,receipt_digest,turn_context_digest)
+             VALUES (?1,?2,?3,?4,?5,'files.patch',?6,?7,?8,?9,?10,?11,?12,?13,'AWAITING_APPROVAL',NULL,NULL,NULL,NULL,?14)",
+            params![challenge_id,effect_id,session_id,batch_id,call_id,first.relative_path,first.requested_path,first.target,first.resource,first.existed as i64,argument_digest,canonical,expires_at_ms as i64,turn_context_digest],
+        ).map_err(|_| Failure::Unavailable)?;
+        for (ordinal, target) in targets.iter().enumerate() {
+            transaction.execute(
+                "INSERT INTO patch_targets (challenge_id,ordinal,operation,relative_path,requested_path,target,resource,existed,before_digest,after_digest,content_digest,requested_executable,before_mode,mode) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                params![challenge_id,ordinal as i64,target.operation,target.relative_path,target.requested_path,target.target,target.resource,target.existed as i64,target.before_digest,target.after_digest,target.content_digest,target.requested_executable.map(|value| if value { 1i64 } else { 0i64 }),target.before_mode,target.mode],
+            ).map_err(|_| Failure::Unavailable)?;
+        }
+        transaction.commit().map_err(|_| Failure::Unavailable)?;
+        Ok(map_value([
+            ("status",Value::String("needs_approval".into())),
+            ("challengeId",Value::String(challenge_id)),
+            ("effectId",Value::String(effect_id)),
+            ("targets",Value::Array(targets.iter().map(patch_target_value).collect())),
+        ]))
+    }
+
+    fn execute_patch(&mut self, process_session_id: &str, body: &Value) -> Result<Value, Failure> {
+        let body = strict_map(body, &["sessionId", "challengeId", "operations"])?;
+        let session_id = text(body, "sessionId")?;
+        require_session(process_session_id, session_id)?;
+        let challenge_id = text(body, "challengeId")?;
+        validate_identifier(challenge_id)?;
+        let challenge = load_challenge(&self.connection, challenge_id)?.ok_or(Failure::NotFound)?;
+        if challenge.session_id != session_id { return Err(Failure::Denied); }
+        if challenge.capability_id != guard::FILES_PATCH_ID || challenge.status != "APPROVED" {
+            return Err(Failure::Conflict);
+        }
+        if challenge.expires_at_ms <= now_ms()? { return Err(Failure::Conflict); }
+        let supplied = match body.get("operations") { Some(Value::Array(values)) => values, _ => return Err(Failure::Invalid) };
+        let mut targets = load_patch_targets(&self.connection,challenge_id)?;
+        if targets.len() != supplied.len() || targets.is_empty() { return Err(Failure::Denied); }
+        let mut total_bytes = 0usize;
+        for (target, value) in targets.iter_mut().zip(supplied) {
+            let map = match value { Value::Map(map) => map, _ => return Err(Failure::Invalid) };
+            let operation = text(map,"operation")?;
+            let expected_before = match map.get("expectedBeforeBase64") {
+                Some(Value::Nil) => None,
+                Some(Value::String(encoded)) => Some(decode_canonical_base64(encoded).ok_or(Failure::Invalid)?),
+                _ => return Err(Failure::Invalid),
+            };
+            if expected_before.as_ref().is_some_and(|bytes| bytes.len() > 2 * 1024 * 1024) {
+                return Err(Failure::Denied);
+            }
+            total_bytes = total_bytes.checked_add(expected_before.as_ref().map_or(0, Vec::len)).ok_or(Failure::Invalid)?;
+            if total_bytes > 4 * 1024 * 1024 || expected_before.as_deref().map(digest_bytes) != target.before_digest {
+                return Err(Failure::Denied);
+            }
+            if operation == "write" {
+                strict_map_optional(value,&["operation","path","expectedBeforeBase64","contentBase64"],&["executable"])?;
+                let executable = match map.get("executable") {
+                    None => None,
+                    Some(Value::Bool(executable)) => Some(*executable),
+                    Some(_) => return Err(Failure::Invalid),
+                };
+                if executable != target.requested_executable { return Err(Failure::Denied); }
+                let encoded = text(map,"contentBase64")?;
+                let content = decode_canonical_base64(encoded).ok_or(Failure::Invalid)?;
+                total_bytes = total_bytes.checked_add(content.len()).ok_or(Failure::Invalid)?;
+                if content.len() > 2 * 1024 * 1024 || total_bytes > 4 * 1024 * 1024 || Some(digest_bytes(&content)) != target.content_digest { return Err(Failure::Denied); }
+                target.content = Some(content);
+            } else if operation == "delete" {
+                strict_map(value,&["operation","path","expectedBeforeBase64"])?;
+                if target.content_digest.is_some() || expected_before.is_none() { return Err(Failure::Denied); }
+            } else { return Err(Failure::Denied); }
+            if operation != target.operation || text(map,"path")? != target.requested_path { return Err(Failure::Denied); }
+        }
+        let execution = self.execution.as_ref().ok_or(Failure::Denied)?;
+        let intent = guard_patch_intent(
+            execution,&challenge.session_id,&challenge.batch_id,&challenge.call_id,
+            &challenge.content_digest,&challenge.turn_context_digest,&challenge.challenge_id,&targets,
+        );
+        if intent.as_deref() != Some(challenge.argument_digest.as_str()) || patch_manifest_digest(&targets) != challenge.content_digest {
+            return Err(Failure::Denied);
+        }
+        for target in &targets {
+            let (actual, mode) = if execution.inspect(Path::new(&target.relative_path)).map_err(map_io_failure)? {
+                let (bytes, mode) = execution.read_target_bytes(Path::new(&target.relative_path)).map_err(map_io_failure)?;
+                (Some(digest_bytes(&bytes)),Some(mode))
+            } else { (None,None) };
+            if actual != target.before_digest || mode != target.before_mode { return Err(Failure::Denied); }
+        }
+        if targets.iter().any(|target| execution.root().join(&target.relative_path).to_string_lossy() != target.target) {
+            return Err(Failure::Denied);
+        }
+        let after_manifest = patch_after_digest(&targets);
+        let lease_id = random_id("lease")?;
+        let lease = Self::persist_prepared(&mut self.connection, &challenge, &after_manifest, &lease_id)?;
+        let result = execution.apply_patch(lease, challenge_id, &targets);
+        if result.is_err() { self.mark_unknown(challenge_id)?; return Err(Failure::Unknown); }
+        let mut observed = Vec::with_capacity(targets.len());
+        for target in &targets {
+            if target.operation == "delete" {
+                observed.push((target.relative_path.as_str(),None,None));
+            } else {
+                let (bytes,mode) = execution.read_target_bytes(Path::new(&target.relative_path)).map_err(|_| Failure::Unknown)?;
+                observed.push((target.relative_path.as_str(),Some(digest_bytes(&bytes)),Some(mode)));
+            }
+        }
+        if patch_observed_digest(&observed) != after_manifest { self.mark_unknown(challenge_id)?; return Err(Failure::Unknown); }
+        let receipt_digest = digest_bytes(format!("{}:{}:{}",challenge.effect_id,after_manifest,lease_id).as_bytes());
+        self.persist_settled(challenge_id,&receipt_digest)?;
+        Ok(map_value([
+            ("status",Value::String("settled".into())),
+            ("effectId",Value::String(challenge.effect_id)),
+            ("receiptDigest",Value::String(receipt_digest)),
+            ("targets",Value::Array(targets.iter().map(patch_target_value).collect())),
+        ]))
+    }
+
+    fn reconcile_patch(&mut self, challenge: &Challenge) -> Result<(), Failure> {
+        let targets = load_patch_targets(&self.connection,&challenge.challenge_id)?;
+        if targets.is_empty() { self.mark_unknown(&challenge.challenge_id)?; return Ok(()); }
+        let Some(execution) = self.execution.as_ref() else { self.mark_unknown(&challenge.challenge_id)?; return Ok(()); };
+        let intent = guard_patch_intent(
+            execution,&challenge.session_id,&challenge.batch_id,&challenge.call_id,
+            &challenge.content_digest,&challenge.turn_context_digest,&challenge.challenge_id,&targets,
+        );
+        if intent.as_deref() != Some(challenge.argument_digest.as_str())
+            || patch_manifest_digest(&targets) != challenge.content_digest
+            || patch_after_digest(&targets) != challenge.after_digest.as_deref().unwrap_or("")
+            || targets.iter().any(|target| execution.root().join(&target.relative_path).to_string_lossy() != target.target)
+        {
+            self.mark_unknown(&challenge.challenge_id)?;
+            return Ok(());
+        }
+        let mut all_before = true;
+        let mut all_after = true;
+        let mut observed_targets = Vec::with_capacity(targets.len());
+        for target in &targets {
+            let (observed_digest, observed_mode) = match execution.inspect(Path::new(&target.relative_path)) {
+                Ok(false) => (None,None),
+                Ok(true) => match execution.read_target_bytes(Path::new(&target.relative_path)) {
+                    Ok((bytes,mode)) => (Some(digest_bytes(&bytes)),Some(mode)),
+                    Err(_) => { all_before=false; all_after=false; continue; }
+                },
+                Err(_) => { all_before=false; all_after=false; continue; }
+            };
+            let expected_after = if target.operation == "delete" { None } else { target.after_digest.clone() };
+            all_before &= observed_digest.as_ref() == target.before_digest.as_ref()
+                && observed_mode == target.before_mode;
+            all_after &= observed_digest.as_ref() == expected_after.as_ref()
+                && observed_mode == target.mode;
+            observed_targets.push((target.relative_path.as_str(),observed_digest,observed_mode));
+        }
+        all_after &= patch_observed_digest(&observed_targets) == challenge.after_digest.as_deref().unwrap_or("");
+        let lease_id = match load_lease_id(&self.connection,&challenge.challenge_id)? {
+            Some(lease_id) => lease_id,
+            None => { self.mark_unknown(&challenge.challenge_id)?; return Ok(()); }
+        };
+        if all_after {
+            let receipt = digest_bytes(format!("{}:{}:{}",challenge.effect_id,challenge.after_digest.as_deref().unwrap_or(""),lease_id).as_bytes());
+            self.persist_settled(&challenge.challenge_id,&receipt)?;
+        } else if all_before {
+            self.connection.execute("UPDATE effect_challenges SET status='NOT_APPLIED' WHERE challenge_id=?1 AND status='PREPARED'",[&challenge.challenge_id]).map_err(|_|Failure::Unavailable)?;
+        } else {
+            self.mark_unknown(&challenge.challenge_id)?;
+        }
+        Ok(())
+    }
     fn resolve_approval(
         &mut self,
         process_session_id: &str,
@@ -518,10 +940,7 @@ impl EffectHost {
             Some(Value::Bool(approved)) => *approved,
             _ => return Err(Failure::Invalid),
         };
-        let transaction = self
-            .connection
-            .transaction()
-            .map_err(|_| Failure::Unavailable)?;
+        let transaction = self.connection.transaction().map_err(|_| Failure::Unavailable)?;
         let challenge = load_challenge(&transaction, challenge_id)?.ok_or(Failure::NotFound)?;
         if challenge.session_id != session_id {
             return Err(Failure::Denied);
@@ -541,22 +960,25 @@ impl EffectHost {
         }
         if approved {
             let execution = self.execution.as_ref().ok_or(Failure::Denied)?;
-            let (decision, intent_digest) = guard_decision(
-                execution,
-                &challenge.session_id,
-                &challenge.batch_id,
-                &challenge.call_id,
-                &challenge.capability_id,
-                &challenge.requested_path,
-                &challenge.relative_path,
-                &challenge.resource,
-                &challenge.content_digest,
-                &challenge.turn_context_digest,
-                &challenge.challenge_id,
-            );
-            if decision.decision != guard::DecisionKind::Ask
-                || intent_digest != challenge.argument_digest
-            {
+            let intent_digest = if challenge.capability_id == guard::FILES_PATCH_ID {
+                let targets = load_patch_targets(&transaction,challenge_id)?;
+                if targets.is_empty() || patch_manifest_digest(&targets) != challenge.content_digest {
+                    return Err(Failure::Denied);
+                }
+                guard_patch_intent(
+                    execution,&challenge.session_id,&challenge.batch_id,&challenge.call_id,
+                    &challenge.content_digest,&challenge.turn_context_digest,&challenge.challenge_id,&targets,
+                )
+            } else {
+                let (decision,intent) = guard_decision(
+                    execution,&challenge.session_id,&challenge.batch_id,&challenge.call_id,&challenge.capability_id,
+                    &challenge.requested_path,&challenge.relative_path,&challenge.resource,&challenge.content_digest,
+                    &challenge.turn_context_digest,&challenge.challenge_id,
+                );
+                if decision.decision != guard::DecisionKind::Ask { return Err(Failure::Denied); }
+                Some(intent)
+            };
+            if intent_digest.as_deref() != Some(challenge.argument_digest.as_str()) {
                 return Err(Failure::Denied);
             }
         }
@@ -654,7 +1076,7 @@ impl EffectHost {
         };
         let after_digest = digest_bytes(output.as_ref());
         let lease_id = random_id("lease")?;
-        let lease = self.persist_prepared(&challenge, &after_digest, &lease_id)?;
+        let lease = Self::persist_prepared(&mut self.connection, &challenge, &after_digest, &lease_id)?;
 
         // The durable intent and one-use lease exist before ExecutionHost reopens the target.
         // Any subsequent ambiguity blocks this challenge as UNKNOWN instead of retrying.
@@ -717,15 +1139,12 @@ impl EffectHost {
     }
 
     fn persist_prepared(
-        &mut self,
+        connection: &mut Connection,
         challenge: &Challenge,
         after_digest: &str,
         lease_id: &str,
     ) -> Result<ExecutionLease, Failure> {
-        let transaction = self
-            .connection
-            .transaction()
-            .map_err(|_| Failure::Unavailable)?;
+        let transaction = connection.transaction().map_err(|_| Failure::Unavailable)?;
         let changed = transaction
             .execute(
                 "UPDATE effect_challenges
@@ -797,6 +1216,10 @@ impl EffectHost {
             .map_err(|_| Failure::Unavailable)?;
         drop(statement);
         for challenge in challenges {
+            if challenge.capability_id == guard::FILES_PATCH_ID {
+                self.reconcile_patch(&challenge)?;
+                continue;
+            }
             let after_digest = challenge.after_digest.clone();
             let can_settle = match (self.execution.as_ref(), after_digest.as_deref()) {
                 (Some(execution), Some(after_digest))
@@ -919,6 +1342,48 @@ fn guard_decision(
     let intent_digest = guard::intent_digest(&request, &decision);
     (decision, intent_digest)
 }
+fn guard_patch_intent(
+    execution: &ExecutionHost,
+    session_id: &str,
+    batch_id: &str,
+    call_id: &str,
+    canonical_digest: &str,
+    turn_context_digest: &str,
+    challenge_id: &str,
+    targets: &[PatchTarget],
+) -> Option<String> {
+    let mut hasher = blake3::Hasher::new();
+    for target in targets {
+        let (decision, intent) = guard_decision(
+            execution,session_id,batch_id,call_id,guard::FILES_PATCH_ID,
+            &target.requested_path,&target.relative_path,&target.resource,canonical_digest,
+            turn_context_digest,challenge_id,
+        );
+        if decision.decision != guard::DecisionKind::Ask { return None; }
+        hasher.update(&(intent.len() as u64).to_be_bytes());
+        hasher.update(intent.as_bytes());
+    }
+    Some(format!("blake3:{}",hasher.finalize().to_hex()))
+}
+
+fn load_patch_targets(connection: &Connection, challenge_id: &str) -> Result<Vec<PatchTarget>, Failure> {
+    let mut statement = connection.prepare(
+        "SELECT operation,relative_path,requested_path,target,resource,existed,before_digest,after_digest,content_digest,requested_executable,before_mode,mode
+         FROM patch_targets WHERE challenge_id=?1 ORDER BY ordinal"
+    ).map_err(|_| Failure::Unavailable)?;
+    let rows = statement.query_map([challenge_id], |row| {
+        let existed: i64 = row.get(5)?;
+        let requested_executable: Option<i64> = row.get(9)?;
+        Ok(PatchTarget {
+            operation: row.get(0)?, relative_path: row.get(1)?, requested_path: row.get(2)?,
+            target: row.get(3)?, resource: row.get(4)?, existed: existed != 0,
+            before_digest: row.get(6)?, after_digest: row.get(7)?, content_digest: row.get(8)?,
+            requested_executable: requested_executable.map(|value| value != 0),
+            before_mode: row.get(10)?, mode: row.get(11)?, content: None,
+        })
+    }).map_err(|_| Failure::Unavailable)?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(|_| Failure::Unavailable)
+}
 
 fn row_to_challenge(row: &rusqlite::Row<'_>) -> rusqlite::Result<Challenge> {
     let existed: i64 = row.get(10)?;
@@ -968,6 +1433,33 @@ fn strict_map<'a>(
     Ok(map)
 }
 
+fn strict_map_optional<'a>(
+    value: &'a Value,
+    required: &[&str],
+    optional: &[&str],
+) -> Result<&'a BTreeMap<String, Value>, Failure> {
+    let Value::Map(map) = value else { return Err(Failure::Invalid); };
+    if required.iter().any(|key| !map.contains_key(*key))
+        || map.keys().any(|key| !required.contains(&key.as_str()) && !optional.contains(&key.as_str()))
+        || map.len() > required.len() + optional.len()
+    {
+        return Err(Failure::Invalid);
+    }
+    Ok(map)
+}
+
+fn patch_target_value(target: &PatchTarget) -> Value {
+    let mut fields = BTreeMap::from([
+        ("target".to_owned(), Value::String(target.target.clone())),
+        ("resource".to_owned(), Value::String(target.resource.clone())),
+        ("operation".to_owned(), Value::String(target.operation.clone())),
+        ("existed".to_owned(), Value::Bool(target.existed)),
+    ]);
+    if let Some(mode) = target.mode {
+        fields.insert("executable".to_owned(), Value::Bool(mode & 0o111 != 0));
+    }
+    Value::Map(fields)
+}
 fn text<'a>(map: &'a BTreeMap<String, Value>, key: &str) -> Result<&'a str, Failure> {
     match map.get(key) {
         Some(Value::String(value)) => Ok(value),
@@ -1202,6 +1694,97 @@ fn read_target_digest(root: &File, relative: &Path) -> io::Result<String> {
         hasher.update(&buffer[..count]);
     }
     Ok(format!("blake3:{}", hasher.finalize().to_hex()))
+}
+
+fn patch_manifest_digest(targets: &[PatchTarget]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for target in targets {
+        for field in [
+            target.operation.as_bytes(),
+            target.relative_path.as_bytes(),
+            target.requested_path.as_bytes(),
+            target.before_digest.as_deref().unwrap_or("").as_bytes(),
+            target.content_digest.as_deref().unwrap_or("").as_bytes(),
+            &[match target.requested_executable { None => 2, Some(false) => 0, Some(true) => 1 }],
+            &target.before_mode.unwrap_or(u32::MAX).to_be_bytes(),
+            &target.mode.unwrap_or(u32::MAX).to_be_bytes(),
+        ] {
+            hasher.update(&(field.len() as u64).to_be_bytes());
+            hasher.update(field);
+        }
+    }
+    format!("blake3:{}", hasher.finalize().to_hex())
+}
+
+fn patch_after_digest(targets: &[PatchTarget]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for target in targets {
+        let digest = if target.operation == "delete" { "" } else { target.after_digest.as_deref().unwrap_or("") };
+        for field in [
+            target.relative_path.as_bytes(),
+            digest.as_bytes(),
+            &target.mode.unwrap_or(u32::MAX).to_be_bytes(),
+        ] {
+            hasher.update(&(field.len() as u64).to_be_bytes());
+            hasher.update(field);
+        }
+    }
+    format!("blake3:{}", hasher.finalize().to_hex())
+}
+
+fn patch_observed_digest(targets: &[(&str, Option<String>, Option<u32>)]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for (path, digest, mode) in targets {
+        for field in [
+            path.as_bytes(),
+            digest.as_deref().unwrap_or("").as_bytes(),
+            &mode.unwrap_or(u32::MAX).to_be_bytes(),
+        ] {
+            hasher.update(&(field.len() as u64).to_be_bytes());
+            hasher.update(field);
+        }
+    }
+    format!("blake3:{}", hasher.finalize().to_hex())
+}
+
+fn digest_file(file: &File) -> io::Result<String> {
+    let mut file = file.try_clone()?;
+    file.seek(SeekFrom::Start(0))?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 { break; }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(format!("blake3:{}",hasher.finalize().to_hex()))
+}
+
+fn decode_canonical_base64(encoded: &str) -> Option<Vec<u8>> {
+    let input = encoded.as_bytes();
+    if input.len() % 4 != 0 { return None; }
+    let value = |byte: u8| -> Option<u8> {
+        match byte { b'A'..=b'Z'=>Some(byte-b'A'), b'a'..=b'z'=>Some(byte-b'a'+26), b'0'..=b'9'=>Some(byte-b'0'+52), b'+'=>Some(62), b'/'=>Some(63), _=>None }
+    };
+    let mut output = Vec::with_capacity(input.len() / 4 * 3);
+    for (index, chunk) in input.chunks_exact(4).enumerate() {
+        let last = index + 1 == input.len() / 4;
+        let a=value(chunk[0])?; let b=value(chunk[1])?;
+        if chunk[2] == b'=' {
+            if !last || chunk[3] != b'=' || b & 15 != 0 { return None; }
+            output.push((a<<2)|(b>>4));
+        } else {
+            let c=value(chunk[2])?;
+            output.push((a<<2)|(b>>4)); output.push((b<<4)|(c>>2));
+            if chunk[3] == b'=' {
+                if !last || c & 3 != 0 { return None; }
+            } else {
+                let d=value(chunk[3])?;
+                output.push((c<<6)|d);
+            }
+        }
+    }
+    Some(output)
 }
 
 fn digest_bytes(bytes: &[u8]) -> String {

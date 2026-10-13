@@ -51,7 +51,6 @@ import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
 import { Skill } from "../../src/skill"
 import { SystemPrompt } from "../../src/session/system"
-import { Shell } from "@opencode-ai/core/shell"
 import { Snapshot } from "../../src/snapshot"
 import { ToolRegistry } from "@/tool/registry"
 import { Truncate } from "@/tool/truncate"
@@ -80,24 +79,6 @@ const ref = {
   modelID: ModelV2.ID.make("test-model"),
 }
 
-function withSh<A, E, R>(fx: () => Effect.Effect<A, E, R>) {
-  return Effect.acquireUseRelease(
-    Effect.sync(() => {
-      const prev = process.env.SHELL
-      process.env.SHELL = "/bin/sh"
-      Shell.preferred.reset()
-      return prev
-    }),
-    () => fx(),
-    (prev) =>
-      Effect.sync(() => {
-        if (prev === undefined) delete process.env.SHELL
-        else process.env.SHELL = prev
-        Shell.preferred.reset()
-      }),
-  )
-}
-
 function toolPart(parts: SessionV1.Part[]) {
   return parts.find((part): part is SessionV1.ToolPart => part.type === "tool")
 }
@@ -105,13 +86,7 @@ function toolPart(parts: SessionV1.Part[]) {
 type CompletedToolPart = SessionV1.ToolPart & { state: SessionV1.ToolStateCompleted }
 type ErrorToolPart = SessionV1.ToolPart & { state: SessionV1.ToolStateError }
 
-function completedTool(parts: SessionV1.Part[]) {
-  const part = toolPart(parts)
-  expect(part?.state.status).toBe("completed")
-  return part?.state.status === "completed" ? (part as CompletedToolPart) : undefined
-}
-
-function errorTool(parts: SessionV1.Part[]) {
+function errorTool(parts: SessionV1.Part[]): ErrorToolPart | undefined {
   const part = toolPart(parts)
   expect(part?.state.status).toBe("error")
   return part?.state.status === "error" ? (part as ErrorToolPart) : undefined
@@ -186,6 +161,8 @@ const testSupervisorLayer = Layer.succeed(
     prepareToolBatch: () => Effect.die("unexpected effect preparation"),
     approveEffect: () => Effect.die("unexpected effect approval"),
     executeWrite: () => Effect.die("unexpected effect execution"),
+    executePatch: () => Effect.die("unexpected patch execution"),
+    runPatch: () => Effect.die("unexpected patch execution"),
     watchSession: (sessionID, source, workspaceRoot, turnComplete, ready) =>
       Effect.gen(function* () {
         yield* Effect.sync(() => {
@@ -337,8 +314,7 @@ const noLLMServer = testEffect(makeHttpNoLLMServer())
 const raceNoLLMServer = testEffect(makeHttpNoLLMServer({ processor: "blocking" }))
 
 const liveRustSupervisor = testEffect(makeHttp({ rustSupervisor: true }))
-const withRustSupervisor =
-  rustSupervisorAvailable ? liveRustSupervisor.instance : liveRustSupervisor.instance.skip
+const withRustSupervisor = rustSupervisorAvailable ? liveRustSupervisor.instance : liveRustSupervisor.instance.skip
 const withMcpInstructions = testEffect(
   makeHttp({
     mcpInstructions: [
@@ -350,8 +326,6 @@ const withMcpInstructions = testEffect(
     ],
   }),
 )
-const unix = process.platform !== "win32" ? it.instance : it.instance.skip
-const unixNoLLMServer = process.platform !== "win32" ? noLLMServer.instance : noLLMServer.instance.skip
 
 // Config that registers a custom "test" provider with a "test-model" model
 // so provider model lookup succeeds inside the loop.
@@ -432,8 +406,6 @@ const waitForBusy = (sessionID: SessionID, duration: Duration.Input = "2 seconds
     `session ${sessionID} never became busy`,
     duration,
   )
-
-const hasBash = Effect.sync(() => Bun.which("bash") !== null)
 
 const deferredAsPromise = <A>(deferred: Deferred.Deferred<A>): PromiseLike<A> => ({
   then: (onfulfilled, onrejected) => {
@@ -574,39 +546,37 @@ noLLMServer.instance(
   { config: cfg },
 )
 
-noLLMServer.instance(
-  "legacy command rejects a V2-owned Session before shell interpolation",
-  () =>
-    Effect.gen(function* () {
-      const { directory } = yield* TestInstance
-      const marker = path.join(directory, ".busy-command-shell-expansion")
-      yield* writeConfig(directory, {
-        ...cfg,
-        command: { probe: { template: `Probe !\`touch '${marker}'\`` } },
-      })
-      const { prompt, chat } = yield* boot()
-      const result = yield* Effect.scoped(
-        SessionSupervisor.acquireExecutionOwner(chat.id, "core-v2").pipe(
-          Effect.andThen(
-            prompt.command({
-              sessionID: chat.id,
-              command: "probe",
-              arguments: "",
-            }),
-          ),
+noLLMServer.instance("legacy command rejects a V2-owned Session before shell interpolation", () =>
+  Effect.gen(function* () {
+    const { directory } = yield* TestInstance
+    const marker = path.join(directory, ".busy-command-shell-expansion")
+    yield* writeConfig(directory, {
+      ...cfg,
+      command: { probe: { template: `Probe !\`touch '${marker}'\`` } },
+    })
+    const { prompt, chat } = yield* boot()
+    const result = yield* Effect.scoped(
+      SessionSupervisor.acquireExecutionOwner(chat.id, "core-v2").pipe(
+        Effect.andThen(
+          prompt.command({
+            sessionID: chat.id,
+            command: "probe",
+            arguments: "",
+          }),
         ),
-      ).pipe(Effect.exit)
+      ),
+    ).pipe(Effect.exit)
 
-      expect(Exit.isFailure(result)).toBe(true)
-      if (Exit.isFailure(result)) {
-        expect(Option.getOrUndefined(Cause.findErrorOption(result.cause))).toMatchObject({
-          _tag: "SessionBusyError",
-          sessionID: chat.id,
-        })
-      }
-      const fs = yield* FSUtil.Service
-      expect(yield* fs.existsSafe(marker)).toBe(false)
-    }),
+    expect(Exit.isFailure(result)).toBe(true)
+    if (Exit.isFailure(result)) {
+      expect(Option.getOrUndefined(Cause.findErrorOption(result.cause))).toMatchObject({
+        _tag: "SessionBusyError",
+        sessionID: chat.id,
+      })
+    }
+    const fs = yield* FSUtil.Service
+    expect(yield* fs.existsSafe(marker)).toBe(false)
+  }),
 )
 
 raceNoLLMServer.instance(
@@ -714,106 +684,110 @@ noLLMServer.instance(
   { config: cfg },
 )
 
-it.instance("registry preserves canonical Guard capabilities", () =>
-  Effect.gen(function* () {
-    const registry = yield* ToolRegistry.Service
-    const agents = yield* AgentSvc.Service
-    const agent = yield* agents.get("build")
-    if (!agent) throw new Error("build agent is unavailable")
+it.instance(
+  "registry preserves canonical Guard capabilities",
+  () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const agents = yield* AgentSvc.Service
+      const agent = yield* agents.get("build")
+      if (!agent) throw new Error("build agent is unavailable")
 
-    const tools = yield* registry.tools({
-      providerID: ref.providerID,
-      modelID: ref.modelID,
-      agent,
-    })
-    expect(tools.find((tool) => tool.id === "read")?.capability).toEqual({
-      id: "files.read",
-      effectClass: "read_only",
-    })
-    expect(tools.find((tool) => tool.id === "write")?.capability).toEqual({
-      id: "files.write",
-      effectClass: "effect",
-    })
-  }),
+      const tools = yield* registry.tools({
+        providerID: ref.providerID,
+        modelID: ref.modelID,
+        agent,
+      })
+      expect(tools.find((tool) => tool.id === "read")?.capability).toEqual({
+        id: "files.read",
+        effectClass: "read_only",
+      })
+      expect(tools.find((tool) => tool.id === "write")?.capability).toEqual({
+        id: "files.write",
+        effectClass: "effect",
+      })
+    }),
   { config: cfg },
 )
 
-it.instance("model write is withheld when the Rust Guard owner is unavailable", () =>
-  Effect.gen(function* () {
-    const { dir, llm } = yield* useServerConfig(providerCfg)
-    const prompt = yield* SessionPrompt.Service
-    const sessions = yield* Session.Service
-    const filepath = path.join(dir, "guarded-write.txt")
-    yield* writeText(filepath, "original")
-    const session = yield* sessions.create({
-      title: "Guarded write",
-      permission: [{ permission: "edit", pattern: "*", action: "allow" }],
-    })
-    yield* prompt.prompt({
-      sessionID: session.id,
-      agent: "build",
-      noReply: true,
-      parts: [{ type: "text", text: "overwrite the file" }],
-    })
-    yield* llm.tool("write", { filePath: filepath, content: "unapproved" })
+it.instance(
+  "model write is withheld when the Rust Guard owner is unavailable",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const filepath = path.join(dir, "guarded-write.txt")
+      yield* writeText(filepath, "original")
+      const session = yield* sessions.create({
+        title: "Guarded write",
+        permission: [{ permission: "edit", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "overwrite the file" }],
+      })
+      yield* llm.tool("write", { filePath: filepath, content: "unapproved" })
 
-    const result = yield* prompt.loop({ sessionID: session.id })
-    const content = yield* Effect.promise(() => Bun.file(filepath).text())
-    expect(content).toBe("original")
-    // A denied full-response batch may expose no tool parts at all.
-    // Whether omitted or emitted as error, a denied write must never complete.
-    expect(
-      result.parts.some(
-        (part) => part.type === "tool" && part.tool === "write" && part.state.status === "completed",
-      ),
-    ).toBe(false)
-  }),
+      const result = yield* prompt.loop({ sessionID: session.id })
+      const content = yield* Effect.promise(() => Bun.file(filepath).text())
+      expect(content).toBe("original")
+      // A denied full-response batch may expose no tool parts at all.
+      // Whether omitted or emitted as error, a denied write must never complete.
+      expect(
+        result.parts.some((part) => part.type === "tool" && part.tool === "write" && part.state.status === "completed"),
+      ).toBe(false)
+    }),
   { config: cfg },
 )
 
-withRustSupervisor("V1 model write is admitted, approved, and receipted by the real Rust supervisor", () =>
-  Effect.gen(function* () {
-    const { dir, llm } = yield* useServerConfig(providerCfg)
-    const prompt = yield* SessionPrompt.Service
-    const sessions = yield* Session.Service
-    const { db } = yield* Database.Service
-    // The file-backed observer fixture uses a distinct test database.
-    // Seed the owning project there before inserting a Session FK.
-    yield* db
-      .insert(ProjectTable)
-      .values({ id: Project.ID.global, worktree: AbsolutePath.make(dir), sandboxes: [] })
-      .onConflictDoNothing()
-      .run()
-      .pipe(Effect.orDie)
-    const filepath = path.join(dir, "rust-guarded-write.txt")
-    yield* writeText(filepath, "original")
-    const session = yield* sessions.create({
-      title: "Rust guarded write",
-      permission: [{ permission: "edit", pattern: "*", action: "allow" }],
-    })
-    yield* prompt.prompt({
-      sessionID: session.id,
-      agent: "build",
-      noReply: true,
-      parts: [{ type: "text", text: "overwrite the file" }],
-    })
-    yield* llm.tool("write", { filePath: filepath, content: "approved by Rust" })
+withRustSupervisor(
+  "V1 model write is admitted, approved, and receipted by the real Rust supervisor",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const { db } = yield* Database.Service
+      // The file-backed observer fixture uses a distinct test database.
+      // Seed the owning project there before inserting a Session FK.
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make(dir), sandboxes: [] })
+        .onConflictDoNothing()
+        .run()
+        .pipe(Effect.orDie)
+      const filepath = path.join(dir, "rust-guarded-write.txt")
+      yield* writeText(filepath, "original")
+      const session = yield* sessions.create({
+        title: "Rust guarded write",
+        permission: [{ permission: "edit", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "overwrite the file" }],
+      })
+      yield* llm.tool("write", { filePath: filepath, content: "approved by Rust" })
 
-    yield* prompt.loop({ sessionID: session.id })
-    const content = yield* Effect.promise(() => Bun.file(filepath).text())
-    expect(content).toBe("approved by Rust")
+      yield* prompt.loop({ sessionID: session.id })
+      const content = yield* Effect.promise(() => Bun.file(filepath).text())
+      expect(content).toBe("approved by Rust")
 
-    const messages = yield* sessions.messages({ sessionID: session.id })
-    const toolCall = messages
-      .flatMap((message) => message.parts)
-      .find((part) => part.type === "tool" && part.tool === "write")
-    expect(toolCall?.type).toBe("tool")
-    if (toolCall?.type !== "tool") return
-    expect(toolCall.state.status).toBe("completed")
-    if (toolCall.state.status !== "completed") return
-    expect(toolCall.state.metadata.effectID).toBeString()
-    expect(toolCall.state.metadata.receiptDigest).toMatch(/^blake3:[0-9a-f]{64}$/)
-  }),
+      const messages = yield* sessions.messages({ sessionID: session.id })
+      const toolCall = messages
+        .flatMap((message) => message.parts)
+        .find((part) => part.type === "tool" && part.tool === "write")
+      expect(toolCall?.type).toBe("tool")
+      if (toolCall?.type !== "tool") return
+      expect(toolCall.state.status).toBe("completed")
+      if (toolCall.state.status !== "completed") return
+      expect(toolCall.state.metadata.effectID).toBeString()
+      expect(toolCall.state.metadata.receiptDigest).toMatch(/^blake3:[0-9a-f]{64}$/)
+    }),
   { config: cfg },
   180000,
 )
@@ -1235,51 +1209,41 @@ it.instance("glob tool keeps instance context during prompt runs", () =>
   }),
 )
 
-it.instance("loop continues when finish is stop but assistant has tool parts", () =>
+it.instance("incomplete tool batch with stop finish cannot write", () =>
   Effect.gen(function* () {
-    const { llm } = yield* useServerConfig(providerCfg)
+    const { dir, llm } = yield* useServerConfig(providerCfg)
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
     const session = yield* sessions.create({
       title: "Pinned",
       permission: [{ permission: "*", pattern: "*", action: "allow" }],
     })
+    const file = path.join(dir, "incomplete-tool-batch.txt")
     yield* prompt.prompt({
       sessionID: session.id,
       agent: "build",
       noReply: true,
       parts: [{ type: "text", text: "hello" }],
     })
-    yield* llm.push(reply().tool("first", { value: "first" }).stop())
-    yield* llm.text("second")
+    yield* llm.push(reply().tool("write", { filePath: file, content: "must not persist" }).stop())
 
     const result = yield* prompt.loop({ sessionID: session.id })
-    expect(yield* llm.calls).toBe(2)
+    expect(yield* llm.calls).toBe(1)
     expect(result.info.role).toBe("assistant")
-    if (result.info.role === "assistant") {
-      expect(result.parts.some((part) => part.type === "text" && part.text === "second")).toBe(true)
-      expect(result.info.finish).toBe("stop")
-    }
+    if (result.info.role === "assistant") expect(result.info.error).toBeDefined()
+    const fs = yield* FSUtil.Service
+    expect(yield* fs.existsSafe(file)).toBe(false)
   }),
 )
 
-it.instance("failed subtask preserves metadata on error tool state", () =>
+it.instance("persisted subtask fails closed without creating a child session", () =>
   Effect.gen(function* () {
-    const { llm } = yield* useServerConfig((url) => ({
-      ...providerCfg(url),
-      agent: {
-        general: {
-          model: "test/missing-model",
-        },
-      },
-    }))
+    const { llm } = yield* useServerConfig(providerCfg)
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
-    const chat = yield* sessions.create({ title: "Pinned" })
-    yield* llm.tool("task", {
-      description: "inspect bug",
-      prompt: "look into the cache key path",
-      subagent_type: "general",
+    const chat = yield* sessions.create({
+      title: "Pinned",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
     })
     yield* llm.text("done")
     const msg = yield* user(chat.id, "hello")
@@ -1287,50 +1251,20 @@ it.instance("failed subtask preserves metadata on error tool state", () =>
 
     const result = yield* prompt.loop({ sessionID: chat.id })
     expect(result.info.role).toBe("assistant")
-    expect(yield* llm.calls).toBe(2)
+    expect(yield* llm.calls).toBe(1)
+    expect(yield* sessions.children(chat.id)).toHaveLength(0)
 
     const msgs = yield* MessageV2.filterCompactedEffect(chat.id)
     const taskMsg = msgs.find((item) => item.info.role === "assistant" && item.info.agent === "general")
     expect(taskMsg?.info.role).toBe("assistant")
-    if (!taskMsg || taskMsg.info.role !== "assistant") return
+    if (!taskMsg || taskMsg.info.role !== "assistant") throw new Error("missing subtask result message")
 
     const tool = errorTool(taskMsg.parts)
-    if (!tool) return
-
-    expect(tool.state.error).toContain("Tool execution failed")
-    expect(tool.state.metadata).toBeDefined()
-    expect(tool.state.metadata?.sessionId).toBeDefined()
-    expect(tool.state.metadata?.model).toEqual({
-      providerID: ProviderV2.ID.make("test"),
-      modelID: ModelV2.ID.make("missing-model"),
-    })
-  }),
-)
-
-it.instance("subtask child inherits parent session external_directory allow", () =>
-  Effect.gen(function* () {
-    const { llm } = yield* useServerConfig(providerCfg)
-    const prompt = yield* SessionPrompt.Service
-    const sessions = yield* Session.Service
-    const chat = yield* sessions.create({
-      title: "Parent",
-      permission: [{ permission: "external_directory", pattern: "/tmp/allowed/*", action: "allow" }],
-    })
-    yield* llm.text("done")
-    const msg = yield* user(chat.id, "hello")
-    yield* addSubtask(chat.id, msg.id)
-
-    yield* prompt.loop({ sessionID: chat.id })
-
-    const kids = yield* sessions.children(chat.id)
-    expect(kids).toHaveLength(1)
-    const child = kids[0]!
-    const rules = child.permission ?? []
-    expect(rules).toEqual(
-      expect.arrayContaining([{ permission: "external_directory", pattern: "/tmp/allowed/*", action: "allow" }]),
+    if (!tool) throw new Error("missing failed subtask result")
+    expect(tool.state.error).toBe(
+      "Agent delegation is unavailable until agents.spawn is mediated by Rust Guard and ExecutionHost.",
     )
-    expect(Permission.evaluate("external_directory", "/tmp/allowed/file", rules).action).toBe("allow")
-    expect(Permission.evaluate("task", "anything", rules).action).toBe("deny")
+    expect(tool.state.metadata).toBeUndefined()
   }),
 )
 
@@ -1362,82 +1296,62 @@ noLLMServer.instance("prompt tools replace previous prompt tool rules", () =>
 )
 
 it.instance(
-  "running subtask preserves metadata after tool-call transition",
+  "unavailable subtask completes as a denial and cancellation leaves no child",
   () =>
     Effect.gen(function* () {
       const { llm } = yield* useServerConfig(providerCfg)
       const prompt = yield* SessionPrompt.Service
       const sessions = yield* Session.Service
+      const status = yield* SessionStatus.Service
       const chat = yield* sessions.create({ title: "Pinned" })
       yield* llm.hang
       const msg = yield* user(chat.id, "hello")
       yield* addSubtask(chat.id, msg.id)
 
       const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
-
-      const tool = yield* pollWithTimeout(
+      const taskTool = yield* pollWithTimeout(
         Effect.gen(function* () {
           const msgs = yield* MessageV2.filterCompactedEffect(chat.id)
           const taskMsg = msgs.find((item) => item.info.role === "assistant" && item.info.agent === "general")
-          const tool = taskMsg?.parts.find((part): part is SessionV1.ToolPart => part.type === "tool")
-          if (tool?.state.status === "running" && tool.state.metadata?.sessionId) return tool
+          const tool = taskMsg?.parts.find(
+            (part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "task",
+          )
+          if (tool?.state.status === "error") return tool
         }),
-        "timed out waiting for running subtask metadata",
+        "timed out waiting for the denied subtask result",
       )
 
-      if (tool.state.status !== "running") return
-      expect(typeof tool.state.metadata?.sessionId).toBe("string")
-      expect(tool.state.title).toBeDefined()
-      expect(tool.state.metadata?.model).toBeDefined()
-
+      if (taskTool.state.status !== "error") throw new Error("expected failed task tool state")
+      expect(taskTool.state.error).toContain("agents.spawn")
+      expect(taskTool.state.metadata).toBeUndefined()
+      expect(yield* sessions.children(chat.id)).toHaveLength(0)
       yield* prompt.cancel(chat.id)
-      yield* Fiber.await(fiber)
+      expect(Exit.isSuccess(yield* Fiber.await(fiber))).toBe(true)
+      expect((yield* status.get(chat.id)).type).toBe("idle")
     }),
   5_000,
 )
 
-it.instance(
-  "running task tool preserves metadata after tool-call transition",
-  () =>
-    Effect.gen(function* () {
-      const { llm } = yield* useServerConfig(providerCfg)
-      const prompt = yield* SessionPrompt.Service
-      const sessions = yield* Session.Service
-      const chat = yield* sessions.create({
-        title: "Pinned",
-        permission: [{ permission: "*", pattern: "*", action: "allow" }],
-      })
-      yield* llm.tool("task", {
-        description: "inspect bug",
-        prompt: "look into the cache key path",
-        subagent_type: "general",
-      })
-      yield* llm.hang
-      yield* user(chat.id, "hello")
+it.instance("model-requested task call does not create a child session", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      title: "Pinned",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* llm.tool("task", {
+      description: "inspect bug",
+      prompt: "look into the cache key path",
+      subagent_type: "general",
+    })
+    yield* llm.text("done")
+    yield* user(chat.id, "hello")
 
-      const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
-
-      const tool = yield* pollWithTimeout(
-        Effect.gen(function* () {
-          const msgs = yield* MessageV2.filterCompactedEffect(chat.id)
-          const assistant = msgs.findLast((item) => item.info.role === "assistant" && item.info.agent === "build")
-          const tool = assistant?.parts.find(
-            (part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "task",
-          )
-          if (tool?.state.status === "running" && tool.state.metadata?.sessionId) return tool
-        }),
-        "timed out waiting for running task metadata",
-      )
-
-      if (tool.state.status !== "running") return
-      expect(typeof tool.state.metadata?.sessionId).toBe("string")
-      expect(tool.state.title).toBe("inspect bug")
-      expect(tool.state.metadata?.model).toBeDefined()
-
-      yield* prompt.cancel(chat.id)
-      yield* Fiber.await(fiber)
-    }),
-  10_000,
+    yield* prompt.loop({ sessionID: chat.id })
+    expect(yield* sessions.children(chat.id)).toHaveLength(0)
+  }),
 )
 
 it.instance(
@@ -1601,88 +1515,6 @@ raceNoLLMServer.instance(
     }),
   { config: cfg },
   3_000,
-)
-
-noLLMServer.instance(
-  "cancel finalizes subtask tool state",
-  () =>
-    Effect.gen(function* () {
-      const ready = yield* Deferred.make<void>()
-      const aborted = yield* Deferred.make<void>()
-      const registry = yield* ToolRegistry.Service
-      const { task } = yield* registry.named()
-      const original = task.execute
-      task.execute = (_args, ctx) =>
-        Effect.callback<never>((_resume) => {
-          ctx.abort.addEventListener("abort", () => succeedVoid(aborted), { once: true })
-          if (ctx.abort.aborted) succeedVoid(aborted)
-          succeedVoid(ready)
-          return Effect.sync(() => succeedVoid(aborted))
-        })
-      yield* Effect.addFinalizer(() => Effect.sync(() => void (task.execute = original)))
-
-      const { prompt, chat } = yield* boot()
-      const msg = yield* user(chat.id, "hello")
-      yield* addSubtask(chat.id, msg.id)
-
-      const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
-      yield* awaitWithTimeout(Deferred.await(ready), "timed out waiting for task tool to start", "10 seconds")
-      yield* prompt.cancel(chat.id)
-
-      const exit = yield* Fiber.await(fiber)
-      expect(Exit.isSuccess(exit)).toBe(true)
-      yield* awaitWithTimeout(Deferred.await(aborted), "timed out waiting for task tool abort", "10 seconds")
-
-      const msgs = yield* MessageV2.filterCompactedEffect(chat.id)
-      const taskMsg = msgs.find((item) => item.info.role === "assistant" && item.info.agent === "general")
-      expect(taskMsg?.info.role).toBe("assistant")
-      if (!taskMsg || taskMsg.info.role !== "assistant") return
-
-      const tool = toolPart(taskMsg.parts)
-      expect(tool?.type).toBe("tool")
-      if (!tool) return
-
-      expect(tool.state.status).not.toBe("running")
-      expect(taskMsg.info.time.completed).toBeDefined()
-      expect(taskMsg.info.finish).toBeDefined()
-    }),
-  { config: cfg },
-  30_000,
-)
-
-it.instance(
-  "cancel propagates from slash command subtask to child session",
-  () =>
-    Effect.gen(function* () {
-      const { llm } = yield* useServerConfig(providerCfg)
-      const prompt = yield* SessionPrompt.Service
-      const sessions = yield* Session.Service
-      const status = yield* SessionStatus.Service
-      const chat = yield* sessions.create({ title: "Pinned" })
-      yield* llm.hang
-      const msg = yield* user(chat.id, "hello")
-      yield* addSubtask(chat.id, msg.id)
-
-      const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
-      yield* llm.wait(1)
-
-      const msgs = yield* MessageV2.filterCompactedEffect(chat.id)
-      const taskMsg = msgs.find((item) => item.info.role === "assistant" && item.info.agent === "general")
-      const tool = taskMsg ? toolPart(taskMsg.parts) : undefined
-      const sessionID = tool?.state.status === "running" ? tool.state.metadata?.sessionId : undefined
-      expect(typeof sessionID).toBe("string")
-      if (typeof sessionID !== "string") throw new Error("missing child session id")
-      const childID = SessionID.make(sessionID)
-      expect((yield* status.get(childID)).type).toBe("busy")
-
-      yield* prompt.cancel(chat.id)
-      const exit = yield* Fiber.await(fiber)
-      expect(Exit.isSuccess(exit)).toBe(true)
-
-      expect((yield* status.get(chat.id)).type).toBe("idle")
-      expect((yield* status.get(childID)).type).toBe("idle")
-    }),
-  10_000,
 )
 
 it.instance(
@@ -1852,507 +1684,57 @@ noLLMServer.instance("assertNotBusy succeeds when idle", () =>
   }),
 )
 
-// Shell semantics
+// Effect origins without the Rust Guard/ExecutionHost boundary stay unavailable.
 
-it.instance("shell rejects with BusyError when loop running", () =>
-  Effect.gen(function* () {
-    const { llm } = yield* useServerConfig(providerCfg)
-    const prompt = yield* SessionPrompt.Service
-    const sessions = yield* Session.Service
-    const chat = yield* sessions.create({ title: "Pinned" })
-    yield* llm.hang
-    yield* user(chat.id, "hi")
-
-    const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
-    yield* llm.wait(1)
-    yield* waitForBusy(chat.id)
-
-    const exit = yield* prompt.shell({ sessionID: chat.id, agent: "build", command: "echo hi" }).pipe(Effect.exit)
-    expect(Exit.isFailure(exit)).toBe(true)
-    if (Exit.isFailure(exit)) {
-      expect(Cause.squash(exit.cause)).toBeInstanceOf(Session.BusyError)
-      expect(Cause.squash(exit.cause)).toMatchObject({ _tag: "SessionBusyError", sessionID: chat.id })
-    }
-
-    yield* prompt.cancel(chat.id)
-    yield* Fiber.await(fiber)
-  }),
-)
-
-unixNoLLMServer(
-  "shell captures stdout and stderr in completed tool output",
+noLLMServer.instance(
+  "legacy session shell is unavailable and never launches a command",
   () =>
     Effect.gen(function* () {
-      const { prompt, run, chat } = yield* boot()
-      const result = yield* prompt.shell({
-        sessionID: chat.id,
-        agent: "build",
-        command: "printf out && printf err >&2",
-      })
+      const { directory } = yield* TestInstance
+      const marker = path.join(directory, ".shell-unavailable")
+      const { prompt, chat, run } = yield* boot()
+      const exit = yield* prompt
+        .shell({ sessionID: chat.id, agent: "build", command: `touch '${marker}'` })
+        .pipe(Effect.exit)
 
-      expect(result.info.role).toBe("assistant")
-      const tool = completedTool(result.parts)
-      if (!tool) return
-
-      expect(tool.state.output).toContain("out")
-      expect(tool.state.output).toContain("err")
-      expect(tool.state.metadata.output).toContain("out")
-      expect(tool.state.metadata.output).toContain("err")
-      yield* run.assertNotBusy(chat.id)
-    }),
-  { config: cfg },
-)
-
-unixNoLLMServer(
-  "shell completes a fast command on the preferred shell",
-  () =>
-    Effect.gen(function* () {
-      const { directory: dir } = yield* TestInstance
-      const { prompt, run, chat } = yield* boot()
-      const result = yield* prompt.shell({
-        sessionID: chat.id,
-        agent: "build",
-        command: "pwd",
-      })
-
-      expect(result.info.role).toBe("assistant")
-      const tool = completedTool(result.parts)
-      if (!tool) return
-
-      expect(tool.state.input.command).toBe("pwd")
-      expect(tool.state.output).toContain(dir)
-      expect(tool.state.metadata.output).toContain(dir)
-      yield* run.assertNotBusy(chat.id)
-    }),
-  { config: cfg },
-)
-
-unixNoLLMServer(
-  "shell uses configured shell over env shell",
-  () =>
-    withSh(() =>
-      Effect.gen(function* () {
-        if (!(yield* hasBash)) return
-
-        const { prompt, chat } = yield* boot()
-        const result = yield* prompt.shell({
-          sessionID: chat.id,
-          agent: "build",
-          command: "[[ 1 -eq 1 ]] && printf configured",
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        expect(Option.getOrUndefined(Cause.findErrorOption(exit.cause))).toMatchObject({
+          _tag: "Session.OperationUnavailableError",
+          operation: "shell",
         })
-
-        const tool = completedTool(result.parts)
-        if (!tool) return
-        expect(tool.state.output).toContain("configured")
-      }),
-    ),
-  { config: { ...cfg, shell: "bash" } },
-  30_000,
-)
-
-unixNoLLMServer(
-  "shell commands can change directory after startup",
-  () =>
-    withSh(() =>
-      Effect.gen(function* () {
-        const { directory: dir } = yield* TestInstance
-        const { prompt, run, chat } = yield* boot()
-        const parent = path.dirname(dir)
-        const result = yield* prompt.shell({
-          sessionID: chat.id,
-          agent: "build",
-          command: "cd .. && pwd",
-        })
-
-        expect(result.info.role).toBe("assistant")
-        const tool = completedTool(result.parts)
-        if (!tool) return
-
-        expect(tool.state.output).toContain(parent)
-        expect(tool.state.metadata.output).toContain(parent)
-        yield* run.assertNotBusy(chat.id)
-      }),
-    ),
-  { config: cfg },
-)
-
-unixNoLLMServer(
-  "shell lists files from the project directory",
-  () =>
-    Effect.gen(function* () {
-      const { directory: dir } = yield* TestInstance
-      const { prompt, run, chat } = yield* boot()
-      yield* writeText(path.join(dir, "README.md"), "# e2e\n")
-
-      const result = yield* prompt.shell({
-        sessionID: chat.id,
-        agent: "build",
-        command: "command ls",
-      })
-
-      expect(result.info.role).toBe("assistant")
-      const tool = completedTool(result.parts)
-      if (!tool) return
-
-      expect(tool.state.input.command).toBe("command ls")
-      expect(tool.state.output).toContain("README.md")
-      expect(tool.state.metadata.output).toContain("README.md")
-      yield* run.assertNotBusy(chat.id)
-    }),
-  { config: cfg },
-)
-
-unixNoLLMServer(
-  "shell captures stderr from a failing command",
-  () =>
-    Effect.gen(function* () {
-      const { prompt, run, chat } = yield* boot()
-      const result = yield* prompt.shell({
-        sessionID: chat.id,
-        agent: "build",
-        command: "command -v __nonexistent_cmd_e2e__ || echo 'not found' >&2; exit 1",
-      })
-
-      expect(result.info.role).toBe("assistant")
-      const tool = completedTool(result.parts)
-      if (!tool) return
-
-      expect(tool.state.output).toContain("not found")
-      expect(tool.state.metadata.output).toContain("not found")
-      yield* run.assertNotBusy(chat.id)
-    }),
-  { config: cfg },
-)
-
-unixNoLLMServer(
-  "shell updates running metadata before process exit",
-  () =>
-    withSh(() =>
-      Effect.gen(function* () {
-        const { prompt, chat } = yield* boot()
-
-        const fiber = yield* prompt
-          .shell({ sessionID: chat.id, agent: "build", command: "printf first && sleep 0.2 && printf second" })
-          .pipe(Effect.forkChild)
-
-        yield* pollWithTimeout(
-          Effect.gen(function* () {
-            const msgs = yield* MessageV2.filterCompactedEffect(chat.id)
-            const taskMsg = msgs.find((item) => item.info.role === "assistant")
-            const tool = taskMsg ? toolPart(taskMsg.parts) : undefined
-            if (tool?.state.status === "running" && tool.state.metadata?.output.includes("first")) return true
-          }),
-          "timed out waiting for running shell metadata",
-        )
-
-        const exit = yield* Fiber.await(fiber)
-        expect(Exit.isSuccess(exit)).toBe(true)
-      }),
-    ),
-  { config: cfg },
-  30_000,
-)
-
-it.instance(
-  "loop waits while shell runs and starts after shell exits",
-  () =>
-    Effect.gen(function* () {
-      const { llm } = yield* useServerConfig(providerCfg)
-      const prompt = yield* SessionPrompt.Service
-      const sessions = yield* Session.Service
-      const chat = yield* sessions.create({
-        title: "Pinned",
-        permission: [{ permission: "*", pattern: "*", action: "allow" }],
-      })
-      yield* llm.text("after-shell")
-
-      const sh = yield* prompt
-        .shell({ sessionID: chat.id, agent: "build", command: "sleep 0.2" })
-        .pipe(Effect.forkChild)
-      yield* waitForBusy(chat.id)
-
-      const loop = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
-      yield* Effect.sleep(50)
-
-      expect(yield* llm.calls).toBe(0)
-
-      yield* Fiber.await(sh)
-      const exit = yield* Fiber.await(loop)
-
-      expect(Exit.isSuccess(exit)).toBe(true)
-      if (Exit.isSuccess(exit)) {
-        expect(exit.value.info.role).toBe("assistant")
-        expect(exit.value.parts.some((part) => part.type === "text" && part.text === "after-shell")).toBe(true)
       }
-      expect(yield* llm.calls).toBe(1)
+      const fs = yield* FSUtil.Service
+      expect(yield* fs.existsSafe(marker)).toBe(false)
+      yield* run.assertNotBusy(chat.id)
     }),
-  { git: true },
-  10_000,
+  { config: cfg },
 )
 
-it.instance(
-  "shell completion resumes queued loop callers",
+noLLMServer.instance(
+  "slash-command shell interpolation is unavailable and never launches a command",
   () =>
     Effect.gen(function* () {
-      const { llm } = yield* useServerConfig(providerCfg)
-      const prompt = yield* SessionPrompt.Service
-      const sessions = yield* Session.Service
-      const chat = yield* sessions.create({
-        title: "Pinned",
-        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      const { directory } = yield* TestInstance
+      const marker = path.join(directory, ".command-shell-unavailable")
+      yield* writeConfig(directory, {
+        ...cfg,
+        command: { probe: { template: `Probe !\`touch '${marker}'\`` } },
       })
-      yield* llm.text("done")
-
-      const sh = yield* prompt
-        .shell({ sessionID: chat.id, agent: "build", command: "sleep 0.2" })
-        .pipe(Effect.forkChild)
-      yield* waitForBusy(chat.id)
-
-      const a = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
-      const b = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
-      yield* Effect.sleep(50)
-
-      expect(yield* llm.calls).toBe(0)
-
-      yield* Fiber.await(sh)
-      const [ea, eb] = yield* Effect.all([Fiber.await(a), Fiber.await(b)])
-
-      expect(Exit.isSuccess(ea)).toBe(true)
-      expect(Exit.isSuccess(eb)).toBe(true)
-      if (Exit.isSuccess(ea) && Exit.isSuccess(eb)) {
-        expect(ea.value.info.id).toBe(eb.value.info.id)
-        expect(ea.value.info.role).toBe("assistant")
-      }
-      expect(yield* llm.calls).toBe(1)
-    }),
-  { git: true },
-  10_000,
-)
-
-unix(
-  "command ! expansion uses configured shell over env shell",
-  () =>
-    withSh(() =>
-      Effect.gen(function* () {
-        if (!(yield* hasBash)) return
-        const { llm } = yield* useServerConfig((url) => ({
-          ...providerCfg(url),
-          shell: "bash",
-          command: {
-            probe: {
-              template: "Probe: !`[[ 1 -eq 1 ]] && printf configured`",
-            },
-          },
-        }))
-
-        const { prompt, chat } = yield* boot()
-        yield* llm.text("done")
-
-        const result = yield* prompt.command({
-          sessionID: chat.id,
-          command: "probe",
-          arguments: "",
-        })
-
-        expect(result.info.role).toBe("assistant")
-        const inputs = yield* llm.inputs
-        expect(JSON.stringify(inputs.at(-1)?.messages)).toContain("configured")
-      }),
-    ),
-  30_000,
-)
-
-unixNoLLMServer(
-  "cancel interrupts shell and resolves cleanly",
-  () =>
-    withSh(() =>
-      Effect.gen(function* () {
-        const { prompt, run, chat } = yield* boot()
-        const { directory: dir } = yield* TestInstance
-        const afs = yield* FSUtil.Service
-        const ready = path.join(dir, ".shell-ready")
-
-        const sh = yield* prompt
-          .shell({ sessionID: chat.id, agent: "build", command: ": > '.shell-ready'; sleep 30" })
-          .pipe(Effect.forkChild)
-        yield* pollWithTimeout(
-          afs.existsSafe(ready).pipe(Effect.map((exists) => (exists ? (true as const) : undefined))),
-          "shell never created readiness marker",
-        )
-
-        yield* prompt.cancel(chat.id)
-
-        const status = yield* SessionStatus.Service
-        expect((yield* status.get(chat.id)).type).toBe("idle")
-        const busy = yield* run.assertNotBusy(chat.id).pipe(Effect.exit)
-        expect(Exit.isSuccess(busy)).toBe(true)
-
-        const exit = yield* Fiber.await(sh)
-        expect(Exit.isSuccess(exit)).toBe(true)
-        if (Exit.isSuccess(exit)) {
-          expect(exit.value.info.role).toBe("assistant")
-          const tool = completedTool(exit.value.parts)
-          if (tool) {
-            expect(tool.state.output).toContain("User aborted the command")
-          }
-        }
-      }),
-    ),
-  { git: true, config: cfg },
-  30_000,
-)
-
-unixNoLLMServer(
-  "cancel persists aborted shell result when shell ignores TERM",
-  () =>
-    withSh(() =>
-      Effect.gen(function* () {
-        const { prompt, chat } = yield* boot()
-        const { directory: dir } = yield* TestInstance
-        const afs = yield* FSUtil.Service
-        const ready = path.join(dir, ".trap-ready")
-
-        const sh = yield* prompt
-          .shell({
-            sessionID: chat.id,
-            agent: "build",
-            // Touch marker AFTER trap installs so the test waits for the actual
-            // ignore-TERM state before cancelling; otherwise SIGTERM can arrive
-            // before `trap` runs and the escalation path is never exercised.
-            command: `trap '' TERM; touch "${ready}"; sleep 30`,
-          })
-          .pipe(Effect.forkChild)
-
-        yield* Effect.gen(function* () {
-          while (!(yield* afs.existsSafe(ready))) {
-            yield* Effect.sleep(Duration.millis(10))
-          }
-        }).pipe(Effect.timeout(Duration.seconds(5)))
-
-        yield* prompt.cancel(chat.id)
-
-        const exit = yield* Fiber.await(sh)
-        expect(Exit.isSuccess(exit)).toBe(true)
-        if (Exit.isSuccess(exit)) {
-          expect(exit.value.info.role).toBe("assistant")
-          const tool = completedTool(exit.value.parts)
-          if (tool) {
-            expect(tool.state.output).toContain("User aborted the command")
-          }
-        }
-      }),
-    ),
-  { git: true, config: cfg },
-  30_000,
-)
-
-unix(
-  "cancel finalizes interrupted bash tool output through normal truncation",
-  () =>
-    Effect.gen(function* () {
-      const { dir, llm } = yield* useServerConfig(providerCfg)
-      const prompt = yield* SessionPrompt.Service
-      const sessions = yield* Session.Service
-      const chat = yield* sessions.create({
-        title: "Interrupted bash truncation",
-        permission: [{ permission: "*", pattern: "*", action: "allow" }],
-      })
-
-      yield* prompt.prompt({
-        sessionID: chat.id,
-        agent: "build",
-        noReply: true,
-        parts: [{ type: "text", text: "run bash" }],
-      })
-
-      yield* llm.tool("bash", {
-        command:
-          'i=0; while [ "$i" -lt 4000 ]; do printf "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx %05d\\n" "$i"; i=$((i + 1)); done; printf truncation-ready; sleep 30',
-        timeout: 30_000,
-        workdir: path.resolve(dir),
-      })
-
-      const run = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
-      yield* llm.wait(1)
-      yield* pollWithTimeout(
-        Effect.gen(function* () {
-          const msgs = yield* MessageV2.filterCompactedEffect(chat.id)
-          const assistant = msgs.findLast((item) => item.info.role === "assistant")
-          const tool = assistant ? toolPart(assistant.parts) : undefined
-          if (tool?.state.status === "running" && tool.state.metadata?.output.includes("truncation-ready")) return true
-        }),
-        "timed out waiting for truncated shell output",
-      )
-      yield* prompt.cancel(chat.id)
-
-      const exit = yield* Fiber.await(run)
-      expect(Exit.isSuccess(exit)).toBe(true)
-      if (Exit.isFailure(exit)) return
-
-      const tool = completedTool(exit.value.parts)
-      if (!tool) return
-
-      expect(tool.state.metadata.truncated).toBe(true)
-      expect(typeof tool.state.metadata.outputPath).toBe("string")
-      expect(tool.state.output).toMatch(/\.\.\.output truncated\.\.\./)
-      expect(tool.state.output).toMatch(/Full output saved to:\s+\S+/)
-      expect(tool.state.output).not.toContain("Tool execution aborted")
-    }),
-  { git: true },
-  30_000,
-)
-
-unixNoLLMServer(
-  "cancel interrupts loop queued behind shell",
-  () =>
-    Effect.gen(function* () {
       const { prompt, chat } = yield* boot()
+      const exit = yield* prompt.command({ sessionID: chat.id, command: "probe", arguments: "" }).pipe(Effect.exit)
 
-      const sh = yield* prompt.shell({ sessionID: chat.id, agent: "build", command: "sleep 30" }).pipe(Effect.forkChild)
-      yield* waitForBusy(chat.id)
-
-      const loop = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
-      yield* Effect.sleep(50)
-
-      yield* prompt.cancel(chat.id)
-
-      const exit = yield* Fiber.await(loop)
-      expect(Exit.isSuccess(exit)).toBe(true)
-      if (Exit.isSuccess(exit)) {
-        const tool = completedTool(exit.value.parts)
-        expect(tool?.state.output).toContain("User aborted the command")
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        expect(Option.getOrUndefined(Cause.findErrorOption(exit.cause))).toMatchObject({
+          _tag: "Session.OperationUnavailableError",
+          operation: "shell",
+        })
       }
-
-      yield* Fiber.await(sh)
+      const fs = yield* FSUtil.Service
+      expect(yield* fs.existsSafe(marker)).toBe(false)
     }),
-  { git: true, config: cfg },
-  30_000,
-)
-
-unixNoLLMServer(
-  "shell rejects when another shell is already running",
-  () =>
-    withSh(() =>
-      Effect.gen(function* () {
-        const { prompt, chat } = yield* boot()
-
-        const a = yield* prompt
-          .shell({ sessionID: chat.id, agent: "build", command: "sleep 30" })
-          .pipe(Effect.forkChild)
-        yield* waitForBusy(chat.id)
-
-        const exit = yield* prompt.shell({ sessionID: chat.id, agent: "build", command: "echo hi" }).pipe(Effect.exit)
-        expect(Exit.isFailure(exit)).toBe(true)
-        if (Exit.isFailure(exit)) {
-          expect(Cause.squash(exit.cause)).toBeInstanceOf(Session.BusyError)
-        }
-
-        yield* prompt.cancel(chat.id)
-        yield* Fiber.await(a)
-      }),
-    ),
-  { git: true, config: cfg },
-  30_000,
+  { config: cfg },
 )
 
 // Abort signal propagation tests for inline tool execution

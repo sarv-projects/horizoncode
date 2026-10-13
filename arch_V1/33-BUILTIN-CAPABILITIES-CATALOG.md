@@ -124,6 +124,7 @@ No built-in `git.push` or destructive remote operation is automatically safe. Re
 terminal.run
 terminal.start
 terminal.input
+terminal.resize
 terminal.cancel
 terminal.status
 terminal.output_range
@@ -137,6 +138,15 @@ ports.release
 services.start_local
 services.stop_local
 ```
+
+`terminal.run`, `terminal.start`, `terminal.input` and `terminal.resize` are
+`guarded_effect` capabilities projected to runtime `Capability.effectClass: "effect"`.
+Owner-only `terminal.cancel` is `guarded_effect` in the registry and projects to
+runtime `"control"` through the existing Guard/ExecutionHost cancellation path.
+Registry/runtime `read_only` maps directly to runtime `"read_only"` (`terminal.status`,
+`terminal.search` and `terminal.output_range`). Model-visible `terminal.run`/search/
+output-range remain distinct from human UI/CLI PTY control; PTY start/input/resize/
+cancel/status are not thereby model tools.
 
 Outputs are bounded and large output becomes an artifact. Process ownership is explicit.
 
@@ -559,8 +569,10 @@ Human/control actions may additionally expose:
 A model cannot restart or reconfigure an editor-owned language service merely by calling a query
 tool. Any server process start/restart is an effect and follows ExecutionHost/Guard.
 
-`terminal.search` and `artifacts.search_text` search bounded artifact/log indexes and return
-stable line/range refs. They are read-only and do not load full log content into model context.
+`terminal.search` and `artifacts.search_text` search bounded managed artifacts. Terminal
+search and `terminal.output_range` accept the same opaque `artifactID` plus generation,
+and return stable zero-based line/range refs with bounded excerpts; stale generations
+fail explicitly. They are read-only and do not load full log content into model context.
 
 ## 33.24 Plan/handoff capabilities
 

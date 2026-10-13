@@ -155,6 +155,8 @@ const supervisor = Layer.succeed(
         ),
       ),
     approveEffect: () => Effect.die("unused"),
+    executePatch: () => Effect.die("unused"),
+    runPatch: () => Effect.die("unused"),
     executeWrite: () => Effect.die("unused"),
     watchSession: () => Effect.void,
   }),
@@ -829,7 +831,6 @@ describe("SessionRunnerLLM", () => {
       ])
     }),
   )
-
 
   it.effect("starts a real runner turn after default prompt recording", () =>
     Effect.gen(function* () {

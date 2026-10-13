@@ -3,17 +3,24 @@ import { randomUUID } from "node:crypto"
 import type { EffectAdmission, EffectChallenge, GuardedToolCall } from "@opencode-ai/core/session/supervisor"
 import type { Capability } from "@/tool/tool"
 
+export type ToolBatchPreparation = {
+  readonly arguments: unknown
+  readonly execution: unknown
+}
+
 export type ToolBatchDefinition = {
   readonly capability: Capability
   readonly schema: unknown
   readonly validate: (input: unknown) => Promise<unknown>
   readonly normalize?: (input: unknown) => unknown
+  readonly prepare?: (input: unknown) => Promise<ToolBatchPreparation>
   readonly internal?: boolean
 }
 
 export type ToolCallOutcome =
   | { readonly status: "allowed" }
-  | { readonly status: "admitted"; readonly challenge: EffectChallenge }
+  | { readonly status: "no_effect"; readonly execution: unknown }
+  | { readonly status: "admitted"; readonly challenge: EffectChallenge; readonly execution?: unknown }
   | { readonly status: "denied"; readonly reason: string }
 
 export type ToolBatchContext = {
@@ -30,11 +37,19 @@ export function toolCallOutcome(context: unknown, callID?: string): ToolCallOutc
   if (!(outcomes instanceof Map)) return undefined
   const value: unknown = outcomes.get(callID)
   if (typeof value !== "object" || value === null || !("status" in value)) return undefined
+  if (value.status === "no_effect" && "execution" in value) {
+    return { status: "no_effect", execution: value.execution }
+  }
   if (value.status === "allowed") return { status: "allowed" }
   if (value.status === "denied" && "reason" in value && typeof value.reason === "string")
     return { status: "denied", reason: value.reason }
-  if (value.status === "admitted" && "challenge" in value && isEffectChallenge(value.challenge))
-    return { status: "admitted", challenge: value.challenge }
+  if (value.status === "admitted" && "challenge" in value && isEffectChallenge(value.challenge)) {
+    return {
+      status: "admitted",
+      challenge: value.challenge,
+      ...("execution" in value ? { execution: value.execution } : {}),
+    }
+  }
   return undefined
 }
 
@@ -65,6 +80,7 @@ export function requireToolExecution(input: {
   if (outcome?.status === "denied") throw new Error(`Tool batch denied: ${outcome.reason}`)
 
   if (input.capability.effectClass === "effect") {
+    if (outcome?.status === "no_effect") return undefined
     if (outcome?.status !== "admitted") throw new Error("Tool batch denied: missing Rust Guard admission")
     return outcome.challenge
   }
@@ -151,7 +167,11 @@ async function admitBatch(
   const deny = (reason: string) => {
     for (const call of pending) input.context.outcomes.set(call.toolCallId, { status: "denied", reason })
   }
-  const prepared: { readonly call: GuardedToolCall; readonly definition: ToolBatchDefinition }[] = []
+  const prepared: {
+    readonly call: GuardedToolCall
+    readonly definition: ToolBatchDefinition
+    readonly execution?: unknown
+  }[] = []
   const seen = new Set<string>()
 
   try {
@@ -168,8 +188,13 @@ async function admitBatch(
 
       const parsed = parseInput(raw.input)
       const decoded = await definition.validate(parsed)
-      const args = definition.normalize ? definition.normalize(decoded) : decoded
-      const serializable = cloneJson(args)
+      const preparedInput = definition.prepare
+        ? await definition.prepare(decoded)
+        : {
+            arguments: definition.normalize ? definition.normalize(decoded) : decoded,
+            execution: undefined,
+          }
+      const serializable = cloneJson(preparedInput.arguments)
       prepared.push({
         call: {
           callID: raw.toolCallId,
@@ -177,6 +202,7 @@ async function admitBatch(
           arguments: serializable,
         },
         definition,
+        execution: preparedInput.execution === undefined ? undefined : cloneJson(preparedInput.execution),
       })
     }
   } catch {
@@ -185,6 +211,22 @@ async function admitBatch(
 
   if (input.signal.aborted) return deny("tool batch interrupted before Guard preparation")
 
+  if (prepared.length === 1 && prepared[0]!.call.capabilityID === "files.patch") {
+    const args = prepared[0]!.call.arguments
+    if (
+      typeof args === "object" &&
+      args !== null &&
+      "operations" in args &&
+      Array.isArray(args.operations) &&
+      args.operations.length === 0
+    ) {
+      input.context.outcomes.set(prepared[0]!.call.callID, {
+        status: "no_effect",
+        execution: prepared[0]!.execution ?? [],
+      })
+      return
+    }
+  }
   if (
     prepared.every(({ definition }) => definition.capability.effectClass === "read_only") ||
     (prepared.length === 1 && prepared[0]!.definition.internal === true)
@@ -206,11 +248,45 @@ async function admitBatch(
   }
   if (input.signal.aborted) return deny("tool batch interrupted before execution")
   if (admission.status === "denied") return deny(admission.reason)
-  if (prepared.length !== 1 || prepared[0]!.call.capabilityID !== "files.write")
+  if (prepared.length !== 1 || !["files.write", "files.patch"].includes(prepared[0]!.call.capabilityID))
     return deny("Rust admitted an unsupported tool batch")
 
-  const [{ call }] = prepared
-  input.context.outcomes.set(call.callID, { status: "admitted", challenge: admission.challenge })
+  const [{ call, execution }] = prepared
+  if (call.capabilityID === "files.patch") {
+    const args = call.arguments as { operations?: unknown }
+    const operations = args.operations
+    const targets = admission.challenge.targets
+    if (!Array.isArray(operations) || !Array.isArray(targets) || operations.length !== targets.length)
+      return deny("Rust patch target set does not match the prepared operations")
+    const targetByPath = new Map(targets.map((target) => [target.target, target]))
+    for (const item of operations) {
+      if (
+        typeof item !== "object" ||
+        item === null ||
+        !("path" in item) ||
+        typeof item.path !== "string" ||
+        !("operation" in item) ||
+        (item.operation !== "write" && item.operation !== "delete") ||
+        ("executable" in item && (item.operation !== "write" || typeof item.executable !== "boolean"))
+      ) {
+        return deny("Malformed files.patch operation")
+      }
+      const target = targetByPath.get(item.path)
+      if (
+        !target ||
+        target.operation !== item.operation ||
+        (item.operation === "write" && typeof target.executable !== "boolean") ||
+        ("executable" in item && target.executable !== item.executable)
+      ) {
+        return deny("Rust patch target set does not match the prepared operations")
+      }
+    }
+  }
+  input.context.outcomes.set(call.callID, {
+    status: "admitted",
+    challenge: admission.challenge,
+    ...(execution !== undefined ? { execution } : {}),
+  })
 }
 
 function parseInput(input: unknown) {

@@ -56,8 +56,8 @@ pub fn serve_authenticated_unix_hello(
 
     let (outcome, response) = match negotiate_hello(&hello, policy) {
         Ok(negotiated) => {
-            let result =
-                hello_result_for(&hello, &negotiated).map_err(HelloExchangeError::Protocol)?;
+            let result = hello_result_for(&hello, &negotiated, policy.owner_epoch)
+                .map_err(HelloExchangeError::Protocol)?;
             let response = RpcMessageV1::HelloResult(Box::new(result.clone()));
             (HelloOutcome::Negotiated(result), response)
         }

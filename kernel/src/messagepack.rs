@@ -12,7 +12,7 @@ use std::fmt;
 pub const MAX_NESTING_DEPTH: usize = 64;
 pub const MAX_DECODED_NODES: usize = 32_768;
 pub const MAX_COLLECTION_ITEMS: usize = 32_768;
-pub const MAX_SCALAR_BYTES: usize = 1_048_576;
+pub const MAX_SCALAR_BYTES: usize = 6 * 1024 * 1024;
 pub const MAX_ENCODED_VALUE_BYTES: usize = 8 * 1024 * 1024;
 
 /// The owned subset of MessagePack values supported by `HzKernelRpcV1`.

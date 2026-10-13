@@ -127,6 +127,19 @@ Exit: user intent is independently verified on final integrated revision.
 
 Remote/cloud continuation, shared live collaboration, autonomous self-improvement, broad voice/media features, hosted image generation, and full product identity migration remain separate product decisions unless 17 explicitly promotes them.
 
+### Deferred engineering TODO — after V1 implementation and verification only
+
+Do **not** start this migration during P1–P9 or use it to block core V1 delivery. Once V1 is implemented, its end-to-end acceptance gates pass, and there is a stable release/build baseline:
+
+- [ ] Refactor the TypeScript workspace/build/typecheck/test architecture for HorizonCode ownership: package boundaries, project references, build graph, caching and incremental checks; retain full CI/release verification while making routine development checks faster.
+- [ ] Migrate public npm/package, executable, product, generated-client, artifact, script, environment/config, CI/workflow, release and displayed identifiers consistently to **HorizonCode** (public npm/CLI name: `horizoncode`; `hzcode` may be an alias). Remove obsolete OpenCode *product branding* where owned by HorizonCode.
+- [ ] Where feasible, migrate first-party TypeScript package scopes, internal import aliases and generated declarations away from `@opencode-ai/*` behind compatibility shims, in a versioned, staged manner; never blindly rename genuine upstream dependencies or break the pinned-source hydration model.
+- [ ] Preserve upstream OpenCode copyright/license/notices and source attribution even if HorizonCode's product-facing identity is unified. Never falsify authorship or strip legally required metadata.
+- [ ] Test Linux/Windows clean install, executable launch, full builds, monorepo and affected-package typechecks, tests/Guard flows, update/migration, npm publish dry-run/tarball contents, backward compatibility and rollback at the final integrated revision.
+- [ ] Remove temporary compatibility paths only after their replacement is validated and migration is documented. Avoid unnecessary duplicate builds, disk growth or concurrent heavy compilers.
+
+**Exit:** supported HorizonCode-facing naming is consistent, no legacy product-name leaks remain outside genuine upstream dependency/license references, development validation is efficient, and clean-install/release tests pass. Treat this as a **deferred post-V1 TODO**, not an implementation task for the current gate.
+
 ## 10.13 Current gate
 
 Do not encode current progress here. HANDOFF.md is the bounded status checkpoint. The implementation agent starts from its first incomplete dependency, currently P1.3 after checking current source/tests prove those gates complete.

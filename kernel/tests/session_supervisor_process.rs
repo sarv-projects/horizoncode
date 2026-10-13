@@ -83,7 +83,7 @@ fn launch_with_workspace_root(
     source: &Path,
     nonce: &str,
     incarnation: &str,
-    workspace_root: Option<&Path>,
+    _workspace_root: Option<&Path>,
 ) -> ChildGuard {
     let mut command = Command::new(executable());
     command
@@ -96,10 +96,8 @@ fn launch_with_workspace_root(
         ))
         .arg(format!("--nonce={nonce}"))
         .arg(format!("--incarnation={incarnation}"))
+        .arg("--owner-epoch=1")
         .arg("--session=ses_process");
-    if let Some(root) = workspace_root {
-        command.arg(format!("--workspace-root={}", root.display()));
-    }
     let child = command
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
@@ -141,7 +139,6 @@ fn hello(nonce: &str, incarnation: &str) -> KernelHelloV1 {
         required_features: vec![
             "session.events.v1".into(),
             "session.events.page-control.v1".into(),
-            FEATURE_EFFECTS_V2.into(),
         ],
         optional_features: vec![],
     }
@@ -163,12 +160,7 @@ fn ready_host(
     let Some(RpcMessageV1::HelloResult(result)) = read_message(&mut host).unwrap() else {
         panic!("expected negotiated hello result");
     };
-    assert!(
-        result
-            .enabled_features
-            .iter()
-            .any(|feature| feature.as_str() == FEATURE_EFFECTS_V2)
-    );
+    assert_eq!(result.owner_epoch, 1);
     let statuses = (0..5)
         .map(|_| read_message(&mut host).unwrap().unwrap())
         .collect::<Vec<_>>();
@@ -720,7 +712,7 @@ fn effects_rpc_requires_one_approved_bound_write_and_fails_closed_on_paths_and_r
             ),
             (
                 "calls",
-                Value::Array(vec![tool_call("unsupported.txt", "secret", "files.patch")]),
+                Value::Array(vec![tool_call("unsupported.txt", "secret", "unsupported.capability")]),
             ),
         ]),
     );
@@ -1020,6 +1012,342 @@ fn effects_rpc_requires_one_approved_bound_write_and_fails_closed_on_paths_and_r
 
     drop(host);
     assert!(child.0.wait().unwrap().success());
+}
+
+#[test]
+fn files_patch_approves_and_applies_ordered_multi_file_operations() {
+    let directory = TestDir::new();
+    let source = directory.0.join("opencode.db");
+    source_db(&source);
+    let workspace = directory.0.join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    fs::write(workspace.join("update.txt"), b"before").unwrap();
+    fs::set_permissions(workspace.join("update.txt"),fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(workspace.join("preserve.txt"), b"preserve").unwrap();
+    fs::set_permissions(workspace.join("preserve.txt"),fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(workspace.join("remove.txt"), b"remove").unwrap();
+    fs::write(workspace.join("move_from.txt"), b"moving").unwrap();
+    let workspace = fs::canonicalize(workspace).unwrap();
+    let mut child = launch_with_workspace_root(&directory.0, &source, "nonce_patch", "inc_patch", Some(&workspace));
+    wait_socket(&directory.0.join("session.sock"));
+    let binary = executable();
+    let mut host = ready_host(&directory.0, &binary, "nonce_patch", "inc_patch");
+    let prepare_patch = |batch: &str, ops: Value| value_map([
+        ("sessionId",Value::String("ses_process".into())),
+        ("batchId",Value::String(batch.into())),
+        ("turnContextDigest",Value::String(TEST_TURN_CONTEXT_DIGEST.into())),
+        ("calls",Value::Array(vec![value_map([
+            ("callId",Value::String("patch_call".into())),
+            ("capabilityId",Value::String("files.patch".into())),
+            ("arguments",value_map([("operations",ops)])),
+        ])])),
+    ]);
+    let duplicate = Value::Array(vec![
+        value_map([("operation",Value::String("write".into())),("path",Value::String("duplicate.txt".into())),("expectedBeforeBase64",Value::Nil),("contentBase64",Value::String("YQ==".into()))]),
+        value_map([("operation",Value::String("write".into())),("path",Value::String("duplicate.txt".into())),("expectedBeforeBase64",Value::Nil),("contentBase64",Value::String("Yg==".into()))]),
+    ]);
+    let duplicate_result = send_effect_request(&mut host,"prepare_tool_batch",prepare_patch("patch_duplicate",duplicate));
+    assert_eq!(response_string(&duplicate_result,"status"),"denied");
+    assert!(!workspace.join("duplicate.txt").exists());
+    let malformed = Value::Array(vec![value_map([
+        ("operation",Value::String("write".into())),
+        ("path",Value::String("malformed.txt".into())),
+        ("expectedBeforeBase64",Value::Nil),
+        ("contentBase64",Value::String("%%%".into())),
+    ])]);
+    let malformed_mode = Value::Array(vec![value_map([
+        ("operation",Value::String("write".into())),
+        ("path",Value::String("malformed-mode.txt".into())),
+        ("expectedBeforeBase64",Value::Nil),
+        ("contentBase64",Value::String("YQ==".into())),
+        ("executable",Value::String("true".into())),
+    ])]);
+    let malformed_mode_result = send_effect_request(&mut host,"prepare_tool_batch",prepare_patch("patch_malformed_mode",malformed_mode));
+    assert_eq!(malformed_mode_result.outcome,RpcOutcomeV1::Error);
+    assert!(!workspace.join("malformed-mode.txt").exists());
+    let malformed_result = send_effect_request(&mut host,"prepare_tool_batch",prepare_patch("patch_malformed",malformed));
+    assert_eq!(malformed_result.outcome,RpcOutcomeV1::Error);
+    assert!(!workspace.join("malformed.txt").exists());
+    let stale = Value::Array(vec![value_map([
+        ("operation",Value::String("write".into())),
+        ("path",Value::String("update.txt".into())),
+        ("expectedBeforeBase64",Value::String("d3Jvbmc=".into())),
+        ("contentBase64",Value::String("YQ==".into())),
+    ])]);
+    let stale_result = send_effect_request(&mut host,"prepare_tool_batch",prepare_patch("patch_stale",stale));
+    assert_eq!(response_string(&stale_result,"status"),"denied");
+    assert_eq!(fs::read(workspace.join("update.txt")).unwrap(),b"before");
+    let oversized = Value::Array(vec![value_map([
+        ("operation",Value::String("write".into())),
+        ("path",Value::String("oversized.txt".into())),
+        ("expectedBeforeBase64",Value::Nil),
+        ("contentBase64",Value::String("A".repeat(2_796_204))),
+    ])]);
+    let oversized_result = send_effect_request(&mut host,"prepare_tool_batch",prepare_patch("patch_oversized",oversized));
+    assert_eq!(response_string(&oversized_result,"status"),"denied");
+    assert!(!workspace.join("oversized.txt").exists());
+    let outside = directory.0.join("patch-outside.txt");
+    fs::write(&outside,b"outside").unwrap();
+    std::os::unix::fs::symlink(&outside,workspace.join("patch-symlink.txt")).unwrap();
+    std::fs::hard_link(&outside,workspace.join("patch-hardlink.txt")).unwrap();
+    for (batch,path) in [
+        ("patch_outside","../patch-outside.txt"),
+        ("patch_symlink","patch-symlink.txt"),
+        ("patch_hardlink","patch-hardlink.txt"),
+    ] {
+        let request = Value::Array(vec![value_map([
+            ("operation",Value::String("write".into())),
+            ("path",Value::String(path.into())),
+            ("expectedBeforeBase64",Value::String("b3V0c2lkZQ==".into())),
+            ("contentBase64",Value::String("bmV3".into())),
+        ])]);
+        let response = send_effect_request(&mut host,"prepare_tool_batch",prepare_patch(batch,request));
+        assert_eq!(response_string(&response,"status"),"denied");
+    }
+    assert_eq!(fs::read(&outside).unwrap(),b"outside");
+    let partially_valid = Value::Array(vec![
+        value_map([
+            ("operation",Value::String("write".into())),
+            ("path",Value::String("should-not-create.txt".into())),
+            ("expectedBeforeBase64",Value::Nil),
+            ("contentBase64",Value::String("bmV3".into())),
+        ]),
+        value_map([
+            ("operation",Value::String("write".into())),
+            ("path",Value::String("patch-hardlink.txt".into())),
+            ("expectedBeforeBase64",Value::String("b3V0c2lkZQ==".into())),
+            ("contentBase64",Value::String("bmV3".into())),
+        ]),
+    ]);
+    let partial_result = send_effect_request(&mut host,"prepare_tool_batch",prepare_patch("patch_all_validate",partially_valid));
+    assert_eq!(response_string(&partial_result,"status"),"denied");
+    assert!(!workspace.join("should-not-create.txt").exists());
+    let operations = Value::Array(vec![
+        value_map([
+            ("operation",Value::String("write".into())),
+            ("path",Value::String("update.txt".into())),
+            ("expectedBeforeBase64",Value::String("YmVmb3Jl".into())),
+            ("contentBase64",Value::String("YWZ0ZXI=".into())),
+            ("executable",Value::Bool(false)),
+        ]),
+        value_map([
+            ("operation",Value::String("write".into())),
+            ("path",Value::String("created.txt".into())),
+            ("expectedBeforeBase64",Value::Nil),
+            ("contentBase64",Value::String("Y3JlYXRlZA==".into())),
+        ]),
+        value_map([
+            ("operation",Value::String("delete".into())),
+            ("path",Value::String("remove.txt".into())),
+            ("expectedBeforeBase64",Value::String("cmVtb3Zl".into())),
+        ]),
+        value_map([
+            ("operation",Value::String("write".into())),
+            ("path",Value::String("preserve.txt".into())),
+            ("expectedBeforeBase64",Value::String("cHJlc2VydmU=".into())),
+            ("contentBase64",Value::String("cHJlc2VydmVk".into())),
+        ]),
+        value_map([
+            ("operation",Value::String("write".into())),
+            ("path",Value::String("script.sh".into())),
+            ("expectedBeforeBase64",Value::Nil),
+            ("contentBase64",Value::String("cnVu".into())),
+            ("executable",Value::Bool(true)),
+        ]),
+        value_map([
+            ("operation",Value::String("write".into())),
+            ("path",Value::String("move_to.txt".into())),
+            ("expectedBeforeBase64",Value::Nil),
+            ("contentBase64",Value::String("bW92aW5n".into())),
+        ]),
+        value_map([
+            ("operation",Value::String("delete".into())),
+            ("path",Value::String("move_from.txt".into())),
+            ("expectedBeforeBase64",Value::String("bW92aW5n".into())),
+        ]),
+    ]);
+    let prepare = value_map([
+        ("sessionId",Value::String("ses_process".into())),
+        ("batchId",Value::String("patch_batch".into())),
+        ("turnContextDigest",Value::String(TEST_TURN_CONTEXT_DIGEST.into())),
+        ("calls",Value::Array(vec![value_map([
+            ("callId",Value::String("patch_call".into())),
+            ("capabilityId",Value::String("files.patch".into())),
+            ("arguments",value_map([("operations",operations.clone())])),
+        ])])),
+    ]);
+    let prepared = send_effect_request(&mut host,"prepare_tool_batch",prepare);
+    assert_eq!(response_string(&prepared,"status"),"needs_approval");
+    assert!(matches!(
+        prepared.body.as_ref().and_then(|body| match body {
+            Value::Map(map) => map.get("targets"),
+            _ => None,
+        }),
+        Some(Value::Array(targets)) if targets.len() == 7
+    ));
+    let target_descriptors = match prepared.body.as_ref().and_then(|body| match body {
+        Value::Map(map) => map.get("targets"),
+        _ => None,
+    }) {
+        Some(Value::Array(targets)) => targets,
+        _ => panic!("missing patch target descriptors"),
+    };
+    assert!(matches!(&target_descriptors[0],Value::Map(map) if map.get("executable")==Some(&Value::Bool(false))));
+    assert!(matches!(&target_descriptors[4],Value::Map(map) if map.get("executable")==Some(&Value::Bool(true))));
+    let durable = fs::read(directory.0.join("effects.sqlite")).unwrap();
+    assert!(!durable.windows(b"Y3JlYXRlZA==".len()).any(|window| window == b"Y3JlYXRlZA=="));
+    let challenge = challenge_id(&prepared);
+    let approved = send_effect_request(&mut host,"resolve_approval",approval_body("ses_process",&challenge,true));
+    assert_eq!(approved.outcome,RpcOutcomeV1::Ok);
+    let mismatched = send_effect_request(&mut host,"execute_patch",value_map([
+        ("sessionId",Value::String("ses_process".into())),
+        ("challengeId",Value::String(challenge.clone())),
+        ("operations",Value::Array(vec![])),
+    ]));
+    assert_eq!(mismatched.outcome,RpcOutcomeV1::Error);
+    let mut wrong_postimage = operations.clone();
+    if let Value::Array(values) = &mut wrong_postimage
+        && let Value::Map(first) = &mut values[0]
+    {
+        first.insert("contentBase64".into(),Value::String("YWJj".into()));
+    }
+    let changed = send_effect_request(&mut host,"execute_patch",value_map([
+        ("sessionId",Value::String("ses_process".into())),
+        ("challengeId",Value::String(challenge.clone())),
+        ("operations",wrong_postimage),
+    ]));
+    assert_eq!(changed.outcome,RpcOutcomeV1::Error);
+    let mut wrong_mode = operations.clone();
+    if let Value::Array(values) = &mut wrong_mode
+        && let Value::Map(first) = &mut values[0]
+    {
+        first.insert("executable".into(),Value::Bool(true));
+    }
+    let changed_mode = send_effect_request(&mut host,"execute_patch",value_map([
+        ("sessionId",Value::String("ses_process".into())),
+        ("challengeId",Value::String(challenge.clone())),
+        ("operations",wrong_mode),
+    ]));
+    assert_eq!(changed_mode.outcome,RpcOutcomeV1::Error);
+    let executed = send_effect_request(&mut host,"execute_patch",value_map([
+        ("sessionId",Value::String("ses_process".into())),
+        ("challengeId",Value::String(challenge.clone())),
+        ("operations",operations),
+    ]));
+    assert_eq!(response_string(&executed,"status"),"settled");
+    assert_eq!(fs::read(workspace.join("update.txt")).unwrap(),b"after");
+    assert_eq!(fs::read(workspace.join("created.txt")).unwrap(),b"created");
+    assert!(!workspace.join("remove.txt").exists());
+    assert_eq!(fs::read(workspace.join("move_to.txt")).unwrap(),b"moving");
+    assert!(!workspace.join("move_from.txt").exists());
+    assert_eq!(fs::metadata(workspace.join("update.txt")).unwrap().permissions().mode() & 0o777,0o644);
+    assert_eq!(fs::metadata(workspace.join("created.txt")).unwrap().permissions().mode() & 0o777,0o644);
+    assert_eq!(fs::metadata(workspace.join("preserve.txt")).unwrap().permissions().mode() & 0o777,0o755);
+    assert_eq!(fs::metadata(workspace.join("script.sh")).unwrap().permissions().mode() & 0o777,0o755);
+    let replay = send_effect_request(&mut host,"execute_patch",value_map([
+        ("sessionId",Value::String("ses_process".into())),
+        ("challengeId",Value::String(challenge)),
+        ("operations",Value::Array(vec![])),
+    ]));
+    assert_eq!(replay.outcome,RpcOutcomeV1::Error);
+    let denied_prepared = send_effect_request(&mut host,"prepare_tool_batch",prepare_patch("patch_denied",Value::Array(vec![value_map([
+        ("operation",Value::String("write".into())),
+        ("path",Value::String("patch-denied.txt".into())),
+        ("expectedBeforeBase64",Value::Nil),
+        ("contentBase64",Value::String("bm8=".into())),
+    ])])));
+    let denied_challenge = challenge_id(&denied_prepared);
+    send_effect_request(&mut host,"resolve_approval",approval_body("ses_process",&denied_challenge,false));
+    let denied_execute = send_effect_request(&mut host,"execute_patch",value_map([
+        ("sessionId",Value::String("ses_process".into())),
+        ("challengeId",Value::String(denied_challenge)),
+        ("operations",Value::Array(vec![value_map([
+            ("operation",Value::String("write".into())),
+            ("path",Value::String("patch-denied.txt".into())),
+            ("expectedBeforeBase64",Value::Nil),
+            ("contentBase64",Value::String("bm8=".into())),
+        ])])),
+    ]));
+    assert_eq!(denied_execute.outcome,RpcOutcomeV1::Error);
+    assert!(!workspace.join("patch-denied.txt").exists());
+    drop(host);
+    assert!(child.0.wait().unwrap().success());
+}
+
+#[test]
+fn files_patch_restart_reconciles_all_before_all_after_and_mixed() {
+    let directory = TestDir::new();
+    let source = directory.0.join("opencode.db");
+    source_db(&source);
+    let workspace = directory.0.join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let workspace = fs::canonicalize(workspace).unwrap();
+    let mut child = launch_with_workspace_root(&directory.0,&source,"nonce_patch_recovery","inc_patch_recovery",Some(&workspace));
+    wait_socket(&directory.0.join("session.sock"));
+    let binary = executable();
+    let mut host = ready_host(&directory.0,&binary,"nonce_patch_recovery","inc_patch_recovery");
+    let prepare = |batch: &str, operations: Value| value_map([
+        ("sessionId",Value::String("ses_process".into())),
+        ("batchId",Value::String(batch.into())),
+        ("turnContextDigest",Value::String(TEST_TURN_CONTEXT_DIGEST.into())),
+        ("calls",Value::Array(vec![value_map([
+            ("callId",Value::String("patch_recovery".into())),
+            ("capabilityId",Value::String("files.patch".into())),
+            ("arguments",value_map([("operations",operations)])),
+        ])])),
+    ]);
+    let operation = |path: &str, post: &str| value_map([
+        ("operation",Value::String("write".into())),
+        ("path",Value::String(path.into())),
+        ("expectedBeforeBase64",Value::Nil),
+        ("contentBase64",Value::String(post.into())),
+    ]);
+    let before_challenge = challenge_id(&send_effect_request(&mut host,"prepare_tool_batch",prepare("recover_before",Value::Array(vec![operation("before.txt","YQ==")]))));
+    let after_challenge = challenge_id(&send_effect_request(&mut host,"prepare_tool_batch",prepare("recover_after",Value::Array(vec![operation("after.txt","Yg==")]))));
+    let mixed_challenge = challenge_id(&send_effect_request(&mut host,"prepare_tool_batch",prepare("recover_mixed",Value::Array(vec![operation("mixed_one.txt","b25l"),operation("mixed_two.txt","dHdv")]))));
+    for challenge in [&before_challenge,&after_challenge,&mixed_challenge] {
+        send_effect_request(&mut host,"resolve_approval",approval_body("ses_process",challenge,true));
+    }
+    fs::write(workspace.join("after.txt"),b"b").unwrap();
+    fs::set_permissions(workspace.join("after.txt"),fs::Permissions::from_mode(0o644)).unwrap();
+    fs::write(workspace.join("mixed_one.txt"),b"one").unwrap();
+    fs::set_permissions(workspace.join("mixed_one.txt"),fs::Permissions::from_mode(0o644)).unwrap();
+    let digest = |bytes: &[u8]| format!("blake3:{}",blake3::hash(bytes).to_hex());
+    let manifest = |entries: &[(&str,&str)]| {
+        let mut hasher = blake3::Hasher::new();
+        let mode = 0o644u32.to_be_bytes();
+        for (path,digest) in entries {
+            for field in [path.as_bytes(),digest.as_bytes(),&mode] {
+                hasher.update(&(field.len() as u64).to_be_bytes());
+                hasher.update(field);
+            }
+        }
+        format!("blake3:{}",hasher.finalize().to_hex())
+    };
+    let db = Connection::open(directory.0.join("effects.sqlite")).unwrap();
+    for (challenge,after) in [
+        (&before_challenge,manifest(&[("before.txt",&digest(b"a"))])),
+        (&after_challenge,manifest(&[("after.txt",&digest(b"b"))])),
+        (&mixed_challenge,manifest(&[("mixed_one.txt",&digest(b"one")),("mixed_two.txt",&digest(b"two"))])),
+    ] {
+        db.execute("UPDATE effect_challenges SET status='PREPARED',after_digest=?1,lease_id='recovery_lease' WHERE challenge_id=?2",rusqlite::params![after,challenge]).unwrap();
+    }
+    drop(db);
+    drop(host);
+    assert!(child.0.wait().unwrap().success());
+    let mut restarted = launch_with_workspace_root(&directory.0,&source,"nonce_patch_recovery_2","inc_patch_recovery_2",Some(&workspace));
+    wait_socket(&directory.0.join("session.sock"));
+    let mut host = ready_host(&directory.0,&binary,"nonce_patch_recovery_2","inc_patch_recovery_2");
+    let db = Connection::open(directory.0.join("effects.sqlite")).unwrap();
+    let status = |challenge: &str| db.query_row("SELECT status FROM effect_challenges WHERE challenge_id=?1",[challenge],|row|row.get::<_,String>(0)).unwrap();
+    assert_eq!(status(&before_challenge),"NOT_APPLIED");
+    assert_eq!(status(&after_challenge),"SETTLED");
+    assert_eq!(status(&mixed_challenge),"UNKNOWN");
+    assert!(!workspace.join("before.txt").exists());
+    assert!(!workspace.join("mixed_two.txt").exists());
+    drop(db);
+    drop(host);
+    assert!(restarted.0.wait().unwrap().success());
 }
 
 #[test]

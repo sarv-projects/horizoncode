@@ -18,8 +18,6 @@ use crate::session_projection::{
     SessionProjection, SessionSubscriptionPage, SubscriptionPageError,
 };
 use crate::startup::{StartupGate, StartupPhase, StartupTransitionError};
-use crate::subscription::{AckResult, BoundedSubscription, OfferResult, SubscriptionError};
-use crate::supervisor_lease::SupervisorLease;
 use crate::unix_peer::AuthenticatedUnixStream;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,21 +80,19 @@ impl fmt::Display for SupervisorSessionError {
 
 impl std::error::Error for SupervisorSessionError {}
 
-/// One authenticated kernel-side connection. The channel cannot be read or written by
+/// One authenticated projection-worker connection. The channel cannot be read or written by
 /// application handlers except through its readiness-gated methods.
-pub struct AuthenticatedKernelSession<'lease> {
+pub struct AuthenticatedKernelSession {
     stream: AuthenticatedUnixStream,
     startup: StartupGate,
-    owner_lease: Option<&'lease SupervisorLease>,
     negotiated_features: BTreeSet<String>,
 }
 
-impl<'lease> AuthenticatedKernelSession<'lease> {
+impl AuthenticatedKernelSession {
     pub fn new(stream: AuthenticatedUnixStream) -> Self {
         Self {
             stream,
             startup: StartupGate::new(),
-            owner_lease: None,
             negotiated_features: BTreeSet::new(),
         }
     }
@@ -131,14 +127,14 @@ impl<'lease> AuthenticatedKernelSession<'lease> {
         self.send_status()
     }
 
+    /// Records the host kernel epoch without acquiring or retaining its lease.
     pub fn owner_epoch_acquired(
         &mut self,
-        lease: &'lease SupervisorLease,
+        epoch: u64,
     ) -> Result<(), SupervisorSessionError> {
         self.startup
-            .record_owner_epoch_acquired(lease.epoch())
+            .record_owner_epoch_acquired(epoch)
             .map_err(SupervisorSessionError::Startup)?;
-        self.owner_lease = Some(lease);
         self.send_status()
     }
 

@@ -43,7 +43,7 @@ function resultFor(sessionID: SessionID): SessionV1.WithParts {
   }
 }
 
-it.instance("V1 loop and shell respect a shared Session owner and recover after release", () =>
+it.instance("V1 loop respects the shared Session owner and recovers after release", () =>
   Effect.gen(function* () {
     const runState = yield* SessionRunState.Service
     expect(SessionSupervisorRelative.acquireExecutionOwner).toBe(SessionSupervisor.acquireExecutionOwner)
@@ -72,14 +72,6 @@ it.instance("V1 loop and shell respect a shared Session owner and recover after 
       })
     }
 
-    const shell = yield* runState.startShell(sessionID, Effect.succeed(result), work).pipe(Effect.exit)
-    expect(Exit.isFailure(shell)).toBe(true)
-    if (Exit.isFailure(shell)) {
-      expect(Option.getOrUndefined(Cause.findErrorOption(shell.cause))).toMatchObject({
-        _tag: "SessionBusyError",
-        sessionID,
-      })
-    }
     expect(workCalls).toBe(0)
     const preflight = yield* runState.withExecutionOwner(sessionID, work).pipe(Effect.exit)
     expect(Exit.isFailure(preflight)).toBe(true)

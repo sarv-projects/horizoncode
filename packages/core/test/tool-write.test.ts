@@ -53,6 +53,8 @@ const supervisor = Layer.succeed(
         supervisorCalls.push(`execute:${challengeID}`)
         return yield* Effect.fail(new SessionSupervisorError({ stage: "effect", reason: "unused" }))
       }),
+    executePatch: () => Effect.die("unused"),
+    runPatch: () => Effect.die("unused"),
     watchSession: () => Effect.void,
   }),
 )
@@ -103,13 +105,22 @@ describe("WriteTool", () => {
         supervisorCalls.length = 0
         approvedChallenges.clear()
         const target = path.join(tmp.path, "blocked.txt")
-        return withTool(tmp.path, (registry) => settleTool(registry, call({ path: "blocked.txt", content: "no" }))).pipe(
+        return withTool(tmp.path, (registry) =>
+          settleTool(registry, call({ path: "blocked.txt", content: "no" })),
+        ).pipe(
           Effect.andThen((settled) =>
             Effect.gen(function* () {
               expect(settled.result).toEqual({ type: "error", value: "Unable to write blocked.txt" })
               expect(permissionAssertions).toEqual([])
               expect(supervisorCalls).toEqual([])
-              expect(yield* Effect.promise(() => fs.stat(target).then(() => true, () => false))).toBe(false)
+              expect(
+                yield* Effect.promise(() =>
+                  fs.stat(target).then(
+                    () => true,
+                    () => false,
+                  ),
+                ),
+              ).toBe(false)
             }),
           ),
         )
@@ -145,7 +156,14 @@ describe("WriteTool", () => {
               expect(settled.result).toEqual({ type: "error", value: "Unable to write forged.txt" })
               expect(permissionAssertions.map((input) => input.action)).toEqual(["edit"])
               expect(supervisorCalls).toEqual(["approve:challenge_forged"])
-              expect(yield* Effect.promise(() => fs.stat(target).then(() => true, () => false))).toBe(false)
+              expect(
+                yield* Effect.promise(() =>
+                  fs.stat(target).then(
+                    () => true,
+                    () => false,
+                  ),
+                ),
+              ).toBe(false)
             }),
           ),
         )

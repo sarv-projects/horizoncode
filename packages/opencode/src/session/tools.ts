@@ -1,4 +1,5 @@
 import { Agent } from "@/agent/agent"
+import { InstanceState } from "@/effect/instance-state"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
@@ -17,6 +18,9 @@ import { EffectBridge } from "@/effect/bridge"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { isRecord } from "@/util/record"
 import { requireToolExecution, type ToolBatchDefinition } from "./tool-batch"
+import { FSUtil } from "@opencode-ai/core/fs-util"
+import { preparePatchBatch } from "@/tool/apply_patch"
+import { toolCallOutcome } from "./tool-batch"
 
 
 export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
@@ -31,6 +35,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const tools: Record<string, AITool> = {}
   const definitions: Record<string, ToolBatchDefinition> = {}
   const run = yield* EffectBridge.make()
+  const instance = yield* InstanceState.context
+  const fs = yield* FSUtil.Service
   const permission = yield* Permission.Service
   const registry = yield* ToolRegistry.Service
 
@@ -38,12 +44,18 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     args: Record<string, unknown>,
     options: ToolExecutionOptions,
     effect?: Tool.Context["effect"],
+    guardedPatch?: unknown,
   ): Tool.Context => ({
     sessionID: input.session.id,
     abort: options.abortSignal!,
     messageID: input.processor.message.id,
     callID: options.toolCallId,
-    extra: { model: input.model, bypassAgentCheck: input.bypassAgentCheck, promptOps: input.promptOps },
+    extra: {
+      model: input.model,
+      bypassAgentCheck: input.bypassAgentCheck,
+      promptOps: input.promptOps,
+      ...(guardedPatch !== undefined ? { guardedPatch } : {}),
+    },
     effect,
     agent: input.agent.name,
     messages: input.messages,
@@ -85,7 +97,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     const supported =
       internal ||
       capability.effectClass === "read_only" ||
-      (capability.effectClass === "effect" && capability.id === "files.write")
+      (capability.effectClass === "effect" && ["files.write", "files.patch"].includes(capability.id))
     if (!supported) continue
 
     const schema = ProviderTransform.schema(input.model, ToolJsonSchema.fromTool(item))
@@ -97,11 +109,20 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             return { path: value.filePath, content: value.content }
           }
         : undefined
+    const prepare =
+      item.id === "apply_patch"
+        ? async (value: unknown) => {
+            if (!isRecord(value) || typeof value.patchText !== "string") throw new Error("Invalid apply_patch arguments")
+            const prepared = await run.promise(preparePatchBatch(value.patchText, instance.directory, fs))
+            return { arguments: { operations: prepared.operations }, execution: prepared.operations }
+          }
+        : undefined
     definitions[item.id] = {
       capability,
       schema,
       validate: (value) => run.promise(Schema.decodeUnknownEffect(item.parameters)(value)),
       ...(normalize ? { normalize } : {}),
+      ...(prepare ? { prepare } : {}),
       ...(internal ? { internal: true } : {}),
     }
     tools[item.id] = tool({
@@ -110,13 +131,16 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
       execute(args, options) {
         return run.promise(
           Effect.gen(function* () {
+            const outcome = toolCallOutcome(options.experimental_context, options.toolCallId)
             const effect = requireToolExecution({
               context: options.experimental_context,
               callID: options.toolCallId,
               capability,
               internal,
             })
-            const ctx = context(args, options, effect)
+            const guardedPatch =
+              outcome?.status === "admitted" || outcome?.status === "no_effect" ? outcome.execution : undefined
+            const ctx = context(args, options, effect, guardedPatch)
             const result = yield* item.execute(args, ctx)
             const output = {
               ...result,

@@ -474,16 +474,24 @@ unambiguous and tested; otherwise return a typed protocol error.
 
 ## 30.17 Terminal/log retrieval without context flooding
 
-Long terminal/build/test streams are stored as bounded append-only artifacts. The model gets
-short live tails and structured exit/diagnostic facts.
+Long terminal/build/test streams are stored as bounded append-only managed artifacts. The
+model gets short live tails and structured exit/diagnostic facts; terminal retrieval never
+accepts a caller-supplied filesystem path or materializes a full log in model context.
 
 Built-ins:
-- `terminal.output_range(processRef, startLine, endLine)`;
-- `terminal.search(processRef, query|regex, maxResults)`;
+- `terminal.output_range(artifactID, generation, lineStart, lineEndExclusive, maxBytes)`;
+- `terminal.search(artifactID, generation, query|regex, maxResults, maxBytesPerExcerpt)`;
 - `artifacts.search_text(artifactRef, query|regex, maxResults)`.
 
-Results return line/range refs plus digest/generation. Search never injects the entire log.
-Rotated/truncated artifacts expose a new generation and stale references fail explicitly.
+`artifactID` is opaque and managed by the artifact owner; every retrieval supplies its
+expected generation. Terminal line references are stable, zero-based, half-open ranges
+`[lineStart,lineEndExclusive)` and search matches include generation-bound byte offsets.
+Results are bounded excerpts plus line/range references and digest/generation metadata.
+Rotation, truncation or replacement advances generation; stale references fail with
+`STALE_GENERATION` rather than resolving to different content. `query|regex` preserves
+the selected literal-query or regular-expression mode. Terminal search/output-range
+accept no `processRef`, arbitrary path or full-log injection. PTY status/replay is a
+separate bounded terminal-ID/generation operation, not artifact search.
 
 ## 30.18 Acceptance tests
 

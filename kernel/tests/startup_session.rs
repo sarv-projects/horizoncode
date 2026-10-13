@@ -68,6 +68,7 @@ fn policy() -> HandshakePolicy {
         supported_features: BTreeSet::from(["session.events.v1".into()]),
         expected_supervisor_nonce: "nonce-test".into(),
         expected_host_process_incarnation: Some("incarnation-test".into()),
+        owner_epoch: 7,
     }
 }
 
@@ -91,7 +92,7 @@ fn startup_statuses_follow_negotiation_and_gate_requests_until_ready() {
         );
         assert!(session.next_application_request().is_err());
         session.canonical_state_validated().unwrap();
-        session.owner_epoch_acquired(&lease).unwrap();
+        session.owner_epoch_acquired(lease.epoch()).unwrap();
         session.recovery_reconciled().unwrap();
         session.required_services_ready().unwrap();
         assert_eq!(session.phase(), StartupPhase::Ready);

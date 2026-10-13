@@ -242,12 +242,144 @@ Terminal graphics:
 - no assumption Kitty/SIXEL/Tern is available.
 
 Durable export is a separate Guarded artifact action.
+## 37.13 TerminalExecutionServiceV1
 
-## 37.13 CacheObservationAdapterV1
+One host-scoped Rust kernel is the sole process/effect owner, multiplexed across
+Locations and Sessions. Core `Pty.Service` is only the V1 `/pty`, V2 `/api/pty`,
+WebSocket and replay adapter; tickets/origins authenticate transport only and never
+authorize Guard effects. No per-Location/per-PTY kernel or parallel process manager.
+The host derives principal from validated `ServerAuth`, or requires loopback listener
+and peer and derives OS UID/SID itself; missing proof denies. Both V1 and V2 create
+adapters preserve public `Pty.CreateInput` `command`, `args`, `cwd`, `env` semantics
+(omitted command/args/cwd mean configured shell, empty args and Location directory,
+including login-shell behavior) and unchanged public `Pty.Info`; Core projects the
+kernel result, retains `title` metadata and never directly spawns, writes, resizes or
+kills.
+For terminal WebSocket attach, ticket requests and reconnect, Origin must be present
+and match exactly `oc://renderer`, `tauri://localhost`, `http://tauri.localhost`,
+`https://tauri.localhost`, an exact configured origin, or exact configured listener
+origin. Prefer one-use tickets bound to principal, terminal, Location and exact
+Origin. V2 obtains a ticket. Preserve ticketless V1 only with validated required
+`ServerAuth` Basic/`auth_token` credentials; with auth not required, ticketless attach
+is allowed only under the loopback-only listener/peer plus host-derived OS-principal
+rule. No ticketless path bypasses principal proof. Check terminal existence before
+query/ticket/origin validation (authorized unknown ID stays the established empty
+404); validate the requested subprotocol before WebSocket upgrade. Redact tickets
+and `auth_token` from logs.
+
+
+All operations use the common §37.1 envelope: protocol/schema version, authenticated
+caller and scope, owner/resource generation, effect class, deadline/cancellation,
+input/output byte and item bounds, stable errors, provenance, result generation and
+support/unavailable reason. Unknown capability/version, malformed frame, missing
+principal proof, stale generation/fence, or exceeded bound fails closed. The service
+does not echo/log raw environment values or terminal input. Provenance records
+authenticated principal source, ingress/origin and surface, Location/workspace,
+terminal/artifact ID and generation, effect/grant/receipt IDs, backend/guarantees,
+owner epoch/fence and operation outcome; never records tickets, auth tokens, raw
+environment or raw input.
+The process owner is a separate host singleton in the existing kernel crate, launched
+as `hz-kernel --state-dir <state-dir> --socket <socket> --host-exe <host-exe> --nonce <nonce> --incarnation <incarnation>`.
+Its authenticated HelloResult returns a durable, monotonically increasing positive
+`ownerEpoch`; `session_supervisor` receives that epoch and remains projection/ACK-only.
+There is no host-wide single `workspace-root`.
+
+Before effect admission, register a trusted Location internally with
+`effects.v2/register_location {canonicalRoot,workspaceID?}`. The root must originate
+from a trusted `Location.Ref`, never a request or model; Rust canonicalizes it. It
+returns `locationID = "loc_" + lowercase BLAKE3 hex(UTF-8("horizon.location.v1\0" +
+canonicalRoot + "\0" + (workspaceID ?? "")))` and rejects rebind. TypeScript does
+not duplicate path canonicalization.
+Model `bash` and other model effect batches use `effects.v2.prepare_tool_batch`: ALLOW returns
+`{status:"prepared",effectID,capabilityLeaseDigest}`, ASK returns a Guard challenge
+and no digest. Only explicit matching `allow_once` allows
+`effects.v2.resolve_approval` to return
+`{status:"approved",effectID,capabilityLeaseDigest}`; denial, expiry, mismatch or
+missing approval yields no digest. The kernel-issued opaque digest binds challenge,
+input, Location, principal and owner epoch, and is consumed once by `terminal.run`
+or `terminal.start`.
+
+User-originated `terminal.start` and `terminal.run` use only
+`effects.v2/prepare_user_effect {locationID,sessionID?,userActionID,capabilityID,arguments}`.
+The server generates `userActionID`; the kernel derives principal. Do not fabricate a
+Session when none exists. This remains a distinct Guarded intent/lease path, not a
+model batch.
+
+Approval is projected as `GuardApproval` EventV2. The protected
+`POST /api/guard/approval/:approvalID/reply` accepts only
+`{decision:"allow_once"|"deny"}`; the server generates `approvalID`. There is no
+`always`, auto-accept or `ctx.ask` approval route. The UI shows exact normalized
+action, resolved resources, policy and expiry, never raw environment secrets.
+
+
+| Operation | Input → result | Class and bound |
+|---|---|---|
+| `terminal.run` | `{effectID, capabilityLeaseDigest, locationID, sessionID?, shellProfileID, command, cwd, timeoutMs, resolvedEnvironment}` → `{status: exited\|timed_out\|cancelled\|unknown, exitCode?, preview, artifactRef, receiptRef}` | `guarded_effect` → runtime `effect`; one-shot PREPARED/lease/ExecutionHost/settlement; command ≤64 KiB UTF-8, cwd ≤4 KiB, timeout 120 s default / ≤600 s (over-limit is `TIMEOUT_LIMIT`, never clamped); max 100 MiB stored per log, then drain and report truncation; 50 KiB/2,000-line preview; 1 GiB host artifact quota; 7-day retention. Environment resolved by host, not model. |
+| `terminal.start` | `{effectID, capabilityLeaseDigest, locationID, sessionID?, terminalID, shellProfileID?, command?, args?, cwd?, cols?, rows?, env?}` → `{terminalID, generation, grantID, leaseRef, expiresAt, backend, cols, rows, byteCursor, pid}` | `guarded_effect` → runtime `effect`; durable PREPARED + one-use launch lease becomes InteractiveTerminalGrantV1, explicit approval, at most 60 min. command ≤64 KiB UTF-8, args ≤256 entries/≤256 KiB total UTF-8, cwd ≤4 KiB, env ≤128 entries/≤64 KiB total key/value UTF-8, cols 1–500, rows 1–300. Bind exact normalized launch/config and approved environment; never inherit ambient `process.env`. |
+| `terminal.input` | `{terminalID, generation, grantID, attachmentID, sequence, bytes}` → ack `{terminalID, generation, attachmentID, acknowledgedSequence, state}` | `guarded_effect` → runtime `effect`; continuation under current grant/Guard; bytes ≤16 KiB. |
+| `terminal.resize` | `{terminalID, generation, grantID, attachmentID, sequence, cols, rows}` → ack `{terminalID, generation, attachmentID, acknowledgedSequence, state}` | `guarded_effect` → runtime `effect`; same checked continuation lane; cols 1–500, rows 1–300. |
+| `terminal.cancel` | `{effectID, terminalID, generation, reason}` → `{terminalID, generation, state, receiptRef}` | registry `guarded_effect` → owner-only runtime `control`; fences before scoped signal/terminate; no new launch or authority. |
+| `terminal.status` | `{terminalID, generation, afterSequence?, afterByteCursor?, maxBytes?}` → bounded state plus optional replay | `read_only` → runtime `read_only`; read status/replay only, not a new replay capability; replay/output ≤64 KiB. |
+| `terminal.search` | `{artifactID, generation, query\|regex, maxResults, maxBytesPerExcerpt}` → matches `{lineStart, lineEndExclusive, byteStart, byteEnd, excerpt}` | `read_only` → runtime `read_only`; opaque managed artifact only; UTF-8 pattern ≤4 KiB, `maxResults` 1–100, each excerpt ≤4 KiB; stable zero-based line refs. |
+| `terminal.output_range` | `{artifactID, generation, lineStart, lineEndExclusive, maxBytes}` → bounded lines/bytes and digest | `read_only` → runtime `read_only`; opaque managed artifact only; zero-based half-open ranges; `maxBytes` and response ≤64 KiB. |
+On any listed wire-bound overflow or invalid dimension, return a typed rejection;
+never clamp or silently truncate the request. These request-validation rules do not
+change the separate managed-log storage cap and drain/truncation behavior above.
+
+
+Every search/range request checks artifact ownership and exact generation; rotated,
+truncated or replaced output returns `STALE_GENERATION`. No caller path or full-log
+result. Search refs and output-range refs are the same artifactID/generation and
+zero-based line/range model as §30.17 and §33.23. `query|regex` is explicit literal
+versus regex mode. Input/resize sequence is monotonic per attachment and generation:
+only next sequence dispatches, duplicates re-ack without redispatch, gaps/stale
+sequence reject; attachment ID is server-generated after one-use ticket consumption
+or validated V1 credential auth. Uncertain input is never replayed after owner loss.
+Terminal EventV2 cursors use `ownerKind:"terminal"` and `ownerId:terminalID`.
+Sequence `"0"` is the base sentinel
+`blake3:0000000000000000000000000000000000000000000000000000000000000000`; each
+event increments decimal sequence. `eventDigest` is `blake3:` plus lowercase BLAKE3
+hex of canonical MessagePack map
+`{terminalID,generation,sequence,byteCursor,kind,payload}` with sorted map keys.
+Exclude `subscriptionId` so replay to another subscriber retains the same digest;
+cursor sequence equals event payload sequence.
+
+
+PTY replay is separate from managed logs: 2 MiB ring per terminal; output frame ≤64
+KiB, input frame ≤16 KiB, WebSocket outbox ≤2 MiB; close slow clients and report a
+gap/reconnect state rather than silently dropping output. Byte cursors are canonical;
+legacy UTF-16 cursors translate only at adapter boundaries. Preserve existing V1
+`/pty/{ptyID}/connect` and V2 `/api/pty/{ptyID}/connect` ticket/origin rules and
+no-subprotocol legacy framing. New binary protocol requires exactly one
+`horizon.terminal.v1`; validate before upgrade, reject unknown/multiple values with
+HTTP 400. Binary envelope is `HPTY`, version 1, kind, sequence u64 BE, byte cursor
+u64 BE, payload length u32 BE, exact payload; output `0x01`, state `0x02`, gap
+`0x03`, exit `0x04`, error `0x05`; client input `0x10`, resize `0x11`.
+
+Stable errors: `DENIED`, `APPROVAL_REQUIRED`, `GRANT_EXPIRED`, `STALE_GENERATION`,
+`STALE_SEQUENCE`, `BAD_FRAME`, `TOO_LARGE`, `TIMEOUT_LIMIT`, `UNAVAILABLE`,
+`OUTPUT_LIMIT`, `OWNER_LOST`, `UNKNOWN`. `DENIED` is current Guard/policy denial;
+`APPROVAL_REQUIRED` means a matching challenge/approval is absent; `GRANT_EXPIRED`
+means interactive grant expired or was revoked; `STALE_GENERATION` means terminal or
+artifact generation mismatch; `STALE_SEQUENCE` means stream sequence is out-of-window
+or has a gap (the last acknowledged duplicate is re-acked); `BAD_FRAME` means invalid
+protocol/type/length/checksum; `TOO_LARGE` means a declared byte/count bound was
+exceeded; `TIMEOUT_LIMIT` means requested run timeout exceeds policy; `UNAVAILABLE`
+means backend/operation unsupported or unavailable; `OUTPUT_LIMIT` means artifact
+storage limit/truncation; `OWNER_LOST` means host owner epoch changed; `UNKNOWN` means
+dispatch/termination outcome cannot be established. Kernel loss fences the host epoch
+and requests process-tree termination; report terminated only when observed, otherwise
+`UNKNOWN`/`session-lost`, and require explicit recreation. Never retry a run with
+unknown dispatch. Windows V1 requires native ConPTY, named-pipe process-bound
+authentication and Job Object process-tree cleanup; WSL or cross-compilation is not
+acceptance.
+
+
+## 37.14 CacheObservationAdapterV1
 
 Reports cache/local-model observations with measured/estimated/unknown provenance. Never fabricate provider cache hit or token savings.
 
-## 37.14 Contract adoption gate
+## 37.15 Contract adoption gate
 
 Before any service becomes WIRED:
 1. find existing source seam;

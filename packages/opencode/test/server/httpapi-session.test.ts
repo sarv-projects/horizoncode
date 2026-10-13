@@ -1,13 +1,20 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
-import { afterEach, describe, expect } from "bun:test"
+import { afterAll, afterEach, describe, expect } from "bun:test"
 import { NodeHttpServer, NodeServices } from "@effect/platform-node"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { mkdir } from "node:fs/promises"
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { createHash } from "node:crypto"
+import { existsSync, mkdtempSync, readFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import path from "node:path"
-import { Cause, Config, Effect, Exit, Layer } from "effect"
+import { Cause, Config, Effect, Exit, Layer, Schema } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse, HttpRouter, HttpServer } from "effect/unstable/http"
 import { layerWebSocketConstructorGlobal } from "effect/unstable/socket/Socket"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
+import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
+import { Location } from "@opencode-ai/core/location"
+import { AbsolutePath, RelativePath } from "@opencode-ai/core/schema"
+import { Snapshot } from "@opencode-ai/core/snapshot"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Flag } from "@opencode-ai/core/flag/flag"
@@ -23,10 +30,12 @@ import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import * as HttpSessionError from "../../src/server/routes/instance/httpapi/handlers/session-errors"
 import { ExperimentalPaths } from "../../src/server/routes/instance/httpapi/groups/experimental"
 import { SessionPaths } from "../../src/server/routes/instance/httpapi/groups/session"
+import { McpPaths } from "../../src/server/routes/instance/httpapi/groups/mcp"
 import { Session } from "@/session/session"
 import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
 import { MessageID, PartID, SessionID, type SessionID as SessionIDType } from "../../src/session/schema"
 import { Database } from "@opencode-ai/core/database/database"
+import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { SessionInputTable, SessionMessageTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -34,7 +43,13 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import * as DateTime from "effect/DateTime"
 import { eq } from "drizzle-orm"
 import { resetDatabase } from "../fixture/db"
-import { disposeAllInstances, provideInstanceEffect, TestInstance, tmpdirScoped } from "../fixture/fixture"
+import {
+  disposeAllInstances,
+  provideInstanceEffect,
+  requireInstance,
+  TestInstance,
+  tmpdirScoped,
+} from "../fixture/fixture"
 import { TestLLMServer } from "../lib/llm-server"
 import { testProviderConfig } from "../lib/test-provider"
 import { pollWithTimeout, testEffect } from "../lib/effect"
@@ -44,12 +59,45 @@ const noopBootstrapLayer = Layer.succeed(
   InstanceBootstrapService.Service,
   InstanceBootstrapService.Service.of({ run: Effect.void }),
 )
+const rustTestRoot = mkdtempSync(path.join(tmpdir(), "hc-httpapi-session-guard-"))
+const supervisorBinary = path.resolve(import.meta.dir, "../../../../kernel/target/debug/session_supervisor")
+const supervisorAvailable = process.platform === "linux" && existsSync(supervisorBinary)
+const supervisorDigest = supervisorAvailable
+  ? createHash("sha256").update(readFileSync(supervisorBinary)).digest("hex")
+  : undefined
+const supervisorRuntime = Layer.succeed(
+  SessionSupervisor.RuntimeConfig,
+  SessionSupervisor.RuntimeConfig.of({
+    assetPath: supervisorAvailable ? supervisorBinary : undefined,
+    manifestJSON: supervisorDigest
+      ? JSON.stringify({
+          schemaVersion: 1,
+          status: "available",
+          binaryName: "session_supervisor",
+          target: `linux-${process.arch}-gnu`,
+          sha256: supervisorDigest,
+        })
+      : undefined,
+    installRoot: path.join(rustTestRoot, "install"),
+    stateRoot: path.join(rustTestRoot, "state"),
+  }),
+)
+const testDatabasePath = path.join(rustTestRoot, "opencode.db")
+const testDatabaseNode = makeGlobalNode({
+  service: Database.Service,
+  layer: Database.layerFromPath(testDatabasePath),
+  deps: [],
+})
+const routeReplacements = [
+  [Database.node, testDatabaseNode],
+  [SessionSupervisor.runtimeConfigNode, supervisorRuntime],
+] as const
 const appLayer = AppNodeBuilder.build(
   LayerNode.group([InstanceStore.node, Project.node, Session.node, Workspace.node, Database.node, Ripgrep.node]),
-  [[InstanceStore.bootstrapNode, noopBootstrapLayer]],
+  [[InstanceStore.bootstrapNode, noopBootstrapLayer], ...routeReplacements],
 )
 const servedRoutes: Layer.Layer<never, Config.ConfigError, HttpServer.HttpServer> = HttpRouter.serve(
-  HttpApiApp.routes,
+  HttpApiApp.createRoutes(undefined, routeReplacements),
   {
     disableListenLog: true,
     disableLogger: true,
@@ -156,6 +204,38 @@ const insertLegacyAssistantMessage = (sessionID: SessionIDType, seq = 1, time = 
     return message
   })
 
+const insertV2AssistantMessage = (
+  sessionID: SessionIDType,
+  seq: number,
+  snapshot?: { readonly start: string; readonly files: readonly string[] },
+) =>
+  Effect.gen(function* () {
+    const time = Date.now()
+    const message = SessionMessage.Assistant.make({
+      id: SessionMessage.ID.create(),
+      type: "assistant",
+      agent: "build",
+      model: {
+        id: ModelV2.ID.make("model"),
+        providerID: ProviderV2.ID.make("provider"),
+        variant: ModelV2.VariantID.make("default"),
+      },
+      time: { created: DateTime.makeUnsafe(time) },
+      content: [],
+      snapshot: snapshot
+        ? { start: snapshot.start, files: snapshot.files.map((file) => RelativePath.make(file)) }
+        : undefined,
+    })
+    const { type, ...data } = Schema.encodeSync(SessionMessage.Assistant)(message)
+    const { db } = yield* Database.Service
+    yield* db
+      .insert(SessionMessageTable)
+      .values([{ id: message.id, session_id: sessionID, type, seq, time_created: time, data }])
+      .run()
+      .pipe(Effect.orDie)
+    return message
+  })
+
 const insertCorruptV2Message = (sessionID: SessionIDType, time = 1) =>
   Effect.gen(function* () {
     const { db } = yield* Database.Service
@@ -233,6 +313,12 @@ afterEach(async () => {
   Flag.OPENCODE_EXPERIMENTAL_WORKSPACES = originalWorkspaces
   await disposeAllInstances()
   await resetDatabase()
+  await rm(testDatabasePath, { force: true })
+  await rm(`${testDatabasePath}-wal`, { force: true })
+  await rm(`${testDatabasePath}-shm`, { force: true })
+})
+afterAll(async () => {
+  await rm(rustTestRoot, { recursive: true, force: true })
 })
 
 describe("session HttpApi", () => {
@@ -250,6 +336,166 @@ describe("session HttpApi", () => {
         })
       }
     }),
+  )
+
+  it.instance(
+    "returns HTTP 503 for shell until terminal.run is Guard-mediated",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const session = yield* createSession({ title: "terminal unavailable" })
+        const response = yield* request(pathFor(SessionPaths.shell, { sessionID: session.id }), {
+          method: "POST",
+          headers: {
+            "x-opencode-directory": test.directory,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ agent: "build", command: "touch shell-must-not-run" }),
+        })
+
+        expect(response.status).toBe(503)
+        expect(yield* responseJson(response)).toEqual({
+          _tag: "ServiceUnavailableError",
+          message: "Shell execution is unavailable until terminal.run is mediated by Rust Guard and ExecutionHost.",
+          service: "terminal.run",
+        })
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
+    "returns HTTP 503 for slash-command shell interpolation",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        yield* Effect.promise(() =>
+          writeFile(
+            path.join(test.directory, "opencode.json"),
+            JSON.stringify({
+              $schema: "https://opencode.ai/config.json",
+              command: { probe: { template: "Probe !`echo shell-must-not-run`" } },
+            }),
+          ),
+        )
+        const session = yield* createSession({ title: "command shell unavailable" })
+        const response = yield* request(pathFor(SessionPaths.command, { sessionID: session.id }), {
+          method: "POST",
+          headers: {
+            "x-opencode-directory": test.directory,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ command: "probe", arguments: "" }),
+        })
+
+        expect(response.status).toBe(503)
+        expect(yield* responseJson(response)).toEqual({
+          _tag: "ServiceUnavailableError",
+          message: "Shell execution is unavailable until terminal.run is mediated by Rust Guard and ExecutionHost.",
+          service: "terminal.run",
+        })
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
+    "returns HTTP 503 for MCP effects until Rust broker mediation",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const marker = path.join(test.directory, "mcp-command-started")
+        const command = [
+          process.execPath,
+          "-e",
+          `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "started")`,
+        ]
+        let remoteRequests = 0
+        const remote = yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            Bun.serve({
+              hostname: "127.0.0.1",
+              port: 0,
+              fetch: () => {
+                remoteRequests++
+                return new Response("unexpected MCP request")
+              },
+            }),
+          ),
+          (server) => Effect.sync(() => server.stop(true)),
+        )
+        const configFile = path.join(test.directory, "opencode.json")
+        const config = {
+          mcp: {
+            marker: { type: "local", command },
+            remote: { type: "remote", url: remote.url.href, enabled: true, oauth: {} },
+          },
+        }
+        yield* Effect.promise(() => writeFile(configFile, JSON.stringify(config)))
+        const headers = {
+          "x-opencode-directory": test.directory,
+          "content-type": "application/json",
+        }
+        const unavailable = {
+          _tag: "ServiceUnavailableError",
+          message:
+            "MCP connections are unavailable until the canonical Rust execution broker supports MCP process and network effects.",
+          service: "mcp",
+        }
+
+        const connect = yield* request(pathFor(McpPaths.connect, { name: "marker" }), {
+          method: "POST",
+          headers,
+        })
+        expect({ status: connect.status, body: yield* responseJson(connect) }).toEqual({
+          status: 503,
+          body: unavailable,
+        })
+        expect(yield* Effect.promise(() => Bun.file(marker).exists())).toBe(false)
+
+        const add = yield* request(McpPaths.status, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            name: "added",
+            config: { type: "local", command },
+          }),
+        })
+        expect(add.status).toBe(503)
+        expect(yield* responseJson(add)).toEqual(unavailable)
+        expect(JSON.parse(yield* Effect.promise(() => Bun.file(configFile).text())).mcp).toEqual(config.mcp)
+        expect(yield* Effect.promise(() => Bun.file(marker).exists())).toBe(false)
+
+        const authStart = yield* request(pathFor(McpPaths.auth, { name: "remote" }), {
+          method: "POST",
+          headers,
+        })
+        expect(authStart.status).toBe(503)
+        expect(yield* responseJson(authStart)).toEqual(unavailable)
+
+        const authAuthenticate = yield* request(pathFor(McpPaths.authAuthenticate, { name: "remote" }), {
+          method: "POST",
+          headers,
+        })
+        expect(authAuthenticate.status).toBe(503)
+        expect(yield* responseJson(authAuthenticate)).toEqual(unavailable)
+
+        const authCallback = yield* request(pathFor(McpPaths.authCallback, { name: "remote" }), {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ code: "untrusted-authorization-code" }),
+        })
+        expect(authCallback.status).toBe(503)
+        expect(yield* responseJson(authCallback)).toEqual(unavailable)
+        expect(remoteRequests).toBe(0)
+
+        const removeAuth = yield* request(pathFor(McpPaths.auth, { name: "marker" }), {
+          method: "DELETE",
+          headers,
+        })
+        expect(removeAuth.status).toBe(503)
+        expect(yield* responseJson(removeAuth)).toEqual(unavailable)
+        expect(yield* Effect.promise(() => Bun.file(marker).exists())).toBe(false)
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
   )
 
   it.instance(
@@ -518,6 +764,75 @@ describe("session HttpApi", () => {
     }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
   )
 
+  if (supervisorAvailable) {
+    it.instance(
+      "stages and clears V2 revert file changes through Guarded files.patch",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const instance = yield* requireInstance
+          const { db } = yield* Database.Service
+          yield* db
+            .insert(ProjectTable)
+            .values({
+              id: instance.project.id,
+              worktree: AbsolutePath.make(test.directory),
+              vcs: "git",
+              sandboxes: [],
+            })
+            .onConflictDoNothing()
+            .run()
+            .pipe(Effect.orDie)
+          const tracked = path.join(test.directory, "tracked.txt")
+          yield* Effect.promise(() => writeFile(tracked, "before\n"))
+
+          const session = yield* createSession({ title: "guarded V2 revert" })
+
+          const snapshotLayer = AppNodeBuilder.build(Snapshot.node, [
+            [Location.node, Location.boundNode(Location.Ref.make({ directory: AbsolutePath.make(test.directory) }))],
+          ])
+          const baseline = yield* Effect.gen(function* () {
+            const snapshot = yield* Snapshot.Service
+            return yield* snapshot.capture()
+          }).pipe(Effect.provide(snapshotLayer))
+          if (!baseline) throw new Error("Snapshot capture was unavailable for the V2 revert fixture")
+
+          yield* Effect.promise(() => writeFile(tracked, "after\n"))
+          const boundary = yield* insertV2AssistantMessage(session.id, 1)
+          yield* insertV2AssistantMessage(session.id, 2, { start: baseline, files: ["tracked.txt"] })
+          const headers = {
+            "x-opencode-directory": test.directory,
+            "content-type": "application/json",
+          }
+
+          const stage = yield* request(`/api/session/${session.id}/revert/stage`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ messageID: boundary.id }),
+          })
+          if (stage.status !== 200) {
+            const body = yield* responseJson(stage)
+            throw new Error(`V2 revert stage returned ${stage.status}: ${JSON.stringify(body)}`)
+          }
+          const staged = yield* json<{ data: { messageID: string; restoreFiles?: readonly string[] } }>(stage)
+          expect(staged.data.messageID).toBe(boundary.id)
+          expect(staged.data.restoreFiles).toEqual(["tracked.txt"])
+          expect(yield* Effect.promise(() => readFile(tracked, "utf8"))).toBe("before\n")
+
+          const clear = yield* request(`/api/session/${session.id}/revert/clear`, {
+            method: "POST",
+            headers: { "x-opencode-directory": test.directory },
+          })
+          expect(clear.status).toBe(204)
+          expect(yield* Effect.promise(() => readFile(tracked, "utf8"))).toBe("after\n")
+        }),
+      { git: true, config: { formatter: false, lsp: false } },
+    )
+  } else {
+    it.instance.skip("stages and clears V2 revert file changes through Guarded files.patch", () => Effect.void, {
+      git: true,
+    })
+  }
   it.instance(
     "returns v2 public request errors for cursor and workspace query failures",
     () =>
@@ -1135,27 +1450,28 @@ describe("session HttpApi", () => {
   )
 
   it.instance(
-    "serves remaining non-LLM session mutation routes",
+    "no-ops when a requested revert message or revert state is missing",
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
         const headers = { "x-opencode-directory": test.directory, "content-type": "application/json" }
-        const session = yield* createSession({ title: "remaining" })
+        const session = yield* createSession({ title: "revert missing state" })
 
-        expect(
-          yield* requestJson<Session.Info>(pathFor(SessionPaths.revert, { sessionID: session.id }), {
-            method: "POST",
-            headers,
-            body: JSON.stringify({ messageID: MessageID.ascending() }),
-          }),
-        ).toMatchObject({ id: session.id })
+        const revert = yield* request(pathFor(SessionPaths.revert, { sessionID: session.id }), {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ messageID: MessageID.ascending() }),
+        })
+        expect(revert.status).toBe(200)
+        expect((yield* json<{ id: string }>(revert)).id).toBe(session.id)
 
-        expect(
-          yield* requestJson<Session.Info>(pathFor(SessionPaths.unrevert, { sessionID: session.id }), {
-            method: "POST",
-            headers,
-          }),
-        ).toMatchObject({ id: session.id })
+        const unrevert = yield* request(pathFor(SessionPaths.unrevert, { sessionID: session.id }), {
+          method: "POST",
+          headers,
+        })
+        expect(unrevert.status).toBe(200)
+        expect((yield* json<{ id: string }>(unrevert)).id).toBe(session.id)
+        expect((yield* Session.use.get(session.id)).revert).toBeUndefined()
 
         const permissionID = String(PermissionV1.ID.ascending())
         const permission = yield* request(

@@ -1,6 +1,7 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Agent } from "@/agent/agent"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { SessionV2 } from "@opencode-ai/core/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Command } from "@/command"
 import { Permission } from "@/permission"
@@ -36,8 +37,11 @@ import {
   SummarizePayload,
   UpdatePayload,
 } from "../groups/session"
-import { PermissionNotFoundError } from "../errors"
+import { PermissionNotFoundError, ServiceUnavailableError } from "../errors"
 import * as SessionError from "./session-errors"
+
+const SHELL_UNAVAILABLE_MESSAGE =
+  "Shell execution is unavailable until terminal.run is mediated by Rust Guard and ExecutionHost."
 
 const tryParseJson = (text: string) =>
   Effect.try({
@@ -249,9 +253,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
             arguments: "",
           })
           .pipe(
-            Effect.mapError((error) =>
-              error instanceof Session.BusyError ? error : new HttpApiError.BadRequest({}),
-            ),
+            Effect.mapError((error) => (error instanceof Session.BusyError ? error : new HttpApiError.BadRequest({}))),
           ),
       )
       return true
@@ -285,9 +287,12 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           ctx.params.sessionID,
           Effect.gen(function* () {
             yield* revertSvc.cleanup(yield* requireSession(ctx.params.sessionID))
-            const messages = yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
+            const messages = yield* SessionError.mapStorageNotFound(
+              session.messages({ sessionID: ctx.params.sessionID }),
+            )
             const defaultAgent = yield* agentSvc.defaultAgent()
-            const currentAgent = messages.findLast((message) => message.info.role === "user")?.info.agent ?? defaultAgent
+            const currentAgent =
+              messages.findLast((message) => message.info.role === "user")?.info.agent ?? defaultAgent
 
             yield* compactSvc.create({
               sessionID: ctx.params.sessionID,
@@ -317,9 +322,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
             sessionID: ctx.params.sessionID,
           })
           .pipe(
-            Effect.mapError((error) =>
-              error instanceof Session.BusyError ? error : new HttpApiError.BadRequest({}),
-            ),
+            Effect.mapError((error) => (error instanceof Session.BusyError ? error : new HttpApiError.BadRequest({}))),
           ),
       )
       return HttpServerResponse.stream(Stream.make(JSON.stringify(message)).pipe(Stream.encodeText), {
@@ -354,13 +357,18 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     }) {
       yield* requireSession(ctx.params.sessionID)
       return yield* SessionError.mapBusy(
-        promptSvc
-          .command({ ...ctx.payload, sessionID: ctx.params.sessionID })
-          .pipe(
-            Effect.mapError((error) =>
-              error instanceof Session.BusyError ? error : new HttpApiError.BadRequest({}),
-            ),
-          ),
+        promptSvc.command({ ...ctx.payload, sessionID: ctx.params.sessionID }).pipe(
+          Effect.mapError((error) => {
+            if (error instanceof Session.BusyError) return error
+            if (error instanceof SessionV2.OperationUnavailableError && error.operation === "shell") {
+              return new ServiceUnavailableError({
+                message: SHELL_UNAVAILABLE_MESSAGE,
+                service: "terminal.run",
+              })
+            }
+            return new HttpApiError.BadRequest({})
+          }),
+        ),
       )
     })
 
@@ -369,7 +377,15 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof ShellPayload.Type
     }) {
       yield* requireSession(ctx.params.sessionID)
-      return yield* SessionError.mapBusy(promptSvc.shell({ ...ctx.payload, sessionID: ctx.params.sessionID }))
+      return yield* promptSvc.shell({ ...ctx.payload, sessionID: ctx.params.sessionID }).pipe(
+        Effect.mapError(
+          () =>
+            new ServiceUnavailableError({
+              message: SHELL_UNAVAILABLE_MESSAGE,
+              service: "terminal.run",
+            }),
+        ),
+      )
     })
 
     const revert = Effect.fn("SessionHttpApi.revert")(function* (ctx: {
@@ -377,12 +393,28 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof RevertPayload.Type
     }) {
       yield* requireSession(ctx.params.sessionID)
-      return yield* SessionError.mapBusy(revertSvc.revert({ sessionID: ctx.params.sessionID, ...ctx.payload }))
+      return yield* revertSvc.revert({ sessionID: ctx.params.sessionID, ...ctx.payload }).pipe(
+        Effect.mapError(
+          (error) =>
+            new ServiceUnavailableError({
+              message: error.message,
+              service: "files.patch",
+            }),
+        ),
+      )
     })
 
     const unrevert = Effect.fn("SessionHttpApi.unrevert")(function* (ctx: { params: { sessionID: SessionID } }) {
       yield* requireSession(ctx.params.sessionID)
-      return yield* SessionError.mapBusy(revertSvc.unrevert({ sessionID: ctx.params.sessionID }))
+      return yield* revertSvc.unrevert({ sessionID: ctx.params.sessionID }).pipe(
+        Effect.mapError(
+          (error) =>
+            new ServiceUnavailableError({
+              message: error.message,
+              service: "files.patch",
+            }),
+        ),
+      )
     })
 
     const permissionRespond = Effect.fn("SessionHttpApi.permissionRespond")(function* (ctx: {

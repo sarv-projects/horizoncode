@@ -6,11 +6,9 @@
 //! exact pipe handle and authenticated process handle; a PID or `KernelHelloV1` nonce
 //! alone is not authentication. The caller must still negotiate the hello on this pipe.
 //!
-//! This adapter is a bounded local-attach primitive, not process supervision. The DACL
 //! permits the current logon SID, so another process in that logon session can still
-//! occupy the single pipe and cause authentication to fail; the supervisor must rotate
-//! the name and apply bounded retry policy. The listener blocks until a client connects;
-//! it has no cancellation path and has not received native Windows runtime review.
+//! occupy the single pipe and cause authentication to fail. Callers must rotate the name
+//! and use bounded retry/cancellation policy. The listener accepts one connection.
 
 const MAX_WINDOWS_IMAGE_PATH_CHARS: usize = 32 * 1024;
 
@@ -79,7 +77,8 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, GetNamedPipeServerProcessId,
-    PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
+    SetNamedPipeHandleState, PIPE_NOWAIT, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
+    PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetProcessId, GetProcessTimes, OpenProcess, OpenProcessToken,
@@ -106,6 +105,8 @@ pub enum WindowsPeerErrorKind {
     MissingExpectedPeer,
     PeerMismatch,
     OsCallFailed,
+    Cancelled,
+    TimedOut,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -345,7 +346,7 @@ pub fn bind_private_pipe(name: &PrivatePipeName) -> Result<PrivatePipeListener, 
         CreateNamedPipeW(
             name.wide().as_ptr(),
             PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
             1,
             PIPE_BUFFER_BYTES,
             PIPE_BUFFER_BYTES,
@@ -378,29 +379,62 @@ impl PrivatePipeListener {
         Ok(())
     }
 
-    /// Wait for one connection, authenticate the peer, then return the bound byte stream.
+    /// Wait indefinitely for one connection, authenticate the peer, then return the stream.
     pub fn accept(self) -> Result<AuthenticatedNamedPipe, WindowsPeerError> {
-        let Self {
-            file,
-            expected_client,
-            ..
-        } = self;
+        self.accept_until(None, None)
+    }
+
+    /// Cancellable bounded listener wait. Cancellation is checked at most 25ms apart.
+    pub fn accept_with_deadline(
+        self,
+        deadline: std::time::Instant,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<AuthenticatedNamedPipe, WindowsPeerError> {
+        self.accept_until(Some(deadline), Some(cancelled))
+    }
+
+    fn accept_until(
+        self,
+        deadline: Option<std::time::Instant>,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<AuthenticatedNamedPipe, WindowsPeerError> {
+        use std::sync::atomic::Ordering;
+        let Self { file, expected_client, .. } = self;
         let Some(expected_client) = expected_client else {
-            return Err(WindowsPeerError {
-                kind: WindowsPeerErrorKind::MissingExpectedPeer,
-                operation: "accept without a supervisor-bound client process",
-                os_code: None,
-            });
+            return Err(WindowsPeerError { kind: WindowsPeerErrorKind::MissingExpectedPeer, operation: "accept without a supervisor-bound client process", os_code: None });
         };
-        let connected = unsafe { ConnectNamedPipe(file.as_raw_handle() as _, ptr::null_mut()) };
-        if connected == 0 && unsafe { GetLastError() } != ERROR_PIPE_CONNECTED {
-            return Err(failed("ConnectNamedPipe"));
+        loop {
+            if cancelled.is_some_and(|value| value.load(Ordering::Acquire)) {
+                return Err(WindowsPeerError { kind: WindowsPeerErrorKind::Cancelled, operation: "accept named pipe", os_code: None });
+            }
+            if deadline.is_some_and(|value| std::time::Instant::now() >= value) {
+                return Err(WindowsPeerError { kind: WindowsPeerErrorKind::TimedOut, operation: "accept named pipe", os_code: None });
+            }
+            let connected = unsafe { ConnectNamedPipe(file.as_raw_handle() as _, ptr::null_mut()) };
+            if connected != 0 {
+                break;
+            }
+            let code = unsafe { GetLastError() };
+            if code == ERROR_PIPE_CONNECTED {
+                break;
+            }
+            if code != 536 {
+                return Err(WindowsPeerError { kind: WindowsPeerErrorKind::OsCallFailed, operation: "ConnectNamedPipe", os_code: Some(code) });
+            }
+            let sleep = deadline.map_or(std::time::Duration::from_millis(25), |value| {
+                std::time::Duration::from_millis(25).min(value.saturating_duration_since(std::time::Instant::now()))
+            });
+            std::thread::sleep(sleep);
+        }
+        let mut mode = PIPE_READMODE_BYTE | PIPE_WAIT;
+        if unsafe { SetNamedPipeHandleState(file.as_raw_handle() as _, &mut mode, ptr::null_mut(), ptr::null_mut()) } == 0 {
+            return Err(failed("SetNamedPipeHandleState"));
         }
         authenticate_pipe(file, &expected_client, true)
     }
 }
 
-/// Connect to a named pipe and authenticate its server against a trusted process handle.
+/// Connect and authenticate a named-pipe server against a trusted process handle.
 pub fn connect_private_pipe(
     name: &PrivatePipeName,
     expected_server: &ExpectedWindowsPeer,
@@ -422,6 +456,32 @@ pub fn connect_private_pipe(
     }
     let file = unsafe { File::from_raw_handle(raw_pipe as RawHandle) };
     authenticate_pipe(file, expected_server, false)
+}
+
+/// Retry transient pipe-not-ready/busy failures until a deadline. Cancellation is checked
+/// between attempts; each wait is capped at 25ms so cancellation remains responsive.
+pub fn connect_private_pipe_until(
+    name: &PrivatePipeName,
+    expected_server: &ExpectedWindowsPeer,
+    deadline: std::time::Instant,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<AuthenticatedNamedPipe, WindowsPeerError> {
+    use std::sync::atomic::Ordering;
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(WindowsPeerError { kind: WindowsPeerErrorKind::Cancelled, operation: "connect named pipe", os_code: None });
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(WindowsPeerError { kind: WindowsPeerErrorKind::TimedOut, operation: "connect named pipe", os_code: None });
+        }
+        match connect_private_pipe(name, expected_server) {
+            Ok(pipe) => return Ok(pipe),
+            Err(error) if matches!(error.os_code, Some(2 | 121 | 231)) => {
+                std::thread::sleep(std::time::Duration::from_millis(25).min(deadline.saturating_duration_since(std::time::Instant::now())));
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn authenticate_pipe(

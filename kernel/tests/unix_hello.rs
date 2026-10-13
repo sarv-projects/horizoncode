@@ -66,6 +66,7 @@ fn handshake_policy() -> HandshakePolicy {
         supported_features: BTreeSet::from(["session.events.v1".into()]),
         expected_supervisor_nonce: "nonce-test".into(),
         expected_host_process_incarnation: Some("incarnation-test".into()),
+        owner_epoch: 7,
     }
 }
 

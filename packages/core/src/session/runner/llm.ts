@@ -309,6 +309,7 @@ const layer = Layer.effect(
                   admission = yield* supervisor
                     .prepareToolBatch({
                       sessionID: session.id,
+                      locationRef: session.location,
                       batchID: `batch_${randomUUID().replaceAll("-", "")}`,
                       turnContextDigest: `sha256:${createHash("sha256")
                         .update(

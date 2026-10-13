@@ -12,6 +12,8 @@ import { SessionMessage } from "./session/message"
 import { Prompt } from "./session/prompt"
 import { PromptInput } from "@opencode-ai/schema/prompt-input"
 import { EventV2 } from "./event"
+import { Snapshot } from "./snapshot"
+import { SessionSupervisor } from "./session/supervisor"
 import { Database } from "./database/database"
 import { SessionProjector } from "./session/projector"
 import { SessionMessageTable, SessionTable } from "./session/sql"
@@ -31,7 +33,6 @@ import { LocationServiceMap } from "./location-service-map"
 import { MessageDecodeError } from "./session/error"
 import { SessionEvent } from "./session/event"
 import { SessionInput } from "./session/input"
-import { Snapshot } from "./snapshot"
 import { SessionRevert } from "./session/revert"
 import { Revert } from "@opencode-ai/schema/revert"
 import { FSUtil } from "./fs-util"
@@ -104,8 +105,6 @@ export class PromptConflictError extends Schema.TaggedErrorClass<PromptConflictE
   sessionID: SessionSchema.ID,
   messageID: SessionMessage.ID,
 }) {}
-export const MessageNotFoundError = SessionRevert.MessageNotFoundError
-export type MessageNotFoundError = SessionRevert.MessageNotFoundError
 
 export type Error = NotFoundError | MessageDecodeError | OperationUnavailableError | PromptConflictError
 
@@ -172,8 +171,13 @@ export interface Interface {
       sessionID: SessionSchema.ID
       messageID: SessionMessage.ID
       files?: boolean
-    }) => Effect.Effect<Revert.State, NotFoundError | MessageNotFoundError | Snapshot.Error>
-    readonly clear: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError | Snapshot.Error>
+    }) => Effect.Effect<
+      Revert.State,
+      NotFoundError | SessionRevert.FileChangesUnavailableError | SessionRevert.MessageNotFoundError
+    >
+    readonly clear: (
+      sessionID: SessionSchema.ID,
+    ) => Effect.Effect<void, NotFoundError | SessionRevert.FileChangesUnavailableError>
     readonly commit: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError>
   }
 }
@@ -190,6 +194,7 @@ const layer = Layer.effect(
     const execution = yield* SessionExecution.Service
     const store = yield* SessionStore.Service
     const locations = yield* LocationServiceMap.Service
+    const supervisor = yield* SessionSupervisor.Service
     const decodeMessage = Schema.decodeUnknownEffect(SessionMessage.Message)
     const isDurableSessionEvent = Schema.is(SessionEvent.Durable)
     const decode = (row: typeof SessionMessageTable.$inferSelect) =>
@@ -433,17 +438,30 @@ const layer = Layer.effect(
       revert: {
         stage: Effect.fn("V2Session.revert.stage")(function* (input) {
           const session = yield* result.get(input.sessionID)
+          if ((yield* execution.active).has(input.sessionID)) {
+            return yield* new SessionRevert.FileChangesUnavailableError({
+              message: "Cannot revert file changes while the Session is active.",
+            })
+          }
           return yield* SessionRevert.stage({ session, messageID: input.messageID, files: input.files }).pipe(
+            Effect.provide(locations.get(session.location)),
             Effect.provideService(Database.Service, database),
             Effect.provideService(EventV2.Service, events),
-            Effect.provide(locations.get(session.location)),
+            Effect.provideService(SessionSupervisor.Service, supervisor),
           )
         }),
         clear: Effect.fn("V2Session.revert.clear")(function* (sessionID) {
           const session = yield* result.get(sessionID)
+          if ((yield* execution.active).has(sessionID)) {
+            return yield* new SessionRevert.FileChangesUnavailableError({
+              message: "Cannot clear file revert while the Session is active.",
+            })
+          }
           yield* SessionRevert.clear(session).pipe(
-            Effect.provideService(EventV2.Service, events),
             Effect.provide(locations.get(session.location)),
+            Effect.provideService(Database.Service, database),
+            Effect.provideService(EventV2.Service, events),
+            Effect.provideService(SessionSupervisor.Service, supervisor),
           )
         }),
         commit: Effect.fn("V2Session.revert.commit")(function* (sessionID) {
@@ -482,5 +500,6 @@ export const node = makeGlobalNode({
     SessionStore.node,
     LocationServiceMap.node,
     SessionProjector.node,
+    SessionSupervisor.node,
   ],
 })

@@ -142,10 +142,12 @@ const hasNativeLinuxTarget = targets.some(
   (item) => process.platform === "linux" && item.os === "linux" && item.arch === process.arch && item.abi === undefined,
 )
 let observerAsset: { readonly bytes: Uint8Array; readonly sha256: string } | undefined
+let observerAssetSource: string | undefined
 if (hasNativeLinuxTarget) {
   const kernelRoot = path.resolve(dir, "../../kernel")
   await $`cargo build --manifest-path ${path.join(kernelRoot, "Cargo.toml")} --locked --offline --release --bin session_supervisor`
-  const bytes = await Bun.file(path.join(kernelRoot, "target/release/session_supervisor")).bytes()
+  observerAssetSource = path.join(kernelRoot, "target/release/session_supervisor")
+  const bytes = await Bun.file(observerAssetSource).bytes()
   if (bytes.length === 0) throw new Error("Rust Session observer build produced an empty executable")
   observerAsset = {
     bytes,
@@ -176,7 +178,7 @@ for (const item of targets) {
     item.os === "linux" &&
     item.arch === process.arch &&
     item.abi === undefined
-  const observerAssetPath = "session-supervisor"
+  const observerAssetPath = "session_supervisor"
   const observerManifest = includeObserver
     ? {
         schemaVersion: 1,
@@ -214,6 +216,7 @@ for (const item of targets) {
       autoloadTsconfig: true,
       autoloadPackageJson: true,
       target: name.replace(pkg.name, "bun") as any,
+      ...(includeObserver ? { assets: [observerAssetSource!] } : {}),
       outfile: `dist/${name}/bin/opencode`,
       execArgv: [`--user-agent=opencode/${Script.version}`, "--use-system-ca", "--"],
       windows: {},
@@ -221,7 +224,6 @@ for (const item of targets) {
     files: {
       [treeSitterWorkerPath]: treeSitterWorker,
       ...(embeddedFileMap ? { "opencode-web-ui.gen.ts": embeddedFileMap } : {}),
-      ...(includeObserver ? { [observerAssetPath]: observerAsset!.bytes } : {}),
     },
     entrypoints: [
       "./src/index.ts",
@@ -236,9 +238,7 @@ for (const item of targets) {
       OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + treeSitterWorkerPath,
       OPENCODE_WORKER_PATH: workerPath,
       OPENCODE_SESSION_OBSERVER_MANIFEST: JSON.stringify(JSON.stringify(observerManifest)),
-      ...(includeObserver
-        ? { OPENCODE_SESSION_OBSERVER_ASSET: JSON.stringify(bunfsRoot + observerAssetPath) }
-        : {}),
+      ...(includeObserver ? { OPENCODE_SESSION_OBSERVER_ASSET: JSON.stringify(bunfsRoot + observerAssetPath) } : {}),
       OPENCODE_CHANNEL: `'${Script.channel}'`,
       OPENCODE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "",
       ...(item.os === "linux" ? { "process.env.OPENTUI_LIBC": JSON.stringify(item.abi ?? "glibc") } : {}),

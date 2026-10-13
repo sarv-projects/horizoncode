@@ -37,6 +37,8 @@ const supervisor = LayerNode.make({
       prepareToolBatch: () => Effect.die("unexpected effect preparation"),
       approveEffect: () => Effect.die("unexpected effect approval"),
       executeWrite: () => Effect.die("unexpected effect execution"),
+      executePatch: () => Effect.die("unexpected patch execution"),
+      runPatch: () => Effect.die("unexpected patch execution"),
       watchSession: () => Effect.die("unexpected session watch"),
     }),
   ),

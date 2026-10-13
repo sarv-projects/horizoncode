@@ -3,7 +3,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Runner } from "@/effect/runner"
 import { BackgroundJob } from "@/background/job"
-import { Effect, Latch, Layer, Scope, Context } from "effect"
+import { Effect, Layer, Scope, Context } from "effect"
 import { Session } from "./session"
 import { SessionID } from "./schema"
 import { SessionStatus } from "./status"
@@ -20,12 +20,6 @@ export interface Interface {
     sessionID: SessionID,
     onInterrupt: Effect.Effect<SessionV1.WithParts>,
     work: Effect.Effect<SessionV1.WithParts, Session.BusyError>,
-  ) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
-  readonly startShell: (
-    sessionID: SessionID,
-    onInterrupt: Effect.Effect<SessionV1.WithParts>,
-    work: Effect.Effect<SessionV1.WithParts, Session.BusyError>,
-    ready?: Latch.Latch,
   ) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
 }
 
@@ -106,19 +100,7 @@ const layer = Layer.effect(
       return yield* (yield* runner(sessionID, onInterrupt)).ensureRunning(ownedWork)
     })
 
-    const startShell = Effect.fn("SessionRunState.startShell")(function* (
-      sessionID: SessionID,
-      onInterrupt: Effect.Effect<SessionV1.WithParts>,
-      work: Effect.Effect<SessionV1.WithParts, Session.BusyError>,
-      ready?: Latch.Latch,
-    ) {
-      const ownedWork = withExecutionOwner(sessionID, work)
-      return yield* (yield* runner(sessionID, onInterrupt))
-        .startShell(ownedWork, ready)
-        .pipe(Effect.catchTag("RunnerBusy", () => Effect.fail(busyError(sessionID))))
-    })
-
-    return Service.of({ assertNotBusy, cancel, withExecutionOwner, ensureRunning, startShell })
+    return Service.of({ assertNotBusy, cancel, withExecutionOwner, ensureRunning })
   }),
 )
 

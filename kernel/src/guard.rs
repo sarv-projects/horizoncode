@@ -1,12 +1,13 @@
 //! Canonical authorization decisions for kernel-owned effects.
 //!
-//! This first policy slice admits only a same-Session `files.write` request that has
-//! already been resolved beneath the pinned workspace handle. The decision is ASK;
+//! The workspace policy admits same-Session `files.write` and `files.patch` requests that
+//! have already been resolved beneath the pinned workspace handle. The decision is ASK;
 //! the host may resolve that exact durable challenge after the PermissionV2 path returns.
 
 use std::path::{Component, Path};
 
 pub const FILES_WRITE_ID: &str = "files.write";
+pub const FILES_PATCH_ID: &str = "files.patch";
 pub const WORKSPACE_WRITE_POLICY_ID: &str = "workspace-write.local.v1";
 const POLICY_BYTES: &[u8] =
     b"horizoncode.guard.workspace-write.local.v1:ask;beneath-root;no-symlink;no-hardlink;one-use";
@@ -90,7 +91,9 @@ pub fn authorize(request: &AuthorizationRequestV1<'_>, decision_id: &str) -> Gua
         .map(|relative| relative.replace('\\', "/"));
     let resource_digest = resource_digest(request);
 
-    let reason_code = if request.action_id != FILES_WRITE_ID {
+    let supported_action =
+        request.action_id == FILES_WRITE_ID || request.action_id == FILES_PATCH_ID;
+    let reason_code = if !supported_action {
         Some("unsupported_action")
     } else if request.principal != request.origin.session_id
         || request.request_id.is_empty()

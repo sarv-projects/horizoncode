@@ -2,17 +2,17 @@
 //!
 //! Implemented primitives include bounded frame and MessagePack codecs, typed v1 RPC
 //! validation/feature negotiation, OwnerLog V2 canonical stream storage, an internal
-//! immutable artifact-byte store, and an in-process startup-readiness gate. On Linux,
-//! private Unix peer authentication, first-message negotiation, READY-gated application
-//! RPC, redacted Session projection pages and bounded ACK delivery are connected and
-//! integration-tested. The Linux GNU package embeds the one-connection observer and
-//! supports a Guard-mediated, one-use `files.write` effect; other effect capabilities
-//! remain unavailable.
+//! immutable artifact-byte store, an in-process startup-readiness gate, and bounded
+//! generation-scoped terminal replay/grant/sequence state. On Linux, private Unix peer
+//! authentication, first-message negotiation, READY-gated application RPC, and redacted
+//! per-Session projection pages with bounded ACK delivery are connected. The projection
+//! worker is not the EffectHost owner; guarded effect hosting and terminal process execution
+//! are not yet integrated into a host-scoped `hz-kernel`.
 //!
 //! Artifact storage is not wired to a production owner. The Windows named-pipe
 //! peer-authentication adapter is partial and is not integrated into the Session RPC
-//! state machine; request cancellation remains an advisory primitive. Windows runtime
-//! and managed worker/process supervision remain unavailable.
+//! state machine; request cancellation remains an advisory primitive. Windows runtime,
+//! PTY/ConPTY backends, and managed worker/process supervision remain unavailable.
 
 // This bounded storage seam is intentionally not wired to a production owner yet.
 #[allow(dead_code)]
@@ -31,6 +31,8 @@ pub mod subscription;
 pub mod supervisor_lease;
 #[cfg(target_os = "linux")]
 pub mod supervisor_session;
+/// Bounded generation-scoped terminal grants, input sequencing, and replay state.
+pub mod terminal;
 pub mod transport;
 #[cfg(windows)]
 pub mod windows_peer;

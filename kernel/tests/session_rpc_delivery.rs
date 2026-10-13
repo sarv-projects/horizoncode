@@ -76,6 +76,7 @@ fn policy() -> HandshakePolicy {
         ]),
         expected_supervisor_nonce: "nonce-test".into(),
         expected_host_process_incarnation: Some("incarnation-test".into()),
+        owner_epoch: 7,
     }
 }
 
@@ -133,7 +134,7 @@ fn authenticated_rpc_sends_redacted_projection_page_and_waits_for_exact_ack() {
             HelloOutcome::Negotiated(_)
         ));
         session.canonical_state_validated().unwrap();
-        session.owner_epoch_acquired(&lease).unwrap();
+        session.owner_epoch_acquired(lease.epoch()).unwrap();
         session.recovery_reconciled().unwrap();
         session.required_services_ready().unwrap();
         assert_eq!(session.phase(), StartupPhase::Ready);
@@ -212,7 +213,7 @@ fn authenticated_rpc_rejects_ack_for_another_subscription() {
             HelloOutcome::Negotiated(_)
         ));
         session.canonical_state_validated().unwrap();
-        session.owner_epoch_acquired(&lease).unwrap();
+        session.owner_epoch_acquired(lease.epoch()).unwrap();
         session.recovery_reconciled().unwrap();
         session.required_services_ready().unwrap();
         assert!(matches!(

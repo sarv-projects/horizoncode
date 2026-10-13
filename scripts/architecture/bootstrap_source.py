@@ -14,9 +14,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SNAPSHOT = ROOT / "opencode"
+# SNAPSHOT is already the top-level `opencode` directory; a nested packages/opencode is source.
 SKIP = {
     ".git", ".turbo", ".cache", ".next", "dist", "build",
-    "node_modules", "target", ".venv", "opencode",
+    "node_modules", "target", ".venv",
 }
 
 

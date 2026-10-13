@@ -17,6 +17,8 @@ import { Plugin } from "@/plugin"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Effect, Layer, Schema } from "effect"
 import { testEffect } from "../lib/effect"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { FSUtil } from "@opencode-ai/core/fs-util"
 
 const callID = "call-test"
 const sessionID = SessionID.make("ses_test")
@@ -62,6 +64,7 @@ const fakeTruncate = Truncate.Service.of({
 } satisfies Truncate.Interface)
 
 const layer = Layer.mergeAll(
+  LayerNode.compile(FSUtil.node),
   Layer.succeed(Plugin.Service, fakePlugin),
   Layer.succeed(Permission.Service, fakePermission),
   Layer.succeed(MCP.Service, fakeMcp()),
@@ -88,6 +91,12 @@ const layer = Layer.mergeAll(
                 return { title: "timing", metadata: {}, output: "done" }
               }),
           } satisfies Tool.Def,
+          {
+            id: "custom-plugin-shell",
+            description: "runs an unclassified plugin effect",
+            parameters: Schema.Struct({}),
+            execute: () => Effect.succeed({ title: "", metadata: {}, output: "must not execute" }),
+          } satisfies Tool.Def,
         ]),
     }),
   ),
@@ -95,74 +104,79 @@ const layer = Layer.mergeAll(
 
 const it = testEffect(layer)
 
-it.effect("preserves running tool start time across metadata updates", () =>
-  Effect.gen(function* () {
-    const state: SessionV1.ToolPart = {
-      id: partID,
-      sessionID,
-      messageID,
-      type: "tool",
-      tool: "timing",
-      callID,
-      state: {
-        status: "running",
-        input: {},
-        time: { start: 100 },
-      },
-    }
-    const updates: number[] = []
-    const processor = {
-      message: {
-        id: messageID,
+it.instance(
+  "preserves running tool start time across metadata updates",
+  () =>
+    Effect.gen(function* () {
+      const state: SessionV1.ToolPart = {
+        id: partID,
         sessionID,
-        role: "assistant",
-        parentID: MessageID.ascending(),
-        agent: "build",
-        mode: "build",
-        path: { cwd: "/tmp", root: "/tmp" },
-        cost: 0,
-        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-        modelID: ModelV2.ID.make("test-model"),
-        providerID: ProviderV2.ID.make("test"),
-        time: { created: 1 },
-      } satisfies SessionV1.Assistant,
-      updateToolCall: (_toolCallID, update) =>
-        Effect.sync(() => {
-          const next = update(state)
-          state.state = next.state
-          if (state.state.status === "running") updates.push(state.state.time.start)
-          return state
-        }),
-      completeToolCall: () => Effect.void,
-    } satisfies Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "completeToolCall">
-
-    const tools = yield* SessionTools.resolve({
-      agent,
-      model,
-      session: { id: sessionID, permission: [] } as unknown as Session.Info,
-      processor,
-      bypassAgentCheck: false,
-      messages: [],
-      promptOps: {} as never,
-    })
-    const execute = tools.tools.timing?.execute
-    if (!execute) throw new Error("timing tool is missing execute")
-
-    yield* Effect.promise(() =>
-      execute(
-        {},
-        {
-          toolCallId: callID,
-          abortSignal: new AbortController().signal,
-          messages: [],
+        messageID,
+        type: "tool",
+        tool: "timing",
+        callID,
+        state: {
+          status: "running",
+          input: {},
+          time: { start: 100 },
         },
-      ),
-    )
+      }
+      const updates: number[] = []
+      const processor = {
+        message: {
+          id: messageID,
+          sessionID,
+          role: "assistant",
+          parentID: MessageID.ascending(),
+          agent: "build",
+          mode: "build",
+          path: { cwd: "/tmp", root: "/tmp" },
+          cost: 0,
+          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+          modelID: ModelV2.ID.make("test-model"),
+          providerID: ProviderV2.ID.make("test"),
+          time: { created: 1 },
+        } satisfies SessionV1.Assistant,
+        updateToolCall: (_toolCallID, update) =>
+          Effect.sync(() => {
+            const next = update(state)
+            state.state = next.state
+            if (state.state.status === "running") updates.push(state.state.time.start)
+            return state
+          }),
+        completeToolCall: () => Effect.void,
+      } satisfies Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "completeToolCall">
 
-    expect(updates).toEqual([100, 100])
-    expect(state.state.status).toBe("running")
-    if (state.state.status === "running") {
-      expect(state.state.time.start).toBe(100)
-    }
-  }),
+      const tools = yield* SessionTools.resolve({
+        agent,
+        model,
+        session: { id: sessionID, permission: [] } as unknown as Session.Info,
+        processor,
+        bypassAgentCheck: false,
+        messages: [],
+        promptOps: {} as never,
+      })
+      expect(tools.tools["custom-plugin-shell"]).toBeUndefined()
+      expect(tools.definitions["custom-plugin-shell"]).toBeUndefined()
+      const execute = tools.tools.timing?.execute
+      if (!execute) throw new Error("timing tool is missing execute")
+
+      yield* Effect.promise(() =>
+        execute(
+          {},
+          {
+            toolCallId: callID,
+            abortSignal: new AbortController().signal,
+            messages: [],
+          },
+        ),
+      )
+
+      expect(updates).toEqual([100, 100])
+      expect(state.state.status).toBe("running")
+      if (state.state.status === "running") {
+        expect(state.state.time.start).toBe(100)
+      }
+    }),
+  { git: true },
 )

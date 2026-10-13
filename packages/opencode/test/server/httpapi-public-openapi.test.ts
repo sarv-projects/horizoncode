@@ -260,13 +260,22 @@ describe("PublicApi OpenAPI v2 errors", () => {
     }
   })
 
+  test("documents unavailable terminal execution", () => {
+    const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
+
+    for (const route of ["/session/{sessionID}/shell", "/session/{sessionID}/command"]) {
+      expect(componentName(responseRef(spec.paths[route]?.post?.responses?.["503"]) ?? "")).toBe(
+        "ServiceUnavailableError",
+      )
+    }
+  })
+
   test("documents session busy errors", () => {
     const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
 
     for (const route of [
       ["post", "/session/{sessionID}/init"],
       ["post", "/session/{sessionID}/message"],
-      ["post", "/session/{sessionID}/shell"],
       ["post", "/session/{sessionID}/revert"],
       ["post", "/session/{sessionID}/unrevert"],
       ["post", "/session/{sessionID}/summarize"],
@@ -318,6 +327,23 @@ describe("PublicApi OpenAPI v2 errors", () => {
     ] as const) {
       expect(componentName(responseRef(spec.paths[route[1]]?.[route[0]]?.responses?.["404"]) ?? "")).toBe(
         "McpServerNotFoundError",
+      )
+    }
+  })
+
+  test("documents unavailable MCP broker operations", () => {
+    const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
+
+    for (const route of [
+      ["post", "/mcp"],
+      ["post", "/mcp/{name}/auth"],
+      ["post", "/mcp/{name}/auth/authenticate"],
+      ["post", "/mcp/{name}/auth/callback"],
+      ["delete", "/mcp/{name}/auth"],
+      ["post", "/mcp/{name}/connect"],
+    ] as const) {
+      expect(componentName(responseRef(spec.paths[route[1]]?.[route[0]]?.responses?.["503"]) ?? "")).toBe(
+        "ServiceUnavailableError",
       )
     }
   })
