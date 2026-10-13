@@ -123,3 +123,24 @@ OpenCode promotional Zen free models remain eligibility-restricted. Native OpenC
 4. Only after the Guard boundary is broad enough, prototype selective OMP transport under the existing direct-session owner.
 5. Prototype the independent official OpenCode native adapter with lifecycle/version/permission/restart tests.
 6. Implement beginner preview/visual-edit/deploy verification only with rollback and observable-result tests.
+
+## GitHub PR #1 implementation completion audit — 2026-10-14 (remote source only)
+
+Reviewed the active architecture/implementation plan and the relevant source paths for optional Settings, experimental flags, TUI and GUI. This is a **targeted line/path review of the related implementation**, not a claim to have read and verified every file in the ~7,700-entry checkout tree. Review reference `c325172492da5741ed416eb018bf724612a6ccf2` plus subsequent audit edits on the draft PR branch. Current main remains at `dead4339cae87f9e48c25e4e9586096d600bb164` during this audit.
+
+| Gate/feature | Observed source or evidence | Honest completion |
+|---|---|---|
+| P1.2-B observer | Previous source-and-test-bound handoff evidence (§ above) | Locally VERIFIED only for its stated test scope; not evidence for all platforms |
+| P1.3 universal effects | Real V1/V2 Rust-mediated guarded write only; other effect origins still inventoried but not migrated | INCOMPLETE (current implementation gate) |
+| Experimental feature **design** | §16.15, §17.9, §20.10.1, §32 FEAT-001..014, §33.28, `contracts-v2/feature-exposure-v1.schema.json` | DESIGNED |
+| Experimental feature **static tests** | Positive/negative fixtures added to `scripts/architecture/validate_convergence.py` | CODE_PRESENT; record execution on this PR head before TESTED |
+| Runtime feature-exposure descriptor / config precedence | Core V2 config, V1 config and migration, OpenCode instance config and env RuntimeFlags inspected | NOT IMPLEMENTED |
+| Explicit per-feature experimental opt-in & blocked state | Broad inherited `OPENCODE_EXPERIMENTAL` controls exist; no new governed resolver | NOT IMPLEMENTED |
+| TUI Features/Experimental Settings and readable tags | Existing app/command palette/status inspected; no matching metadata/view | NOT IMPLEMENTED |
+| GUI/web Features/Experimental Settings | Existing desktop/web dialog only offers General, Shortcuts, Servers, Providers and Models | NOT IMPLEMENTED |
+| Backend/API/TUI/GUI parity and migration | No FEAT-001..014 executable integration suite observed | NOT VERIFIED |
+| Other planned V1 capability families | Current root architecture §10/§33 and status above describe target vs implementation | Not declared complete by documentation or this audit |
+
+CI chronology: `HorizonCode full validation` GitHub Actions run [38476485241](https://github.com/sarv-projects/horizoncode/actions/runs/38476485241) passed for `c325172492da5741ed416eb018bf724612a6ccf2` after restoring the nested Bun `packages/opencode` workspace. That is real CI for that commit, **not runtime verification of Experimental Settings**. New audit-branch commits require fresh CI and schema checks. Do not carry old “zero workflow runs” claims forward as present-tense truth.
+
+Next: first P1.3 effect-origin migration, then implement `FeatureExposureV1` through the existing config owner; UI surfaces read authoritative effective state. §20.10.1 lists concrete code locations, §32 FEAT-001..014 lists acceptance, and the operative plan records unchecked implementation steps. No source-runtime feature implementation has been completed by this audit.
