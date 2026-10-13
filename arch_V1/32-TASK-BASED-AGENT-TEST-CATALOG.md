@@ -577,3 +577,14 @@ These are **future test requirements**, not evidence of implementation. Derive f
 | FEAT-010 | User has no color/uses small terminal/screen reader | `Experimental` readable as text; narrow TUI exposes warning/disabled reason and all Settings actions remain keyboard accessible |
 
 Public exposure of experimental features requires specific security/negative tests for each effect origin; merely declaring the release class cannot bypass P1.3. Document proposed features in Settings as disabled `Not available yet` when relevant to the build, without creating fake executable tools or implying release verification.
+
+### 32.31.1 Source-parity integration tests (2026-10-14)
+
+| ID | Runtime scenario | Acceptance |
+|---|---|---|
+| FEAT-011 | Broad inherited `OPENCODE_EXPERIMENTAL` or individual legacy flags conflict with a new Horizon experiment explicitly set OFF | New experiment stays off; classified legacy behavior is intentionally migrated or explicitly isolated |
+| FEAT-012 | GUI-local `settings.v3` says ON while runtime config/policy is OFF or BLOCKED | Backend does not execute; UI shows runtime effective status and reason, not cosmetic local preference |
+| FEAT-013 | Stale/concurrent user/project feature-setting writes | Conflict/merge or typed stale rejection without overwriting unrelated configuration, credentials or later user updates |
+| FEAT-014 | Core V2, V1 compatibility, TUI, GUI and HTTP consumers observe a pending next-turn/session/restart state | Same requested/effective/release-class/source/pending interpretation; runtime uses effective state even before the UI refreshes |
+
+`scripts/architecture/validate_convergence.py` checks positive and negative `FeatureExposureV1` **static** schema fixtures. Those static checks do not pass FEAT-001..014. Full implementation requires actual config read/write, source precedence, guards, platform gating and TUI/GUI/HTTP integration tests.
