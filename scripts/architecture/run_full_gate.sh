@@ -11,6 +11,6 @@ FULL_TYPECHECK_CONCURRENCY="${HORIZONCODE_FULL_TYPECHECK_CONCURRENCY:-1}"
 # One-worker default avoids swap exhaustion on 8 GiB WSL and 7 GiB CI runners.
 bun turbo typecheck --concurrency="$FULL_TYPECHECK_CONCURRENCY"
 # New Settings metadata must pass real Bun unit tests, not only JSON Schema checks.
-bun test packages/core/test/config/feature-exposure.test.ts
+(cd packages/core && bun test test/config/feature-exposure.test.ts)
 bash scripts/architecture/run_push_gate.sh
 echo "Full HorizonCode validation passed."
