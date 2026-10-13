@@ -261,3 +261,15 @@ Integrate with the existing §16 Settings/config owner and §33 canonical capabi
 - [ ] Run FEAT-001..010 in §32 with schema/registry validation before declaring a feature TESTED or VERIFIED; preserve safe disable/migration when class changes.
 
 Examples that remain experimental/disabled until their runtime and benchmarks actually qualify: alternate native grep/gix backend, Hashline edit dialect, provider transport prewarm and CoW worktree backend. Deferred features (such as snapcompact) must not be mislabeled as operational merely by appearing under an Experimental heading.
+
+### Feature-source audit and smallest implementation route (2026-10-14)
+
+**Inspected source:** Core V2 and legacy V1 experimental/config/migration, OpenCode instance config/runtime flags and config API, GUI-local `settings.v3`, GUI Settings tabs, TUI config/app/command/status, schema and architecture validator. These paths **do not yet implement a shared feature exposure resolver, actionable Experimental Settings, or TUI labels**. Exact source-to-owner mapping: §20.10.1; UX semantics §16.15; runtime acceptance §32 FEAT-001..014.
+
+- [ ] Inventory user-selectable optional controls and legacy experimental environment variables. Deliberately classify `OPENCODE_EXPERIMENTAL` inheritance so broad flags cannot silently enable newly governed experiments.
+- [ ] Implement one derived `FeatureExposureV1` read/effective-state projection from existing backend config, source precedence, platform/build/eligibility and Guard constraints; don't make GUI-local `settings.v3` the execution authority.
+- [ ] Implement narrow source-version-safe opt-in persistence using current config update owner. Concurrency, denied policy, pending turn/session/restart, rollback and opt-out must work.
+- [ ] Add keyboard-accessible TUI Settings → Features/Experimental and GUI Settings entries plus command/status `[Experimental]` labels. All show the same effective runtime state and unavailable reason.
+- [ ] Run schema/contract validator, V1/V2 binding tests and FEAT-001..014 actual integration. A passing generic typecheck or designed schema is not completion.
+
+This work is part of P6 Settings/UX but must be integrated before *new optional effectful features* are presented as executable. It does not replace P1.3 Guard completion.
