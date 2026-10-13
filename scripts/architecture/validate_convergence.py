@@ -161,6 +161,50 @@ for stem,good in examples.items():
     bad=dict(good);bad['unexpected_privileged_override']=True
     check(bool(list(validator.iter_errors(bad))),'unknown field denied '+stem)
 
+# FeatureExposureV1 is a derived Settings/UX contract, not proof of a wired feature.
+feature_schema=load(D/'feature-exposure-v1.schema.json')
+feature_validator=Draft202012Validator(feature_schema)
+feature_off={
+ 'schemaVersion':1,'featureId':'horizon.native-search','settingKey':'features.native_search',
+ 'title':'Native repository search','description':'Optional audited native search backend',
+ 'releaseClass':'experimental','optional':True,'audience':'developer','defaultEnabled':False,
+ 'supportedScopes':['user','project'],'applyBoundary':'next_session','capabilityIds':['text.search'],
+ 'state':{
+  'implementationStatus':'designed','requestedEnabled':None,'effectiveEnabled':False,
+  'effectiveState':'unavailable','valueSource':'default','blockedReason':'Not implemented'
+ }
+}
+check(not list(feature_validator.iter_errors(feature_off)),'feature exposure experimental unavailable fixture')
+check(all(ref in records for ref in feature_off['capabilityIds']),'feature exposure canonical capability ref missing')
+feature_on={
+ **feature_off,'featureId':'horizon.editor-annotations','settingKey':'features.editor_annotations',
+ 'releaseClass':'stable','audience':'public','defaultEnabled':True,'capabilityIds':[],
+ 'state':{
+  'implementationStatus':'verified','requestedEnabled':True,'effectiveEnabled':True,
+  'effectiveState':'on','valueSource':'user'
+ }
+}
+check(not list(feature_validator.iter_errors(feature_on)),'feature exposure stable-enabled fixture')
+feature_pending={
+ **feature_on,'state':{
+  'implementationStatus':'verified','requestedEnabled':False,'effectiveEnabled':True,
+  'effectiveState':'pending_apply','valueSource':'user','pendingApplyAt':'restart'
+ }
+}
+check(not list(feature_validator.iter_errors(feature_pending)),'feature exposure pending-disable fixture')
+for label,bad in [
+ ('experimental default enabled',{**feature_off,'defaultEnabled':True}),
+ ('developer default enabled',{**feature_off,'defaultEnabled':True,'releaseClass':'stable'}),
+ ('missing setting key',{k:v for k,v in feature_off.items() if k!='settingKey'}),
+ ('unknown top-level authority',{**feature_off,'privilegedOverride':True}),
+ ('unknown nested authority',{**feature_off,'state':{**feature_off['state'],'guardBypass':True}}),
+ ('designed feature effective on',{**feature_off,'state':{**feature_off['state'],'effectiveEnabled':True,'effectiveState':'on'}}),
+ ('on state but disabled',{**feature_on,'state':{**feature_on['state'],'effectiveEnabled':False}}),
+ ('blocked without reason',{**feature_off,'state':{**feature_off['state'],'effectiveState':'blocked','blockedReason':None}}),
+ ('pending without apply boundary',{**feature_pending,'state':{k:v for k,v in feature_pending['state'].items() if k!='pendingApplyAt'}}),
+]:
+ check(bool(list(feature_validator.iter_errors(bad))),'feature exposure rejects '+label)
+
 # Existing source anchors: source truth, not feature acceptance.
 present=[
  'packages/core/src/session/runner/llm.ts','packages/core/src/tool/registry.ts',
