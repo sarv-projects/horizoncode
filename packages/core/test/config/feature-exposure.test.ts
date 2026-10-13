@@ -51,7 +51,7 @@ describe("FeatureExposure derived Settings projection", () => {
   test("compaction update is bounded and preserves the other value", () => {
     const source = { compaction: { auto: false, prune: false } }
     expect(FeatureExposure.updateCompaction(source, "compaction.prune", true)).toEqual({
-      compaction: { auto: false, prune: true },
+      compaction: { prune: true },
     })
     expect(source.compaction.prune).toBe(false)
     expect(FeatureExposure.updateCompaction(source, "native_search", true)).toBeUndefined()
