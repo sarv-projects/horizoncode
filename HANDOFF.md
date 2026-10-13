@@ -144,3 +144,16 @@ Reviewed the active architecture/implementation plan and the relevant source pat
 CI chronology: `HorizonCode full validation` GitHub Actions run [38476485241](https://github.com/sarv-projects/horizoncode/actions/runs/38476485241) passed for `c325172492da5741ed416eb018bf724612a6ccf2` after restoring the nested Bun `packages/opencode` workspace. That is real CI for that commit, **not runtime verification of Experimental Settings**. New audit-branch commits require fresh CI and schema checks. Do not carry old “zero workflow runs” claims forward as present-tense truth.
 
 Next: first P1.3 effect-origin migration, then implement `FeatureExposureV1` through the existing config owner; UI surfaces read authoritative effective state. §20.10.1 lists concrete code locations, §32 FEAT-001..014 lists acceptance, and the operative plan records unchecked implementation steps. No source-runtime feature implementation has been completed by this audit.
+
+## Feature Settings implementation checkpoint — 2026-10-14 (supersedes earlier design-only status)
+
+Code now exists **on draft PR #1 only**, not on `main`:
+- `packages/core/src/v1/config/feature-exposure.ts` — derived metadata for existing backend config; stable compaction auto/prune options and three unavailable Experimental candidates. This is not an independent settings registry or policy authority.
+- `packages/core/test/config/feature-exposure.test.ts` — focused Bun tests for defaults, disabled experiments, unique IDs and safe minimal patches.
+- `packages/tui/src/component/dialog-features.tsx` and `packages/tui/src/app.tsx` — working-code candidate for `/features` with explicit Experimental labels and existing SDK config read/update.
+- `packages/app/src/components/settings-v2/features.tsx` and `dialog-settings-v2.tsx` — desktop/web Features and Experimental tabs using existing server-global config updates; GUI-local `settings.v3` is not used for backend authorization.
+- `scripts/architecture/run_full_gate.sh` runs the focused Bun test **from the Core package directory**, respecting the pinned upstream `bunfig.toml` test-root restriction.
+
+**Verified as of this checkpoint:** the GitHub full-validation workflow passed the pure feature resolver commit, TUI dialog/app wiring commit, and desktop/web feature view+tabs commit `50949e9f63bd740ad3deb8fe29b3a33a653763da`. The first attempt to run the *new* test command from monorepo root failed due to intentionally disabled root test discovery, not type errors; the package-local invocation is committed and must pass its own PR-head workflow. No interactive device smoke test was run.
+
+**Still open:** feature-specific runtime server projection (UI currently derives from *server-returned config* using shared code), source-precedence / lock-source resolution, revision-aware concurrent writes, active-session pending-apply fidelity, arbitrary optional-feature inventory and FEAT-001..014 end-to-end tests. The three experimental engine backends remain unavailable even when listed, and P1.3 universal mutation mediation is a separate unfinished gate. This is a real initial product UI/config slice, not completed full Experimental infrastructure.
