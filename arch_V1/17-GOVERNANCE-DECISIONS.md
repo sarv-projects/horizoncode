@@ -116,3 +116,15 @@ Decision A-V2-27 amends only the future provider-transport direction under A-V2-
 - OpenCode Go follows documented third-party access. Zen promotional free-tier eligibility is independently restricted and not guaranteed. Never spoof a native client or bypass provider access gates.
 - Public npm package and primary CLI: horizoncode. Optional command alias: hzcode. Retain upstream @opencode-ai internal import names until a separately validated migration. No premature npm publication.
 - Required gates: repeatable checkout, bounded test/build, real Guard mediation, native adapter lifecycle, streaming, cost accuracy, explicit permissions and independent outcome verification.
+
+## 17.8 A-V2-28 — selective rival adoption and evidence-first implementation (2026-10-14)
+
+This clarifies existing V1 contracts; it does not authorize another session owner, orchestration runtime, extension registry, native tool authority or new platform capability without its existing acceptance gate.
+
+- **Adopt now:** one Guard/ExecutionHost mediation for enabled mutation origins, complete bounded ToolBatch, accurate UNKNOWN/cancellation, real acceptance evidence, V1/V2 parity and a lightweight direct coding path. Unsupported or opaque effect origins are disabled rather than falsely labeled safe.
+- **Adopt behind benchmarks:** source-revision-safe Hashline as an edit dialect within `files.patch`; in-process read/grep/gix behind the existing tools only with equivalent open-time read scope/security and truthful partial results; early connection/lazy MCP; CoW worktrees preserving the existing resource lease/disk/dirty-state policy; optional read-only independent verifier, typed child deliverables and UI inspection.
+- **Reuse:** current OpenCode-derived direct Session, transport, compaction, TUI, plugin/ACP/MCP surfaces when proved on the pinned fork; Rust canonical Goal/SpecVersion/Run/Task/Attempt/effects/evidence and existing supervisor.
+- **Defer as defaults:** parallel best-of-N or 8 workers, new leader daemon, Rust TUI rewrite, full native shell, always-on classifier, snapcompact, unreviewed executable marketplace or hidden paid model calls.
+- **Proof:** each candidate needs identical-task/model/platform baselines where possible; correctness, security, verification success, p50/p95 latency, resource/disk/tokens/cost and rollback. Compaction summaries cannot become authoritative task/lease state. Reviewers cannot invent new acceptance requirements after an evidenced PASS.
+
+The single implementation-order decision and benchmark specification live in `docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md`; §14 governs effect/read security, §20 source placement, §21 pooling, §30 context, §31 measurement/UI, §32 tests and §42 source pins. Do not create another competing architecture chapter. Completion requires observed behavior, not another document.
