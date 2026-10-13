@@ -161,5 +161,5 @@ export function list(config: SourceConfig): Feature[] {
 export function updateCompaction(config: SourceConfig, featureId: FeatureId, enabled: boolean): SourceConfig | undefined {
   const option = compactionOptions.find((candidate) => candidate.id === featureId)
   if (!option) return undefined
-  return { compaction: { ...config.compaction, [option.key]: enabled } }
+  return { compaction: { [option.key]: enabled } }
 }
