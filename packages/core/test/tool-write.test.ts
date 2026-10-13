@@ -21,7 +21,14 @@ import { toolIdentity, settleTool } from "./lib/tool"
 const sessionID = SessionV2.ID.make("ses_write_tool_test")
 const permissionAssertions: PermissionV2.AssertInput[] = []
 const supervisorCalls: string[] = []
-const approvedChallenges = new Set<string>()
+const lease = {
+  effectID: "effect_prepared",
+  capabilityLeaseDigest: `blake3:${"1".repeat(64)}`,
+}
+let preparedTarget: string | undefined
+let preparedResource: string | undefined
+let leasePrepared = false
+let denyToolBatch = false
 
 const permission = Layer.succeed(
   PermissionV2.Service,
@@ -41,17 +48,48 @@ const supervisor = Layer.succeed(
   SessionSupervisor.Service.of({
     open: () => Effect.die("unused"),
     openForSession: () => Effect.die("unused"),
-    prepareToolBatch: () => Effect.succeed({ status: "denied", reason: "unused" }),
-    approveEffect: ({ challengeID }) =>
+    prepareToolBatch: ({ locationRef, calls }) => {
+      supervisorCalls.push("prepare")
+      const input = calls[0]?.arguments
+      const relativePath = typeof input === "object" && input !== null && "path" in input ? input.path : undefined
+      if (denyToolBatch)
+        return Effect.succeed({ status: "denied" as const, reason: "Guard approval denied" })
+      if (calls.length !== 1 || calls[0]?.capabilityID !== "files.write" || typeof relativePath !== "string")
+        return Effect.succeed({ status: "denied" as const, reason: "unsupported batch" })
+      preparedTarget = path.resolve(locationRef.directory, relativePath)
+      preparedResource = relativePath
+      leasePrepared = true
+      return Effect.succeed({ status: "prepared" as const, lease })
+    },
+    replyGuardApproval: () => Effect.die("unused"),
+    executeWrite: ({ lease: providedLease, content }) =>
       Effect.gen(function* () {
-        supervisorCalls.push(`approve:${challengeID}`)
-        if (!approvedChallenges.has(challengeID))
-          return yield* Effect.fail(new SessionSupervisorError({ stage: "authorization", reason: "unknown challenge" }))
-      }),
-    executeWrite: ({ challengeID }) =>
-      Effect.gen(function* () {
-        supervisorCalls.push(`execute:${challengeID}`)
-        return yield* Effect.fail(new SessionSupervisorError({ stage: "effect", reason: "unused" }))
+        supervisorCalls.push("execute")
+        if (
+          !leasePrepared ||
+          providedLease.effectID !== lease.effectID ||
+          providedLease.capabilityLeaseDigest !== lease.capabilityLeaseDigest ||
+          !preparedTarget ||
+          !preparedResource
+        )
+          return yield* Effect.fail(new SessionSupervisorError({ stage: "effect", reason: "invalid lease" }))
+        leasePrepared = false
+        const target = preparedTarget
+        const resource = preparedResource
+        const existed = yield* Effect.promise(() =>
+          fs.stat(target).then(
+            () => true,
+            () => false,
+          ),
+        )
+        yield* Effect.promise(() => fs.writeFile(target, content))
+        return {
+          effectID: lease.effectID,
+          receiptDigest: `blake3:${"2".repeat(64)}`,
+          target,
+          resource,
+          existed,
+        }
       }),
     executePatch: () => Effect.die("unused"),
     runPatch: () => Effect.die("unused"),
@@ -97,20 +135,64 @@ const call = (input: typeof WriteTool.Input.Type, effect?: ToolRegistry.ExecuteI
 const it = testEffect(Layer.empty)
 
 describe("WriteTool", () => {
-  it.live("rejects direct registry settlement without a Rust effect challenge", () =>
+  it.live("writes only with the prepared host lease", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),
       (tmp) => {
+        leasePrepared = false
+        preparedTarget = undefined
+        preparedResource = undefined
         permissionAssertions.length = 0
         supervisorCalls.length = 0
-        approvedChallenges.clear()
+        const target = path.join(tmp.path, "allowed.txt")
+        return withTool(tmp.path, (registry) =>
+          Effect.gen(function* () {
+            const admission = yield* SessionSupervisor.Service.pipe(
+              Effect.flatMap((service) =>
+                service.prepareToolBatch({
+                  sessionID,
+                  locationRef: Location.Ref.make({ directory: AbsolutePath.make(tmp.path) }),
+                  batchID: "batch_write_test",
+                  turnContextDigest: `sha256:${"0".repeat(64)}`,
+                  calls: [{ callID: "call-write", capabilityID: "files.write", arguments: { path: "allowed.txt" } }],
+                }),
+              ),
+            )
+            expect(admission.status).toBe("prepared")
+            const settled = yield* settleTool(
+              registry,
+              call(
+                { path: "allowed.txt", content: "allowed" },
+                admission.status === "prepared" ? admission.lease : undefined,
+              ),
+            )
+            expect(settled.result).toMatchObject({ type: "text" })
+            expect(supervisorCalls).toEqual(["prepare", "execute"])
+            expect(permissionAssertions.map((input) => input.action)).toEqual(["edit"])
+            expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("allowed")
+          }),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  it.live("rejects settlement without a Rust Guard lease", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        leasePrepared = false
+        preparedTarget = undefined
+        preparedResource = undefined
+        permissionAssertions.length = 0
+        supervisorCalls.length = 0
         const target = path.join(tmp.path, "blocked.txt")
         return withTool(tmp.path, (registry) =>
           settleTool(registry, call({ path: "blocked.txt", content: "no" })),
         ).pipe(
           Effect.andThen((settled) =>
             Effect.gen(function* () {
-              expect(settled.result).toEqual({ type: "error", value: "Unable to write blocked.txt" })
+              expect(settled.result).toEqual({ type: "error", value: "Unable to write file" })
               expect(permissionAssertions).toEqual([])
               expect(supervisorCalls).toEqual([])
               expect(
@@ -129,13 +211,15 @@ describe("WriteTool", () => {
     ),
   )
 
-  it.live("does not treat a caller-forged challenge as Rust approval", () =>
+  it.live("rejects a forged lease and does not mutate", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),
       (tmp) => {
+        leasePrepared = false
+        preparedTarget = undefined
+        preparedResource = undefined
         permissionAssertions.length = 0
         supervisorCalls.length = 0
-        approvedChallenges.clear()
         const target = path.join(tmp.path, "forged.txt")
         return withTool(tmp.path, (registry) =>
           settleTool(
@@ -143,19 +227,17 @@ describe("WriteTool", () => {
             call(
               { path: "forged.txt", content: "no" },
               {
-                challengeID: "challenge_forged",
                 effectID: "effect_forged",
-                target,
-                resource: "forged.txt",
-              },
+                capabilityLeaseDigest: `blake3:${"9".repeat(64)}`,
+              } as unknown as ToolRegistry.ExecuteInput["effect"],
             ),
           ),
         ).pipe(
           Effect.andThen((settled) =>
             Effect.gen(function* () {
-              expect(settled.result).toEqual({ type: "error", value: "Unable to write forged.txt" })
+              expect(settled.result).toEqual({ type: "error", value: "Unable to write file" })
               expect(permissionAssertions.map((input) => input.action)).toEqual(["edit"])
-              expect(supervisorCalls).toEqual(["approve:challenge_forged"])
+              expect(supervisorCalls).toEqual(["execute"])
               expect(
                 yield* Effect.promise(() =>
                   fs.stat(target).then(
@@ -169,6 +251,52 @@ describe("WriteTool", () => {
         )
       },
       (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+  it.live("does not execute after a denied Guard approval", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        leasePrepared = false
+        denyToolBatch = true
+        preparedTarget = undefined
+        preparedResource = undefined
+        permissionAssertions.length = 0
+        supervisorCalls.length = 0
+        const target = path.join(tmp.path, "denied.txt")
+        return withTool(tmp.path, (registry) =>
+          Effect.gen(function* () {
+            const service = yield* SessionSupervisor.Service
+            const admission = yield* service.prepareToolBatch({
+              sessionID,
+              locationRef: Location.Ref.make({ directory: AbsolutePath.make(tmp.path) }),
+              batchID: "batch_denied_test",
+              turnContextDigest: `sha256:${"0".repeat(64)}`,
+              calls: [
+                { callID: "call-write", capabilityID: "files.write", arguments: { path: "denied.txt" } },
+              ],
+            })
+            expect(admission).toEqual({ status: "denied", reason: "Guard approval denied" })
+            expect(
+              yield* settleTool(registry, call({ path: "denied.txt", content: "no" })),
+            ).toMatchObject({ result: { type: "error" } })
+            expect(supervisorCalls).toEqual(["prepare"])
+            expect(permissionAssertions).toEqual([])
+            expect(
+              yield* Effect.promise(() =>
+                fs.stat(target).then(
+                  () => true,
+                  () => false,
+                ),
+              ),
+            ).toBe(false)
+          }),
+        )
+      },
+      (tmp) =>
+        Effect.sync(() => {
+          denyToolBatch = false
+        }).pipe(Effect.andThen(Effect.promise(() => tmp[Symbol.asyncDispose]()))),
     ),
   )
 })

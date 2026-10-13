@@ -333,21 +333,18 @@ const layer = Layer.effect(
                       })),
                     })
                     .pipe(
-                      Effect.catch((error) =>
+                      Effect.catch(() =>
                         Effect.succeed({
                           status: "denied" as const,
-                          reason: `Rust Guard unavailable: ${error.message}`,
+                          reason: "Rust Guard is unavailable",
                         }),
                       ),
                     )
-                  if (
-                    admission.status === "admitted" &&
-                    (localToolCalls.length !== 1 || capabilities[0]?.id !== "files.write")
-                  )
-                    admission = {
-                      status: "denied",
-                      reason: "Rust admitted an unsupported local ToolBatch",
-                    }
+                  if (localToolCalls.length !== 1 || capabilities[0]?.id !== "files.write") {
+                    admission = { status: "denied", reason: "Rust Guard denied an unsupported local ToolBatch" }
+                  } else if (admission.status !== "prepared" && admission.status !== "denied") {
+                    admission = { status: "denied", reason: "Rust Guard returned no prepared lease" }
+                  }
                 }
               }
               for (const [index, call] of localToolCalls.entries()) {
@@ -376,15 +373,7 @@ const layer = Layer.effect(
                   continue
                 }
                 const assistantMessageID = yield* publisher.assistantMessageID(call.id)
-                const effect =
-                  admission?.status === "admitted"
-                    ? {
-                        challengeID: admission.challenge.challengeID,
-                        effectID: admission.challenge.effectID,
-                        target: admission.challenge.target,
-                        resource: admission.challenge.resource,
-                      }
-                    : undefined
+                const effect = admission?.status === "prepared" ? admission.lease : undefined
                 yield* Effect.uninterruptibleMask((restore) =>
                   restore(
                     materialization.settle({
@@ -420,8 +409,6 @@ const layer = Layer.effect(
           const settled = yield* restore(awaitToolFibers(toolFibers)).pipe(Effect.exit)
           if (settled._tag === "Failure" && isUserDeclined(settled.cause)) {
             yield* FiberSet.clear(toolFibers)
-            yield* withPublication(publisher.failUnsettledTools("Tool execution interrupted"))
-            return yield* Effect.interrupt
           }
           if (
             (stream._tag === "Failure" && Cause.hasInterrupts(stream.cause)) ||

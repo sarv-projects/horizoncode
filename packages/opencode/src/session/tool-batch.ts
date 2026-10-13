@@ -1,7 +1,13 @@
 import type { LanguageModelV3Middleware, LanguageModelV3StreamPart } from "@ai-sdk/provider"
-import { randomUUID } from "node:crypto"
-import type { EffectAdmission, EffectChallenge, GuardedToolCall } from "@opencode-ai/core/session/supervisor"
+import type {
+  EffectAdmission,
+  EffectChallenge,
+  EffectLease,
+  GuardedToolCall,
+} from "@opencode-ai/core/session/supervisor"
 import type { Capability } from "@/tool/tool"
+import { Location } from "@opencode-ai/core/location"
+
 
 export type ToolBatchPreparation = {
   readonly arguments: unknown
@@ -20,6 +26,7 @@ export type ToolBatchDefinition = {
 export type ToolCallOutcome =
   | { readonly status: "allowed" }
   | { readonly status: "no_effect"; readonly execution: unknown }
+  | { readonly status: "prepared"; readonly lease: EffectLease; readonly execution?: unknown }
   | { readonly status: "admitted"; readonly challenge: EffectChallenge; readonly execution?: unknown }
   | { readonly status: "denied"; readonly reason: string }
 
@@ -43,6 +50,13 @@ export function toolCallOutcome(context: unknown, callID?: string): ToolCallOutc
   if (value.status === "allowed") return { status: "allowed" }
   if (value.status === "denied" && "reason" in value && typeof value.reason === "string")
     return { status: "denied", reason: value.reason }
+  if (value.status === "prepared" && "lease" in value && isEffectLease(value.lease)) {
+    return {
+      status: "prepared",
+      lease: value.lease,
+      ...("execution" in value ? { execution: value.execution } : {}),
+    }
+  }
   if (value.status === "admitted" && "challenge" in value && isEffectChallenge(value.challenge)) {
     return {
       status: "admitted",
@@ -51,6 +65,18 @@ export function toolCallOutcome(context: unknown, callID?: string): ToolCallOutc
     }
   }
   return undefined
+}
+
+function isEffectLease(value: unknown): value is EffectLease {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "effectID" in value &&
+    typeof value.effectID === "string" &&
+    "capabilityLeaseDigest" in value &&
+    typeof value.capabilityLeaseDigest === "string" &&
+    /^blake3:[0-9a-f]{64}$/.test(value.capabilityLeaseDigest)
+  )
 }
 
 function isEffectChallenge(value: unknown): value is EffectChallenge {
@@ -75,12 +101,13 @@ export function requireToolExecution(input: {
   readonly callID?: string
   readonly capability: Capability
   readonly internal?: boolean
-}): EffectChallenge | undefined {
+}): EffectChallenge | EffectLease | undefined {
   const outcome = toolCallOutcome(input.context, input.callID)
   if (outcome?.status === "denied") throw new Error(`Tool batch denied: ${outcome.reason}`)
 
   if (input.capability.effectClass === "effect") {
     if (outcome?.status === "no_effect") return undefined
+    if (outcome?.status === "prepared") return outcome.lease
     if (outcome?.status !== "admitted") throw new Error("Tool batch denied: missing Rust Guard admission")
     return outcome.challenge
   }
@@ -95,11 +122,13 @@ export function requireToolExecution(input: {
 
 export type ToolBatchGateInput = {
   readonly sessionID: string
+  readonly locationRef: typeof Location.Ref.Type
   readonly turnContextDigest: string
   readonly signal: AbortSignal
   readonly definitions: Readonly<Record<string, ToolBatchDefinition>>
   readonly prepareToolBatch: (request: {
     readonly sessionID: string
+    readonly locationRef: typeof Location.Ref.Type
     readonly batchID: string
     readonly turnContextDigest: string
     readonly calls: ReadonlyArray<GuardedToolCall>
@@ -239,6 +268,7 @@ async function admitBatch(
   try {
     admission = await input.prepareToolBatch({
       sessionID: input.sessionID,
+      locationRef: input.locationRef,
       batchID: `batch_${randomUUID().replaceAll("-", "")}`,
       turnContextDigest: input.turnContextDigest,
       calls: prepared.map(({ call }) => call),
@@ -248,10 +278,32 @@ async function admitBatch(
   }
   if (input.signal.aborted) return deny("tool batch interrupted before execution")
   if (admission.status === "denied") return deny(admission.reason)
-  if (prepared.length !== 1 || !["files.write", "files.patch"].includes(prepared[0]!.call.capabilityID))
+  if (
+    prepared.length !== 1 ||
+    !["files.write", "files.patch", "terminal.run"].includes(prepared[0]!.call.capabilityID)
+  )
     return deny("Rust admitted an unsupported tool batch")
 
   const [{ call, execution }] = prepared
+  if (admission.status === "prepared") {
+    if (!isEffectLease(admission.lease)) return deny("Rust returned an invalid capability lease")
+    input.context.outcomes.set(call.callID, {
+      status: "prepared",
+      lease: admission.lease,
+      ...(execution !== undefined ? { execution } : {}),
+    })
+    return
+  }
+
+  if (call.capabilityID === "terminal.run") {
+    input.context.outcomes.set(call.callID, {
+      status: "admitted",
+      challenge: admission.challenge,
+      ...(execution !== undefined ? { execution } : {}),
+    })
+    return
+  }
+
   if (call.capabilityID === "files.patch") {
     const args = call.arguments as { operations?: unknown }
     const operations = args.operations

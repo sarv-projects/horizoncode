@@ -75,6 +75,10 @@ export const PermissionResponsePayload = Schema.Struct({
   response: PermissionV1.Reply,
 })
 
+export const GuardApprovalPayload = Schema.Struct({
+  approvalID: Schema.String,
+  decision: Schema.Literals(["allow_once", "deny"]),
+})
 export const SessionPaths = {
   list: root,
   status: `${root}/status`,
@@ -95,6 +99,7 @@ export const SessionPaths = {
   prompt: `${root}/:sessionID/message`,
   promptAsync: `${root}/:sessionID/prompt_async`,
   command: `${root}/:sessionID/command`,
+  guardApproval: `${root}/guard-approval`,
   shell: `${root}/:sessionID/shell`,
   revert: `${root}/:sessionID/revert`,
   unrevert: `${root}/:sessionID/unrevert`,
@@ -364,6 +369,18 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.shell",
             summary: "Run a shell command",
             description: "Run a shell command through Rust Guard and the managed terminal host.",
+          }),
+        ),
+        HttpApiEndpoint.post("guardApproval", SessionPaths.guardApproval, {
+          query: WorkspaceRoutingQuery,
+          payload: GuardApprovalPayload,
+          success: Schema.Boolean,
+          error: [HttpApiError.BadRequest, ServiceUnavailableError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.guardApproval",
+            summary: "Reply to a Guard approval request",
+            description: "Allow a prepared effect once or deny it.",
           }),
         ),
         HttpApiEndpoint.post("revert", SessionPaths.revert, {

@@ -1,6 +1,8 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Agent } from "@/agent/agent"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { Pty } from "@opencode-ai/core/pty"
+import { ServerAuth } from "@/server/auth"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Command } from "@/command"
@@ -27,6 +29,7 @@ import {
   CommandPayload,
   DiffQuery,
   ForkPayload,
+  GuardApprovalPayload,
   InitPayload,
   ListQuery,
   MessagesQuery,
@@ -63,6 +66,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const todoSvc = yield* Todo.Service
     const summary = yield* SessionSummary.Service
     const events = yield* EventV2Bridge.Service
+    const pty = yield* Pty.Service
+    const serverAuth = yield* ServerAuth.Config
     const scope = yield* Scope.Scope
 
     const list = Effect.fn("SessionHttpApi.list")(function* (ctx: { query: typeof ListQuery.Type }) {
@@ -434,6 +439,25 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       )
       return true
     })
+    const guardApproval = Effect.fn("SessionHttpApi.guardApproval")(function* (ctx: {
+      payload: typeof GuardApprovalPayload.Type
+    }) {
+      if (!ServerAuth.required(serverAuth))
+        return yield* new ServiceUnavailableError({
+          message: "Guard approvals require validated server authentication.",
+          service: "guard.approval",
+        })
+      yield* pty.replyGuardApproval(ctx.payload).pipe(
+        Effect.mapError(
+          () =>
+            new ServiceUnavailableError({
+              message: "Guard approval could not be resolved.",
+              service: "guard.approval",
+            }),
+        ),
+      )
+      return true
+    })
 
     const deleteMessage = Effect.fn("SessionHttpApi.deleteMessage")(function* (ctx: {
       params: { sessionID: SessionID; messageID: MessageID }
@@ -490,6 +514,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("promptAsync", promptAsync)
       .handle("command", command)
       .handle("shell", shell)
+      .handle("guardApproval", guardApproval)
       .handle("revert", revert)
       .handle("unrevert", unrevert)
       .handle("permissionRespond", permissionRespond)

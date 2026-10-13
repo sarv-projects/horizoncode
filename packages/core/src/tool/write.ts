@@ -8,6 +8,7 @@ export * as WriteTool from "./write"
 import { ToolFailure } from "@opencode-ai/llm"
 import { Effect, Layer, Schema } from "effect"
 import { makeLocationNode } from "../effect/app-node"
+import { Location } from "../location"
 import { LocationMutation } from "../location-mutation"
 import { PermissionV2 } from "../permission"
 import { SessionSupervisor } from "../session/supervisor"
@@ -46,6 +47,7 @@ export const toModelOutput = (output: Output) =>
 const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const tools = yield* Tools.Service
+    const location = yield* Location.Service
     const mutation = yield* LocationMutation.Service
     const permission = yield* PermissionV2.Service
     const supervisor = yield* SessionSupervisor.Service
@@ -64,15 +66,16 @@ const layer = Layer.effectDiscard(
               Effect.gen(function* () {
                 const admission = context.effect
                 if (!admission)
-                  return yield* Effect.fail(new ToolFailure({ message: "Write denied: missing Rust effect challenge" }))
+                  return yield* Effect.fail(new ToolFailure({ message: "Write denied: missing Rust Guard lease" }))
+                const lease = admission
+                if (!lease.effectID || !lease.capabilityLeaseDigest)
+                  return yield* Effect.fail(new ToolFailure({ message: "Write denied: invalid Rust Guard lease" }))
                 const source = {
                   type: "tool" as const,
                   messageID: context.assistantMessageID,
                   callID: context.toolCallID,
                 }
                 const target = yield* mutation.resolve({ path: input.path, kind: "file" })
-                if (admission.target !== target.canonical || admission.resource !== target.resource)
-                  return yield* Effect.fail(new ToolFailure({ message: "Write denied: effect target changed" }))
                 if (target.externalDirectory)
                   yield* permission.assert({
                     ...LocationMutation.externalDirectoryPermission(target.externalDirectory),
@@ -89,34 +92,28 @@ const layer = Layer.effectDiscard(
                   source,
                 })
                 const receipt = yield* Effect.uninterruptible(
-                  supervisor
-                    .approveEffect({
-                      sessionID: context.sessionID,
-                      challengeID: admission.challengeID,
-                    })
-                    .pipe(
-                      Effect.andThen(
-                        supervisor.executeWrite({
-                          sessionID: context.sessionID,
-                          challengeID: admission.challengeID,
-                          content: input.content,
-                        }),
-                      ),
-                    ),
+                  supervisor.executeWrite({
+                    sessionID: context.sessionID,
+                    locationRef: Location.Ref.make({ directory: location.directory }),
+                    lease,
+                    content: input.content,
+                  }),
                 )
                 if (
-                  receipt.effectID !== admission.effectID ||
+                  receipt.effectID !== lease.effectID ||
                   receipt.target !== target.canonical ||
                   receipt.resource !== target.resource
                 )
-                  return yield* Effect.fail(new ToolFailure({ message: "Write denied: Rust receipt does not match its challenge" }))
+                  return yield* Effect.fail(
+                    new ToolFailure({ message: "Write denied: Rust receipt does not match the prepared lease" }),
+                  )
                 return {
                   operation: "write" as const,
                   target: receipt.target,
                   resource: receipt.resource,
                   existed: receipt.existed,
                 }
-              }).pipe(Effect.mapError(() => new ToolFailure({ message: `Unable to write ${input.path}` }))),
+              }).pipe(Effect.mapError(() => new ToolFailure({ message: "Unable to write file" }))),
           }),
           "edit",
         ),
@@ -128,5 +125,5 @@ const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "tool/write",
   layer,
-  deps: [ToolRegistry.node, LocationMutation.node, PermissionV2.node, SessionSupervisor.node],
+  deps: [Location.node, ToolRegistry.node, LocationMutation.node, PermissionV2.node, SessionSupervisor.node],
 })

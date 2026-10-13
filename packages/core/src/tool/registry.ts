@@ -10,7 +10,7 @@ import { ToolOutputStore } from "../tool-output-store"
 import { ApplicationTools } from "./application-tools"
 import { Tools } from "./tools"
 import { Wildcard } from "../util/wildcard"
-import { capability, definition, permission, settle, validate as validateInput, validateName, type AnyTool, type Capability, type EffectAdmission, type RegistrationError } from "./tool"
+import { capability, definition, permission, settle, validate as validateInput, validateName, type AnyTool, type Capability, type EffectLease, type RegistrationError } from "./tool"
 import { makeLocationNode } from "../effect/app-node"
 
 export type ExecuteInput = {
@@ -18,7 +18,7 @@ export type ExecuteInput = {
   readonly agent: AgentV2.ID
   readonly assistantMessageID: SessionMessage.ID
   readonly call: ToolCall
-  readonly effect?: EffectAdmission
+  readonly effect?: EffectLease
 }
 
 export interface Interface {

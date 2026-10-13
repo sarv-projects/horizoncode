@@ -16,6 +16,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SNAPSHOT = ROOT / "opencode"
 SKIP = {".git", "node_modules", ".turbo", "target", "dist", "build", ".next", ".cache", ".venv", "vendor"}
+def skip_scan_dir(name: str) -> bool:
+    # Generated E2E workspaces are ignored artifacts, not overlay source.
+    return name in SKIP or name.startswith(".horizoncode-e2e-")
 FIRST_PARTY_NEW_ROOTS = (
     ROOT / "packages",
     ROOT / "kernel",
@@ -82,7 +85,7 @@ def main() -> int:
         if not root.exists():
             continue
         for base, dirs, files in os.walk(root):
-            dirs[:] = sorted(d for d in dirs if d not in SKIP)
+            dirs[:] = sorted(d for d in dirs if not skip_scan_dir(d))
             for name in sorted(files):
                 target = Path(base) / name
                 if target.suffix.lower() not in SOURCE_SUFFIXES and name != "Dockerfile":

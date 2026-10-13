@@ -33,6 +33,8 @@ pub mod supervisor_lease;
 pub mod supervisor_session;
 /// Bounded generation-scoped terminal grants, input sequencing, and replay state.
 pub mod terminal;
+/// Host-controlled, deterministic configured shell profiles; request bodies carry IDs only.
+pub mod terminal_profile;
 pub mod transport;
 #[cfg(windows)]
 pub mod windows_peer;

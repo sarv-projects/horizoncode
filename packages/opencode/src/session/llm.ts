@@ -23,6 +23,9 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Wildcard } from "@/util/wildcard"
 import { SessionID } from "@/session/schema"
+import { Location } from "@opencode-ai/core/location"
+import { AbsolutePath } from "@opencode-ai/core/schema"
+import { InstanceState } from "@/effect/instance-state"
 import { Auth } from "@/auth"
 import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -91,6 +94,8 @@ const live: Layer.Layer<
     const supervisor = yield* SessionSupervisor.Service
 
     const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
+      const instance = yield* InstanceState.context
+      const locationRef = Location.Ref.make({ directory: AbsolutePath.make(instance.directory) })
       yield* Effect.logInfo("stream", {
         providerID: input.model.providerID,
         modelID: input.model.id,
@@ -164,6 +169,7 @@ const live: Layer.Layer<
         .digest("hex")}`
       const batchMiddleware = toolBatchMiddleware({
         sessionID: input.sessionID,
+        locationRef,
         turnContextDigest,
         signal: input.abort,
         definitions,

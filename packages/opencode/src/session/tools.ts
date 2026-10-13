@@ -17,10 +17,12 @@ import { PartID } from "./schema"
 import { EffectBridge } from "@/effect/bridge"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { isRecord } from "@/util/record"
-import { requireToolExecution, type ToolBatchDefinition } from "./tool-batch"
+import type { EffectLease } from "@opencode-ai/core/session/supervisor"
+import path from "node:path"
+import { RuntimeFlags } from "@/effect/runtime-flags"
+import { requireToolExecution, type ToolBatchDefinition, toolCallOutcome } from "./tool-batch"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { preparePatchBatch } from "@/tool/apply_patch"
-import { toolCallOutcome } from "./tool-batch"
 
 
 export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
@@ -37,6 +39,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const run = yield* EffectBridge.make()
   const instance = yield* InstanceState.context
   const fs = yield* FSUtil.Service
+  const flags = yield* RuntimeFlags.Service
   const permission = yield* Permission.Service
   const registry = yield* ToolRegistry.Service
 
@@ -45,6 +48,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     options: ToolExecutionOptions,
     effect?: Tool.Context["effect"],
     guardedPatch?: unknown,
+    guardedLease?: EffectLease,
   ): Tool.Context => ({
     sessionID: input.session.id,
     abort: options.abortSignal!,
@@ -55,6 +59,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
       bypassAgentCheck: input.bypassAgentCheck,
       promptOps: input.promptOps,
       ...(guardedPatch !== undefined ? { guardedPatch } : {}),
+      ...(guardedLease !== undefined ? { guardedLease } : {}),
     },
     effect,
     agent: input.agent.name,
@@ -97,8 +102,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     const supported =
       internal ||
       capability.effectClass === "read_only" ||
-      (capability.effectClass === "effect" && ["files.write", "files.patch"].includes(capability.id))
-    if (!supported) continue
+      (capability.effectClass === "effect" && ["files.write", "files.patch", "terminal.run"].includes(capability.id))
 
     const schema = ProviderTransform.schema(input.model, ToolJsonSchema.fromTool(item))
     const normalize =
@@ -116,7 +120,24 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             const prepared = await run.promise(preparePatchBatch(value.patchText, instance.directory, fs))
             return { arguments: { operations: prepared.operations }, execution: prepared.operations }
           }
-        : undefined
+        : item.id === "bash"
+          ? async (value: unknown) => {
+              if (
+                !isRecord(value) ||
+                typeof value.command !== "string" ||
+                (value.workdir !== undefined && typeof value.workdir !== "string") ||
+                (value.timeout !== undefined &&
+                  (typeof value.timeout !== "number" || !Number.isSafeInteger(value.timeout) || value.timeout <= 0))
+              )
+                throw new Error("Invalid terminal.run arguments")
+              const execution = {
+                command: value.command,
+                cwd: path.resolve(instance.directory, value.workdir ?? "."),
+                timeoutMs: value.timeout ?? flags.bashDefaultTimeoutMs ?? 2 * 60 * 1000,
+              }
+              return { arguments: execution, execution }
+            }
+          : undefined
     definitions[item.id] = {
       capability,
       schema,
@@ -139,8 +160,17 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               internal,
             })
             const guardedPatch =
-              outcome?.status === "admitted" || outcome?.status === "no_effect" ? outcome.execution : undefined
-            const ctx = context(args, options, effect, guardedPatch)
+              outcome?.status === "prepared" || outcome?.status === "admitted" || outcome?.status === "no_effect"
+                ? outcome.execution
+                : undefined
+            const guardedLease = outcome?.status === "prepared" ? outcome.lease : undefined
+            const ctx = context(
+              args,
+              options,
+              effect && "challengeID" in effect ? effect : undefined,
+              guardedPatch,
+              guardedLease,
+            )
             const result = yield* item.execute(args, ctx)
             const output = {
               ...result,

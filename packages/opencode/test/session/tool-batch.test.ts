@@ -36,6 +36,29 @@ const readDefinition: ToolBatchDefinition = {
     return value
   },
 }
+const terminalDefinition: ToolBatchDefinition = {
+  capability: { id: "terminal.run", effectClass: "effect" },
+  schema: {
+    type: "object",
+    properties: {
+      command: { type: "string" },
+      cwd: { type: "string" },
+      timeoutMs: { type: "integer" },
+    },
+    required: ["command", "cwd", "timeoutMs"],
+    additionalProperties: false,
+  },
+  validate: async (value) => {
+    if (
+      !isRecord(value) ||
+      typeof value.command !== "string" ||
+      typeof value.cwd !== "string" ||
+      typeof value.timeoutMs !== "number"
+    )
+      throw new Error("invalid terminal.run")
+    return value
+  },
+}
 
 const finish = {
   type: "finish",
@@ -74,7 +97,7 @@ function gateInput(overrides: Partial<ToolBatchGateInput> = {}): ToolBatchGateIn
     sessionID: "session_1",
     turnContextDigest: `sha256:${"a".repeat(64)}`,
     signal: new AbortController().signal,
-    definitions: { write: writeDefinition, read: readDefinition },
+    definitions: { write: writeDefinition, read: readDefinition, bash: terminalDefinition },
     prepareToolBatch: async () => ({
       status: "admitted",
       challenge: {
@@ -340,4 +363,74 @@ test("checks cancellation after asynchronous validation and before Guard prepara
     status: "denied",
     reason: "tool batch interrupted before Guard preparation",
   })
+})
+test("binds model terminal execution to a host-prepared one-use Guard lease", async () => {
+  const lease = {
+    effectID: "effect_terminal",
+    capabilityLeaseDigest: `blake3:${"b".repeat(64)}`,
+  }
+  let request: unknown
+  const gate = gateInput({
+    prepareToolBatch: async (value) => {
+      request = value
+      return { status: "prepared", lease }
+    },
+  })
+  const output = await collect(
+    gateToolCallStream(
+      stream([
+        toolCall("call_bash", "bash", '{"command":"echo ok","cwd":"/workspace","timeoutMs":1000}'),
+        finish,
+      ]),
+      gate,
+    ),
+  )
+  const call = output.find((part) => part.type === "tool-call")
+  expect(call?.type).toBe("tool-call")
+  if (call?.type !== "tool-call") return
+
+  expect(request).toMatchObject({
+    sessionID: "session_1",
+    calls: [
+      {
+        callID: "call_bash",
+        capabilityID: "terminal.run",
+        arguments: { command: "echo ok", cwd: "/workspace", timeoutMs: 1000 },
+      },
+    ],
+  })
+  expect(
+    requireToolExecution({
+      context: gate.context,
+      callID: call.toolCallId,
+      capability: terminalDefinition.capability,
+    }),
+  ).toEqual(lease)
+})
+
+test("denies malformed model terminal arguments before Guard preparation", async () => {
+  let preparations = 0
+  const gate = gateInput({
+    prepareToolBatch: async () => {
+      preparations++
+      return { status: "denied", reason: "unexpected" }
+    },
+  })
+  const output = await collect(
+    gateToolCallStream(
+      stream([toolCall("call_bash", "bash", '{"command":"echo ok","cwd":"/workspace"}'), finish]),
+      gate,
+    ),
+  )
+  const call = output.find((part) => part.type === "tool-call")
+  expect(call?.type).toBe("tool-call")
+  if (call?.type !== "tool-call") return
+  expect(preparations).toBe(0)
+  expect(() =>
+    requireToolExecution({
+      context: gate.context,
+      callID: call.toolCallId,
+      capability: terminalDefinition.capability,
+    }),
+  ).toThrow("invalid tool arguments")
 })

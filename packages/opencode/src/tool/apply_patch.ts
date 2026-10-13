@@ -6,14 +6,27 @@ import { Watcher } from "@opencode-ai/core/filesystem/watcher"
 import { InstanceState } from "@/effect/instance-state"
 import { Patch } from "../patch"
 import { createTwoFilesPatch, diffLines } from "diff"
-import { assertExternalDirectoryEffect } from "./external-directory"
 import { trimDiff } from "./edit"
 import { LSP } from "@/lsp/lsp"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import DESCRIPTION from "./apply_patch.txt"
 import { FileSystem } from "@opencode-ai/core/filesystem"
 import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
+import { Location } from "@opencode-ai/core/location"
+import { AbsolutePath } from "@opencode-ai/core/schema"
+import type { EffectLease } from "@opencode-ai/core/session/supervisor"
 import * as Bom from "@/util/bom"
+
+function isEffectLease(value: unknown): value is EffectLease {
+  if (typeof value !== "object" || value === null) return false
+  return (
+    "effectID" in value &&
+    typeof value.effectID === "string" &&
+    "capabilityLeaseDigest" in value &&
+    typeof value.capabilityLeaseDigest === "string" &&
+    /^blake3:[0-9a-f]{64}$/.test(value.capabilityLeaseDigest)
+  )
+}
 
 export const Parameters = Schema.Struct({
   patchText: Schema.String.annotate({ description: "The full patch text that describes all changes to be made" }),
@@ -156,7 +169,6 @@ export const ApplyPatchTool = Tool.define(
 
       for (const hunk of hunks) {
         const filePath = path.resolve(instance.directory, hunk.path)
-        yield* assertExternalDirectoryEffect(ctx, filePath)
 
         switch (hunk.type) {
           case "add": {
@@ -225,7 +237,6 @@ export const ApplyPatchTool = Tool.define(
             }
 
             const movePath = hunk.move_path ? path.resolve(instance.directory, hunk.move_path) : undefined
-            yield* assertExternalDirectoryEffect(ctx, movePath)
 
             fileChanges.push({
               filePath,
@@ -317,37 +328,32 @@ export const ApplyPatchTool = Tool.define(
         })
       }
       const guardedPatch = ctx.extra?.guardedPatch
+      const lease = ctx.extra?.guardedLease
       if (
         !Array.isArray(guardedPatch) ||
         JSON.stringify(guardedPatch) !== JSON.stringify(operations) ||
-        !ctx.effect?.targets
+        !isEffectLease(lease)
       ) {
-        return yield* Effect.fail(new Error("Patch denied: guarded operation set changed"))
+        return yield* Effect.fail(new Error("Patch denied: guarded operation set or lease changed"))
       }
 
-      // Check permissions if needed
-      const relativePaths = fileChanges.map((c) => path.relative(instance.worktree, c.filePath).replaceAll("\\", "/"))
-      yield* ctx.ask({
-        permission: "edit",
-        patterns: relativePaths,
-        always: ["*"],
-        metadata: {
-          filepath: relativePaths.join(", "),
-          diff: totalDiff,
-          files,
-        },
-      })
-
-      const admission = ctx.effect
-      if (!admission) return yield* Effect.fail(new Error("Patch denied: missing Rust effect challenge"))
-      yield* Effect.uninterruptible(
-        supervisor.runPatch({
+      const locationRef = Location.Ref.make({ directory: AbsolutePath.make(instance.directory) })
+      const receipt = yield* Effect.uninterruptible(
+        supervisor.executePatch({
           sessionID: ctx.sessionID,
+          locationRef,
+          lease,
           operations: guardedPatch as typeof operations,
-          preparedChallenge: admission,
-          authorize: async () => undefined,
         }),
       )
+      const expected = new Map(operations.map((item) => [item.path, item.operation]))
+      if (
+        receipt.effectID !== lease.effectID ||
+        receipt.targets.length !== operations.length ||
+        receipt.targets.some((target) => expected.get(target.target) !== target.operation)
+      ) {
+        return yield* Effect.fail(new Error("Patch denied: Rust receipt does not match the prepared operation set"))
+      }
 
       const updates: Array<{ file: string; event: "add" | "change" | "unlink" }> = []
       for (const change of fileChanges) {

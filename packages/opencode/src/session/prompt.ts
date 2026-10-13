@@ -1,7 +1,10 @@
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Location } from "@opencode-ai/core/location"
+import { AbsolutePath } from "@opencode-ai/core/schema"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import path from "path"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { Pty } from "@opencode-ai/core/pty"
+import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 import { SessionV2 } from "@opencode-ai/core/session"
 import os from "os"
 import { SessionID, MessageID, PartID } from "./schema"
@@ -105,10 +108,18 @@ export interface Interface {
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
   readonly prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error | Session.BusyError>
   readonly loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
-  readonly shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, SessionV2.OperationUnavailableError>
+  readonly shell: (input: ShellInput) => Effect.Effect<
+    SessionV1.WithParts,
+    Image.Error | Session.BusyError | Pty.InvalidInputError | Pty.UnavailableError | SessionSupervisorError,
+    TrustedPrincipalContext
+  >
   readonly command: (
     input: CommandInput,
-  ) => Effect.Effect<SessionV1.WithParts, Image.Error | Session.BusyError | SessionV2.OperationUnavailableError>
+  ) => Effect.Effect<
+    SessionV1.WithParts,
+    Image.Error | Session.BusyError | Pty.InvalidInputError | Pty.UnavailableError | SessionSupervisorError,
+    TrustedPrincipalContext
+  >
   readonly resolvePromptParts: (template: string) => Effect.Effect<PromptInput["parts"]>
 }
 
@@ -144,6 +155,7 @@ const layer = Layer.effect(
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
     const supervisor = yield* SessionSupervisor.Service
+    const terminal = yield* Pty.Service
     const { db } = database
     const ops = Effect.fn("SessionPrompt.ops")(function* () {
       return {
@@ -1082,8 +1094,32 @@ const layer = Layer.effect(
       return yield* state.ensureRunning(input.sessionID, lastAssistant(input.sessionID), observedRun)
     })
 
-    const shell: Interface["shell"] = Effect.fn("SessionPrompt.shell")(function* () {
-      return yield* new SessionV2.OperationUnavailableError({ operation: "shell" })
+    const shell: Interface["shell"] = Effect.fn("SessionPrompt.shell")(function* (input) {
+      const instance = yield* InstanceState.context
+      const message = yield* createUserMessage({
+        sessionID: input.sessionID,
+        messageID: input.messageID,
+        agent: input.agent,
+        model: input.model,
+        parts: [{ type: "text", text: `! ${input.command}` }],
+      })
+      const result = yield* terminal.runUser({
+        sessionID: input.sessionID,
+        locationRef: Location.Ref.make({ directory: AbsolutePath.make(instance.directory) }),
+        command: input.command,
+        cwd: instance.directory,
+        timeoutMs: flags.bashDefaultTimeoutMs ?? 120_000,
+      })
+      const part: SessionV1.Part = {
+        id: PartID.ascending(),
+        messageID: message.info.id,
+        sessionID: input.sessionID,
+        type: "text",
+        synthetic: true,
+        text: `[terminal ${result.status}${result.exitCode === undefined ? "" : `, exit code ${result.exitCode}`}]\n${result.preview}`,
+      }
+      yield* sessions.updatePart(part)
+      return { info: message.info, parts: [...message.parts, part] }
     })
 
     const commandWork = Effect.fn("SessionPrompt.command")(function* (input: CommandInput) {
@@ -1127,8 +1163,24 @@ const layer = Layer.effect(
         template = template + "\n\n" + input.arguments
       }
 
-      if (ConfigMarkdown.shell(template).length > 0) {
-        return yield* new SessionV2.OperationUnavailableError({ operation: "shell" })
+      const shellBlocks = ConfigMarkdown.shell(template)
+      if (shellBlocks.length > 0) {
+        const instance = yield* InstanceState.context
+        let rendered = ""
+        let offset = 0
+        for (const block of shellBlocks) {
+          rendered += template.slice(offset, block.index)
+          const result = yield* terminal.runUser({
+            sessionID: input.sessionID,
+            locationRef: Location.Ref.make({ directory: AbsolutePath.make(instance.directory) }),
+            command: block[1],
+            cwd: instance.directory,
+            timeoutMs: flags.bashDefaultTimeoutMs ?? 120_000,
+          })
+          rendered += `[terminal ${result.status}${result.exitCode === undefined ? "" : `, exit code ${result.exitCode}`}]\n${result.preview}`
+          offset = block.index + block[0].length
+        }
+        template = rendered + template.slice(offset)
       }
       template = template.trim()
 

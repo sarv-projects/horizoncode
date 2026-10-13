@@ -13,11 +13,9 @@ export type Capability = {
   readonly effectClass: EffectClass
 }
 
-export type EffectAdmission = {
-  readonly challengeID: string
+export type EffectLease = {
   readonly effectID: string
-  readonly target: string
-  readonly resource: string
+  readonly capabilityLeaseDigest: string
 }
 
 export interface Context {
@@ -25,7 +23,7 @@ export interface Context {
   readonly agent: AgentV2.ID
   readonly assistantMessageID: SessionMessage.ID
   readonly toolCallID: string
-  readonly effect?: EffectAdmission
+  readonly effect?: EffectLease
 }
 
 export type SchemaType<A> = Schema.Codec<A, any, never, never>

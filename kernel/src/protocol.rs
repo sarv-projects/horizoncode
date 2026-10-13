@@ -128,6 +128,8 @@ pub enum KernelStartupStatusV1 {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RpcRequestV1 {
+    pub owner_epoch: u64,
+    pub process_incarnation: String,
     pub request_id: String,
     pub service_id: String,
     pub operation: String,
@@ -147,6 +149,8 @@ pub enum RpcOutcomeV1 {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RpcResponseV1 {
+    pub owner_epoch: u64,
+    pub process_incarnation: String,
     pub request_id: String,
     pub outcome: RpcOutcomeV1,
     pub owner_cursor: Option<CursorV1>,
@@ -157,6 +161,8 @@ pub struct RpcResponseV1 {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RpcEventV1 {
+    pub owner_epoch: u64,
+    pub process_incarnation: String,
     pub subscription_id: String,
     pub cursor: CursorV1,
     pub event_type: String,
@@ -166,21 +172,29 @@ pub struct RpcEventV1 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RpcControlV1 {
     Subscribe {
+        owner_epoch: u64,
+        process_incarnation: String,
         subscription_id: String,
         owner_kind: String,
         owner_id: String,
         after: Option<CursorV1>,
     },
     Unsubscribe {
+        owner_epoch: u64,
+        process_incarnation: String,
         subscription_id: String,
     },
     Ack {
+        owner_epoch: u64,
+        process_incarnation: String,
         subscription_id: String,
         through: CursorV1,
     },
     /// Server-to-client page boundary. The cursor is the last acknowledged event,
     /// including the requested cursor for an empty page.
     PageEnd {
+        owner_epoch: u64,
+        process_incarnation: String,
         subscription_id: String,
         through: CursorV1,
         has_more: bool,
@@ -188,17 +202,24 @@ pub enum RpcControlV1 {
     /// The requested cursor is no longer represented by retained owner history.
     /// The client must obtain a fresh owner snapshot before resuming.
     ResnapshotRequired {
+        owner_epoch: u64,
+        process_incarnation: String,
         subscription_id: String,
         requested: CursorV1,
         latest: CursorV1,
     },
     CancelRequest {
+        owner_epoch: u64,
+        process_incarnation: String,
         request_id: String,
     },
     Ping {
+        owner_epoch: u64,
+        process_incarnation: String,
         nonce: String,
     },
 }
+
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RpcMessageV1 {
@@ -280,6 +301,13 @@ impl From<FrameError> for ProtocolError {
 fn invalid(field: &'static str, reason: &'static str) -> ProtocolError {
     ProtocolError(ProtocolErrorKind::InvalidField { field, reason })
 }
+fn validate_frame_metadata(owner_epoch: u64, process_incarnation: &str) -> Result<(), ProtocolError> {
+    if owner_epoch == 0 {
+        return Err(invalid("ownerEpoch", "must be a positive owner epoch"));
+    }
+    validate_safe_integer("ownerEpoch", owner_epoch)?;
+    text("processIncarnation", process_incarnation, MAX_IDENTIFIER_BYTES)
+}
 
 fn missing(field: &'static str) -> ProtocolError {
     ProtocolError(ProtocolErrorKind::MissingField { field })
@@ -335,6 +363,7 @@ pub(crate) fn validate_message(message: &RpcMessageV1) -> Result<(), ProtocolErr
             KernelStartupStatusV1::Failed(error) => validate_typed_error(error),
         },
         RpcMessageV1::Request(request) => {
+            validate_frame_metadata(request.owner_epoch, &request.process_incarnation)?;
             text("requestId", &request.request_id, MAX_IDENTIFIER_BYTES)?;
             text("serviceId", &request.service_id, MAX_IDENTIFIER_BYTES)?;
             text("operation", &request.operation, MAX_IDENTIFIER_BYTES)?;
@@ -350,6 +379,7 @@ pub(crate) fn validate_message(message: &RpcMessageV1) -> Result<(), ProtocolErr
             Ok(())
         }
         RpcMessageV1::Response(response) => {
+            validate_frame_metadata(response.owner_epoch, &response.process_incarnation)?;
             text("requestId", &response.request_id, MAX_IDENTIFIER_BYTES)?;
             match response.outcome {
                 RpcOutcomeV1::Ok if response.error.is_some() => {
@@ -391,6 +421,7 @@ pub(crate) fn validate_message(message: &RpcMessageV1) -> Result<(), ProtocolErr
             Ok(())
         }
         RpcMessageV1::Event(event) => {
+            validate_frame_metadata(event.owner_epoch, &event.process_incarnation)?;
             text(
                 "subscriptionId",
                 &event.subscription_id,
