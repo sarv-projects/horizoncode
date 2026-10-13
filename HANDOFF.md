@@ -75,7 +75,7 @@ Historical architecture/work logs are non-normative. The committed-base historic
 4. Native OpenCode adapter is DESIGN only. No production official-runtime lifecycle/session bridge is wired.
 5. horizoncode npm/CLI identity is planned, not published. Internal @opencode-ai identifiers remain compatibility dependencies until a tested migration. hzcode is an optional future command alias.
 6. Beginner visual-edit/deploy journey is designed but not implemented. Preview, source selection, deployment verification and rollback require real acceptance tests.
-7. CI full-validation workflow exists locally but has not executed on GitHub; local Turbo typecheck success is not GitHub Actions CI success.
+7. As of the 2026-10-12 local evidence snapshot, GitHub Actions had not run. PR #1 subsequently obtained a successful full-validation workflow for commit `c325172492da5741ed416eb018bf724612a6ccf2` (run `38476485241`); see the dated PR completion audit below for current limitations. A green workflow is not proof of Experimental Settings runtime implementation.
 8. Moving-tree caveat: after the green Turbo run, additional kernel source/tests changed and four legacy memory/thread schema prototype files were moved into a newly Git-visible non-normative archive. A source-import scan found no remaining imports of those prototype identifiers in the active kernel/Core/OpenCode/schema/server/indexd roots. These later edits were not part of the completed Turbo/Guard test snapshot and require a fresh final validation when all writers have finished.
 
 ## Git and source model
