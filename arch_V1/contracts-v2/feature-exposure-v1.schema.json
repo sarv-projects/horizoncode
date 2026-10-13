@@ -124,10 +124,9 @@
             "wired",
             "tested",
             "verified",
-            "released",
-            "unavailable"
+            "released"
           ],
-          "description": "Source-evidenced status, NOT the releaseClass; unavailable is a runtime capability claim when implementation is unsupported."
+          "description": "Implementation evidence state, distinct from releaseClass and runtime effectiveState. Unavailable belongs to effectiveState."
         },
         "requestedEnabled": {
           "type": [
@@ -186,7 +185,52 @@
           "then": {
             "properties": {
               "effectiveState": {
+                "enum": [
+                  "on",
+                  "pending_apply"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "effectiveState": {
                 "const": "on"
+              }
+            },
+            "required": [
+              "effectiveState"
+            ]
+          },
+          "then": {
+            "properties": {
+              "effectiveEnabled": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "effectiveState": {
+                "enum": [
+                  "off",
+                  "blocked",
+                  "unavailable"
+                ]
+              }
+            },
+            "required": [
+              "effectiveState"
+            ]
+          },
+          "then": {
+            "properties": {
+              "effectiveEnabled": {
+                "const": false
               }
             }
           }
@@ -208,12 +252,7 @@
           "then": {
             "required": [
               "blockedReason"
-            ],
-            "properties": {
-              "effectiveEnabled": {
-                "const": false
-              }
-            }
+            ]
           }
         },
         {
@@ -230,7 +269,24 @@
           "then": {
             "required": [
               "pendingApplyAt"
-            ],
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "implementationStatus": {
+                "enum": [
+                  "designed",
+                  "code_present"
+                ]
+              }
+            },
+            "required": [
+              "implementationStatus"
+            ]
+          },
+          "then": {
             "properties": {
               "effectiveEnabled": {
                 "const": false
