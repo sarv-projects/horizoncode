@@ -31,6 +31,7 @@
 !/arch_V1/
 !/arch_V1/**
 !/docs/
+!/docs/agent-tool-routing.md
 !/docs/architecture-input/
 !/docs/architecture-archive/
 !/docs/architecture-archive/2026-10-12-pre-repo-audit-HANDOFF.md

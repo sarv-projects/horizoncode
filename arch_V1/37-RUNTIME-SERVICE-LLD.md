@@ -279,7 +279,7 @@ terminal/artifact ID and generation, effect/grant/receipt IDs, backend/guarantee
 owner epoch/fence and operation outcome; never records tickets, auth tokens, raw
 environment or raw input.
 The process owner is a separate host singleton in the existing kernel crate, launched
-as `hz-kernel --state-dir <state-dir> --socket <socket> --host-exe <host-exe> --nonce <nonce> --incarnation <incarnation>`.
+as `hz-kernel --state-dir=<state-dir> --socket=<socket> --host-exe=<host-exe> --nonce=<nonce> --incarnation=<incarnation>`.
 Its authenticated HelloResult returns a durable, monotonically increasing positive
 `ownerEpoch`; `session_supervisor` receives that epoch and remains projection/ACK-only.
 There is no host-wide single `workspace-root`.
@@ -301,15 +301,22 @@ or `terminal.start`.
 
 User-originated `terminal.start` and `terminal.run` use only
 `effects.v2/prepare_user_effect {locationID,sessionID?,userActionID,capabilityID,arguments}`.
-The server generates `userActionID`; the kernel derives principal. Do not fabricate a
-Session when none exists. This remains a distinct Guarded intent/lease path, not a
-model batch.
+The server generates `userActionID`; Core injects the typed principal only from
+validated ServerAuth middleware (username only) or a host-OS marker; Rust
+independently derives UID/SID and binds any ServerAuth subject. Do not fabricate a
+Session when none exists. This remains distinct from a model batch.
 
 Approval is projected as `GuardApproval` EventV2. The protected
 `POST /api/guard/approval/:approvalID/reply` accepts only
 `{decision:"allow_once"|"deny"}`; the server generates `approvalID`. There is no
 `always`, auto-accept or `ctx.ask` approval route. The UI shows exact normalized
 action, resolved resources, policy and expiry, never raw environment secrets.
+The protected reply adapter calls
+`replyGuardApproval({approvalID,decision})`; Core resolves the challenge/Location
+from the server-generated ID and the trusted principal context. Missing or
+wrong-principal IDs share 404; expired/replayed/stale requests return 409 and invalid
+decisions return 400. ServerAuth context contains only the validated username;
+without ServerAuth the host OS identity is kernel-derived.
 
 
 | Operation | Input → result | Class and bound |

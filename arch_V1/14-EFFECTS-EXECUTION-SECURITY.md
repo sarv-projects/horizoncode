@@ -151,6 +151,14 @@ approval path. The approval UI presents the exact normalized action, resolved
 resources, policy and expiry, and never exposes raw environment secrets. Approval
 must match the persisted challenge binding; request-origin/surface provenance is
 part of the binding.
+The HTTP reply takes only the server-generated `approvalID` path parameter and
+`{decision}` body. Core `replyGuardApproval({approvalID,decision})` resolves the
+hidden challenge and Location from its pending record and checks the request's
+trusted principal; callers never supply `challengeID`, `locationID` or principal.
+Missing and wrong-principal IDs return the same 404; expired, replayed or stale
+approvals return 409; malformed decisions return 400. With ServerAuth enabled the
+trusted subject is the validated username, never the password; otherwise Core passes
+only a host-OS marker and the kernel derives UID/SID.
 
 
 `normal`, `reduced` and `auto-safe` are policy postures, not bypass modes.
@@ -202,7 +210,7 @@ owner-scoped authorization and bounded-result rule above, creating an intent onl
 policy classifies the access as auditable. Never fabricate an Attempt to represent Run
 integration or maintenance work.
 Terminal effects belong to one separate host singleton, launched as
-`hz-kernel --state-dir <state-dir> --socket <socket> --host-exe <host-exe> --nonce <nonce> --incarnation <incarnation>`.
+`hz-kernel --state-dir=<state-dir> --socket=<socket> --host-exe=<host-exe> --nonce=<nonce> --incarnation=<incarnation>`.
 The authenticated HelloResult returns a durable, monotonically increasing positive
 `ownerEpoch`; Core `session_supervisor` receives it and remains projection/ACK-only.
 There is no host-wide single `workspace-root`. Register trusted Locations internally
@@ -211,8 +219,10 @@ comes only from a trusted `Location.Ref`; the kernel canonicalizes it, returns a
 opaque stable BLAKE3 `locationID`, and rejects rebind. No request or model supplies a
 root path. User-originated `terminal.start`/`terminal.run` use the distinct
 `effects.v2/prepare_user_effect {locationID,sessionID?,userActionID,capabilityID,arguments}`:
-the adapter generates `userActionID`, the kernel derives principal, and an absent
-session stays absent rather than being fabricated. The same Guard, PREPARED, lease,
+the adapter generates `userActionID`; a trusted `TrustedPrincipalContext` is injected
+only by validated ServerAuth middleware or as a host-OS marker. It crosses authenticated
+IPC as a delegated subject; Rust always derives UID/SID independently and binds the
+ServerAuth subject when present. An absent session stays absent rather than fabricated.
 ExecutionHost and settlement rules apply.
 
 Terminal output EventV2 cursors use `ownerKind:"terminal"` and `ownerId:terminalID`.

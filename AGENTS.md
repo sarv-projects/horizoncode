@@ -1,5 +1,12 @@
 # AGENTS.md — HorizonCode implementation rules
 
+## Mandatory tool and resource lifecycle
+
+- For every substantial slice, exhaustively use the relevant subagents, MCPs, installed skills, and repository tools that improve coverage, throughput, or evidence. Delegate the largest safe independent modules; do not launch redundant workers or invoke irrelevant tools.
+- At start, before/after each build-heavy or subagent phase, at least every ~hour during long sessions, and before cleanup, inspect Git status, active-agent state, worktree ownership/dirty state, active processes, free disk and relevant build-output sizes. Never kill unrelated user-owned processes.
+- Worktrees and generated build outputs are task-scoped leases. After integration/rejection and once no process uses them, inspect status and ownership; remove only task-created temporary worktrees and redundant generated build outputs. Preserve shared useful caches. No broad `cargo clean`, cache purge, or cleanup of unknown worktrees.
+- Before destructive cleanup, use `git add <exact task-owned paths>`, then commit and push the exact verified changes owned by this task to the intended upstream. Never use `git add .` in a shared dirty tree, include user-owned/unrelated changes, or push an unrelated pre-existing commit. If ownership, diff boundaries, or the push target is ambiguous or safe publication is impossible, defer cleanup and preserve the state. Core source, Markdown, configuration, tests, evidence, and user-owned content are never cleanup targets.
+
 ## Start here
 
 1. Inspect git status, worktrees, active processes, and disk/build-output pressure. Preserve every user-owned change.
@@ -24,6 +31,8 @@ Use the strongest relevant capability already available instead of reimplementin
 - Use MCP/tools when they provide authoritative access to the required external system, browser, repository, filesystem, test runner, documentation source or service.
 - Prefer deterministic/local tools for deterministic work; do not spend model calls on work a local tool can do exactly.
 - Do not call tools/MCPs merely because they exist. Use the smallest set that improves correctness, speed or evidence.
+- For skills, inspect registered `skill://` routes and `$HOME/.agents/skills/`; read the matching skill before material work. Do not assume a repository-local `.agents/skills/` directory exists.
+- Before selecting any MCP, MUST consult `docs/agent-tool-routing.md` and check the exact endpoint and schema in the current tool inventory. If a row's MUST trigger applies, use that endpoint unless unavailable or unauthorized; record the exact fallback/limitation. A connection badge alone proves neither endpoint availability nor use.
 - Reuse existing Horizon/OpenCode abstractions and integrations before introducing a new dependency, helper, server or wrapper.
 - Respect each tool/MCP's permission, trust and cost boundary. No paid API, credential export, remote mutation or new external connection without authorization.
 - When an architecture/source document names a relevant skill, MCP, tool or exact external source, use it where appropriate and verify its result against the owning source/tests before relying on it.
@@ -146,6 +155,6 @@ Do not spend V1 implementation time on a broad branding/build rewrite. Once V1 e
 
 ## Safety/repository operations
 
-No reset, clean, destructive rebase, force-push, user-content deletion, broad cache purge, credential export, paid API use, or commit/push unless explicitly authorized.
+Do not run reset, clean, destructive rebase, force-push, user-content deletion, broad cache purge, credential export, or paid API use without explicit authorization. For commits/pushes, follow the task-scoped pre-cleanup rule above: its authorization covers only exact verified task-owned changes to the intended upstream, never unrelated or user-owned changes. If publication cannot be done safely, defer cleanup.
 
 Preserve the working tree as found; it may contain changes from another agent/session.
