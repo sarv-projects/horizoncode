@@ -348,3 +348,18 @@ Do not create new agent loops, tool authorities, separate Rust conversation stor
 ### Engineering rule
 
 Work on RC0 **without** claiming P1/P2 completion; proceed with required real Guard and managed execution in the existing Gate 2 → Gate 3 order. RC3/RC4 adapters may be designed/tested in isolation but must not expose effectful bypasses. `README.md` is a product page and must not become a RAM benchmark claim. Automatic hot-swap/self-dev remains developer-option work with independent rollback/security gates, not a reason to defer the fundamental engine.
+
+### RC5 — remaining JCode adoption parity (not omitted)
+
+The original 24-candidate audit includes supporting features beyond core RAM. Track all of them explicitly; implementation can overlap where different code owners/tests permit.
+
+- [ ] **Active user steering and terminal input compatibility:** confirm existing durable steer/queue behaviour under concurrent streams; render queued/accepted/next-turn state, verify Shift+Enter/tmux/SSH, and never corrupt the selected provider request/cache prefix.
+- [ ] **Cross-client SDK/protocol:** thin documented, authenticated TUI/CLI/web/desktop SDK over one Core Session and Rust managed owner; API version negotiation, reconnect/replay and simultaneous multi-client session activity, without new conversation authority.
+- [ ] **Rich provider auth/catalog/compatibility:** evaluate JCode provider-source breadth alongside existing OpenCode/OMP candidates, reuse current transport/model picker and secret ownership, verify explicit user selection and cache/cost provenance with Doctor fixtures.
+- [ ] **Tool intent and large-output opt-in:** add concise user-visible intent/purpose only behind canonical ActionDescriptor/ToolBatch schema; bounded output remains an artifact/stream, not an escape from limits.
+- [ ] **Compile-time rebuild and release-resource hygiene:** profile Rust crate/Bun TypeScript invalidation, no duplicated heavyweight build trees, benchmark incremental compile and install size; only split modules after measured hot-path impact.
+- [ ] **Multi-session activity map:** derived UI over the same Session/Run state, focus/scroll isolation, pausing/resuming and clean external terminal/tmux integrations; JCode multisurface is Proposed, not shipping proof.
+- [ ] **Human-quality performance/demo trial:** repeat real user workflows and record authentic TUI video, input/stream p95, verification success, understandable errors and accessibility; never represent mock/demo placeholders as completed product.
+- [ ] **Opt-in self-development/hot swap and thin mobile client:** developer-only signed/reversible canary with fencing and rollback; secure remote authenticated SDK client/mobile surface with no separate Task/Session engine, no exposed secrets and correct disconnect behaviour. Respect A-V2-29 Experimental settings and human authorization.
+
+Source-to-feature coverage crosswalk: §42.10. These are accepted product capabilities with individually honest availability/evidence, **not an instruction to discard them on scope grounds**.

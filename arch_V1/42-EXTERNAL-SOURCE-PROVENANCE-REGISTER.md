@@ -341,3 +341,36 @@ Adopt selectively: provider/model/auth/pricing and bounded visual UX. Reject dup
 | External resume | [RESUME_BEHAVIOR.md](https://github.com/1jehuang/jcode/blob/1f612a7/docs/RESUME_BEHAVIOR.md) | Documented UX with current/new terminal and import modes; test current code before assuming full compatibility |
 
 **Adoption method:** `REUSE EXISTING` / `ADAPT ALGORITHM` / `SERVICE ADAPTER` / `REJECT`; verify upstream license and exact commit/function/tests, preserve canonical Horizon owners and contract IDs, then execute §32 negative/restart/security/real-work acceptance. The acceptance decision A-V2-30 is in §17.10. Never publish the above external RAM figures as Horizon measurements.
+
+## 42.10 JCode adoption coverage crosswalk — 24 candidates, no omissions
+
+Research/provenance register only. “Accepted” means a Horizon feature/optimization is captured with an owner and actionable tests, **not** implemented. JCode's `Proposed/Being implemented/Draft/Design` labels remain source-status labels; confirm direct source and license before transplanting. Concrete runtime status is `HANDOFF.md`.
+
+| # | Candidate | Horizon topic owner / execution | Evidence anchor |
+|---|---|---|---|
+| 01 | Shared Rust daemon / multi-Session virtual ownership | §01/§13; RC1 | JC-RES-001/008/009 |
+| 02 | Reproducible RAM/PSS benchmark | §18; RC0 | JC-RES-001/002/004 |
+| 03 | Deep process/allocator attribution | §18/§37; RC0 | JC-RES-003/006 |
+| 04 | Cache size/TTL and large-output budgets | §30/§31; RC3 | JC-RES-005 |
+| 05 | Provider Doctor (offline/catalog/full) | §15/§33/§37; RC3 | JC-RES-013/014/015 |
+| 06 | Session-path file-touch tracking | §21; RC2 | JC-RES-011 |
+| 07 | Adaptive TUI redraw/paint reasons | §31; RC4 | JC-RES-016 |
+| 08 | Bounded live inline tool-tail | §31; RC4 | JC-RES-017 |
+| 09 | Cancellation epoch/async notification | §11/§14; RC1/2 | JC-RES-009/010 |
+| 10 | Low-RAM headless worker pool | §21/§29; RC2 | JC-RES-007/012 |
+| 11 | Provider prewarm/cache diagnostics | §15/§30; RC3 | JC-RES-015 |
+| 12 | Managed task DAG, typed artifacts, critique | §15/§29; RC2 | JC-RES-018 |
+| 13 | Active input steering, Shift+Enter/tmux | §16/§31; RC5 | JC-RES-016 + existing UI/runner tests |
+| 14 | External Session import/resume | §15/§33; RC3 | JC-RES-019 |
+| 15 | Multi-client protocol and SDK | §13/§16; RC5 | session reconnect/auth matrix |
+| 16 | Additional provider catalog/auth compatibility | §20/§33; RC5 | provider doctor/identity fixtures |
+| 17 | Tool intent and controlled large output | §14/§33; RC5 | ToolBatch/size/auth and JC-RES-005 |
+| 18 | Optional local project memory/recall | §30; RC3 | JC-RES-020 |
+| 19 | Compile-time dependency isolation | §18/§20; RC5 | incremental build size/time samples |
+| 20 | Multi-session activity map | §16/§31; RC5 | multi-client UI/scroll/focus tests |
+| 21 | User-visible interactive/perf demo | §16/§31/§32; RC5 | real captured UX/pass evidence |
+| 22 | Offline-first local telemetry | §18/§31; RC0/4 | JC-RES-001/006 + privacy cases |
+| 23 | Developer self-dev/hot-swap canary | §17 A-V2-29/§18; RC5 | opt-in rollback/epoch/secret tests |
+| 24 | Thin authenticated mobile/remote client | §13/§16; RC5 | remote auth/reconnect/feature-parity tests |
+
+Never interpret coverage as a blanket all-features release claim, and never solve a missing implementation by adding a new Session/Task/Guard owner.
