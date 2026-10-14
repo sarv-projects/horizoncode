@@ -178,3 +178,13 @@ No V1 automatic self-modification.
 - automation cannot execute if Guard/executor unavailable.
 
 External OMP rendering/UI research is preserved in the archive and source register 42; accepted behavior is fully stated here.
+
+## 31.16 Adaptive TUI redraw, compact tool tail and attributed resource UX
+
+Rendering is an ephemeral projection over canonical Session parts + Rust events. Use stable committed prefix and a bounded mutable streaming suffix; track dirty regions/layout generation and coalesce replaceable paint updates without delaying keypresses, acknowledgements, approvals, receipts or cancellation. Prefer event-driven redraw; an idle visual effect never forces continuous full-frame repaint. Use active/idle/deep-idle budgets measured on actual terminals, and expose the **reason for each full-frame redraw** in diagnostics. Support tmux/SSH and no-graphics terminals.
+
+A bounded \`ToolTailView\` maintains recent committed lines plus the current live line/operation marker, in-place duration/status updates and a strict max lines/chars/bytes. The full source remains in the canonical tool result or a bounded artifact, not duplicated across every view. Long-running output passes through line/byte/time caps, backpressure and artifactization, with honest FULL/SAMPLE status. Final view must survive reconnect without duplicating live pieces.
+
+Resource columns on Mission Control: actual host/kernel and child process RSS/PSS/private bytes where supported; per-Session/Run/worker attribution, open process/FD/thread count, active build targets/worktrees, index/render/token/image cache bytes, local inference VRAM, cold/warm startup, p50/p95 keystroke and stream latency, rendering queue depth and dropped/coalesced ephemeral paints. Respect metric method/platform/source and mark UNKNOWN rather than zero. Provide deterministic disk/cache cleanup proposals, not silent deletion. Diagnostic export is local/redacted unless explicitly approved.
+
+Cache budgets: each Markdown highlight, Mermaid source/render, image placement, AST/index and decoded artifact cache has an upper bound on **count and bytes**, TTL/eviction and stale generation. JCode's particular caps are examples, not copied Horizon guarantees. Enforce cache leak tests under 10k messages, 1000 tiny deltas, 10/20 parallel sessions, terminal resize, idle 30m and repeated previews. §18.17 defines overall resource truth; §32.32 is acceptance.

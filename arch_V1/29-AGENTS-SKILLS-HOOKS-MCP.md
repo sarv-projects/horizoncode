@@ -564,3 +564,16 @@ External products can inspire profile, provider, skill, hook or MCP behavior onl
 
 All extension-visible actions resolve to canonical 33 capability IDs and cross 14 Guard for effects. Provider/model/harness configuration remains owned by existing OpenCode/Horizon config services. Current implementation status belongs in HANDOFF.md.
 DOFF.md.
+
+## 29.17 DAG-first coordination and shared headless specialists (A-V2-30)
+
+Retain **one Rust managed Goal/SpecVersion/Run/Task/Attempt owner**. Represent dependencies and hierarchical ownership independently: Task \`dependsOn\` forms an acyclic graph, while child attempts/specialists have exactly one parent scope. Avoid copying JCode's separate swarm-plan/session authority into Horizon.
+
+- Two scheduling styles over the same Rust DAG: lightweight bounded fan-out for precise independent research; comprehensive goal decomposition/review for ambiguous migrations and cross-file design. No mandatory graph for ordinary direct editing. Both have an explicit graph-wide total-member cap, live-worker cap, recursion/depth/repair cap, resource budget and integration collision control.
+- Task handoffs use typed artifact references, current source revision, criteria, known unknowns and evidence. A model can propose new child tasks, but only the authenticated coordinator validates edges, detects cycles, guards scope changes, reserves resources and persists graph edits. “Done” by a worker does not mark a parent PASS.
+- Exploration/read-only workers may be low-overhead headless attachments to a shared Core/provider infrastructure; effectful children get fenced process/workspace isolation. Avoid one new full TUI/provider host/Rust observer/worktree per small helper. SessionLink correlation is explicit and never duplicates the Core transcript.
+- Critique/review is a verifiable separate step when needed; a reviewer may identify missed coverage but cannot rewrite accepted user criteria retroactively or approve its own unverified work. Source, test and integration evidence are compared to the final repository revision.
+- Communication defaults to dataflow along dependency edges (immutable artifact refs/typed results); optional bounded mailbox for exceptions, not uncontrolled all-to-all model chat. Parent compaction/restart must not orphan a child receipt or accepted result.
+- Backpressure from memory/FD/disk/provider limits queues READY tasks without changing user-pinned provider/model. Expired/leaked workers are fenced, settled and cleaned up only when owner/lease is known.
+
+JCode \`SWARM_TASK_GRAPH.md\` is a **Being implemented** design reference and \`MULTI_SESSION_CLIENT_ARCHITECTURE.md\` is **Proposed**; neither is automatic implementation proof. Accepted tests in §32.32 include DAG cycle/coverage, 20-worker contention, user file collision and crash safety.

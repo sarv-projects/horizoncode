@@ -588,3 +588,32 @@ Public exposure of experimental features requires specific security/negative tes
 | FEAT-014 | Core V2, V1 compatibility, TUI, GUI and HTTP consumers observe a pending next-turn/session/restart state | Same requested/effective/release-class/source/pending interpretation; runtime uses effective state even before the UI refreshes |
 
 `scripts/architecture/validate_convergence.py` checks positive and negative `FeatureExposureV1` **static** schema fixtures. Those static checks do not pass FEAT-001..014. Full implementation requires actual config read/write, source precedence, guards, platform gating and TUI/GUI/HTTP integration tests.
+
+## 32.32 JCode-informed resource and multi-session regression suite (A-V2-30)
+
+Use the same pinned repository, identical task set and selected model/provider on a recorded machine. Each test writes raw samples, platform/build/commit, time window, method, error bars, cache settings, selected-model costs and failure diagnostics. Vendor README PSS figures are reference claims only. **No test below may pass on schema presence, a README example or unexecuted mock alone.**
+
+| ID | Scenario | Required evidence / rejection |
+|---|---|---|
+| JC-RES-001 | Linux baseline 1/5/10/20 direct idle Sessions | Total descendant PSS/RSS/CPU/FD/threads; warm/cold and no per-Session leak; compare current observer path |
+| JC-RES-002 | Five tool-call turns in 10/20 Sessions | Task correctness and process-tree PSS at each turn; no hidden full host per lightweight child |
+| JC-RES-003 | Local model unloaded/loaded, embeddings off/on | Separate inference RAM/VRAM from agent RAM; no secret paid-cloud fallback |
+| JC-RES-004 | Native Windows and macOS resource collection | Native process/private footprint metrics and OS support truth; never claim PSS cross-OS parity |
+| JC-RES-005 | Cache churn with 10k messages, 100MB output and 1000 stream deltas | Caps on bytes/entries, output FULL/SAMPLE fidelity, bounded growth, canonical evidence retained |
+| JC-RES-006 | 30m idle and sustained long-running session | Memory/FD/thread leak slope and redraw/CPU idle; cleanup restores near baseline after task ends |
+| JC-RES-007 | Single active Session and 20 concurrent read-only headless workers | Shared infrastructure deduplication, fairness, no unauthorized worktree or full renderer per worker |
+| JC-RES-008 | Shared-kernel session ID/policy/workspace substitution | Authenticated virtual scope denial, no cross-Session cursor, tool results, secrets or effects |
+| JC-RES-009 | Kill one untrusted worker, then kill entire kernel mid-uncertain effect | Other work isolation where applicable, new epoch fence, UNKNOWN reconciliation, no double mutation |
+| JC-RES-010 | CPU-heavy subscriber and unbounded output while input/cancel occurs | Fair queues, bounded mailboxes, stream/prompt p95 and high-priority cancellation |
+| JC-RES-011 | Two agents read/edit same file plus user patch, symlink/rename | Advisory file-touch warning and authoritative stale digest/lease denial, preserve user edits |
+| JC-RES-012 | Resource cap, low disk/FD/process pressure and overlapping builds | Visible queue/block, no foreign process kill, no silent model switch, owned cleanup only |
+| JC-RES-013 | Provider Doctor offline tier without credentials | No network/billing; deterministic config/catalog route/projection diagnostics |
+| JC-RES-014 | Provider Doctor catalog/full tiers on test account | Explicit cost consent, auth/catalog/model/tool/stream results, typed failures and bounded spend |
+| JC-RES-015 | Provider cold start, network loss and 429 | Correct retry/deadline/cancel state; no unapproved prewarm/provider fallback |
+| JC-RES-016 | Adaptive TUI on SSH/tmux, 10k transcript, resize, idle | Stable focus/scroll, full-frame redraw reason, bounded render cache and input latency |
+| JC-RES-017 | Compact tool-tail streaming plus reconnection | Live/committed marker stays correct, no duplicate canonical part, bounded line/byte budget |
+| JC-RES-018 | DAG fanout/cycle, critique, conflicting edits, parent restart | Total-member cap; no accepted cycle; typed artifact passing, revision-bound independent verifier |
+| JC-RES-019 | External source import/resume of supported adapters | Explicit ownership choice, provenance, no credential leakage or dual conversation writers |
+| JC-RES-020 | Optional local memory recall under hostile/stale input | Project scope, token caps, source label, failed recall safe, no secret remote injection |
+
+**Acceptance order:** test current source + numbers before optimization; introduce isolated shared-observer prototype; prove JC-RES-008/009/010 plus existing Guard suites before effect cutover; repeat full task/model/machine benchmark; promote only with correctness and security parity plus measured resource benefit. All platforms absent from the matrix are unverified, not green. Release claims include raw evidence paths, not an overall “fast” adjective.

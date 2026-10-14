@@ -629,3 +629,21 @@ For every **user-optional** feature, the owner provides one discoverable setting
 Do not confuse release class with code readiness: `experimental` does not imply CODE_PRESENT or WIRED, and runtime cannot expose unimplemented tools. Every optional **experiment** defaults disabled until explicitly enabled in an eligible build/channel and passes its own Guard/platform/security gates. A blocked or absent feature is disabled with a reason; enabling its setting cannot authorize a denied tool, start an unapproved external effect or silently bill a provider. Source provenance, settings value/source/apply boundary, eligibility and effective status are surfaced per §16.15.
 
 Runtime validation must reject duplicate setting keys, nonexistent referenced capability IDs, missing Settings entries for exposed optional features, default-enabled experiments, developer-only experiments advertised as public, and inconsistencies between TUI/API/Settings effective state.
+
+## 33.29 Resource, provider and session interoperability candidate IDs (A-V2-30)
+
+The following **reserved DESIGN targets** extend the existing canonical catalog; they do **not** imply registered runtime tools, working CLI commands or an implementation in \`capability-registry-v1.json\`. Integrate IDs through the **existing** owner and schema registry only when a corresponding implementation and permission class are proven; do not create a second tool registry.
+
+| Candidate ID | Effect class / owner | Intended interface |
+|---|---|---|
+| \`diagnostics.resource.snapshot\` | scoped read / host + Rust resource owner | PSS/RSS/private/CPU/FD/cache/disk with units, method, provenance and owner |
+| \`diagnostics.resource.history\` | scoped read / derived redacted diagnostics | bounded owner/time-filtered resource samples |
+| \`providers.doctor\` | offline read; catalog network read; full authenticated paid effect requiring explicit grant / provider transport | tiered model route/auth/catalog/chat/stream/tool diagnostics |
+| \`sessions.file_activity\` | scoped read / derived workspace index | peer file touches and observed revision; advisory only |
+| \`sessions.import.preview\` | bounded read / external source adapter | provenance, supported fields and single-owner choice |
+| \`sessions.import.commit\` | guarded filesystem/session mutation / canonical Session owner | confirmed copy/handoff, immutable origin refs; not live dual ownership |
+| \`workers.resources\` | scoped read / Rust control plus OS measurement adapter | actual leases/worker capacity/pressure |
+| \`tasks.graph.inspect\` | scoped read / Rust managed control | ready/blocked graph, dependency edges and artifact refs |
+| \`ui.tool_tail.inspect\` | scoped read / UiEventMux presentation | bounded current live tool activity; never canonical result authority |
+
+All tool-visible schemas are bounded and discoverable progressively. Headless workers, file activity, process resource sampling and adaptive render need not be exposed to the model by default. For each candidate, update \`ActionDescriptor\`, capability machine registry, platform support matrix, permission/feature exposure and §32 tests **together** when promoted to WIRED. Read-only is not “permission-free”; network/cost and user privacy require authorization. This inventory is not an invitation for a plugin to supply its own authority.

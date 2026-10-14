@@ -176,3 +176,16 @@ A successful local build or upload command alone is not deployment completion.
 ## 3.19 Stop
 
 Stop when objective satisfied and verified, user cancels/pauses, required authority/secret/payment/platform decision is missing, budget is exhausted, or unsafe UNKNOWN/retry exhaustion requires review.
+
+## 3.20 Resource-aware concurrent coding journey (A-V2-30)
+
+1. Host starts direct Session via existing Core; selected provider/model/harness stay pinned. Authenticate and attach the SessionLink; existing Linux implementation may create a per-Session Rust observer until the shared variant is proven.
+2. Direct or managed task compiles only required context; symbol/file query uses scope-checked index/LSP/lexical fallback. Optional memory recall is bounded, opt-in and labeled by provenance; no automatic paid retrieval.
+3. Managed spec is explicitly accepted; Rust persists immutable criteria, DAG dependency edges and Attempt identities. Scheduler computes READY and reserves memory/CPU/disk/worker/worktree capacity before worker launch. A read-only helper may reuse shared headless infrastructure and must not get a new writable worktree by default.
+4. Worker creates typed ToolIntent; complete batch is validated; all mutation origins pass Guard, PREPARE, one-use lease and ExecutionHost. File-touch index may warn about concurrent reads/writes but only revision/lease checks can enforce stale-write denial.
+5. Stream tool activity through bounded ephemeral tool-tail and stable transcript; apply backpressure and frame coalescing without dropping effect/owner events. Attribute process-tree PSS/CPU and cost/cache/latency to the correct owner, marking unavailable metrics unknown.
+6. On user file edit, collision, cancelled worker, loss of provider, resource exhaustion or kernel restart, fence the Attempt, persist UNKNOWN for potentially executed effects, reconcile from receipts/observed source, then replan/retry only safely.
+7. Task outputs typed artifact refs and evidence; reviewer/critique checks coverage, dependencies unblock only on independent PASS, and integrated revision is reverified. Report true success/blocked/failed/NeedsYou and clean owned disposable workers/worktrees.
+8. Optional external Session import creates a provenance-preserving **snapshot or handoff** under one chosen backend owner. It does not silently merge two live canonical transcripts.
+
+Acceptance journeys and fault injections are §32.32; resource contract is §18.17 and exact interfaces are §37.15. No step above is implicitly CODE_PRESENT merely because documented.
