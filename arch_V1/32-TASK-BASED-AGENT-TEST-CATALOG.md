@@ -667,3 +667,32 @@ For every newly documented service/capability, enforce at PR time:
 - evidence in HANDOFF names actual commit+CI job/test, not a research report, vendor RAM number, checklist or mocked expected output.
 
 Static test suggestions: augment existing `scripts/architecture/validate_convergence.py` and `run_contract_tests.py` rather than writing a new competing validator; add fixtures that intentionally duplicate §2.9, invent unsupported error codes or point at an unhydrated nonexistent source. Current validation scripts catch heading collisions already; their checks are not proof of source-runtime correctness.
+
+## 32.35 ACP delegation, visual-source and deployment completion cases
+
+These close missing acceptance links for existing §§3.16–3.18. All are **required before the corresponding capability is WIRED/VERIFIED**, with real backend/OS and security negatives rather than mocks alone.
+
+| ID | Setup / failure injection | Required observable invariant |
+|---|---|---|
+| ACP-001 | Pinned source ACP server vs proposed client | Identify server-side implementation as existing; do not call an ACP *client* implemented until separate integration code exists |
+| ACP-002 | ACP client protocol version too old, no resume support | disabled/unavailable capability with reason; no fabricated Session |
+| ACP-003 | External agent tries filesystem/process tool outside delegated root | deny before dispatch in governed mode; independently native-trusted mode labeled weaker |
+| ACP-004 | Wrong Session ID/owner epoch in ACP stream event | reject, no cross-user part visibility or transcript write |
+| ACP-005 | Duplicate update, disconnect/reconnect, retention gap | cursor+generation replay bounded, no duplicate user turn or ToolPart |
+| ACP-006 | User cancellation after child may have already run tool | cancel fence, UNKNOWN reconciliation; never claim rollback or blind retry |
+| ACP-007 | Parent delegates model provider not permitted by current user/cost policy | explicit refusal; no silent account/model switch, no unexpected billing |
+| ACP-008 | ACP agent returns success but lacks canonical receipts/verifier evidence | Task remains unverified; parent does not mark PASS |
+| VIS-001 | User clicks DOM element with exact current source map | scoped candidate with build/source revision; patch uses expected file digest |
+| VIS-002 | Source map absent, stale or candidates ambiguous | no blind write, show ambiguity and user selection |
+| VIS-003 | DOM navigation or hot rebuild between click and edit | stale generation rejected/re-observed; no old source overwrite |
+| VIS-004 | Hostile DOM/AX payload includes instructions or external file path | treated as untrusted data, no arbitrary filesystem access |
+| DEP-001 | No supported deploy backend configured | UNAVAILABLE, no assumed generic shell credential routing |
+| DEP-002 | Wrong production account/secret/environment, consent missing | prevent upload/remote mutation, redact secrets and show exact requested scope |
+| DEP-003 | Upload times out after remote success | mark UNKNOWN, reconcile provider idempotency/state, never duplicate deploy |
+| DEP-004 | Upload succeeds but health/critical-path check fails | not VERIFIED/SUCCEEDED; evidence and repair/rollback option |
+| DEP-005 | User selects rollback with old revision or missing authority | deny/stale challenge, require fresh target and independent approval |
+| DEP-006 | Model attempt switches selected deploy provider/cost class | deny, no hidden paid route/credential use |
+| DEP-007 | Target URL proves wrong build version or source revision | stale verification, do not close accepted Run |
+| DEP-008 | Native Windows or macOS remote tool/sandbox guarantee missing | honest platform UNAVAILABLE; WSL not counted as native Windows |
+
+Add fixtures under the existing §32 test catalog and appropriate hydrated provider/ACP/Guard source test directories, record live fixture auth/OS limitations, and bind each PASS to a current source commit and proof artifact. User consent/Guard tests must run at real effect pre-dispatch and final revision layers. A proposal table does not count as an executable suite.

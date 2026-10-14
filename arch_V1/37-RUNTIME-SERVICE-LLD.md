@@ -410,3 +410,87 @@ type SteeringRequestV1 = {sessionId:string;expectedTurnEpoch:string;intent:"NEXT
 **Developer self-code canary:** behind §17 A-V2-29 Experimental OFF by default, accept a reviewed candidate diff/spec only in a disposable isolated worktree; build/test/lint and signed/hash-attested artifact; measure resource/build outputs, require user approval and reversible activation point; drain old in-flight effects, rotate owner/process epoch, preserve canonical stores, run canary fixture with explicit acceptance, and rollback on failure. Never hot-swap Rust security/policy/guard code during active uncertain effects or let a model self-approve broad privileges. Build cache/worker cleanup uses ownership rules (§18.19). This is separately gated post-V1 work; defining it here does not make it available.
 
 **Cross-cutting error classes:** unsupported backend/version, malformed source, permission denied, stale preview/turn epoch, dual-writer conflict, client disconnected, approval missing, unconfirmed effects and canary rollback failure must each preserve a typed redacted outcome and never fabricate historical tool success.
+
+## 37.19 External agent ACP adapter — source-bound client/service LLD
+
+This is **PROPOSED** HorizonCode interoperability work, not an implemented external-agent client. The pinned OpenCode source at `opencode/packages/opencode/src/acp/{service,session,permission,event}.ts` and `cli/cmd/acp.ts` implements an **agent-side ACP server**; it is not evidence that HorizonCode can act as an ACP **client** controlling arbitrary external agents. The `AgentProfileV2.adapter.kind = "acp"` and the optional native OpenCode backend are accepted product integration seams (§29/§17). Do not create an additional direct Session authority.
+
+~~~ts
+type ExternalAgentAdapterV1 = {
+  adapterId: string; kind: "acp"|"cli"|"container"|"remote";
+  executableDigest?: string; protocolVersion: string; supportedFeatures: string[];
+  sandboxProfile: string; sourceVersion: string; status: "AVAILABLE"|"UNAVAILABLE";
+};
+type ExternalAgentSessionLinkV1 = {
+  adapterId: string; backendSessionRef: string; horizonSessionLinkRef: string;
+  ownerEpoch: string; workspaceBinding: string; principalScopeDigest: string;
+  selectedProviderModelRef?: string; sourceCursor?: string;
+};
+type ExternalAgentDeliveryV1 = {
+  dispatchId: string; parentTaskId?: string; workerExecutionId: string;
+  adapterSessionRef: string; status: "RETURNED"|"FAILED"|"CANCELLED"|"UNKNOWN";
+  textArtifactRef?: string; typedArtifactRefs: string[]; effectReceiptRefs: string[];
+  observedSourceRevision?: string; boundedWarnings: string[];
+};
+interface ExternalAgentClientAdapterV1 {
+  discover(ref: string, deadlineMs: number): Promise<ExternalAgentAdapterV1>;
+  initialize(ref: string, authScopeRef: string): Promise<{negotiatedVersion:string;capabilityDigest:string}>;
+  startOrAttach(input: {profileRef:string;workspaceBinding:string;parentGrantRef:string;ownerEpoch:string;resumeRef?:string}): Promise<ExternalAgentSessionLinkV1>;
+  sendTask(input: {link:ExternalAgentSessionLinkV1;requestRef:string;idempotencyKey:string;deadlineMs:number}): Promise<{dispatchId:string}>;
+  receiveBounded(link: ExternalAgentSessionLinkV1, cursor?:string): Promise<{eventsRef:string;nextCursor?:string;hasMore:boolean}>;
+  cancelOrDetach(link:ExternalAgentSessionLinkV1, reason:string): Promise<{settlement:"CANCELLED"|"STILL_RUNNING"|"UNKNOWN"}>;
+  reconcile(dispatchId:string): Promise<ExternalAgentDeliveryV1>;
+}
+~~~
+
+**Protocol and authority:** the ACP client handles initialize/version negotiation, optional auth/config, new/load/resume session, prompt, permitted streaming updates, cancellation and close; each message is size/time bounded and associated with the authenticated backend owner. ACP protocol compatibility **does not grant filesystem/network/process authority**. Launch of local external agent binary is a Rust Guarded effect through ExecutionHost with OS profile and process identity; any external agent capability that can mutate outside HorizonCode's pre-dispatch Guard must be restricted to trusted separately owned native mode with a clear weaker-safety label, or disabled in governed mode. An MCP server furnished by the remote ACP agent is untrusted data, not an implicit local MCP installation.
+
+**Parent/child transfer:** bind exact parent Run/Task/Attempt, accepted SpecVersion digest, workspace/base revision, provider/harness selection, capability intersection, spend/token/deadline budget, source cursor and approved output schema. Use existing `SubagentDeliveryV1`/typed artifact/evidence refs (§29.18), not another Task database. External agent "done" is candidate evidence; trusted Horizon verifier owns PASS. The native OpenCode adapter stays the separately authorized backend's conversation writer; an ACP child in Horizon direct mode is a delegated worker, never a second writer to the same Session.
+
+**Failure cases:** handle protocol mismatch, auth challenge, provider restriction, disabled mode, byte/rate flood, malformed ACP part, duplicate/late update, crashed child, host restart, cancellation racing with remote action, hidden outbound connector, stale workspace, unexplained cost and orphaned backend session. Preserve UNKNOWN for any unobservable side effect. Fail closed on unsupported permission mediation, maintain bounded buffers and redacted telemetry, and do not silently switch agent/provider.
+
+## 37.20 Visual source selection and deployment verification LLD
+
+These two flows already exist normatively in §§3.17–3.18; this section **fills their missing service contract**. It does not declare new deployed functionality or grant an unrestricted cloud credential.
+
+~~~ts
+type VisualTargetObservationV1 = {
+  previewId:string; pageUrlRef:string; browserGeneration:string;
+  nodeRef:string; boundingBox?:{x:number;y:number;width:number;height:number};
+  accessibilityName?:string; sourceCandidates:{pathRef:string;lineStart?:number;
+    lineEnd?:number;sourceDigest:string;confidence:"EXACT"|"HEURISTIC"|"UNKNOWN"}[];
+  sourceMapDigest?:string; assetBuildRevision:string;
+};
+type DeploymentPlanV1 = {
+  planId:string; workspaceRevision:string; targetId:string;
+  accountRef:string; environment:"LOCAL"|"PREVIEW"|"STAGING"|"PRODUCTION";
+  artifactDigest:string; manifestRef:string; externalEffects:string[];
+  estimatedCostClass:"FREE"|"PAID"|"UNKNOWN"; requiredSecretRefs:string[];
+  requestedCapabilities:string[]; rollbackTargetRef?:string;
+};
+type DeploymentReceiptV1 = {
+  deploymentId:string; targetId:string; artifactDigest:string;
+  externalOperationRef?:string; observedUrlRef?:string; revisionRef?:string;
+  state:"PREPARED"|"DISPATCHED"|"OBSERVED"|"VERIFIED"|"FAILED"|"UNKNOWN";
+  effectReceiptRefs:string[]; healthEvidenceRefs:string[]; rollbackRef?:string;
+};
+interface VisualSourceMapAdapterV1 {
+  observe(previewId:string,auth:AuthenticatedOwnerContext):Promise<VisualTargetObservationV1[]>;
+  candidates(nodeRef:string,expectedBrowserGeneration:string,limit:number):Promise<VisualTargetObservationV1>;
+  requestGuardedEdit(candidateRef:string,expectedSourceDigest:string,patchRef:string):Promise<{effectId:string}>;
+}
+interface DeploymentAdapterV1 {
+  inspectTargets(scopeRef:string):Promise<{targetsRef:string;providerProvenance:string}>;
+  prepare(plan:DeploymentPlanV1):Promise<{normalizedPlanDigest:string;requiredApprovals:string[]}>;
+  apply(planId:string,consentRef:string,effectLeaseRef:string):Promise<DeploymentReceiptV1>;
+  verify(deploymentId:string,checksRef:string,deadlineMs:number):Promise<DeploymentReceiptV1>;
+  reconcile(deploymentId:string):Promise<DeploymentReceiptV1>;
+  rollback(deploymentId:string,approvalRef:string,effectLeaseRef:string):Promise<DeploymentReceiptV1>;
+}
+~~~
+
+**Visual flow:** start/observe approved local preview and record browser/DOM/AX generation + app build revision; user selects a bounded element reference. Resolve source-map candidates with file hashes, confidence and build timestamp. Ambiguous/no map returns UNKNOWN with candidate explanation; never guess an edit target from a pixel alone. A user-reviewed patch is applied via canonical `files.patch`/`files.write` under Rust Guard/expected digest and workspace lease; rebuild, recapture and compare user-visible result/test evidence. Race with hot reload, tab navigation, symlinked source, untrusted DOM/remote URL or stale line map invalidates the selection. Source maps and DOM text are untrusted.
+
+**Deployment flow:** select explicit target/account/environment; run read-only discovery without using secrets in the model prompt; prepare exact artifact/revision/config/secret scopes and estimated cost; obtain separately bound approval for potentially costly or public external side effects. Guard PREPARE and one-use lease **before** upload, config change, secret use or remote command. Save external idempotency token if provided and bounded logs/artifact receipts, then health/critical-route verification against target revision and accepted criteria. Build success or HTTP 200 on upload is **not** deployment VERIFIED. Remote effect after network timeout is UNKNOWN and must be reconciled with provider state before replay; rollback is a new approved Guarded effect with independent receipt/verification, never assumed safe. Production access and unimplemented adapters remain UNAVAILABLE rather than silently inferred from a generic shell command.
+
+**Tests:** stale DOM/AX generation, source-map mismatch, wrong repo file, malicious markup, patch racing user edit, preview process leak, deployment credential redaction, wrong account/environment, failed upload after remote success, health mismatch, approval revoked, spending denied, canary URL expires, remote duplicate deployment ID, rollback fails and final revision verification. §32.35 defines traceability.

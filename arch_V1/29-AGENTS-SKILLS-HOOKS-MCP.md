@@ -620,3 +620,13 @@ type CandidateTaskResultV1 = {
 **Controlled model budget:** separate model token/cost and process RAM budgets; no forced “small model for worker” downgrade. Optional explicitly approved specialist model/harness bindings are frozen in the delivery envelope and visible in spending observations. Resume/recovery recreates missing ephemeral queues by replaying Rust OwnerLog and canonical evidence refs, not old in-memory agent messages.
 
 **Tests:** invalid DAG cycle/cross-Run edge, 21st child beyond configured 20 limit, parent scope escalation, random late child after cancellation, duplicate delivery, conflicting user edit, dead worker with receipts, missing artifact or wrong hash, independent reviewer source-stale, parent compaction, 20-session bounded overhead and no second transcript owner. Follow §32.33 for exact fixtures.
+
+## 29.19 ACP/CLI/remote adapters and subagent delegation completeness
+
+`AgentProfileV2.adapter.kind` already permits `native | acp | cli | container | remote`. This field is **profile configuration**, not proof that those runtime adapters exist. The pinned OpenCode ACP agent-side server is NOT Horizon's ACP client for delegating work to another running coding agent; §37.19 owns the proposed client interface, version negotiation and bounded event protocol.
+
+Required capability negotiation by adapter: exact protocol version, session lifecycle, stream/cancel support, external tool/permission observability, artifact result format, model/provider routing and spend reporting, OS sandbox guarantees and health/reconnect. Return UNAVAILABLE when a required feature cannot be proven, rather than blindly treating a generic CLI as privileged Horizon code. Avoid adapter-specific UI/Task stores: return candidate SubagentDelivery through existing mailbox and Rust task lease.
+
+The parent capability intersection, user-reviewed model/account/cost policy, active Task source revision, lease epoch and selected workspace must be frozen per dispatch. A CLI child has no right to launch additional shells or mutate arbitrary paths just because its executable started successfully. For unobservable external tooling, only an explicitly trusted separate backend mode may be offered with truthful weaker safety guarantees; governed effectful delegation remains disabled until the action can be pre-authorized and target outcome reconciled.
+
+Required errors: unsupported protocol/version, lost external process, denied tool capability, unauthorized nested delegation, spurious event replay, mismatched model selection, remote prompt/tool injection, arbitrary cwd escape, cancellation after remote effect, session ownership confusion and non-idempotent UNKNOWN. §32.35 tests and §20.13 source placement are the acceptance owner.

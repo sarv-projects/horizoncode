@@ -647,3 +647,20 @@ The following **reserved DESIGN targets** extend the existing canonical catalog;
 | `ui.tool_tail.inspect` | scoped read / UiEventMux presentation | bounded current live tool activity; never canonical result authority |
 
 All tool-visible schemas are bounded and discoverable progressively. Headless workers, file activity, process resource sampling and adaptive render need not be exposed to the model by default. For each candidate, update `ActionDescriptor`, capability machine registry, platform support matrix, permission/feature exposure and §32 tests **together** when promoted to WIRED. Read-only is not “permission-free”; network/cost and user privacy require authorization. This inventory is not an invitation for a plugin to supply its own authority.
+
+## 33.30 Visual edit, deploy and external agent candidate coverage
+
+These candidates close an implementation-contract gap for already-accepted §§3.16–3.18 and §29 adapter kinds. **DESIGN-RESERVED**, not machine-registered operational commands. Use the existing capability registry/tool projection and §14 effect boundary before enabling. Do not duplicate existing `preview.start/stop/status`, `files.patch`, `git.diff`, `test.run_related`, `browser.*`, `agent.*` or `terminal.*` IDs.
+
+| Candidate ID | Effect and owner | Minimum proof before WIRED |
+|---|---|---|
+| `visual.source_candidates` | workspace/browser scoped read; preview+RepoIntel adapter | bounded DOM/AX/build/source map generation, confidence and no guessed writable target |
+| `visual.selection.inspect` | scoped read; existing UI/browser projection | current page/source epoch and accessibility fallback, no effect without user request |
+| `deployment.targets.inspect` | scoped credential-safe read; provider adapter | available authenticated backend/environment, no secret bytes |
+| `deployment.plan` | scoped deterministic planning/control; deployment adapter | target/account/cost/secret/effect preview and immutable plan digest |
+| `deployment.apply` | remote effect; Rust Guard → authenticated deployment adapter | explicit account/environment/scope/cost consent, prepared lease, receipts |
+| `deployment.verify` | bounded scoped read/external observation; provider target | actual URL/revision/health/critical checks and criterion-bound evidence |
+| `deployment.rollback` | remote effect; independent Rust Guard approval | confirmed rollback target, target-state reconciliation and receipt |
+| `agents.external.inspect` | scoped read; AgentProfile + existing adapter health | ACP/CLI/remote protocol/permission/model support and disabled reason |
+
+Model tool exposure is optional and progressively filtered; an external ACP backend is an integration, not a permit for a model to bypass Guard. No auto-production deployment, hidden remote spend, duplicate cloud credential registry or direct Session migration may be inferred from these catalog rows. Definitions for wire data and errors live in §37.19–20, verification in §32.35. When implementing, update `contracts-v2/capability-registry-v1.json` and typed schema exactly once along with any user-facing Settings and action IDs.
