@@ -181,3 +181,16 @@ Evidence boundary: targeted normative owners (§10, §14, §17, §18, §32), ope
 Remaining P1.3 work in priority order: (1) bounded partial tool-call delta/stream timeout and cancellation semantics; (2) source-by-source shell/process/Task admission or explicit unavailable; (3) stable permission/lease and durable effect/UNKNOWN recovery across the rest; (4) no-effect bypass tests for every enabled origin. Green tests for this limited bound do **not** close Gate 2.
 
 No extra agent runtime, feature registry or duplicate effect policy is introduced by this slice.
+
+## P1.3 ToolBatch callback provenance and AI SDK V3 partial-input budget — PR #2 (2026-10-14)
+
+**Repository state:** PR #1 was merged into `main` as `ee1db242a76c0d7a6153f7d644af565b954ab0df`, and its final head `c8027ad004c9ac8a29c69832fc6605c7c4a29464` passed GitHub full validation (run 38508152414). Earlier text describing PR #1 as only a draft/branch is historical. PR #2, `fix/p1-3-tool-batch-provenance-and-delta-budget`, is a distinct **unmerged** implementation slice from that main commit.
+
+**New implementation on PR #2:**
+- `packages/opencode/src/session/tool-batch.ts`: each allowed/admitted callback result includes the pinned canonical capability ID. No read-only or internal-control callback is permitted merely because a call ID is supplied without a completed and validated batch decision. A reused call ID for another capability is denied. `internal: true` bypasses Rust preparation **only for a single actual control** capability, not an effectful tool.
+- The middleware bounds AI SDK **V3 `tool-input-start`/`tool-input-delta`/`tool-input-end`** frames by ID count, per-call/aggregate UTF-8 argument bytes and delta-frame count without accumulating full argument text. A partial ID without a terminal `tool-call` and a streaming/final tool-name mismatch fail closed before any callback.
+- `packages/opencode/test/session/tool-batch.test.ts`: negative/positive tests cover read/control callback admission, capability confusion, internal-effect denial, streamed overflow, missing terminal, mismatched names and acceptable valid streaming input. The isolated metadata test in `test/session/tools.test.ts` explicitly supplies its simulated validated read-only outcome; direct calls without admission remain denied.
+
+**Important distinction:** this does *not* implement stream-lifetime deadlines, bound arbitrary tool output or guard the remaining shell/Task/MCP/plugin/browser/desktop/etc. effect origins. Hosted/provider-executed effects still require genuine pre-dispatch control; returned denial cannot undo an already external action. P1.3 universal effect mediation and Windows release qualification remain open.
+
+**Verification chronology:** intermediate CI commits intentionally containing tests before implementation, or testing obsolete SDK event names/direct-call fixtures, failed. The current branch's full typecheck/Guard/ToolBatch test result must be read from the latest PR-head GitHub Actions check. Do **not** mark this slice TESTED/VERIFIED until that run actually passes. No local desktop smoke test, provider inference or release installation occurred.
