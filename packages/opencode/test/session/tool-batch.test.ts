@@ -640,3 +640,36 @@ test("bounds the number of streaming tool IDs independently of terminal calls", 
   )
   expect(gate.context.outcomes.size).toBe(0)
 })
+
+
+test("turn cancellation interrupts a stalled provider before any ToolBatch admission", async () => {
+  const controller = new AbortController()
+  let preparations = 0
+  let upstreamCancelled = false
+  const gate = gateInput({
+    signal: controller.signal,
+    prepareToolBatch: async () => {
+      preparations++
+      throw new Error("cancelled response must not reach Guard")
+    },
+  })
+  const provider = new ReadableStream<LanguageModelV3StreamPart>({
+    start(stream) {
+      stream.enqueue({ type: "tool-input-start", id: "never_finished", toolName: "write" })
+      // Simulate a provider that never emits a terminal call or finish frame.
+    },
+    cancel() {
+      upstreamCancelled = true
+    },
+  })
+  const output = gateToolCallStream(provider, gate)
+  const reader = output.getReader()
+  const initial = await reader.read()
+  expect(initial.value?.type).toBe("tool-input-start")
+  const pending = reader.read()
+  controller.abort(new Error("turn cancelled"))
+  await expect(pending).rejects.toThrow()
+  expect(preparations).toBe(0)
+  expect(gate.context.outcomes.size).toBe(0)
+  expect(upstreamCancelled).toBe(true)
+})
