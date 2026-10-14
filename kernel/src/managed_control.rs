@@ -34,6 +34,9 @@ pub enum RunPhase {
     Paused,
     Reconciling,
     Cancelling,
+    Verifying,
+    Succeeded,
+    NeedsYou,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,6 +52,7 @@ pub struct Task {
     pub ready: bool,
     pub active_attempt: Option<String>,
     pub unknown_effect: bool,
+    pub verified_revision: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,6 +60,17 @@ pub struct Run {
     pub spec_id: String,
     pub phase: RunPhase,
     pub tasks: BTreeMap<String, Task>,
+    pub final_revision: Option<String>,
+    pub criterion_evidence: BTreeMap<String, CriterionEvidence>,
+}
+
+/// Only an independent, trusted verifier adapter may submit this evidence.
+/// No model-facing, plugin or public command path may submit these events.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CriterionEvidence {
+    pub source_revision: String,
+    pub evidence_digest: String,
+    pub verifier_id: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -80,6 +95,11 @@ pub enum ManagedCommand {
     MarkTaskReady { run_id: String, task_id: String },
     AdmitAttempt { run_id: String, task_id: String, attempt_id: String },
     MarkAttemptUnknown { run_id: String, task_id: String, attempt_id: String },
+    VerifyTask { run_id: String, task_id: String, attempt_id: String, source_revision: String, evidence_digest: String },
+    BeginVerification { run_id: String, final_revision: String },
+    RecordCriterionEvidence { run_id: String, criterion_id: String, source_revision: String, evidence_digest: String, verifier_id: String },
+    FinalizeRun { run_id: String, final_revision: String },
+    NeedsYou { run_id: String },
     PauseRun { run_id: String },
     ResumeRun { run_id: String },
     RequestCancel { run_id: String },
@@ -104,6 +124,16 @@ impl ManagedCommand {
                 ("attempt_admitted", json!({"runId": run_id, "taskId": task_id, "attemptId": attempt_id})),
             Self::MarkAttemptUnknown { run_id, task_id, attempt_id } =>
                 ("attempt_unknown", json!({"runId": run_id, "taskId": task_id, "attemptId": attempt_id})),
+            Self::VerifyTask { run_id, task_id, attempt_id, source_revision, evidence_digest } =>
+                ("task_passed", json!({"runId": run_id, "taskId": task_id, "attemptId": attempt_id, "sourceRevision": source_revision, "evidenceDigest": evidence_digest})),
+            Self::BeginVerification { run_id, final_revision } =>
+                ("run_verifying", json!({"runId": run_id, "finalRevision": final_revision})),
+            Self::RecordCriterionEvidence { run_id, criterion_id, source_revision, evidence_digest, verifier_id } =>
+                ("evidence_accepted", json!({"runId": run_id, "criterionId": criterion_id, "sourceRevision": source_revision, "evidenceDigest": evidence_digest, "verifierId": verifier_id})),
+            Self::FinalizeRun { run_id, final_revision } =>
+                ("run_succeeded", json!({"runId": run_id, "finalRevision": final_revision})),
+            Self::NeedsYou { run_id } =>
+                ("run_needs_you", json!({"runId": run_id})),
             Self::PauseRun { run_id } =>
                 ("run_paused", json!({"runId": run_id})),
             Self::ResumeRun { run_id } =>
@@ -143,6 +173,16 @@ impl ManagedCommand {
                 Self::AdmitAttempt { run_id: field(payload, "runId")?, task_id: field(payload, "taskId")?, attempt_id: field(payload, "attemptId")? },
             "attempt_unknown" if count == 3 =>
                 Self::MarkAttemptUnknown { run_id: field(payload, "runId")?, task_id: field(payload, "taskId")?, attempt_id: field(payload, "attemptId")? },
+            "task_passed" if count == 5 =>
+                Self::VerifyTask { run_id: field(payload, "runId")?, task_id: field(payload, "taskId")?, attempt_id: field(payload, "attemptId")?, source_revision: field(payload, "sourceRevision")?, evidence_digest: field(payload, "evidenceDigest")? },
+            "run_verifying" if count == 2 =>
+                Self::BeginVerification { run_id: field(payload, "runId")?, final_revision: field(payload, "finalRevision")? },
+            "evidence_accepted" if count == 5 =>
+                Self::RecordCriterionEvidence { run_id: field(payload, "runId")?, criterion_id: field(payload, "criterionId")?, source_revision: field(payload, "sourceRevision")?, evidence_digest: field(payload, "evidenceDigest")?, verifier_id: field(payload, "verifierId")? },
+            "run_succeeded" if count == 2 =>
+                Self::FinalizeRun { run_id: field(payload, "runId")?, final_revision: field(payload, "finalRevision")? },
+            "run_needs_you" if count == 1 =>
+                Self::NeedsYou { run_id: field(payload, "runId")? },
             "run_paused" if count == 1 =>
                 Self::PauseRun { run_id: field(payload, "runId")? },
             "run_resumed" if count == 1 =>
@@ -208,7 +248,7 @@ impl ManagedSnapshot {
                 let spec = self.specs.get(spec_id).ok_or(ManagedError::Conflict("spec missing"))?;
                 if !spec.accepted { return Err(ManagedError::Conflict("spec not accepted")); }
                 if self.runs.contains_key(run_id) { return Err(ManagedError::Conflict("run ID already used")); }
-                self.runs.insert(run_id.clone(), Run { spec_id: spec_id.clone(), phase: RunPhase::Running, tasks: BTreeMap::new() });
+                self.runs.insert(run_id.clone(), Run { spec_id: spec_id.clone(), phase: RunPhase::Running, tasks: BTreeMap::new(), final_revision: None, criterion_evidence: BTreeMap::new() });
             }
             ManagedCommand::AddTask { run_id, task_id, dependencies } => {
                 id(task_id)?;
@@ -223,15 +263,18 @@ impl ManagedSnapshot {
                         return Err(ManagedError::Conflict("task dependency invalid or duplicated"));
                     }
                 }
-                run.tasks.insert(task_id.clone(), Task { dependencies: dependencies.clone(), ready: false, active_attempt: None, unknown_effect: false });
+                run.tasks.insert(task_id.clone(), Task { dependencies: dependencies.clone(), ready: false, active_attempt: None, unknown_effect: false, verified_revision: None });
             }
             ManagedCommand::MarkTaskReady { run_id, task_id } => {
                 let run = self.runs.get_mut(run_id).ok_or(ManagedError::Conflict("run missing"))?;
                 if run.phase != RunPhase::Running { return Err(ManagedError::Conflict("run fenced")); }
+                let dependencies = run.tasks.get(task_id)
+                    .ok_or(ManagedError::Conflict("task missing"))?.dependencies.clone();
+                let prerequisites_passed = dependencies.iter().all(|dependency| {
+                    run.tasks.get(dependency).is_some_and(|prior| prior.verified_revision.is_some())
+                });
                 let task = run.tasks.get_mut(task_id).ok_or(ManagedError::Conflict("task missing"))?;
-                // Dependency PASS is not yet implemented, so the safe default
-                // is to withhold readiness for every dependent task.
-                if task.ready || !task.dependencies.is_empty() || task.unknown_effect || task.active_attempt.is_some() {
+                if task.ready || !prerequisites_passed || task.unknown_effect || task.active_attempt.is_some() {
                     return Err(ManagedError::Conflict("task dependencies not independently verified"));
                 }
                 task.ready = true;
@@ -243,7 +286,7 @@ impl ManagedSnapshot {
                 if run.phase != RunPhase::Running { return Err(ManagedError::Conflict("run fenced")); }
                 let task = run.tasks.get_mut(task_id).ok_or(ManagedError::Conflict("task missing"))?;
                 // Without independent Task PASS, dependencies are never presumed satisfied.
-                if !task.ready || !task.dependencies.is_empty() || task.active_attempt.is_some() || task.unknown_effect {
+                if !task.ready || task.verified_revision.is_some() || task.active_attempt.is_some() || task.unknown_effect {
                     return Err(ManagedError::Conflict("task not ready for another attempt"));
                 }
                 task.active_attempt = Some(attempt_id.clone());
@@ -257,6 +300,70 @@ impl ManagedSnapshot {
                 }
                 task.unknown_effect = true;
                 if run.phase == RunPhase::Running { run.phase = RunPhase::Reconciling; }
+            }
+
+            ManagedCommand::VerifyTask { run_id, task_id, attempt_id, source_revision, evidence_digest } => {
+                digest(source_revision)?;
+                digest(evidence_digest)?;
+                let run = self.runs.get_mut(run_id).ok_or(ManagedError::Conflict("run missing"))?;
+                if run.phase != RunPhase::Running { return Err(ManagedError::Conflict("run fenced")); }
+                let task = run.tasks.get_mut(task_id).ok_or(ManagedError::Conflict("task missing"))?;
+                if task.active_attempt.as_deref() != Some(attempt_id) || task.unknown_effect
+                    || task.verified_revision.is_some() {
+                    return Err(ManagedError::Conflict("task has no verifiable active attempt"));
+                }
+                task.verified_revision = Some(source_revision.clone());
+                task.active_attempt = None;
+            }
+            ManagedCommand::BeginVerification { run_id, final_revision } => {
+                digest(final_revision)?;
+                let run = self.runs.get_mut(run_id).ok_or(ManagedError::Conflict("run missing"))?;
+                if run.phase != RunPhase::Running || run.tasks.is_empty()
+                    || run.tasks.values().any(|task| task.unknown_effect || task.active_attempt.is_some() || task.verified_revision.is_none()) {
+                    return Err(ManagedError::Conflict("run has unresolved or unverified Tasks"));
+                }
+                run.phase = RunPhase::Verifying;
+                run.final_revision = Some(final_revision.clone());
+                run.criterion_evidence.clear(); // Evidence must be fresh on this revision.
+            }
+            ManagedCommand::RecordCriterionEvidence { run_id, criterion_id, source_revision, evidence_digest, verifier_id } => {
+                digest(source_revision)?;
+                digest(evidence_digest)?;
+                id(verifier_id)?;
+                let run = self.runs.get_mut(run_id).ok_or(ManagedError::Conflict("run missing"))?;
+                if run.phase != RunPhase::Verifying || run.final_revision.as_deref() != Some(source_revision) {
+                    return Err(ManagedError::Conflict("stale or out-of-phase criterion evidence"));
+                }
+                let spec = self.specs.get(&run.spec_id).ok_or(ManagedError::Conflict("spec missing"))?;
+                if !spec.criteria.contains(criterion_id) || run.criterion_evidence.contains_key(criterion_id) {
+                    return Err(ManagedError::Conflict("unknown or duplicated acceptance criterion"));
+                }
+                run.criterion_evidence.insert(criterion_id.clone(), CriterionEvidence {
+                    source_revision: source_revision.clone(),
+                    evidence_digest: evidence_digest.clone(),
+                    verifier_id: verifier_id.clone(),
+                });
+            }
+            ManagedCommand::FinalizeRun { run_id, final_revision } => {
+                digest(final_revision)?;
+                let run = self.runs.get_mut(run_id).ok_or(ManagedError::Conflict("run missing"))?;
+                if run.phase != RunPhase::Verifying || run.final_revision.as_deref() != Some(final_revision)
+                    || run.tasks.values().any(|task| task.unknown_effect || task.active_attempt.is_some()) {
+                    return Err(ManagedError::Conflict("run not ready to finalize"));
+                }
+                let spec = self.specs.get(&run.spec_id).ok_or(ManagedError::Conflict("spec missing"))?;
+                if spec.criteria.iter().any(|id| run.criterion_evidence.get(id)
+                    .is_none_or(|proof| proof.source_revision != *final_revision)) {
+                    return Err(ManagedError::Conflict("missing or stale final-revision evidence"));
+                }
+                run.phase = RunPhase::Succeeded;
+            }
+            ManagedCommand::NeedsYou { run_id } => {
+                let run = self.runs.get_mut(run_id).ok_or(ManagedError::Conflict("run missing"))?;
+                if matches!(run.phase, RunPhase::Succeeded | RunPhase::Cancelling | RunPhase::NeedsYou) {
+                    return Err(ManagedError::Conflict("run cannot transition to NEEDS_YOU"));
+                }
+                run.phase = RunPhase::NeedsYou;
             }
             ManagedCommand::PauseRun { run_id } => {
                 let run = self.runs.get_mut(run_id).ok_or(ManagedError::Conflict("run missing"))?;
