@@ -151,3 +151,26 @@ fn dependencies_are_not_claimed_passed_from_worker_or_model_output() {
         run_id: "run-v1".into(), task_id: "cycle".into(), dependencies: vec!["cycle".into()],
     }).is_err());
 }
+
+
+#[test]
+fn pause_is_a_durable_admission_fence_and_resume_restores_only_safe_work() {
+    let root = PrivateRoot::new();
+    let mut store = ManagedControl::open(root.path(), "goal-paused").unwrap();
+    accepted_run(&mut store);
+    send(&mut store, "task", ManagedCommand::AddTask {
+        run_id: "run-v1".into(), task_id: "task-a".into(), dependencies: vec![],
+    });
+    send(&mut store, "pause", ManagedCommand::PauseRun { run_id: "run-v1".into() });
+    drop(store);
+    let mut restored = ManagedControl::open(root.path(), "goal-paused").unwrap();
+    assert_eq!(restored.snapshot().runs["run-v1"].phase, RunPhase::Paused);
+    assert!(restored.apply(restored.snapshot().revision, "blocked-attempt", ManagedCommand::AdmitAttempt {
+        run_id: "run-v1".into(), task_id: "task-a".into(), attempt_id: "attempt-one".into(),
+    }).is_err());
+    send(&mut restored, "resume", ManagedCommand::ResumeRun { run_id: "run-v1".into() });
+    send(&mut restored, "attempt", ManagedCommand::AdmitAttempt {
+        run_id: "run-v1".into(), task_id: "task-a".into(), attempt_id: "attempt-one".into(),
+    });
+    assert_eq!(restored.snapshot().runs["run-v1"].phase, RunPhase::Running);
+}
