@@ -194,3 +194,18 @@ No extra agent runtime, feature registry or duplicate effect policy is introduce
 **Important distinction:** this does *not* implement stream-lifetime deadlines, bound arbitrary tool output or guard the remaining shell/Task/MCP/plugin/browser/desktop/etc. effect origins. Hosted/provider-executed effects still require genuine pre-dispatch control; returned denial cannot undo an already external action. P1.3 universal effect mediation and Windows release qualification remain open.
 
 **Verification chronology:** intermediate CI commits intentionally containing tests before implementation, or testing obsolete SDK event names/direct-call fixtures, failed. The current branch's full typecheck/Guard/ToolBatch test result must be read from the latest PR-head GitHub Actions check. Do **not** mark this slice TESTED/VERIFIED until that run actually passes. No local desktop smoke test, provider inference or release installation occurred.
+
+## P1.3 streamed-input lifecycle guard — PR #3 (2026-10-14)
+
+**Base rechecked before development:** `main` was `5b989930cd158c8acc831fc90afddad782be36f7`; PR #1 and PR #2 have both **merged**. The merged PR #2 head `697eb261a5299cff1f0ac61ce92083d512eb9d0e` passed GitHub Actions run `38528519442`. The older PR #1/PR #2 status entries above are dated source snapshots, not current branches.
+
+Next bounded P1.3 issue discovered in `packages/opencode/src/session/tool-batch.ts`: the SDK V3 streamed tool-input budget and canonical terminal-call validation already existed, but partial frame ordering was not enforced. Without this slice, a provider could send an input delta/end without start, duplicate start/end, or append a partial delta after a terminal tool-call. Those frames are not direct mutation rights, but they undermine exact per-call input provenance.
+
+**Implementation on `fix/p1-3-streamed-tool-input-lifecycle`, draft PR #3:**
+- `packages/opencode/src/session/tool-batch.ts`: require a prior start for each delta/end, reject duplicate starts, reject post-end deltas or ends, reject partial frames after a terminal call ID; preserve optional end-frame compatibility where SDK providers emit terminal calls after start/delta.
+- `packages/opencode/test/session/tool-batch.test.ts`: five new cases for orphan delta/end, duplicate starts, post-end extra frames, partial updates after terminal and successful complete start/delta/end/terminal flow. All malformed paths deny before callbacks or Rust Guard preparation.
+- No new executor, policy authority, tool registry or package dependency. Existing 32-call/256-KiB/512-KiB bounds and capability-pinned decisions remain as before.
+
+**Verification status:** GitHub workflow run [38540697810](https://github.com/sarv-projects/horizoncode/actions/runs/38540697810) was in progress when this record was written. Do not claim TESTED or verified until the PR's **final head** passes the focused ToolBatch suite, full workspace typecheck and real Rust Guard smoke tests. No live provider inference or native Windows sandbox tests were performed.
+
+**Still incomplete:** time/lifetime deadline for a provider stream that never terminates, network/provider abort propagation, all unmediated shell/Task/MCP/plugin/hosted effects, durable UNKNOWN settlement and supported-OS release gates. P1.3 remains open. The next slice should identify and fail-close one actual shell/process/Task mutation origin at its dispatch boundary, or implement a separately tested provider-stream deadline without bypassing the batch gate.
