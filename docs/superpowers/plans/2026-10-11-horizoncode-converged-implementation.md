@@ -363,3 +363,31 @@ The original 24-candidate audit includes supporting features beyond core RAM. Tr
 - [ ] **Opt-in self-development/hot swap and thin mobile client:** developer-only signed/reversible canary with fencing and rollback; secure remote authenticated SDK client/mobile surface with no separate Task/Session engine, no exposed secrets and correct disconnect behaviour. Respect A-V2-29 Experimental settings and human authorization.
 
 Source-to-feature coverage crosswalk: §42.10. These are accepted product capabilities with individually honest availability/evidence, **not an instruction to discard them on scope grounds**.
+
+## Implementation-ready RC0–RC5 function/test ledger — 2026-10-15
+
+**Authoritative design is in the topic owners; this ledger only orders code work.** All entries below are **NOT IMPLEMENTED by the documentation PR** unless separately identified in HANDOFF with source and real test evidence. Do not create a second Session, Task, tool registry, authorization engine or runtime in the name of JCode parity. The precise HLD is §01.13, API/IPC §13.12, state/durability §11.20, schema work §12.16, LLD §15.20/§18.18–19/§21.11/§29.18/§30.21/§31.17/§37.16–18 and tests §32.33–34.
+
+| Deliverable | Concrete code boundary | Core functions / adapters to implement | Test gate |
+|---|---|---|---|
+| RC0.1 process-tree measurement | host supervisor + Rust/OS ResourceSampler, script harness under `scripts/perf/` | `resolveOwner, walkOwnedProcesses, readCounters, deduplicateTree, attributeByLease, sampleWithBudget` | JC-RES-001/002/003/004 |
+| RC0.2 process/budget truth | Rust WorkerExecution/resource lease owner | `reserveCapacity, chargeActiveUsage, evaluatePressure, releaseIfSettled, reconcileOrphan` | JC-RES-006/012 |
+| RC0.3 cache/renderer | existing context/index/TUI owners | `cache.lookup, insertIfCurrent, pin/unpin, evictToBudget` | JC-RES-005/006/020 |
+| RC1.1 Guard closure | existing provider/callback/host paths + Rust `guard.rs/effect_host.rs` | complete atomic batch, classify origins, authorize, durable PREPARE, one-use lease, launch, receipt/UNKNOWN, cancel | existing P1 denial matrix + JC-RES-009 |
+| RC1.2 shared read-only observer | `SessionSupervisor.Service` and Rust supervised IPC | `attach, subscribe_page, ack_page, detach, cancel_scope, read source cursor` with peer/epoch/queue quotas | JC-RES-008/009/010 |
+| RC1.3 eventual shared effects | same Rust Guard and EffectService, feature-negotiated | migrate one effect class behind selected kernel owner, durable reconcile then release old supervisor | full §14 bypass/regression & benchmark |
+| RC2.1 managed scheduler | Rust `managed_control.rs`/OwnerLog, authenticated API | `acceptFullSpec, graphValidate, readyTasks, admitAttempt, reserveResourceLease, settleDelivery` | JC-RES-007/018 + P2 |
+| RC2.2 worker execution | Rust WorkerExecution + §14 ExecutionHost | `enqueue, reserve, attachExistingCoreClient, startIsolatedWorker, settleWorker, revokeLease` | JC-RES-007/009/012 |
+| RC2.3 reviewer | existing Rust Evidence/Verification owner with independently authenticated adapter | `verifyCriterion, bindRevision, finalizeRun`; no child self-approval | JC-RES-018 |
+| RC2.4 file-conflict safety | file watchers/handler + Rust guard revision preconditions | `recordObservedTouch, listForPath, invalidateGeneration, evictExpired`; hard write lease/hash validation separate | JC-RES-011 |
+| RC3.1 Provider Doctor | existing selected provider/auth/catalog source; §37.17 | `inspectOffline, probeCatalog, probeFull` + consent and actual token/billing evidence | JC-RES-013/014/015 |
+| RC3.2 context+recall | ContextLedger/indexd and selected model provider | `compileContext, recallScoped, getTokenBudget, invalidateSourceEpoch` | JC-RES-003/005/020 |
+| RC3.3 session import | canonical host Session and explicit native backend adapter | `detectSources, previewImport, commitImport, detachExternalSession` | JC-RES-019 |
+| RC4 TUI | hydrated existing renderer + UiEventMux | `normalizePaintEvent, stablePrefixDiff, coalesceReplaceableDelta, chooseFrameDeadline, paintChangedCells` | JC-RES-016/017 |
+| RC4 surfaces | existing Settings FeatureExposure and API/TUI/app | `resolveEffectiveFeature, renderResourcePanel, renderProviderDoctor, showFileConflict` | FEAT-001..014 + resource suites |
+| RC5 clients | existing public Session/API and authenticated backend adapters | `attachClient, subscribe/ack/replay, sendUserInput, steer, cancel` | replay/auth/single-owner/turn-epoch tests |
+| RC5 dev canary/packaging | supervised build/test worker, release owner | `prepareCandidate, testAndAttest, requestUserApproval, activateCanary, rollback` | isolation/signature/rollback and disk/build cases |
+
+**Definition of executable specification before marking a checkbox:** every selected function above has an existing/new concrete file path *in a hydrated checkout*, typed parameters/return/limits, ownership of durable vs derived data, error-code mapping, explicit concurrent/cancel/crash behaviour and a complete test with fixture bytes and method. §37 pseudotypes are not compiled/generated contracts: RC0–5 may be marked CODE_PRESENT only after actual modules/schema appear, WIRED only after real ingress/egress, VERIFIED only after security/OS/performance tests. Benchmarks from JCode or README screenshots are not runtime proofs.
+
+**First coding commit recipe:** start with shell/process ToolBatch pre-dispatch denial and real guarded replacement (P1.3); in parallel add **read-only** ResourceSampler and process-tree baseline. Do not build the shared effect daemon first. After P1, a single authenticated managed goal-to-verifier integration slice establishes P2 before expanding workers. Keep native Windows unsupported paths explicitly unavailable until actual Windows source/OS CI passes. Follow `AGENTS.md` cleanup/worktree discipline.
