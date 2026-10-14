@@ -1,7 +1,17 @@
 import type { LanguageModelV3Middleware, LanguageModelV3StreamPart } from "@ai-sdk/provider"
+import { Buffer } from "node:buffer"
 import { randomUUID } from "node:crypto"
 import type { EffectAdmission, EffectChallenge, GuardedToolCall } from "@opencode-ai/core/session/supervisor"
 import type { Capability } from "@/tool/tool"
+
+// Bound provider-supplied tool calls at the streaming boundary, before parsing,
+// asynchronous validation, Guard preparation or callback dispatch. These limits
+// intentionally apply to read-only calls too, so a provider cannot build an
+// unbounded pending array while waiting for a terminal tool-calls finish.
+const MAX_TOOL_BATCH_CALLS = 32
+const MAX_TOOL_CALL_ARGUMENT_BYTES = 256 * 1024
+const MAX_TOOL_BATCH_ARGUMENT_BYTES = 512 * 1024
+const MAX_TOOL_IDENTITY_BYTES = 256
 
 export type ToolBatchDefinition = {
   readonly capability: Capability
@@ -106,6 +116,7 @@ export function gateToolCallStream(
   input: ToolBatchGateInput,
 ): ReadableStream<LanguageModelV3StreamPart> {
   const pending: Extract<LanguageModelV3StreamPart, { type: "tool-call" }>[] = []
+  let pendingArgumentBytes = 0
   let finish: Extract<LanguageModelV3StreamPart, { type: "finish" }> | undefined
 
   return stream.pipeThrough(
@@ -113,6 +124,28 @@ export function gateToolCallStream(
       transform(part, controller) {
         if (finish) throw new Error("Provider emitted data after finish")
         if (part.type === "tool-call") {
+          if (pending.length >= MAX_TOOL_BATCH_CALLS)
+            throw new Error("Tool batch limit exceeded: call count")
+          // The provider protocol defines input as JSON text. Reject malformed
+          // runtime shapes rather than allowing an object to evade byte caps.
+          if (typeof part.toolCallId !== "string" || typeof part.toolName !== "string")
+            throw new Error("Tool batch limit exceeded: tool identity")
+          if (
+            Buffer.byteLength(part.toolCallId, "utf8") > MAX_TOOL_IDENTITY_BYTES ||
+            Buffer.byteLength(part.toolName, "utf8") > MAX_TOOL_IDENTITY_BYTES
+          ) throw new Error("Tool batch limit exceeded: tool identity")
+          if (typeof part.input !== "string")
+            throw new Error("Tool batch limit exceeded: invalid argument representation")
+          // Fast character-count rejection avoids scanning huge ASCII payloads.
+          // Byte length is authoritative for non-ASCII JSON text.
+          if (part.input.length > MAX_TOOL_CALL_ARGUMENT_BYTES)
+            throw new Error("Tool batch limit exceeded: argument bytes")
+          const bytes = Buffer.byteLength(part.input, "utf8")
+          if (bytes > MAX_TOOL_CALL_ARGUMENT_BYTES)
+            throw new Error("Tool batch limit exceeded: argument bytes")
+          if (bytes > MAX_TOOL_BATCH_ARGUMENT_BYTES - pendingArgumentBytes)
+            throw new Error("Tool batch limit exceeded: aggregate argument bytes")
+          pendingArgumentBytes += bytes
           pending.push(part)
           return
         }
