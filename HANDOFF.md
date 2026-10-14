@@ -157,3 +157,27 @@ Code now exists **on draft PR #1 only**, not on `main`:
 **Verified as of this checkpoint:** the GitHub full-validation workflow passed the pure feature resolver commit, TUI dialog/app wiring commit, and desktop/web feature view+tabs commit `50949e9f63bd740ad3deb8fe29b3a33a653763da`. The first attempt to run the *new* test command from monorepo root failed due to intentionally disabled root test discovery, not type errors; the package-local invocation is committed and must pass its own PR-head workflow. No interactive device smoke test was run.
 
 **Still open:** feature-specific runtime server projection (UI currently derives from *server-returned config* using shared code), source-precedence / lock-source resolution, revision-aware concurrent writes, active-session pending-apply fidelity, arbitrary optional-feature inventory and FEAT-001..014 end-to-end tests. The three experimental engine backends remain unavailable even when listed, and P1.3 universal mutation mediation is a separate unfinished gate. This is a real initial product UI/config slice, not completed full Experimental infrastructure.
+
+## V1 release-gap inventory and P1.3 bounded ToolBatch slice — 2026-10-14
+
+Evidence boundary: targeted normative owners (§10, §14, §17, §18, §32), operative checklist and the current source/tests under `packages/opencode/src/session/tool-batch.ts` and `packages/opencode/test/session/tool-batch.test.ts`. This is **not** a claim that every tracked line or every future capability has been tested. PR commits are not on `main`; `HorizonCode full validation` last passed on prior PR head `eb57b447a239e5fc9acac33f3afe9f3153d5b2c4`. Await a **new passing run on the final slice commit** before marking this slice tested.
+
+| V1 requirement | What is still needed to claim release completion |
+|---|---|
+| P0 pin/provenance | Preserve upstream snapshot and legal notices; full redistributable-license and packaging proof is still P9 |
+| P1.2-B Session observer | Existing positive local evidence; platform/restart/support matrix must match shipped platforms |
+| P1.3 universal Guard | Shell/process, Task/subagent, MCP/plugin/hook, hosted provider, network/settings/auth, LSP/DAP, browser, desktop, REPL, automation and external agent effect origins remain unverified or gated; active release blocker |
+| P2 managed control | Accepted SpecVersion, durable Goal/Run/Task/Attempt, leases, pause/cancel, restart, unknown-effect reconciliation, evidence-bound final result |
+| P3 coding/RepoIntel | Guarded normal read/search/patch/build/test/diff/retry; revision-safe edit; lexical/symbol index/update and measured latency |
+| P4 language/debug/REPL | LSP edit safety, DAP lifecycle/evaluate isolation, bounded Python/JS worker and restart tests |
+| P5 browser/desktop/web | Per-OS real interaction safety, stale-ref/permission tests; web search cost/auth/source provenance |
+| P6 agents/settings | Typed bounded subagents, plugin/skill/hook/MCP trust; provider/model UX, one ActionDescriptor, server-authoritative optional Settings with source/lock/revision/pending and TUI/GUI/API parity; current `/features` slice is partial |
+| P7 UI/artifacts/automation | Stable streaming/scroll, bounded UI mux/renderer, source-faithful artifacts/SVG/Mermaid/tables, measured costs and durable jobs |
+| P8 long horizon | Real crash/recovery and stop-budget tests, bounded worktree parallelism, final outcome verification and cross-model evaluation |
+| P9 ship | Legal/attribution, signing/update scope, native **Windows** sandbox/durability qualification, install/upgrade/migration, package name/CLI, clean-machine and security/UX/performance release gates |
+
+**This implementation slice:** the pinned V1 streamed `tool-call` terminal gate now limits **32 tool calls**, **256 KiB per call JSON argument**, **512 KiB aggregate arguments**, and **256 UTF-8 bytes** each for the tool name/call ID, rejecting before accumulation, parsing, validation, Guard preparation, or local callback dispatch. Tests cover overflow count, single/aggregate bytes, overlong identities, valid 32-read boundary and mixed valid write plus oversized read. These numbers are safety ceilings for provider **terminal `tool-call` parts**, not coverage of stream lifetime, partial tool-input deltas, arbitrary stdout, overall tool results, memory across sessions, blocked provider-executed tools or external effect origins.
+
+Remaining P1.3 work in priority order: (1) bounded partial tool-call delta/stream timeout and cancellation semantics; (2) source-by-source shell/process/Task admission or explicit unavailable; (3) stable permission/lease and durable effect/UNKNOWN recovery across the rest; (4) no-effect bypass tests for every enabled origin. Green tests for this limited bound do **not** close Gate 2.
+
+No extra agent runtime, feature registry or duplicate effect policy is introduced by this slice.
