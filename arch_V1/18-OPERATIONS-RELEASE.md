@@ -238,3 +238,37 @@ Fresh clone acceptance: check status, inspect bootstrap plan, apply in the fresh
 - No hidden remote telemetry: diagnostics default local/redacted; export or remote aggregation requires user approval and must not include prompt bodies, secrets or raw tool stdout by default. Profiling artifacts are retained/removed under §18.14.
 
 Test owners are §32.32; scheduler/process integration is §21.10; client drawing and artifact budgets are §31.16. See `docs/performance/README.md` for the non-normative measurement runbook and empty evidence template.
+
+## 18.18 Resource profiles, accounting invariants and deterministic pressure controller
+
+**Resource policy API (design, not shipped):** one per-installation `ResourcePolicyV1`, with optional workspace/user/Run overrides resolved through §16 Settings precedence. It governs foreground host processes, pooled headless workers, LSP/DAP/REPL/browser subprocesses, index/render caches, build/test workers and separately reported local model inference. No manager outside the Rust resource/lease owner may allocate a new effectful worker on the assumption that free RAM exists.
+
+~~~ts
+type BudgetDimension = "memoryBytes" | "cpuMillicores" | "processes" | "fds" |
+  "diskBytes" | "toolOutputBytes" | "activeWorkers" | "tokens" | "providerCostMicros";
+type ResourceLimitV1 = {
+  dimension: BudgetDimension;
+  soft?: string; hard?: string; // decimal nonnegative exact integers, config validated
+  source: "OS_QUOTA" | "USER" | "WORKSPACE" | "RUN" | "SYSTEM_DEFAULT";
+  enforcement: "HARD_OS" | "ADMISSION_ONLY" | "OBSERVE_ONLY" | "UNSUPPORTED";
+};
+type WorkerResourceReservationV1 = {
+  reservationId: string; runId?: string; attemptId: string;
+  ownerEpoch: string; requested: ResourceLimitV1[]; expiresAt: string;
+  actualUsageRef?: string; status: "RESERVED" | "ACTIVE" | "RELEASED" | "EXPIRED";
+};
+~~~
+
+**Admission calculation:** gather total memory available from the actual effective boundary: cgroup v2 (Linux), Job Object quota/commit (Windows), task/application limits (macOS) or explicitly configured user cap. Distinguish physical available, current process resident, reservations, shared cache bytes and GPU memory; do not add Linux RSS across shared mappings and represent shared daemon PSS once globally. Define `remaining(d) = hardLimit(d) - measuredUsage(d) - activeReservations(d) - safetyReserve(d)`, all same unit; any missing hard-limit input causes an explicit `UNKNOWN_CAPACITY` decision (queue new costly work or require a bounded conservative operator profile), **not an infinite quota**. Canonical security/permission checks run independently before launch; budget admission is an additional constraint, never Guard bypass.
+
+**Initial scheduling defaults, before calibrated benchmarks:** foreground input and cancellation have priority over derived cache rebuilds; no more than one new heavy build/index/model load may start at once for the same workspace by default; 20 Sessions in the acceptance harness is a **load scenario**, not a default fan-out setting. Numeric per-machine RAM thresholds and regression caps become normative only after §18.17 raw baselines. Do not hardcode JCode's PSS as a target.
+
+**Pressure machine:** `NORMAL → SOFT_PRESSURE → HARD_PRESSURE → RECOVERING → NORMAL` with hysteresis. Soft pressure (measured use >= configured soft cap, or OS-reported pressure) evicts rebuildable caches by least-recently-used bounded family, suspends background/prewarm/index warming and reduces *new* parallel admissions. Hard pressure (hard cap/reservations would be exceeded) rejects or queues new expensive workers, pauses only safely checkpointable managed tasks, preserves interactive cancellation and receipt settlement, and reports the exact blocked dimension. Continue running owned processes unless user/effect policy explicitly authorizes safe cancellation; never kill foreign processes, unsafely terminate partially executing effects, or delete unowned/dirty worktrees. Recovery requires sustained readings below lower watermark and new owner-epoch validation before admission resumes.
+
+**Cache registry and eviction:** one canonical runtime cache owner table keyed by `{family,principal,workspace,sourceGeneration,buildVersion}`. Each cache reports allocated bytes, count, max bytes, TTL, last-used observation, protection class and evict callback. Evict derived read-only data and replaceable UI paints first; then optional immutable index generations not pinned to live request; never evict an in-use generation until consumers release their pin. Provider history is not duplicated as a cache of canonical messages with independent mutation. Canonical OwnerLog, effect receipts, accepted criteria and user edits are **not evictable**. Cache eviction that cannot prove safe releases reports blocked, and must not fabricate freed memory until post-eviction measurement.
+
+**OS sampling:** include wall-clock + monotonic sample sequence, process start fingerprint, full descendant scope and confidence; PSS may require slower /proc access and is never sampled on the keystroke/UI thread. Unavailable platform metrics stay UNKNOWN; enforce only actually supported OS/process isolation. Detect child escaping descendant tree as degraded containment, revoke future work and record unsupported guarantee. Disk pressure can limit *new* build output but must not garbage-collect live Cargo targets, untracked user builds or historical artifacts automatically.
+
+**Lifecycle and telemetry:** reserve with owner epoch → claim worker startup lease → charge measured active usage → reconcile on crash/timeout → release only on confirmed process-tree termination; bounded ephemeral snapshots may expire independently. Aggregations must show agent-only vs all-inclusive local model, actual vs estimated, per-worker vs whole system, and not double-count shared services. Export is local/redacted by default and must survive model-provider and UI disconnections.
+
+**Release fixtures:** cgroup memory cap, Windows Job Object hard memory/process cap, macOS task footprint, 10/20 Sessions, duplicate shared-daemon accounting, PID reuse, orphan child, denial when insufficient disk/FD, user source/cache preservation, peak build output, slow sampler, different model inference load, hysteresis flapping and cache protection. §32.33 enumerates exact fault acceptance.

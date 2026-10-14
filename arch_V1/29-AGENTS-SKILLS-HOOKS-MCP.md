@@ -577,3 +577,46 @@ Retain **one Rust managed Goal/SpecVersion/Run/Task/Attempt owner**. Represent d
 - Backpressure from memory/FD/disk/provider limits queues READY tasks without changing user-pinned provider/model. Expired/leaked workers are fenced, settled and cleaned up only when owner/lease is known.
 
 JCode `SWARM_TASK_GRAPH.md` is a **Being implemented** design reference and `MULTI_SESSION_CLIENT_ARCHITECTURE.md` is **Proposed**; neither is automatic implementation proof. Accepted tests in §32.32 include DAG cycle/coverage, 20-worker contention, user file collision and crash safety.
+
+## 29.18 Exact DAG worker contract, dataflow and failure semantics
+
+**Worker is not scheduler.** Managed coordinator owns Task identifiers, dependencies, priority, run budget, accepted specification, child depth, lease and approval; individual agents may propose a change but never commit task transitions or acceptance. Preserve the direct Session flow without mandatory DAG.
+
+~~~ts
+type TaskProposalV1 = {
+  runId: string; parentTaskId?: string; expectedGraphRevision: string;
+  proposedTasks: {
+    tempId: string; title: string; purpose: string; deps: string[];
+    criteriaIds: string[]; readScopes: string[]; writeScopes: string[];
+    requiresTools: string[]; requestedProfile: string; estimatedUsage?: {tokens?:string; memoryBytes?:string};
+  }[];
+};
+type TaskDeliveryEnvelopeV1 = {
+  runId: string; taskId: string; attemptId: string; workerExecutionId: string;
+  acceptedSpecDigest: string; sourceRevision: string; parentScopeDigest: string;
+  taskCriteriaIds: string[]; dependencyArtifactRefs: string[];
+  capabilityGrantDigest: string; providerSelectionDigest: string;
+  deadlineMs: string; resourceReservationRef: string;
+};
+type CandidateTaskResultV1 = {
+  attemptId: string; status: "PRODUCED" | "BLOCKED" | "FAILED" | "UNKNOWN";
+  artifacts: {ref:string;sha256:string;mime:string;sourceRevision:string;fidelity:"FULL"|"SAMPLE"}[];
+  touchedFiles: {pathRef:string;sourceRevision:string;access:"READ"|"WRITE"}[];
+  toolReceiptRefs: string[]; proposedEvidenceRefs: string[];
+  missingCriteriaIds: string[]; errors: {category:string;safeMessage:string}[];
+};
+~~~
+
+**Plan/graph compile:** accept user-approved full SpecVersion criteria; decompose into tasks with explicit input/output artifact kinds, exact criterion ID coverage, scopes and dependency edges. Reject a graph that lacks accepted criteria unless the user explicitly defers them; no Task may secretly extend write roots or increase model spend. Topologically sort using stable ID order; every leaf must have explicit useful output or bounded inspection deliverable. Critical-file single-writer rule is a default; concurrent readers are safe only under workspace policy. Resolve parent dependencies and project sources through the same Rust Task owner.
+
+**Scheduling and handoff:** from §21.11 READY list, reserve resources and bounded worker, then send `TaskDeliveryEnvelopeV1` with immutable task criteria/scope/dependency refs and only **minimum necessary** context. Do not clone the full parent conversation into every child; child output is typed candidate artifacts and a bounded prose summary. Child cannot directly mark task PASS, request arbitrary further privileges or silently mutate the accepted plan. Adding a dependency is a versioned graph edit that invalidates affected readiness/review; rerunning a completed task must preserve previous evidence/attempt lineage.
+
+**Task graph invariant:** at any time exactly one authoritative Task revision exists; all edges refer to same managed Run and accepted SpecVersion; graph remains acyclic; every task has finite attempt, deadline, depth, member and cumulative token/cost bounds. Parallel write scopes either do not overlap or hold serialized workspace leases; “unknown writes” is treated conservatively as overlap. Each descendant's capability grant = intersection(parent grant, current policy, user consent, platform support, task requested subset). Never derive grant from model text.
+
+**Result ingestion:** verify worker identity+epoch, attempt lease, artifact SHA/fidelity, actual file/source revision and ordered effect receipts. Attach candidate evidence; a separate verifier assesses criterion IDs, tests/diagnostics and source revision. Downstream Task only becomes READY after trusted PASSED verdict on required predecessors. If a task fails, classify deterministic repair, provider retry, code failure, policy denied or UNKNOWN effect; bounded healing cannot mark PASS. Dead/late child delivery cannot overwrite newer Attempt or finalization. Process exit alone is not completion.
+
+**Reviewer and finalizer:** verifier must not self-approve the same effectful Attempt, and reviewer can report uncovered acceptance but cannot invent a new accepted criterion. Before Run SUCCEEDED, hold integration fence, re-scan source revision, compare complete criterion coverage and all required receipts; reject if user edits changed revision or any UNKNOWN required effect remains. Return `NEEDS_YOU` with actionable known evidence rather than fabricated success. Read-only parent-child delegation for direct mode remains useful without creating a managed Run.
+
+**Controlled model budget:** separate model token/cost and process RAM budgets; no forced “small model for worker” downgrade. Optional explicitly approved specialist model/harness bindings are frozen in the delivery envelope and visible in spending observations. Resume/recovery recreates missing ephemeral queues by replaying Rust OwnerLog and canonical evidence refs, not old in-memory agent messages.
+
+**Tests:** invalid DAG cycle/cross-Run edge, 21st child beyond configured 20 limit, parent scope escalation, random late child after cancellation, duplicate delivery, conflicting user edit, dead worker with receipts, missing artifact or wrong hash, independent reviewer source-stale, parent compaction, 20-session bounded overhead and no second transcript owner. Follow §32.33 for exact fixtures.
