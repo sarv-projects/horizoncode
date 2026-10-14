@@ -71,3 +71,10 @@ The accepted 20 explicit new regression cases are `JC-RES-001..020` in §32.32. 
 ## Documentation-update validation status
 
 This PR edits Markdown only. The source/heading/Markdown-format checks were performed through GitHub reads; the full GitHub Actions validation was still running at the time this handoff entry was authored and must be checked on the **final PR head**. No native Windows/macOS tests, provider inference, JCode-vs-Horizon benchmark or new runtime features were run by this documentation-only task.
+
+## Detailed HLD/LLD readiness reconciliation — 2026-10-15 (documentation-only)
+
+All 46 `arch_V1/*.md` active and compatibility Markdown files were rechecked structurally for duplicate/out-of-order numbered sections, balanced code fences and escaped code literal artifacts. Authoritative product HLD is §01.13; function-level wiring and source paths §10.15/§20.12; machine schemas §12.16; shared-kernel IPC §13.12; runtime flow §15.20; resource budget/sampling/cache §18.18–19/§30.21/§37.16; worker/DAG §21.11/§29.18; TUI/UI §16.17/§31.17; SDK/import/steering/canary §37.18; fault cases §32.33–34. The operative plan RC0–RC5 now has a function-to-code-to-test ledger. Historical `opencode/` Markdown and `docs/architecture-archive/` are inherited/reference, not parallel implementation authority.
+
+**Source truth:** current code remains narrow Linux Session supervisor + guarded file write, partial non-executing P2 admission state and initial feature-exposure UI. No new schemas, shared daemon, RAM benchmarks, provider doctor, headless worker or native Windows qualification were run or implemented by these Markdown-only commits. Earlier PR #7 CI failed on numbered architecture headings and mandatory provenance pointers; both documentation faults were corrected in branch commits. **Recheck latest final-HEAD Actions status before merging**, and do not mark the real runtime implementation tests as passed based on docs-only typecheck.
+

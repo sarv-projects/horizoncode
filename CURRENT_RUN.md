@@ -45,3 +45,12 @@ Branch: `docs/jcode-resource-runtime-adoption-20261015`. The relevant existing t
 ### Guardrails for continuation
 
 Actual tests outrank prose. User-pinned model/harness/provider must not change as a result of RAM pressure; do not delete dirty/unowned worktrees or purge build caches to manufacture a RAM/disk win. Respect experimental enablement/visibility controls, OS sandbox honesty and strict pre-dispatch Guard for all mutation origins. Keep CANONICAL → DERIVED ownership distinctions intact.
+
+## 2026-10-15 — second-pass HLD/LLD hardening and GitHub CI correction
+
+- Re-reviewed active architecture owner sections and the 46 active/compatibility `arch_V1` Markdown files for numbered headings, duplicate headings, code fences and escaped backtick formatting. Retained 779+ upstream OpenCode/reference files as non-normative source/compatibility material; no claim of semantic line-by-line review of all inherited vendor Markdown.
+- Compared real `kernel/src/{guard,effect_host,managed_control,owner_log,request_cancellation,protocol}.rs`, `kernel/src/bin/session_supervisor.rs`, `packages/core/src/session/supervisor.ts`, `packages/opencode/src/session/tool-batch.ts` and `indexd/src/lib.rs` against claimed runtime coverage. Updated the old §14.4 claim: guarded `files.write` is code-present; universal Guard is not.
+- GitHub Actions logs revealed five duplicate/out-of-order sections and two absent provenance pointers in PR #7. Fixed headings to §2.12/§4.12/§5.13/§11.19/§12.15 and restored `42-EXTERNAL-SOURCE-PROVENANCE-REGISTER.md` references in active handoff/implementer.
+- Added concrete HLD topology; IPC attach/subscribe/ack/detach/epoch, RAM sampler, measurement unit/counter types, resource pressure/leasing/cache eviction, headless worker/DAG/artifact verifier, provider Doctor, file-touch/advisory vs hard writes, model-context retrieval, TUI scheduler, session import/SDK/steering/experimental canary, privacy/OS and task-by-task fault tests. Added function/test coding ledger under the **existing** implementation plan; did not add an architecture owner.
+- Work remains **docs-only**. Latest GitHub CI after final branch head must be checked; no machine PSS benchmark, native Windows/macOS, shared kernel cutover, new runtime schema or production feature was executed by this review. Next source gate remains P1.3 universal effect boundary, with RC0 read-only process-tree baseline in parallel.
+
