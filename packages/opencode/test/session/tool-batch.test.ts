@@ -341,3 +341,143 @@ test("checks cancellation after asynchronous validation and before Guard prepara
     reason: "tool batch interrupted before Guard preparation",
   })
 })
+
+test("bounds tool-call count before any read-only callback or Guard preparation", async () => {
+  let preparations = 0
+  const gate = gateInput({
+    prepareToolBatch: async () => {
+      preparations++
+      throw new Error("should not prepare an oversized batch")
+    },
+  })
+  const calls = Array.from({ length: 33 }, (_, index) =>
+    toolCall(`read_${index}`, "read", '{"filePath":"/workspace/a.txt"}'),
+  )
+  await expect(collect(gateToolCallStream(stream([...calls, finish]), gate))).rejects.toThrow(
+    "Tool batch limit exceeded: call count",
+  )
+  expect(preparations).toBe(0)
+  expect(gate.context.outcomes.size).toBe(0)
+})
+
+test("rejects excessive individual tool arguments before parsing or Guard", async () => {
+  let validations = 0
+  let preparations = 0
+  const gate = gateInput({
+    definitions: {
+      read: {
+        ...readDefinition,
+        validate: async (value) => {
+          validations++
+          return readDefinition.validate(value)
+        },
+      },
+    },
+    prepareToolBatch: async () => {
+      preparations++
+      throw new Error("must not reach Guard")
+    },
+  })
+  const huge = JSON.stringify({ filePath: "/workspace/a.txt", padding: "x".repeat(256 * 1024) })
+  await expect(
+    collect(gateToolCallStream(stream([toolCall("read_huge", "read", huge), finish]), gate)),
+  ).rejects.toThrow("Tool batch limit exceeded: argument bytes")
+  expect(validations).toBe(0)
+  expect(preparations).toBe(0)
+  expect(gate.context.outcomes.size).toBe(0)
+})
+
+test("rejects excessive aggregate arguments even for individually valid read calls", async () => {
+  let validations = 0
+  let preparations = 0
+  const gate = gateInput({
+    definitions: {
+      read: {
+        ...readDefinition,
+        validate: async (value) => {
+          validations++
+          return readDefinition.validate(value)
+        },
+      },
+    },
+    prepareToolBatch: async () => {
+      preparations++
+      throw new Error("must not reach Guard")
+    },
+  })
+  const payload = JSON.stringify({ filePath: "/workspace/a.txt", padding: "x".repeat(180 * 1024) })
+  const calls = [1, 2, 3].map((i) => toolCall(`read_${i}`, "read", payload))
+  await expect(collect(gateToolCallStream(stream([...calls, finish]), gate))).rejects.toThrow(
+    "Tool batch limit exceeded: aggregate argument bytes",
+  )
+  expect(validations).toBe(0)
+  expect(preparations).toBe(0)
+  expect(gate.context.outcomes.size).toBe(0)
+})
+
+test("rejects oversized tool identity fields without tool dispatch", async () => {
+  for (const entry of [
+    toolCall("x".repeat(300), "read", '{"filePath":"a"}'),
+    toolCall("read_id", "x".repeat(300), "{}"),
+  ]) {
+    const gate = gateInput()
+    await expect(collect(gateToolCallStream(stream([entry, finish]), gate))).rejects.toThrow(
+      "Tool batch limit exceeded: tool identity",
+    )
+    expect(gate.context.outcomes.size).toBe(0)
+  }
+})
+
+test("accepts the documented maximum of 32 bounded read-only calls", async () => {
+  let preparations = 0
+  const gate = gateInput({
+    prepareToolBatch: async () => {
+      preparations++
+      throw new Error("read-only batch should not touch Rust")
+    },
+  })
+  const calls = Array.from({ length: 32 }, (_, index) =>
+    toolCall(`read_${index}`, "read", '{"filePath":"/workspace/a.txt"}'),
+  )
+  const output = await collect(gateToolCallStream(stream([...calls, finish]), gate))
+  expect(output.filter((part) => part.type === "tool-call")).toHaveLength(32)
+  expect(preparations).toBe(0)
+  for (const call of calls) {
+    if (call.type !== "tool-call") continue
+    expect(
+      requireToolExecution({
+        context: gate.context,
+        callID: call.toolCallId,
+        capability: readDefinition.capability,
+      }),
+    ).toBeUndefined()
+  }
+})
+
+test("oversized sibling cannot dispatch or Guard-admit an otherwise valid write", async () => {
+  let preparations = 0
+  const gate = gateInput({
+    prepareToolBatch: async () => {
+      preparations++
+      throw new Error("whole batch should be rejected by the stream limit")
+    },
+  })
+  const oversized = JSON.stringify({ filePath: "/workspace/a.txt", padding: "x".repeat(256 * 1024) })
+  await expect(
+    collect(
+      gateToolCallStream(
+        stream([
+          toolCall("first_write", "write", '{"filePath":"/workspace/a.txt","content":"new"}'),
+          toolCall("bad_read", "read", oversized),
+          finish,
+        ]),
+        gate,
+      ),
+    ),
+  ).rejects.toThrow("Tool batch limit exceeded: argument bytes")
+  expect(preparations).toBe(0)
+  expect(gate.context.outcomes.size).toBe(0)
+  expect(() =>
+    requireToolExecution({ context: gate.context, callID: "first_write", capability: writeDefinition.capability }),
+  ).toThrow("missing Rust Guard admission")
+})

@@ -207,3 +207,69 @@ No commit/push/destructive cleanup without explicit authorization.
 - OMP transport/catalog migration, native OpenCode adapter, visual edit and deployment flows are DESIGNED, not production-wired.
 - P1.3 still requires shell/process/Task, plugin/hook/MCP, LSP/DAP, browser/desktop/REPL, settings/auth/network, hosted tools, automations and external-agent mutation coverage.
 - Exact current commands/results live in `HANDOFF.md`; historical implementation increments above remain provenance, not the current status authority.
+
+## Final adoption and execution reconciliation — 2026-10-14
+
+**Status: approved implementation guidance, NOT implemented functionality.** Retain the complete V1 capability roadmap above and the canonical owners in §17/§20. Do not build another direct Session, agent loop, independent Rust tool authority, extension registry, native shell, leader daemon, or Rust TUI. The existing OpenCode-derived direct Session is canonical; Rust owns managed work, Guard, leases and effect evidence. This section chooses *order and implementation technique*, not a new architecture authority.
+
+### Source-grounded adoption decisions
+
+| Candidate | Decision | Proof before enabling |
+|---|---|---|
+| Grok early connection/prewarm, deferred auth/MCP discovery | Prototype behind existing selected provider/session transport; never make background paid calls | Cold/warm time to usable composer, first useful output, auth and MCP phase p50/p95 |
+| Grok leader/follower IPC | Reuse current Horizon supervisor/session lifecycle; no new resident daemon by default | Owner exclusivity, reconnect, actual latency improvement |
+| Grok CoW/Btrfs worktrees and gix status | Optional backends in existing leased workspace/search interfaces | Git/index correctness, dirty user-file preservation, disk pressure, cross-OS fallback, end-to-end time |
+| Grok adversarial goal verifier | Optional independent read-only reviewer for complex managed tasks; deterministic evidence first | Criteria/revision-bound verdict; finite review/retry budget; no invented new requirements |
+| OMP Hashline | Model-compatible edit dialect **inside existing files.patch**, not a security mechanism | Full source revision/digest/fence stale check; atomic failure; first-attempt success, tokens and retries |
+| OMP artifact references and Agent Hub | Reuse existing artifact, Session and managed Task/Attempt identities for derived inspection, steering and bounded result refs | No second transcript or effect authority; permission and resume tests |
+| Codex sandbox/checkpoint patterns | Implement accepted per-OS confinement and producer/route-compatible compaction metadata | Negative sandbox cases; newest invalid checkpoint must not silently fall back to older authority |
+| OpenCode compaction, TUI, skills, hooks, ACP/MCP | Reuse pinned inherited implementation where tests prove support | V1/V2 parity, versioned toolset, no privilege bypass or redundant runtime |
+| Snapcompact, default best-of-N, always-on classifier, full native shell, competing marketplace | DEFER as default; research only if later benchmark/product decision supports them | Explicit cost/privacy/accuracy tests and source license review |
+
+### Security-critical native read/grep/gix acceptance
+
+Do **not** paste the proposed `canonicalize() -> search_path()` Rust implementation into production. Validation followed by a path-based open is subject to symlink/TOCTOU races. A native backend must use a pinned root and audited handle-relative open-time confinement (for example Linux `openat2` where supported), consistent permission/redaction checks for every descendant and symlink, and the incumbent isolated backend or typed UNAVAILABLE when equivalent protection cannot be enforced. Read-only still can exfiltrate secrets to model/provider/logs. Bound bytes scanned/output, files/matches/line lengths, time, memory and workers. Propagate partial search/Git errors and filtered untracked status rather than falsely returning complete/clean. Blocking tasks retain cancellation ownership and semaphore limits until actually ended. Test hostile Git config, symlink swapping, protected files, cancellation and per-OS isolation.
+
+Short Hashline display anchors (including 2-byte line hashes) never authorize edits. A source revision/full digest plus current Guard/lease is the authoritative precondition. Prepare and validate before atomic mutation and reject stale inputs; do not universally require read-before-write in the current context, which would unnecessarily block legitimate new-file creation.
+
+### Real implementation dependency order
+
+- [ ] **P1.3:** Inventory all V1/V2/legacy shell, command, plugin, hook, MCP, child, hosted, network and other mutation origins. Either mediate before dispatch through one Guard/ExecutionHost or disable, including provider-side tools without enforceable pre-execution authorization.
+- [ ] **P1.3:** Enforce bounded ToolBatch count/argument size/stream time/memory; deny malformed/unknown/stale/cancelled effectful batches atomically; one-use lease, durable receipt, UNKNOWN reconciliation, true cancellation state and bypass tests.
+- [ ] **Direct coding:** Execute an actual read/search/edit/test/diff/retry task without managed Goal overhead, with real evidence of the requested outcome and baseline latency/cost.
+- [ ] **P2 managed vertical slice:** Accepted immutable SpecVersion -> Task/Attempt -> supervised bounded action -> effect receipt -> independently verified final integrated revision; crash/restart and human-edit conflict test before multiple workers.
+- [ ] **Context/edit:** Preserve original direct history; rebuild compact control footer from canonical Rust task/effect state; pin checkpoint producer/model/harness/source cursor; reject malformed newest checkpoint rather than trusting older grant. Benchmark trim/compact retention, re-fetch, latency and outcome.
+- [ ] **Speed:** Benchmark existing ripgrep/Git/index and patch paths first. Enable guarded native search/gix, Hashline, connection warming or CoW only behind rollback flags once both correctness/security and net benefit are proven.
+- [ ] **V1 remaining gates:** Continue LSP, DAP, persistent REPL, browser, desktop, web-search, skills/hooks/plugin distribution, ACP/MCP integration, artifacts, rendering, UX and automation within their already approved owners, independently tested and accurately labeled.
+
+### Six benchmark lanes, not another dashboard
+
+Store small versioned JSON/CI artifacts bound to commit, OS, CPU/RAM, fixture, provider/model/harness, permission mode and cache state. Measure (1) cold/warm composer-ready, TTFT and first useful output with stage breakdown; (2) first *correct* repository search hit, incremental edit/rename/branch-switch update and stale window; (3) context/tool bytes, tokens, protected-fact retention, compaction latency and subsequent re-fetch; (4) first-edit success, stale conflict, retry count, final regressions and token cost by dialect; (5) 1/2/4/8 worker final verified success, wall time, conflicts, coordination, disk and cost; (6) TUI input/frame p95, scroll/focus, recomposition/CPU/memory at 100/1K/10K transcript blocks and parallel streams. Distinguish harness time, provider inference and **total verified task time**. Tool-ready ≠ feature WIRED; passing mocks ≠ end-to-end VERIFIED; existing GitHub workflow YAML ≠ green CI run.
+
+### Evidence and source-truth rules
+
+The remote source reviewed was `dead4339cae87f9e48c25e4e9586096d600bb164`; it has `kernel/`, `packages/core/`, `packages/opencode/` and `indexd/`, **not** the independent `horizoncode-runner`, `horizoncode-orchestrator`, `horizoncode-tools` or `horizoncode-tui` crates imagined in other reports. The key-shaped string in `opencode/packages/http-recorder/test/record-replay.test.ts` is inside a secret-detection fixture, not proof of a live credential. Do not rewrite Git history without actual alert and provenance confirmation. At the initial remote review checkpoint, GitHub Actions had zero runs; PR #1 subsequently ran full validation. For current commit-bound hosted results consult `HANDOFF.md` and the Actions checks, never assume this historical snapshot remains current. No benchmark or Experimental Settings runtime integration was verified by this documentation-only change. Use immutable source pins in §42 before translating rival code. The current implementation gate remains P1.3.
+
+## Optional-feature Settings and Experimental class — A-V2-29
+
+Integrate with the existing §16 Settings/config owner and §33 canonical capability/action registry; do not create a separate feature registry, feature daemon or TUI-only flags. `FeatureExposureV1` is a derived projection schema in `contracts-v2/feature-exposure-v1.schema.json`. The official maturity/release tag is `experimental` (then `beta`, `stable`), distinct from DESIGNED/CODE_PRESENT/WIRED/TESTED/VERIFIED/RELEASED and runtime unavailable/disabled reasons.
+
+- [ ] At every optional feature introduction, register one searchable owning setting with stable key, default/scope, requested/effective/source/locked/apply-boundary and availability; display in Settings → Features, plus Settings → Experimental if classed experimental.
+- [ ] Experimental default OFF; user explicitly opts in on eligible developer/early-access build. A DESIGNED/unsupported feature is disabled/unavailable, **never fake-enabled**. A developer-only feature is invisible as an actionable control in ordinary public builds.
+- [ ] TUI command palette, help, tool/agent picker, running status and eventual desktop/web/API render `[Experimental]` or accessible equivalent from the **same descriptor**, and show effective status/reason. No TUI-only independent source of flags.
+- [ ] Enabling a setting cannot override Guard/policy, change selected model/harness, launch paid inference, or perform an unauthorized effect. Apply boundary and next-turn/next-session/restart state are explicit.
+- [ ] Run FEAT-001..010 in §32 with schema/registry validation before declaring a feature TESTED or VERIFIED; preserve safe disable/migration when class changes.
+
+Examples that remain experimental/disabled until their runtime and benchmarks actually qualify: alternate native grep/gix backend, Hashline edit dialect, provider transport prewarm and CoW worktree backend. Deferred features (such as snapcompact) must not be mislabeled as operational merely by appearing under an Experimental heading.
+
+### Feature-source audit and smallest implementation route (2026-10-14)
+
+**Inspected source:** Core V2 and legacy V1 experimental/config/migration, OpenCode instance config/runtime flags and config API, GUI-local `settings.v3`, GUI Settings tabs, TUI config/app/command/status, schema and architecture validator. These paths **do not yet implement a shared feature exposure resolver, actionable Experimental Settings, or TUI labels**. Exact source-to-owner mapping: §20.10.1; UX semantics §16.15; runtime acceptance §32 FEAT-001..014.
+
+- [ ] Inventory user-selectable optional controls and legacy experimental environment variables. Deliberately classify `OPENCODE_EXPERIMENTAL` inheritance so broad flags cannot silently enable newly governed experiments.
+- [ ] Implement one derived `FeatureExposureV1` read/effective-state projection from existing backend config, source precedence, platform/build/eligibility and Guard constraints; don't make GUI-local `settings.v3` the execution authority.
+- [ ] Implement narrow source-version-safe opt-in persistence using current config update owner. Concurrency, denied policy, pending turn/session/restart, rollback and opt-out must work.
+- [ ] Add keyboard-accessible TUI Settings → Features/Experimental and GUI Settings entries plus command/status `[Experimental]` labels. All show the same effective runtime state and unavailable reason.
+- [ ] Run schema/contract validator, V1/V2 binding tests and FEAT-001..014 actual integration. A passing generic typecheck or designed schema is not completion.
+
+This work is part of P6 Settings/UX but must be integrated before *new optional effectful features* are presented as executable. It does not replace P1.3 Guard completion.

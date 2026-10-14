@@ -14,9 +14,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SNAPSHOT = ROOT / "opencode"
+# The nested packages/opencode workspace is required by Bun; do not skip it.
+# The pinned source root itself is never hydrated as a relative directory.
 SKIP = {
     ".git", ".turbo", ".cache", ".next", "dist", "build",
-    "node_modules", "target", ".venv", "opencode",
+    "node_modules", "target", ".venv",
 }
 
 
@@ -60,6 +62,9 @@ def main() -> int:
         else:
             shutil.copy2(source, target)
         copied += 1
+
+    if args.apply and (SNAPSHOT / "packages/opencode/package.json").is_file() and not (ROOT / "packages/opencode/package.json").is_file():
+        raise RuntimeError("Required Bun workspace packages/opencode was not hydrated")
 
     print(
         f"PINNED_SOURCE_BOOTSTRAP existing={existing} "

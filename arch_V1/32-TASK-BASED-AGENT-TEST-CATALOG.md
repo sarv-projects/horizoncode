@@ -558,3 +558,33 @@ ISOLATION-01: no double session owner or host effects without Guard across backe
 VISUAL-01: chart, SVG, Mermaid, image and log streaming remains bounded, usable and accessible.
 GIT-01: clean-clone reconstruction and runnable checks; root typecheck must pass before release.
 Each case records exact revision, task, environment, model/account, acceptance criteria, observed outcome and costs.
+
+## 32.31 Optional Settings and Experimental release-class acceptance (A-V2-29)
+
+These are **future test requirements**, not evidence of implementation. Derive feature metadata from the existing settings/canonical capability owners, validate it against `contracts-v2/feature-exposure-v1.schema.json`, and run the identical inputs through TUI, CLI/API and other shipped surfaces.
+
+| ID | Scenario | Acceptance |
+|---|---|---|
+| FEAT-001 | Optional feature offered by a build | One searchable Settings entry exists; requested/effective/source/lock/default/apply-boundary fields agree with actual config; no undocumented UI-only toggle |
+| FEAT-002 | Experimental feature in a supported developer build | OFF by default; enabling is explicit; TUI feature picker/help and Settings show `[Experimental]` from the same descriptor, not a duplicated hard-coded label |
+| FEAT-003 | Experimental feature is only DESIGNED or unsupported on selected platform | Cannot execute or show as enabled; precise unavailable reason; no fake tool/capability exposed to model |
+| FEAT-004 | Developer-only experiment in a production build | Never automatically runs; not misleadingly advertised as enabled; inaccessible through CLI/API/aliases too |
+| FEAT-005 | Feature toggled while a direct Session/Run is active | Apply boundary honored; pending restart/next-turn indicator; no unintended provider/model changes, background billing or unrelated effects |
+| FEAT-006 | Optional feature contradicts system policy, Guard or workspace scope | Effective OFF/BLOCKED regardless of requested ON, correct reason and source; no security fallback or bypass |
+| FEAT-007 | Feature promoted experimental → beta → stable, or rolled back | Stable settings key/migration, explicit consent where required, safe disable, preserved user data and no silent change to authority/cost |
+| FEAT-008 | Descriptors are duplicated, missing, or point to nonexistent canonical tools | Schema/registry tests fail; all UI/SDK surfaces show same release class and effective state after correction |
+| FEAT-009 | Experimental native search/Hashline/backend switch fails during operation | Incumbent safe backend or truthful UNAVAILABLE; no partial silent success, user changes or Guard bypass |
+| FEAT-010 | User has no color/uses small terminal/screen reader | `Experimental` readable as text; narrow TUI exposes warning/disabled reason and all Settings actions remain keyboard accessible |
+
+Public exposure of experimental features requires specific security/negative tests for each effect origin; merely declaring the release class cannot bypass P1.3. Document proposed features in Settings as disabled `Not available yet` when relevant to the build, without creating fake executable tools or implying release verification.
+
+### 32.31.1 Source-parity integration tests (2026-10-14)
+
+| ID | Runtime scenario | Acceptance |
+|---|---|---|
+| FEAT-011 | Broad inherited `OPENCODE_EXPERIMENTAL` or individual legacy flags conflict with a new Horizon experiment explicitly set OFF | New experiment stays off; classified legacy behavior is intentionally migrated or explicitly isolated |
+| FEAT-012 | GUI-local `settings.v3` says ON while runtime config/policy is OFF or BLOCKED | Backend does not execute; UI shows runtime effective status and reason, not cosmetic local preference |
+| FEAT-013 | Stale/concurrent user/project feature-setting writes | Conflict/merge or typed stale rejection without overwriting unrelated configuration, credentials or later user updates |
+| FEAT-014 | Core V2, V1 compatibility, TUI, GUI and HTTP consumers observe a pending next-turn/session/restart state | Same requested/effective/release-class/source/pending interpretation; runtime uses effective state even before the UI refreshes |
+
+`scripts/architecture/validate_convergence.py` checks positive and negative `FeatureExposureV1` **static** schema fixtures. Those static checks do not pass FEAT-001..014. Full implementation requires actual config read/write, source precedence, guards, platform gating and TUI/GUI/HTTP integration tests.
