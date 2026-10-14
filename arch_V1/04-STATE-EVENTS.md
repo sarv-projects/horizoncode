@@ -149,3 +149,9 @@ Metrics record provenance: measured, estimated or unknown.
 - cancellation race.
 
 Any event family that would recreate a Rust canonical conversational Thread is invalid under 17.
+
+## 4.9 Resource observations and shared-kernel restart semantics (A-V2-30)
+
+Resource samples, render queue deltas, file-touch warnings and Provider Doctor progress are bounded projections/events; they may be coalesced/dropped under backpressure and must not be replayed as canonical write/evidence history. In contrast, policy revision, virtual Session attachment/owner epoch, WorkerExecution/Attempt lease, cancellation generation, effect PREPARED/UNKNOWN/SETTLED and independent Verification remain fenced/durable in their established owners. A task cannot become PASS from a paint/event-counters stream.
+
+A shared-kernel crash fences all old host/kernel attachment epochs and active leases before reconnect; each backend-owned Session observes from an authenticated source cursor and the Rust owner log replays managed/effect state. Any effect that may have reached its target before disconnect is UNKNOWN until reconciled; never issue a fresh idempotency key and repeat a non-idempotent operation merely because no response was received. Reader and worker faults should be isolated where their process boundary permits. Resource attribution is rebuilt from owner process generations and leases, not stale PIDs.

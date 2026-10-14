@@ -135,3 +135,9 @@ Telemetry distinguishes content-free metrics from user content. No remote teleme
 - unsupported sandbox claim.
 
 Security status lives in tests/HANDOFF, not prose claims.
+
+## 5.10 Shared-service and diagnostic security boundaries (A-V2-30)
+
+Multiplexing sessions into a long-lived Rust service **increases cross-session blast radius**. Require OS-authenticated host-to-kernel identity, source cursor/epoch binding, scoped principal/workspace/policy revision, bounded per-Session queues and no cross-session state lookup by caller-supplied IDs. Compromise of an untrusted worker must not expose shared host secrets or bypass the Guard. Use process/container/job isolation for effectful shell, browser, plugins, MCP, REPL and build/test where warranted; in-process virtualization is not an OS sandbox.
+
+Resource/process inspection is scoped and redacted; private file paths, raw command arguments, prompt bodies, provider API keys, shared-terminal output and foreign processes must not leak through diagnostics/SDK. One agent cannot read another agent's file-touch index unless a trusted workspace policy allows it. Offline Provider Doctor must not access network/credentials; full tier requires exact selected provider/model and explicit spend/secret policy. Imported external Sessions are untrusted input, never permission grants. Denied measurement or unavailable native OS enforcement remains UNKNOWN/unavailable; do not fake sandbox availability.

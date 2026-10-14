@@ -707,3 +707,15 @@ Persistent REPL:
 - filesystem/network/process/tool callbacks are constrained by the REPL profile;
 - callback tool invocations resolve to canonical capabilities and cross Guard;
 - REPL state never carries raw kernel/SecretBroker authority across sessions.
+
+## 14.17 Shared kernel, headless pool and diagnostic effect classification (A-V2-30)
+
+A shared Rust daemon is **not** approval to run all tools in-process. Every effectful origin still undergoes request-pinned ToolBatch collection and Guard, durable PREPARE, single-use resource/policy-bound lease, sandboxed ExecutionHost dispatch, observed result and receipt/UNKNOWN reconciliation. This applies equally to a headless specialist, warm pooled worker, imported Session adapter, file rename/rebase, Provider Doctor's full inference tests, process prewarm with external side effect, and any memory write or remote recall.
+
+- Virtual Session attach/subscribe/resource snapshot/file-touch read: scoped queries requiring authenticated owner/workspace visibility and read budget, never actor authority. Provider Doctor \`offline\` must be strictly no-network/no-spend; \`catalog\` is bounded network/auth data access under policy; \`full\` incurs explicit provider/cost authorisation and records actual charges when known.
+- Worker pool: reuse only for compatible, revoked/cleared secret state with identical trust/OS sandbox/resource scope; each new Attempt obtains a new fence/lease. PIDs are not identities; OS process start/lease fingerprint binds a worker. An unsupported confinement guarantee disables the origin in governed mode.
+- File activity warnings are not enforcement. Before writes, resolve real destination (including symlink/reparse/race conditions), check exact expected digest, workspace lease, user edit and authorization generation. Do not advertise read overlap as a security deny.
+- Cancellation: provider-stream abort does not prove a process was killed or an external effect did not happen. Propagate through child process groups/Job Objects with timeout and receipt reconciliation; preserve UNKNOWN and do not replay uncertain non-idempotent mutations.
+- Daemon isolation tests: swap session/workspace/policy IDs, stale epoch, forged approval, oversized event, malicious MCP/tool stdout, crash during effect, cross-session observation, file reparse and secret exfiltration. Reject no-bypass claims until these tests and real-platform execution pass.
+
+§05 states the threat boundary, §13 the virtual wire topology, §18 measured pressure rules, §32.32 test scenarios. No JCode shell/destructive-action heuristic replaces these controls.
