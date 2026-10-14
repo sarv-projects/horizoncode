@@ -199,15 +199,15 @@ No extra agent runtime, feature registry or duplicate effect policy is introduce
 
 **Source:** branch fix/p1-p2-guard-cancel-managed-foundation-20261014 from main at 5b989930. PR #3 is separately open. This is a targeted code-and-contract review, not a complete line-by-line audit of the hydrated upstream codebase.
 
-**P1 implemented in this PR:** propagate the turn AbortSignal through the streamed ToolBatch pipe; a stalled producer can no longer keep a cancelled response waiting for terminal flush. An explicit stalled-stream negative test denies effect dispatch. Provider timeouts and universal mutation coverage are NOT solved.
+**P1 implemented in this PR (latest branch):** propagate cancellation to the provider stream; enforce a ten-minute upper bound on stream lifetime even when it stops emitting frames; import all five malformed SDK V3 partial lifecycle tests from PR #3 into this branch; deny unmediated GitLab workflow-model execution before provider request. These changes are NOT universal Guard mediation, and provider connection setup/remote executed effects still require dedicated proof.
 
-**P2 implemented in this PR:** internal Rust managed control state backed by the existing durable OwnerLogV2. Tests cover immutable spec acceptance and Run admission, revision/idempotency, Task/Attempt admission, restart-persistent pause/cancel fences, UNKNOWN blocking and dependency safety. This service is NOT wired to production RPC, executor, scheduler, lease manager, authenticated approval, verifier or user interfaces. Do not describe Managed Runs as operational.
+**P2 implemented in this PR (latest branch):** internal Rust managed control state backed by durable OwnerLogV2. Tests cover accepted spec, Task READY/dependency and Attempt admission, replay-safe pause/cancel/idempotency, UNKNOWN after admitted-but-unsettled restart, and Task PASS/criterion evidence/final-revision Run finalization transitions. The evidence commands are internal ONLY and are not a trusted verifier: production RPC, executor, scheduler, resource leases, authenticated acceptance, independent verification of submitted evidence and UI remain unwired. Do not describe managed Runs as operational.
 
 ### P1 effect-origin coverage (not a completion claim)
 
 | Origin | Current status | Remaining production requirement |
 |---|---|---|
-| V1/V2 provider ToolBatch | Bounded supported files.write, Rust effect path; cancellation improved here; PR #3 stream lifecycle pending | Provider deadlines, true cancellation, bounded stdout/results, UNKNOWN settlement, hostile provider fixtures |
+| V1/V2 provider ToolBatch | Bounded files.write; PR #3 partial lifecycle code incorporated into this branch; abort and hard ten-minute stream deadline included | Pre-stream/provider request deadlines, true process cancellation, stdout/results, UNKNOWN settlement, hostile hosted/provider fixtures |
 | Direct shell/process, Git/build/test | Existing direct spawn/interpolation entry points bypass universal Guard | Guard/ExecutionHost before spawn; handle-relative constraints, sandbox/lease; negative process bypass tests |
 | Subagents/Task/command | Direct TaskTool and command-template shell execution still exist | Parent scope and epoch/fence inheritance, child launch Guard, pre-interpolation mediation |
 | Plugins/skills/hooks/MCP | Runtime hook and MCP entry points still outside full mediated execution | Capability-scoped registration, enforced pre-dispatch admission and exfiltration limits |
@@ -224,7 +224,7 @@ No extra agent runtime, feature registry or duplicate effect policy is introduce
 | Pause/resume/cancel/restart | Persisted admission fences with replay tests | Signal propagation, active effect settlement, real crash/reconnect tests |
 | Idempotency/UNKNOWN | Duplicate logical command recognition, UNKNOWN blocks readmission | EffectReceipt reconciler, safe retry/new attempt or NEEDS_YOU |
 | SessionLink | Read-only observer exists | Exact managed session correlation, authenticated API, one conversation owner |
-| Verification/final result | Design only | Trusted independent evidence; every criterion on final integrated revision, human-edit conflicts, terminal stop law |
+| Verification/final result | Internal Task PASS, criterion revision and Run finalization transitions with tests | AUTHENTICATED independent verifier/receipt source, current actual revision/human edit detection, authenticated terminal action and real-work acceptance |
 | OS support | Linux tests only | Native Windows storage, sandbox and process qualification |
 
 **Release sequence:** close universal P1 origins and bypass tests first; keep unsupported origins unavailable when a safe replacement is not ready. Then wire authenticated spec acceptance; durable scheduler/worker leases; effect receipt and reconciliation; independent verifier; cancellation/restart/long-horizon acceptance. Direct Session stays direct, no mandatory Goal.
