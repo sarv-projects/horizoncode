@@ -22,8 +22,8 @@ export type ToolBatchDefinition = {
 }
 
 export type ToolCallOutcome =
-  | { readonly status: "allowed" }
-  | { readonly status: "admitted"; readonly challenge: EffectChallenge }
+  | { readonly status: "allowed"; readonly capabilityID: string }
+  | { readonly status: "admitted"; readonly capabilityID: string; readonly challenge: EffectChallenge }
   | { readonly status: "denied"; readonly reason: string }
 
 export type ToolBatchContext = {
@@ -40,11 +40,17 @@ export function toolCallOutcome(context: unknown, callID?: string): ToolCallOutc
   if (!(outcomes instanceof Map)) return undefined
   const value: unknown = outcomes.get(callID)
   if (typeof value !== "object" || value === null || !("status" in value)) return undefined
-  if (value.status === "allowed") return { status: "allowed" }
+  if (value.status === "allowed" && "capabilityID" in value && typeof value.capabilityID === "string")
+    return { status: "allowed", capabilityID: value.capabilityID }
   if (value.status === "denied" && "reason" in value && typeof value.reason === "string")
     return { status: "denied", reason: value.reason }
-  if (value.status === "admitted" && "challenge" in value && isEffectChallenge(value.challenge))
-    return { status: "admitted", challenge: value.challenge }
+  if (
+    value.status === "admitted" &&
+    "capabilityID" in value &&
+    typeof value.capabilityID === "string" &&
+    "challenge" in value &&
+    isEffectChallenge(value.challenge)
+  ) return { status: "admitted", capabilityID: value.capabilityID, challenge: value.challenge }
   return undefined
 }
 
@@ -73,6 +79,9 @@ export function requireToolExecution(input: {
 }): EffectChallenge | undefined {
   const outcome = toolCallOutcome(input.context, input.callID)
   if (outcome?.status === "denied") throw new Error(`Tool batch denied: ${outcome.reason}`)
+  if (!outcome) throw new Error("Tool batch denied: missing validated ToolBatch admission")
+  if (outcome.capabilityID !== input.capability.id)
+    throw new Error("Tool batch denied: capability does not match admitted call")
 
   if (input.capability.effectClass === "effect") {
     if (outcome?.status !== "admitted") throw new Error("Tool batch denied: missing Rust Guard admission")
@@ -81,9 +90,10 @@ export function requireToolExecution(input: {
   if (input.capability.effectClass === "unknown") {
     throw new Error("Tool batch denied: capability is unknown")
   }
-  if (input.capability.effectClass === "control" && !input.internal) {
+  if (input.capability.effectClass === "control" && !input.internal)
     throw new Error("Tool batch denied: unsupported control capability")
-  }
+  if (outcome.status !== "allowed")
+    throw new Error("Tool batch denied: non-effect capability lacks validated batch allowance")
   return undefined
 }
 
@@ -220,9 +230,12 @@ async function admitBatch(
 
   if (
     prepared.every(({ definition }) => definition.capability.effectClass === "read_only") ||
-    (prepared.length === 1 && prepared[0]!.definition.internal === true)
+    (prepared.length === 1 &&
+      prepared[0]!.definition.internal === true &&
+      prepared[0]!.definition.capability.effectClass === "control")
   ) {
-    for (const { call } of prepared) input.context.outcomes.set(call.callID, { status: "allowed" })
+    for (const { call } of prepared)
+      input.context.outcomes.set(call.callID, { status: "allowed", capabilityID: call.capabilityID })
     return
   }
 
@@ -243,7 +256,11 @@ async function admitBatch(
     return deny("Rust admitted an unsupported tool batch")
 
   const [{ call }] = prepared
-  input.context.outcomes.set(call.callID, { status: "admitted", challenge: admission.challenge })
+  input.context.outcomes.set(call.callID, {
+    status: "admitted",
+    capabilityID: call.capabilityID,
+    challenge: admission.challenge,
+  })
 }
 
 function parseInput(input: unknown) {
