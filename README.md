@@ -1,14 +1,16 @@
-<div align="center">
+<p align="center">
+  <img src="docs/assets/horizoncode-hero.svg" alt="HorizonCode — Built for the whole job" width="100%" />
+</p>
 
-<img src="docs/assets/horizoncode-hero.svg" alt="HorizonCode — Built for the whole job" width="100%" />
+<p align="center"><strong>Explore the code. Make the change. Check the result.</strong></p>
+<p align="center">A terminal-first coding agent, with durable managed work in development.</p>
 
-**Explore the code. Make the change. Check the result.**
-
-A terminal-first coding agent, with durable managed work in development.
-
-[Get started](#get-started) · [What works today](#what-works-today) · [Why HorizonCode](#why-horizoncode) · [Contributing](#contributing)
-
-</div>
+<p align="center">
+  <a href="#get-started">Get started</a> ·
+  <a href="#what-works-today">What works today</a> ·
+  <a href="#why-horizoncode">Why HorizonCode</a> ·
+  <a href="#contributing">Contributing</a>
+</p>
 
 ---
 
