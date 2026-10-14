@@ -73,13 +73,27 @@ pub struct CriterionEvidence {
     pub verifier_id: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttemptPhase {
+    Admitted,
+    Unknown,
+    Verified,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttemptRecord {
+    pub run_id: String,
+    pub task_id: String,
+    pub phase: AttemptPhase,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ManagedSnapshot {
     pub revision: u64,
     pub goal_digest: Option<String>,
     pub specs: BTreeMap<String, SpecVersion>,
     pub runs: BTreeMap<String, Run>,
-    attempts: BTreeSet<String>,
+    pub attempts: BTreeMap<String, AttemptRecord>,
     deliveries: BTreeMap<String, String>,
 }
 
@@ -281,7 +295,7 @@ impl ManagedSnapshot {
             }
             ManagedCommand::AdmitAttempt { run_id, task_id, attempt_id } => {
                 id(attempt_id)?;
-                if self.attempts.contains(attempt_id) { return Err(ManagedError::Conflict("attempt ID already used")); }
+                if self.attempts.contains_key(attempt_id) { return Err(ManagedError::Conflict("attempt ID already used")); }
                 let run = self.runs.get_mut(run_id).ok_or(ManagedError::Conflict("run missing"))?;
                 if run.phase != RunPhase::Running { return Err(ManagedError::Conflict("run fenced")); }
                 let task = run.tasks.get_mut(task_id).ok_or(ManagedError::Conflict("task missing"))?;
@@ -290,7 +304,11 @@ impl ManagedSnapshot {
                     return Err(ManagedError::Conflict("task not ready for another attempt"));
                 }
                 task.active_attempt = Some(attempt_id.clone());
-                self.attempts.insert(attempt_id.clone());
+                self.attempts.insert(attempt_id.clone(), AttemptRecord {
+                    run_id: run_id.clone(),
+                    task_id: task_id.clone(),
+                    phase: AttemptPhase::Admitted,
+                });
             }
             ManagedCommand::MarkAttemptUnknown { run_id, task_id, attempt_id } => {
                 let run = self.runs.get_mut(run_id).ok_or(ManagedError::Conflict("run missing"))?;
@@ -299,6 +317,11 @@ impl ManagedSnapshot {
                     return Err(ManagedError::Conflict("attempt is not active"));
                 }
                 task.unknown_effect = true;
+                let attempt = self.attempts.get_mut(attempt_id).ok_or(ManagedError::Conflict("attempt record missing"))?;
+                if attempt.run_id != *run_id || attempt.task_id != *task_id || attempt.phase != AttemptPhase::Admitted {
+                    return Err(ManagedError::Conflict("attempt ownership or state changed"));
+                }
+                attempt.phase = AttemptPhase::Unknown;
                 if run.phase == RunPhase::Running { run.phase = RunPhase::Reconciling; }
             }
 
@@ -312,6 +335,11 @@ impl ManagedSnapshot {
                     || task.verified_revision.is_some() {
                     return Err(ManagedError::Conflict("task has no verifiable active attempt"));
                 }
+                let attempt = self.attempts.get_mut(attempt_id).ok_or(ManagedError::Conflict("attempt record missing"))?;
+                if attempt.run_id != *run_id || attempt.task_id != *task_id || attempt.phase != AttemptPhase::Admitted {
+                    return Err(ManagedError::Conflict("attempt ownership or state changed"));
+                }
+                attempt.phase = AttemptPhase::Verified;
                 task.verified_revision = Some(source_revision.clone());
                 task.active_attempt = None;
             }
@@ -434,7 +462,12 @@ impl ManagedControl {
             let unsettled = run.tasks.values().any(|task| task.active_attempt.is_some());
             if unsettled {
                 for task in run.tasks.values_mut() {
-                    if task.active_attempt.is_some() { task.unknown_effect = true; }
+                    if let Some(attempt_id) = task.active_attempt.as_deref() {
+                        task.unknown_effect = true;
+                        if let Some(attempt) = snapshot.attempts.get_mut(attempt_id) {
+                            attempt.phase = AttemptPhase::Unknown;
+                        }
+                    }
                 }
                 if run.phase == RunPhase::Running || run.phase == RunPhase::Paused {
                     run.phase = RunPhase::Reconciling;
