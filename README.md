@@ -14,11 +14,11 @@ A terminal-first coding agent, with durable managed work in development.
 
 ## Get started
 
-HorizonCode is currently a **developer preview you run from source**. There is no official one-line installer or stable standalone \`horizoncode\` binary yet.
+HorizonCode is currently a **developer preview you run from source**. There is no official one-line installer or stable standalone `horizoncode` binary yet.
 
 **Requirements:** Linux, Git, Python 3, [Bun 1.3.14](https://bun.sh/), and the [Rust toolchain](https://rustup.rs/).
 
-\`\`\`bash
+```bash
 git clone https://github.com/sarv-projects/horizoncode.git
 cd horizoncode
 
@@ -26,7 +26,7 @@ python3 scripts/architecture/bootstrap_source.py --apply
 bun install --frozen-lockfile
 cargo build --locked --manifest-path kernel/Cargo.toml --bin session_supervisor
 bun run dev
-\`\`\`
+```
 
 The development entrypoint still inherits some OpenCode command/package names while HorizonCode's own release packaging is being built.
 
@@ -66,10 +66,10 @@ Want the detailed proof instead of a marketing claim? Read [the current implemen
 
 The source tree combines the application, its pinned base, and HorizonCode's Rust implementation. Missing base files are restored without overwriting first-party changes.
 
-\`\`\`bash
+```bash
 # Complete development validation
 bun run horizon:full-gate
-\`\`\`
+```
 
 Start with the [contributor instructions](AGENTS.md), [architecture index](arch_V1/README.md), and [current implementation work](docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md).
 
@@ -79,6 +79,6 @@ HorizonCode is being developed openly. [Open an issue](https://github.com/sarv-p
 
 ## Origins & attribution
 
-HorizonCode is an independent project maintained under [sarv-projects](https://github.com/sarv-projects). Its interactive coding foundation incorporates [OpenCode](https://github.com/anomalyco/opencode), with the preserved source and copyright notice in [\`opencode/\`](opencode/) and [\`opencode/LICENSE\`](opencode/LICENSE). HorizonCode is not affiliated with the OpenCode maintainers.
+HorizonCode is an independent project maintained under [sarv-projects](https://github.com/sarv-projects). Its interactive coding foundation incorporates [OpenCode](https://github.com/anomalyco/opencode), with the preserved source and copyright notice in [`opencode/`](opencode/) and [`opencode/LICENSE`](opencode/LICENSE). HorizonCode is not affiliated with the OpenCode maintainers.
 
 Root licensing, third-party notices, and release packaging are still being finalized. Existing upstream attribution obligations continue to apply.
