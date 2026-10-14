@@ -14,18 +14,16 @@ Explore a repository. Make a change. Check the result. And, as managed execution
 
 ---
 
-## Your next change is only the beginning.
+## Code isn't done when the diff looks right.
 
-Writing a patch is the easy part. The difficult part is understanding the repository, making the right change, keeping track of what happened, and knowing whether the result actually works.
+A real coding task starts with a repository and ends with something you can inspect: changed files, test results, and a clear account of what's still open. The model's answer is only one part of it.
 
-HorizonCode is being built around that entire job.
+HorizonCode puts the rest of the job back in the picture.
 
 - **Start immediately.** Work in an interactive coding session without creating a project plan just to fix a bug.
 - **Keep your choices.** Choose the provider, model, and workflow you want; the agent should not silently substitute another.
 - **See the evidence.** Tool results, tests, and repository state matter more than an agent saying “done.”
 - **Go beyond one session.** The developing managed-work system is designed to preserve goals, task progress, recovery state, and final acceptance criteria across interruptions.
-
-**One product. Two scales of work.**
 
 ## Two ways to work
 
@@ -49,21 +47,21 @@ HorizonCode is being built around that entire job.
 
 ## Why HorizonCode
 
-### Stay in charge of the agent
+### Your model. Your call.
 
-A coding assistant shouldn't surprise you with a different model, an unexpected external action, or a vague claim of success. HorizonCode's design puts model choice, execution authority, and observable outcomes in separate, explicit places.
+Use the models and providers you choose. A coding agent shouldn't secretly switch them, expand its permissions, or turn a failed operation into a confident-looking answer.
 
-### Build with context, not just conversation
+### The job shouldn't vanish with the session.
 
-Real changes cross files, tests, tools, and sometimes sessions. HorizonCode is growing toward a workflow where the plan, attempts, decisions, and evidence can outlive any single model response.
+Features, migrations, and difficult bugs rarely fit in one turn. Managed work is being built around durable goals, explicit attempts, and recovery that survives interruptions—not a longer chat transcript.
 
-### One boundary for actions
+### Tools shouldn't bypass the rules.
 
-Tools and extensions shouldn't become alternative ways around the user's permissions. A Rust Guard and effect-execution layer is being integrated to mediate actions before they reach the machine. The current implementation covers a narrow, tested set of effects; **universal mutation coverage is not yet complete**.
+A plugin, shell command, or subagent shouldn't find a back door around approval. HorizonCode's Rust Guard is moving execution behind one checked boundary. A narrow set of effects is implemented today; **universal mutation coverage is still in progress**.
 
-### Use the tools you actually want
+### Keep the developer experience.
 
-The interactive foundation carries a multi-provider coding workflow and extensibility surfaces. HorizonCode is designed to keep that flexibility while adding stronger execution accounting and longer-running work—not replace it with a closed, single-model experience.
+Interactive terminal coding, provider choice, sessions, and extensions are worth keeping. HorizonCode is adding execution accountability and durable work without forcing every small edit through a project manager.
 
 ## Get started
 
@@ -115,9 +113,7 @@ HorizonCode is being developed in the open. Here's the useful distinction betwee
 | Durable Goal / SpecVersion / Run / Task / Attempt state foundations | End-to-end crash recovery and independently verified completion |
 | Optional and Experimental feature surfaces | More fully wired feature eligibility, settings, and runtime parity |
 
-**No fabricated benchmarks, placeholder download links, or “fully autonomous” claims:** new capabilities move into the ready column when their real execution paths and regression tests justify it.
-
-See [HANDOFF.md](HANDOFF.md) for current implementation evidence and outstanding blockers.
+Capabilities move into the ready column when their execution paths and regression tests are verified. See [HANDOFF.md](HANDOFF.md) for the current evidence and blockers.
 
 ## Built for contributors
 
@@ -143,7 +139,7 @@ The project is still completing root-level licensing, third-party notices, and r
 
 <div align="center">
 
-**Short task or long job: the code is only part of the result.**
+**HorizonCode — from the first edit to the finished job.**
 
 [Explore the code](https://github.com/sarv-projects/horizoncode) · [See what's next](docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md)
 
