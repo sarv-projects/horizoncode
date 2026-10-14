@@ -614,3 +614,29 @@ test("legitimate streaming tool deltas retain an accepted terminal read call", a
     requireToolExecution({ context: gate.context, callID: "read_stream", capability: readDefinition.capability }),
   ).toBeUndefined()
 })
+
+test("bounds aggregate streamed tool inputs even when each stays below its own limit", async () => {
+  const gate = gateInput()
+  const parts: LanguageModelV3StreamPart[] = []
+  for (let index = 0; index < 4; index++) {
+    parts.push({ type: "tool-input-start", id: `stream_${index}`, toolName: "read" })
+    parts.push({ type: "tool-input-delta", id: `stream_${index}`, delta: "x".repeat(150 * 1024) })
+  }
+  await expect(collect(gateToolCallStream(stream([...parts, finish]), gate))).rejects.toThrow(
+    "Tool batch limit exceeded: aggregate streamed argument bytes",
+  )
+  expect(gate.context.outcomes.size).toBe(0)
+})
+
+test("bounds the number of streaming tool IDs independently of terminal calls", async () => {
+  const gate = gateInput()
+  const parts: LanguageModelV3StreamPart[] = Array.from({ length: 33 }, (_, index) => ({
+    type: "tool-input-start",
+    id: `stream_${index}`,
+    toolName: "read",
+  }))
+  await expect(collect(gateToolCallStream(stream([...parts, finish]), gate))).rejects.toThrow(
+    "Tool batch limit exceeded: streaming call count",
+  )
+  expect(gate.context.outcomes.size).toBe(0)
+})
