@@ -98,6 +98,7 @@ fn cancellation_fences_task_admission_durably_across_restart() {
     send(&mut store, "task1", ManagedCommand::AddTask {
         run_id: "run-v1".into(), task_id: "task-a".into(), dependencies: vec![],
     });
+    send(&mut store, "ready", ManagedCommand::MarkTaskReady { run_id: "run-v1".into(), task_id: "task-a".into() });
     send(&mut store, "cancel", ManagedCommand::RequestCancel { run_id: "run-v1".into() });
     drop(store);
     let mut restored = ManagedControl::open(root.path(), "goal-cancel").unwrap();
@@ -118,6 +119,7 @@ fn unknown_attempt_blocks_retries_and_remains_unknown_after_replay() {
     send(&mut store, "task", ManagedCommand::AddTask {
         run_id: "run-v1".into(), task_id: "task-a".into(), dependencies: vec![],
     });
+    send(&mut store, "ready", ManagedCommand::MarkTaskReady { run_id: "run-v1".into(), task_id: "task-a".into() });
     send(&mut store, "attempt", ManagedCommand::AdmitAttempt {
         run_id: "run-v1".into(), task_id: "task-a".into(), attempt_id: "attempt-one".into(),
     });
@@ -161,6 +163,7 @@ fn pause_is_a_durable_admission_fence_and_resume_restores_only_safe_work() {
     send(&mut store, "task", ManagedCommand::AddTask {
         run_id: "run-v1".into(), task_id: "task-a".into(), dependencies: vec![],
     });
+    send(&mut store, "ready", ManagedCommand::MarkTaskReady { run_id: "run-v1".into(), task_id: "task-a".into() });
     send(&mut store, "pause", ManagedCommand::PauseRun { run_id: "run-v1".into() });
     drop(store);
     let mut restored = ManagedControl::open(root.path(), "goal-paused").unwrap();
