@@ -143,3 +143,26 @@ This is accepted engineering work, **not a feature-cut list**. Preserve the P0�
 6. **P8/P9 proof and shipping:** 10/20-session real-work concurrency; exact error injections; cross-OS resource/security tests; installer/upgrade; legal/license review of any transplanted code; reproducible warm/cold startup and memory baseline. Only ship enabled capabilities whose own end-to-end gates pass.
 
 **Implementation tracker:** `docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md` contains exact checkboxes and ordering. `HANDOFF.md` is the current observed status; `CURRENT_RUN.md` is a dated evidence/work log, not an architecture authority. A source signature, Markdown contract or JCode benchmark never upgrades `DESIGNED` to `TESTED`.
+
+## 10.15 Implementation-ready slice definition and source-to-test ordering
+
+“Only code left to fill” means an implementing agent can identify the canonical owner, exact ingress/egress, state/durability, function behaviour, failure class, test and release evidence without inventing a second architecture. The following table defines **what code remains to write** (not that these slices are shipped). Execute P1 universal Guard before effectful shared-kernel, workers, Doctor full tier or remote clients; RC0 read-only measurement can run in parallel.
+
+| Work unit | Function owner/entry | Required first vertical output | Negative/recovery proof |
+|---|---|---|---|
+| R0.1 baseline | `scripts/perf/` harness + `ResourceSamplerV1.sample` | controlled 1/5/10/20 Sessions and raw process-tree PSS/private bytes + correct tasks | missing metric, PID reuse, shared daemon double count; JC-RES-001/004 |
+| R0.2 cache accounting | existing context/index/TUI cache owners, `insertIfCurrent/evictToBudget` | byte/entry budget + per-family metrics, no canonical data eviction | concurrent pinned entry, 100MB output; JC-RES-005 |
+| P1.3 guard origins | Core and legacy tool dispatch → Rust `Guard.authorize` and `EffectHost` | real shell/process first, then Task/subagent and other origins; complete pre-dispatch authorization | denied spawn count zero, callback/MCP/hosted bypass, cancellation/UNKNOWN; §14/§32 |
+| R1.1 virtual Session | `SessionSupervisor.Service` + Rust `VirtualSessionBroker.attach/subscribe/ack` | safe read-only multi-Session event pages behind existing API | wrong peer/session, slow consumer, restart/retention gap; JC-RES-008/009/010 |
+| R1.2 shared effects | same §14 Rust effect owner | **only after P1** route one supported effect through shared broker with rollback | exactly-once lease claim where possible, UNKNOWN reconciler and old/new exclusive authority |
+| P2.1 admitted spec | `ManagedControl.open/apply` + authenticated RPC | accepted full SpecVersion, durable Run and Task dependency graph | stale revision, invalid criterion/scope, graph cycle and replay |
+| P2.2 worker pool | Rust scheduler/resource reservations + `ExecutionHost` | one Task → supervised Attempt → typed artifact and effect receipts | user edit, denied subagent, crash/lease/UNKNOWN; JC-RES-007/011/012 |
+| P2.3 finalizer | trusted verifier adapter and Rust final revision fence | Task independent PASS, dependent READY, final Run SUCCESS only on current revision | forged verifier, stale repo, missing criterion/effect; JC-RES-018 |
+| R3 Doctor | existing provider transport/config + `ProviderDoctorV1` | offline then catalog then consented full stream/tool probe | unavailable account, 429, spend/cancel, no fallback; JC-RES-013–015 |
+| R3 file activity | canonical file/read/write observation + `FileTouchIndexV1` | reverse path/session read-write advisory, hard precondition still Guard | false read conflict, symlink, user patch; JC-RES-011 |
+| R3 context/import | ContextLedger/indexd + Session import adapter | scoped token-bounded recall and explicit single-owner snapshot/resume | secret/path isolation, old preview, malformed import; JC-RES-019/020 |
+| R4 renderer/ops | existing TUI event loop + `UiRedrawBudgetV1` | dirty-region paint, bounded live tail, resource panel | slow consumer, idle CPU, reconnect, terminal injection; JC-RES-016/017 |
+| R5 SDK/steering | canonical public Session API + typed `ClientAttachmentV1` | two clients see one transcript with scoped steering | conflicting writer, stale turn epoch, revoked remote session |
+| R5 developer canary | existing build tooling + Guarded rollout | explicit OFF developer preview with rollback, **not unreviewed self-modification** | security code hot-swap during UNKNOWN denied, failed rollback, build disk pressure |
+
+**Per-slice sign-off:** 1. exact owner/source/hydrated paths; 2. wire schema version + typed error; 3. user authorization/feature exposure; 4. state transition with durable vs derived distinction; 5. happy path **and** timeout/cancel/crash/unknown; 6. process/disk/token/cost resource charge; 7. source-revision/final outcome proof; 8. benchmark/task regression and native platform qualification; 9. raw CI commit/test/OS evidence in HANDOFF. Checklist owner: existing `docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md`. A task is not complete because its HLD/LLD is present.
