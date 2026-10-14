@@ -12,8 +12,8 @@ Evaluate 1, 5, 10 and 20 Sessions with each of: (a) cold startup + time to first
 
 | Column | Source | Rule |
 |---|---|---|
-| agent_process_tree_pss_mib | Linux per-PID \`/proc/<pid>/smaps_rollup\`, group all descendants | Measured PSS; do not conflate with RSS or include provider server ambiguously |
-| agent_process_tree_rss_mib | Linux \`/proc/<pid>/status\` / process metadata | Measured but shared pages double-count across processes |
+| agent_process_tree_pss_mib | Linux per-PID `/proc/<pid>/smaps_rollup`, group all descendants | Measured PSS; do not conflate with RSS or include provider server ambiguously |
+| agent_process_tree_rss_mib | Linux `/proc/<pid>/status` / process metadata | Measured but shared pages double-count across processes |
 | private_dirty_uss_mib | Linux smaps private pages | Label coverage and method |
 | windows_private_bytes_mib | Windows native performance counters | Do not compare directly with PSS |
 | mac_physical_footprint_mib | macOS task/process APIs | Record collection method |
@@ -26,7 +26,7 @@ Evaluate 1, 5, 10 and 20 Sessions with each of: (a) cold startup + time to first
 | process_tree_pids, active_workers, worktrees, target_build_bytes | Resource owner/supervisor | Include owned child processes/port/build outputs |
 | task_pass_rate, verification, unsafe_effect_count | Deterministic fixture + final revision checks | Performance gain is invalid when correctness or isolation regresses |
 
-Report **unknown** when a platform/counter is not available; never replace with \`0\`. Keep raw JSONL/CSV and renderer/OS logs redacted under \`docs/performance/evidence/\` only after actually running; do not commit API keys, prompts, captured stdout or real user paths.
+Report **unknown** when a platform/counter is not available; never replace with `0`. Keep raw JSONL/CSV and renderer/OS logs redacted under `docs/performance/evidence/` only after actually running; do not commit API keys, prompts, captured stdout or real user paths.
 
 ## Comparison and gate
 
@@ -41,7 +41,7 @@ JCode public comparison sources (external, **not independently confirmed results
 
 ## Empty evidence record example
 
-\`\`\`json
+```json
 {
   "status": "NOT_RUN",
   "product": "horizoncode",
@@ -56,6 +56,6 @@ JCode public comparison sources (external, **not independently confirmed results
   "observations": [],
   "known_limitations": ["No measurements taken"]
 }
-\`\`\`
+```
 
 Do not generate a fake success report from this template. Benchmark harness scripts and CI ratchet are **outstanding implementation tasks**.

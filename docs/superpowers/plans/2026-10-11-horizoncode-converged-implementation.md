@@ -310,20 +310,20 @@ Do not create new agent loops, tool authorities, separate Rust conversation stor
 
 ## Resource-efficiency and JCode adoption implementation gates — 2026-10-15 (A-V2-30)
 
-**Baseline:** Horizon \`main@4e2086633d006f7d8b7709cb0df622f77a9b8d54\`, JCode \`1jehuang/jcode@1f612a7\`. This section records **newly accepted work, not completed work**. The normative owners are §17.10, §18.17, §20.11, §21.10, §29.17, §30.20, §31.16, §32.32, §33.29 and §37.15; this plan is the sole task-order tracker. Never interpret a checked research item as working runtime.
+**Baseline:** Horizon `main@4e2086633d006f7d8b7709cb0df622f77a9b8d54`, JCode `1jehuang/jcode@1f612a7`. This section records **newly accepted work, not completed work**. The normative owners are §17.10, §18.17, §20.11, §21.10, §29.17, §30.20, §31.16, §32.32, §33.29 and §37.15; this plan is the sole task-order tracker. Never interpret a checked research item as working runtime.
 
 ### RC0 — baseline and resource instrumentation (independent of mutation enablement)
 - [x] Pin external JCode source and distinguish implemented vs Proposed/Design/Draft/Being implemented in §42.9.
-- [x] Record current per-Session \`SessionSupervisor.open\` / \`session_supervisor.rs\` process topology and Rust managed admission truth.
-- [ ] Add first-party \`scripts/perf/\` harness with Linux process-tree PSS/RSS/FD/CPU/threads, macOS footprint/native Windows private bytes. Tests for missing/permission-denied metrics and PID reuse; no fabricated zero.
+- [x] Record current per-Session `SessionSupervisor.open` / `session_supervisor.rs` process topology and Rust managed admission truth.
+- [ ] Add first-party `scripts/perf/` harness with Linux process-tree PSS/RSS/FD/CPU/threads, macOS footprint/native Windows private bytes. Tests for missing/permission-denied metrics and PID reuse; no fabricated zero.
 - [ ] Add redacted, bounded process-tree ResourceSampler with host/kernel/Session/Run/Attempt/child/cache/local-model attribution and compatible sampling period.
-- [ ] Record reproducible current Horizon/JCode controlled 1/5/10/20-session baseline and real task outcomes in \`docs/performance/evidence/\`, with exact commits, machine, build, warm/cold, embeddings, model selection and method.
+- [ ] Record reproducible current Horizon/JCode controlled 1/5/10/20-session baseline and real task outcomes in `docs/performance/evidence/`, with exact commits, machine, build, warm/cold, embeddings, model selection and method.
 - [ ] Decide per-platform release budgets/regression ratchets from evidence, then add CI test. **Do not claim JCode's PSS values for Horizon.**
 
 ### RC1 — mandatory P1 security and current supervisor
 - [ ] Complete enabled tool-origin interception (direct shell/process, Task/subagent, hooks/MCP/plugins, provider-hosted, LSP/DAP/REPL, browser/desktop/network/automation) with pre-dispatch Guard/lease/receipt/UNKNOWN and no-bypass tests. Unsupported origins remain unavailable, not implicitly trusted.
 - [ ] Measure baseline per-Session supervisor process count, per-SQLite observer cost, startup, watchdog/cursor and isolated effect write.
-- [ ] Prototype **read-only** shared Rust SessionLink multiplexing behind \`SessionSupervisor.Service\` with peer-auth binding, per-Session queue/cursor/epoch/cancellation, bounded ACK and cross-session negative tests.
+- [ ] Prototype **read-only** shared Rust SessionLink multiplexing behind `SessionSupervisor.Service` with peer-auth binding, per-Session queue/cursor/epoch/cancellation, bounded ACK and cross-session negative tests.
 - [ ] Fault-inject one client abuse, one worker crash, kernel crash, malformed packet, conflicting owner and stale epoch; prove no cross-session read or mutation authority and no lost receipt.
 - [ ] Only then consider shared effect-host cutover with full §14 P1 tests; preserve existing interface and rollback. Run JC-RES-001/002/008/009/010.
 
@@ -347,4 +347,4 @@ Do not create new agent loops, tool authorities, separate Rust conversation stor
 
 ### Engineering rule
 
-Work on RC0 **without** claiming P1/P2 completion; proceed with required real Guard and managed execution in the existing Gate 2 → Gate 3 order. RC3/RC4 adapters may be designed/tested in isolation but must not expose effectful bypasses. \`README.md\` is a product page and must not become a RAM benchmark claim. Automatic hot-swap/self-dev remains developer-option work with independent rollback/security gates, not a reason to defer the fundamental engine.
+Work on RC0 **without** claiming P1/P2 completion; proceed with required real Guard and managed execution in the existing Gate 2 → Gate 3 order. RC3/RC4 adapters may be designed/tested in isolation but must not expose effectful bypasses. `README.md` is a product page and must not become a RAM benchmark claim. Automatic hot-swap/self-dev remains developer-option work with independent rollback/security gates, not a reason to defer the fundamental engine.

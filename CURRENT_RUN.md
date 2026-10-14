@@ -1,16 +1,16 @@
 # CURRENT_RUN — HorizonCode engineering activity and evidence log
 
-**Status:** dated implementation diary. This is **not** canonical product architecture, a second issue tracker, nor proof of runtime capabilities. Normative owners: \`arch_V1/README.md\` → exact topic file; observed implementation status: \`HANDOFF.md\`; execution order: \`docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md\`. Historic pre-consolidation CURRENT_RUN remains preserved under \`docs/architecture-archive/\`.
+**Status:** dated implementation diary. This is **not** canonical product architecture, a second issue tracker, nor proof of runtime capabilities. Normative owners: `arch_V1/README.md` → exact topic file; observed implementation status: `HANDOFF.md`; execution order: `docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md`. Historic pre-consolidation CURRENT_RUN remains preserved under `docs/architecture-archive/`.
 
 ## 2026-10-15 — JCode resource/performance adoption documentation
 
-**Source context:** HorizonCode \`main@4e2086633d006f7d8b7709cb0df622f77a9b8d54\`, JCode pinned \`1jehuang/jcode@1f612a7\`; derived uploaded \`jcode-godmap.zip\` (157 Markdown source map). This is a remote GitHub/docs audit and update, **not** a full local build/runtime validation. Separate source-derived claims from proven runtime.
+**Source context:** HorizonCode `main@4e2086633d006f7d8b7709cb0df622f77a9b8d54`, JCode pinned `1jehuang/jcode@1f612a7`; derived uploaded `jcode-godmap.zip` (157 Markdown source map). This is a remote GitHub/docs audit and update, **not** a full local build/runtime validation. Separate source-derived claims from proven runtime.
 
 ### Confirmed source baseline
 
-- Current \`packages/core/src/session/supervisor.ts\` launches one Linux \`session_supervisor\` Rust child per watched direct Session. Its current implementation is a Session event observer/effect endpoint, not a shared Rust multi-session daemon. Existing \`SessionSupervisor\` service and authenticated RPC remain the integration surface.
-- Existing Rust \`kernel/src/owner_log.rs\`, \`managed_control.rs\`, \`guard.rs\`, \`effect_host.rs\`, \`request_cancellation.rs\` are real code. Managed control is explicitly a **non-executing** admission/state machine; production scheduler/executor/independent verification and universal mutation enforcement are incomplete.
-- \`indexd/src/lib.rs\` provides bounded in-memory lexical/index overlay operations; persistent symbol/reference intelligence and platform/benchmark work remain gated.
+- Current `packages/core/src/session/supervisor.ts` launches one Linux `session_supervisor` Rust child per watched direct Session. Its current implementation is a Session event observer/effect endpoint, not a shared Rust multi-session daemon. Existing `SessionSupervisor` service and authenticated RPC remain the integration surface.
+- Existing Rust `kernel/src/owner_log.rs`, `managed_control.rs`, `guard.rs`, `effect_host.rs`, `request_cancellation.rs` are real code. Managed control is explicitly a **non-executing** admission/state machine; production scheduler/executor/independent verification and universal mutation enforcement are incomplete.
+- `indexd/src/lib.rs` provides bounded in-memory lexical/index overlay operations; persistent symbol/reference intelligence and platform/benchmark work remain gated.
 - No HorizonCode-versus-JCode same-machine PSS/RAM/task-completion test was run. JCode's public PSS values are **JCode measurements**, not HorizonCode expectations. JCode's 2026 design docs carry different statuses (including Proposed, Draft, Being implemented).
 
 ### Adopted documentation decisions (A-V2-30)
@@ -24,7 +24,7 @@
 
 ### GitHub documentation output
 
-Branch: \`docs/jcode-resource-runtime-adoption-20261015\`. The relevant existing topic owners have new A-V2-30 sections, and \`docs/performance/README.md\` is a non-normative empty measurement protocol. Existing historical documentation is intentionally retained. No performance benchmark, source-runtime implementation, or new external provider integration was performed by these commits. Treat any PR CI as documentation/contract validation only.
+Branch: `docs/jcode-resource-runtime-adoption-20261015`. The relevant existing topic owners have new A-V2-30 sections, and `docs/performance/README.md` is a non-normative empty measurement protocol. Existing historical documentation is intentionally retained. No performance benchmark, source-runtime implementation, or new external provider integration was performed by these commits. Treat any PR CI as documentation/contract validation only.
 
 ### Next exact engineering work (unchecked)
 
@@ -34,7 +34,7 @@ Branch: \`docs/jcode-resource-runtime-adoption-20261015\`. The relevant existing
 4. Wire authenticated P2 SpecVersion + DAG scheduler + bounded WorkerExecution/Attempt leases and independent final revision verification. Do not replace Rust Task ownership.
 5. Trial shared *read-only* Rust observer; prove cross-session denial, restart/UNKNOWN, input fairness and measured benefit **before** shared effect-host cutover.
 6. Integrate Provider Doctor, resource telemetry, file-touch advisory, headless worker pool, TUI redraw/tool-tail, memory cache caps and external session resume via exact §20/§37 seams. Iterate RC0–RC4 from operative plan with §32.32 tests.
-7. Record each TESTED/VERIFIED claim with exact platform, run, pass/fail, raw task/artifact link and known unavailable paths. Update \`HANDOFF.md\` (not this diary) as the current truth.
+7. Record each TESTED/VERIFIED claim with exact platform, run, pass/fail, raw task/artifact link and known unavailable paths. Update `HANDOFF.md` (not this diary) as the current truth.
 
 ### Explicitly not done by this doc-only activity
 

@@ -9,22 +9,22 @@ The 2026-10-12 local working tree was reported dirty; remote GitHub access canno
 
 ## Remote checkpoint — 2026-10-15 (supersedes older branch-status language below)
 
-**Repository audited:** \`sarv-projects/horizoncode\` \`main@4e2086633d006f7d8b7709cb0df622f77a9b8d54\` (last checked before this documentation branch). PR #4's managed-state work was **merged** to main as \`03691d7852f2\`; older passages below describing that PR as open/awaiting CI are historical. There were **no open pull requests** at the baseline query. The root README commits after PR #4 do not prove additional runtime gates passed. This change itself is **docs-only**, on \`docs/jcode-resource-runtime-adoption-20261015\`; do not mark a runtime capability TESTED or VERIFIED on the strength of this update.
+**Repository audited:** `sarv-projects/horizoncode` `main@4e2086633d006f7d8b7709cb0df622f77a9b8d54` (last checked before this documentation branch). PR #4's managed-state work was **merged** to main as `03691d7852f2`; older passages below describing that PR as open/awaiting CI are historical. There were **no open pull requests** at the baseline query. The root README commits after PR #4 do not prove additional runtime gates passed. This change itself is **docs-only**, on `docs/jcode-resource-runtime-adoption-20261015`; do not mark a runtime capability TESTED or VERIFIED on the strength of this update.
 
 | Area | Current observed code / status | Next actionable evidence |
 |---|---|---|
-| P1.3 Guard | Rust \`guard.rs\`/\`effect_host.rs\` + bounded V1/V2 tool batches, guarded file write; other shell/process/subagent/MCP/etc origins remain incomplete | Source-specific pre-dispatch bypass denial, cancel/UNKNOWN, platform security |
-| P2 durable managed state | Rust OwnerLog and \`managed_control.rs\` implemented as a *non-executing internal admission/state machine* | Authenticated Spec acceptance/RPC, resource leases/scheduler/real workers, independent verifier and final revision |
-| Session observer | \`packages/core/src/session/supervisor.ts\` starts one Linux Rust \`session_supervisor\` process per watched Session; private channel, projection/effects | Baseline process PSS/FD/startup/strong isolation; shared read-only virtual-session prototype behind existing interface |
-| Context/RepoIntel | Core provider/session and \`indexd\` lexical/overlay fundamentals | Full symbol/ref/healthy LSP integration, context/cache limits and measured correctness |
-| JCode adoption A-V2-30 | **DESIGNED** in current architecture/plan; JCode snapshot \`1f612a7\` source pins and caveats in §42.9 | RC0–RC4 from operative plan and JC-RES-001..020 task cases |
+| P1.3 Guard | Rust `guard.rs`/`effect_host.rs` + bounded V1/V2 tool batches, guarded file write; other shell/process/subagent/MCP/etc origins remain incomplete | Source-specific pre-dispatch bypass denial, cancel/UNKNOWN, platform security |
+| P2 durable managed state | Rust OwnerLog and `managed_control.rs` implemented as a *non-executing internal admission/state machine* | Authenticated Spec acceptance/RPC, resource leases/scheduler/real workers, independent verifier and final revision |
+| Session observer | `packages/core/src/session/supervisor.ts` starts one Linux Rust `session_supervisor` process per watched Session; private channel, projection/effects | Baseline process PSS/FD/startup/strong isolation; shared read-only virtual-session prototype behind existing interface |
+| Context/RepoIntel | Core provider/session and `indexd` lexical/overlay fundamentals | Full symbol/ref/healthy LSP integration, context/cache limits and measured correctness |
+| JCode adoption A-V2-30 | **DESIGNED** in current architecture/plan; JCode snapshot `1f612a7` source pins and caveats in §42.9 | RC0–RC4 from operative plan and JC-RES-001..020 task cases |
 | RAM and concurrency | No independently measured Horizon-vs-JCode comparable benchmark | First-party process-tree PSS/private footprint/CPU/FD/VRAM and 1/5/10/20 Session test raw baseline, selected-model/correctness parity |
 | Provider Doctor, file-touch, headless pool, DAG scheduler, adaptive TUI, import/resume | **Proposed / no new runtime code in this docs branch** | Existing owner implementations, typed contracts and real negative/OS/UI tests |
 | OS/release and legal | Linux source/tests partial; Windows/macOS native memory/sandbox/durability and root licensing remain separate gates | Native platform/security/install/legal/reproducible build evidence |
 
 **Next dependency:** P1.3 direct shell/process and Task/subagent mutation origins; complete provider-hosted denial and remaining origin matrix. **Parallel read-only RC0:** implement real resource collector/harness and baseline before an irreversible shared-daemon or allocator refactor. After P1, authenticated P2 scheduler/leases/independent verifier. Keep permissions/memory-pressure policies fail closed and user-selected model/provider fixed. Store exact implementation proof and refreshed status in this HANDOFF; append chronological work in CURRENT_RUN only.
 
-**Documentation reference:** §17.10 A-V2-30 is the frozen decision; §18.17 RAM/performance, §20.11 code seams, §21.10 worker pool/conflicts, §29.17 DAG, §30.20 cache/recall, §31.16 UI, §32.32 tests, §33.29 candidate capabilities, §37.15 proposed service LLD, §42.9 source provenance; \`docs/performance/README.md\` is an empty benchmark runbook, **not benchmark evidence**.
+**Documentation reference:** §17.10 A-V2-30 is the frozen decision; §18.17 RAM/performance, §20.11 code seams, §21.10 worker pool/conflicts, §29.17 DAG, §30.20 cache/recall, §31.16 UI, §32.32 tests, §33.29 candidate capabilities, §37.15 proposed service LLD, §42.9 source provenance; `docs/performance/README.md` is an empty benchmark runbook, **not benchmark evidence**.
 
 ## Authority
 
