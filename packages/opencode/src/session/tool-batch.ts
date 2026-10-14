@@ -12,6 +12,7 @@ const MAX_TOOL_BATCH_CALLS = 32
 const MAX_TOOL_CALL_ARGUMENT_BYTES = 256 * 1024
 const MAX_TOOL_BATCH_ARGUMENT_BYTES = 512 * 1024
 const MAX_TOOL_IDENTITY_BYTES = 256
+const MAX_TOOL_STREAM_DELTA_CHUNKS = 16_384
 
 export type ToolBatchDefinition = {
   readonly capability: Capability
@@ -22,8 +23,8 @@ export type ToolBatchDefinition = {
 }
 
 export type ToolCallOutcome =
-  | { readonly status: "allowed" }
-  | { readonly status: "admitted"; readonly challenge: EffectChallenge }
+  | { readonly status: "allowed"; readonly capabilityID: string }
+  | { readonly status: "admitted"; readonly capabilityID: string; readonly challenge: EffectChallenge }
   | { readonly status: "denied"; readonly reason: string }
 
 export type ToolBatchContext = {
@@ -40,11 +41,17 @@ export function toolCallOutcome(context: unknown, callID?: string): ToolCallOutc
   if (!(outcomes instanceof Map)) return undefined
   const value: unknown = outcomes.get(callID)
   if (typeof value !== "object" || value === null || !("status" in value)) return undefined
-  if (value.status === "allowed") return { status: "allowed" }
+  if (value.status === "allowed" && "capabilityID" in value && typeof value.capabilityID === "string")
+    return { status: "allowed", capabilityID: value.capabilityID }
   if (value.status === "denied" && "reason" in value && typeof value.reason === "string")
     return { status: "denied", reason: value.reason }
-  if (value.status === "admitted" && "challenge" in value && isEffectChallenge(value.challenge))
-    return { status: "admitted", challenge: value.challenge }
+  if (
+    value.status === "admitted" &&
+    "capabilityID" in value &&
+    typeof value.capabilityID === "string" &&
+    "challenge" in value &&
+    isEffectChallenge(value.challenge)
+  ) return { status: "admitted", capabilityID: value.capabilityID, challenge: value.challenge }
   return undefined
 }
 
@@ -73,6 +80,9 @@ export function requireToolExecution(input: {
 }): EffectChallenge | undefined {
   const outcome = toolCallOutcome(input.context, input.callID)
   if (outcome?.status === "denied") throw new Error(`Tool batch denied: ${outcome.reason}`)
+  if (!outcome) throw new Error("Tool batch denied: missing validated ToolBatch admission")
+  if (outcome.capabilityID !== input.capability.id)
+    throw new Error("Tool batch denied: capability does not match admitted call")
 
   if (input.capability.effectClass === "effect") {
     if (outcome?.status !== "admitted") throw new Error("Tool batch denied: missing Rust Guard admission")
@@ -81,9 +91,10 @@ export function requireToolExecution(input: {
   if (input.capability.effectClass === "unknown") {
     throw new Error("Tool batch denied: capability is unknown")
   }
-  if (input.capability.effectClass === "control" && !input.internal) {
+  if (input.capability.effectClass === "control" && !input.internal)
     throw new Error("Tool batch denied: unsupported control capability")
-  }
+  if (outcome.status !== "allowed")
+    throw new Error("Tool batch denied: non-effect capability lacks validated batch allowance")
   return undefined
 }
 
@@ -117,13 +128,68 @@ export function gateToolCallStream(
 ): ReadableStream<LanguageModelV3StreamPart> {
   const pending: Extract<LanguageModelV3StreamPart, { type: "tool-call" }>[] = []
   let pendingArgumentBytes = 0
+  // Partial arguments can arrive in thousands of provider stream frames before
+  // the final tool-call event. Count bytes, IDs and frames without retaining
+  // argument text: terminal parts still own complete-batch authorization.
+  const partialIDs = new Set<string>()
+  const partialNames = new Map<string, string>()
+  const partialBytes = new Map<string, number>()
+  let partialArgumentBytes = 0
+  let partialChunks = 0
   let finish: Extract<LanguageModelV3StreamPart, { type: "finish" }> | undefined
 
   return stream.pipeThrough(
     new TransformStream<LanguageModelV3StreamPart, LanguageModelV3StreamPart>({
       transform(part, controller) {
         if (finish) throw new Error("Provider emitted data after finish")
+        // AI SDK Provider V3 emits tool-input-start/delta/end before the
+        // complete tool-call. Track partial bytes without storing or approving
+        // incomplete arguments. Tool callbacks execute only after terminal
+        // batch validation.
+        if (
+          part.type === "tool-input-start" ||
+          part.type === "tool-input-delta" ||
+          part.type === "tool-input-end"
+        ) {
+          const callID = part.id
+          if (typeof callID !== "string" || Buffer.byteLength(callID, "utf8") > MAX_TOOL_IDENTITY_BYTES)
+            throw new Error("Tool batch limit exceeded: tool identity")
+          if (!partialIDs.has(callID) && partialIDs.size >= MAX_TOOL_BATCH_CALLS)
+            throw new Error("Tool batch limit exceeded: streaming call count")
+          partialIDs.add(callID)
+          if (part.type === "tool-input-start") {
+            const name = part.toolName
+            if (typeof name !== "string" || Buffer.byteLength(name, "utf8") > MAX_TOOL_IDENTITY_BYTES)
+              throw new Error("Tool batch limit exceeded: tool identity")
+            const previous = partialNames.get(callID)
+            if (previous !== undefined && previous !== name)
+              throw new Error("Tool batch denied: streaming tool identity mismatch")
+            partialNames.set(callID, name)
+          }
+          if (part.type === "tool-input-delta") {
+            partialChunks++
+            if (partialChunks > MAX_TOOL_STREAM_DELTA_CHUNKS)
+              throw new Error("Tool batch limit exceeded: streaming chunk count")
+            const delta = part.delta
+            if (typeof delta !== "string")
+              throw new Error("Tool batch limit exceeded: invalid streamed arguments")
+            if (delta.length > MAX_TOOL_CALL_ARGUMENT_BYTES)
+              throw new Error("Tool batch limit exceeded: streamed argument bytes")
+            const bytes = Buffer.byteLength(delta, "utf8")
+            if (bytes > MAX_TOOL_CALL_ARGUMENT_BYTES - (partialBytes.get(callID) ?? 0))
+              throw new Error("Tool batch limit exceeded: streamed argument bytes")
+            if (bytes > MAX_TOOL_BATCH_ARGUMENT_BYTES - partialArgumentBytes)
+              throw new Error("Tool batch limit exceeded: aggregate streamed argument bytes")
+            partialBytes.set(callID, (partialBytes.get(callID) ?? 0) + bytes)
+            partialArgumentBytes += bytes
+          }
+          controller.enqueue(part)
+          return
+        }
         if (part.type === "tool-call") {
+          const streamedName = partialNames.get(part.toolCallId)
+          if (streamedName !== undefined && streamedName !== part.toolName)
+            throw new Error("Tool batch denied: streaming tool identity mismatch")
           if (pending.length >= MAX_TOOL_BATCH_CALLS)
             throw new Error("Tool batch limit exceeded: call count")
           // The provider protocol defines input as JSON text. Reject malformed
@@ -163,8 +229,10 @@ export function gateToolCallStream(
             : rawFinishReason !== null && typeof rawFinishReason === "object" && "unified" in rawFinishReason
               ? rawFinishReason.unified
               : undefined
-        if (pending.length > 0 && normalizedFinishReason !== "tool-calls")
-          throw new Error("Incomplete provider response; tool calls withheld")
+        if (
+          (pending.length > 0 && normalizedFinishReason !== "tool-calls") ||
+          [...partialIDs].some((id) => !pending.some((call) => call.toolCallId === id))
+        ) throw new Error("Incomplete provider response; tool calls withheld")
         if (pending.length > 0) {
           if (input.signal.aborted) throw input.signal.reason ?? new DOMException("Aborted", "AbortError")
           await admitBatch(pending, input)
@@ -220,9 +288,12 @@ async function admitBatch(
 
   if (
     prepared.every(({ definition }) => definition.capability.effectClass === "read_only") ||
-    (prepared.length === 1 && prepared[0]!.definition.internal === true)
+    (prepared.length === 1 &&
+      prepared[0]!.definition.internal === true &&
+      prepared[0]!.definition.capability.effectClass === "control")
   ) {
-    for (const { call } of prepared) input.context.outcomes.set(call.callID, { status: "allowed" })
+    for (const { call } of prepared)
+      input.context.outcomes.set(call.callID, { status: "allowed", capabilityID: call.capabilityID })
     return
   }
 
@@ -243,7 +314,11 @@ async function admitBatch(
     return deny("Rust admitted an unsupported tool batch")
 
   const [{ call }] = prepared
-  input.context.outcomes.set(call.callID, { status: "admitted", challenge: admission.challenge })
+  input.context.outcomes.set(call.callID, {
+    status: "admitted",
+    capabilityID: call.capabilityID,
+    challenge: admission.challenge,
+  })
 }
 
 function parseInput(input: unknown) {
