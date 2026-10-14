@@ -379,7 +379,9 @@ impl ManagedSnapshot {
             }
             ManagedCommand::RequestCancel { run_id } => {
                 let run = self.runs.get_mut(run_id).ok_or(ManagedError::Conflict("run missing"))?;
-                if run.phase == RunPhase::Cancelling { return Err(ManagedError::Conflict("run already cancelling")); }
+                if matches!(run.phase, RunPhase::Cancelling | RunPhase::Succeeded | RunPhase::NeedsYou) {
+                    return Err(ManagedError::Conflict("run cannot be cancelled from terminal/fenced phase"));
+                }
                 run.phase = RunPhase::Cancelling; // Persist admission fence before signaling workers.
             }
         }
