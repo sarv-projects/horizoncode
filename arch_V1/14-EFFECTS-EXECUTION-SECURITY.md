@@ -203,10 +203,7 @@ buffers local calls until the provider stream has a terminal `finish` and a comp
 invalid local-call schema produces zero local dispatches for that batch. Tests cover
 provider failure after a call, clean EOF without finish, finish without step settlement,
 schema rejection of one call withholding valid siblings, and concurrent dispatch after a
-valid complete batch. This closes the early-stream-dispatch gap only. The runner still
-executes through `ToolRegistry` in Bun; no Rust Guard/EffectService/ExecutionHost path or
-complete legacy/V2 effect coverage is implemented, so production governed tools remain
-unaccepted.
+valid complete batch. This is the **2026-10-10 historical implementation checkpoint**, not the current state. As of the 2026-10-14 reviewed commit, `packages/opencode/src/session/tool-batch.ts` does bounded complete-batch admission and `kernel/src/{guard,effect_host}.rs` provides a real Rust-backed `files.write` challenge, durable preparation and receipt path through `packages/core/src/session/supervisor.ts`. That narrow path does **not** mean universal effects are mediated: `terminal.run`, subprocess/subagent, plugins/MCP/hooks, hosted-provider tools and other mutation origins still require end-to-end pre-dispatch proof. See current HANDOFF.md; do not turn the historical note into a blanket runtime denial or release claim.
 
 ```rust
 trait ExecutionHost {
