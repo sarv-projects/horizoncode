@@ -481,3 +481,80 @@ test("oversized sibling cannot dispatch or Guard-admit an otherwise valid write"
     requireToolExecution({ context: gate.context, callID: "first_write", capability: writeDefinition.capability }),
   ).toThrow("missing Rust Guard admission")
 })
+
+test("read-only callback requires a completed, validated ToolBatch outcome", () => {
+  const gate = gateInput()
+  expect(() =>
+    requireToolExecution({
+      context: gate.context,
+      callID: "read_without_batch",
+      capability: readDefinition.capability,
+    }),
+  ).toThrow("missing validated ToolBatch admission")
+  expect(() =>
+    requireToolExecution({
+      context: undefined,
+      callID: "read_without_context",
+      capability: readDefinition.capability,
+    }),
+  ).toThrow("missing validated ToolBatch admission")
+})
+
+test("control callbacks require a completed validated internal-control batch", () => {
+  const control = { id: "tool.noop", effectClass: "control" } as const
+  expect(() =>
+    requireToolExecution({ context: createToolBatchContext(), callID: "control_unchecked", capability: control, internal: true }),
+  ).toThrow("missing validated ToolBatch admission")
+})
+
+test("validated read call ID cannot be reused for another capability", async () => {
+  const gate = gateInput()
+  await collect(gateToolCallStream(stream([toolCall("read_one", "read", '{"filePath":"a"}'), finish]), gate))
+  expect(() =>
+    requireToolExecution({
+      context: gate.context,
+      callID: "read_one",
+      capability: { id: "repo.search", effectClass: "read_only" },
+    }),
+  ).toThrow("capability does not match")
+  expect(
+    requireToolExecution({ context: gate.context, callID: "read_one", capability: readDefinition.capability }),
+  ).toBeUndefined()
+})
+
+test("Guard challenge is bound to the admitted capability, not only the call ID", async () => {
+  const gate = gateInput()
+  await collect(
+    gateToolCallStream(
+      stream([toolCall("write_one", "write", '{"filePath":"/workspace/a.txt","content":"new"}'), finish]),
+      gate,
+    ),
+  )
+  expect(() =>
+    requireToolExecution({
+      context: gate.context,
+      callID: "write_one",
+      capability: { id: "shell.exec", effectClass: "effect" },
+    }),
+  ).toThrow("capability does not match")
+  expect(
+    requireToolExecution({ context: gate.context, callID: "write_one", capability: writeDefinition.capability }),
+  )?.toMatchObject({ challengeID: "ch_1" })
+})
+
+test("internal marker never bypasses Rust admission for effectful capabilities", async () => {
+  const gate = gateInput({
+    definitions: { write: { ...writeDefinition, internal: true } },
+    prepareToolBatch: async () => ({ status: "denied", reason: "no internal effect bypass" }),
+  })
+  const parts = await collect(
+    gateToolCallStream(
+      stream([toolCall("write_internal", "write", '{"filePath":"/workspace/a.txt","content":"new"}'), finish]),
+      gate,
+    ),
+  )
+  expect(parts.filter((part) => part.type === "tool-call")).toHaveLength(1)
+  expect(() =>
+    requireToolExecution({ context: gate.context, callID: "write_internal", capability: writeDefinition.capability, internal: true }),
+  ).toThrow("no internal effect bypass")
+})
