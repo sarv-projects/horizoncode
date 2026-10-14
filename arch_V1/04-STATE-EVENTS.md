@@ -41,7 +41,7 @@ goal_created, spec_proposed, spec_accepted, goal_paused/resumed/completed/cancel
 
 Run/task/attempt:
 run_started/paused/resumed/cancelling/cancelled/verifying/succeeded/failed/needs_you;
-task_ready/running/verifying/passed/failed/blocked/cancelled;
+task_proposed/ready/running/verifying/passed/failed/blocked/cancelled;
 attempt_admitted/executing/settling/succeeded/failed/unknown/cancelled.
 
 Tool/effect:
