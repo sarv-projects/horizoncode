@@ -204,3 +204,86 @@ fn restarting_with_admitted_but_unsettled_attempt_fences_execution_as_unknown() 
         run_id: "run-v1".into(),
     }).is_err());
 }
+
+
+#[test]
+fn verified_task_unblocks_dependency_but_run_requires_fresh_all_criteria_evidence() {
+    let root = PrivateRoot::new();
+    let mut store = ManagedControl::open(root.path(), "goal-verified").unwrap();
+    accepted_run(&mut store);
+    send(&mut store, "task-a", ManagedCommand::AddTask {
+        run_id: "run-v1".into(), task_id: "task-a".into(), dependencies: vec![],
+    });
+    send(&mut store, "task-b", ManagedCommand::AddTask {
+        run_id: "run-v1".into(), task_id: "task-b".into(), dependencies: vec!["task-a".into()],
+    });
+    assert!(store.apply(store.snapshot().revision, "too-early", ManagedCommand::MarkTaskReady {
+        run_id: "run-v1".into(), task_id: "task-b".into(),
+    }).is_err());
+    send(&mut store, "ready-a", ManagedCommand::MarkTaskReady { run_id: "run-v1".into(), task_id: "task-a".into() });
+    send(&mut store, "attempt-a", ManagedCommand::AdmitAttempt {
+        run_id: "run-v1".into(), task_id: "task-a".into(), attempt_id: "a-1".into(),
+    });
+    send(&mut store, "verified-a", ManagedCommand::VerifyTask {
+        run_id: "run-v1".into(), task_id: "task-a".into(), attempt_id: "a-1".into(),
+        source_revision: sha('a'), evidence_digest: sha('c'),
+    });
+    send(&mut store, "ready-b", ManagedCommand::MarkTaskReady { run_id: "run-v1".into(), task_id: "task-b".into() });
+    send(&mut store, "attempt-b", ManagedCommand::AdmitAttempt {
+        run_id: "run-v1".into(), task_id: "task-b".into(), attempt_id: "b-1".into(),
+    });
+    assert!(store.apply(store.snapshot().revision, "verify-running", ManagedCommand::BeginVerification {
+        run_id: "run-v1".into(), final_revision: sha('b'),
+    }).is_err());
+    send(&mut store, "verified-b", ManagedCommand::VerifyTask {
+        run_id: "run-v1".into(), task_id: "task-b".into(), attempt_id: "b-1".into(),
+        source_revision: sha('b'), evidence_digest: sha('d'),
+    });
+    send(&mut store, "verifying", ManagedCommand::BeginVerification {
+        run_id: "run-v1".into(), final_revision: sha('b'),
+    });
+    assert!(store.apply(store.snapshot().revision, "premature", ManagedCommand::FinalizeRun {
+        run_id: "run-v1".into(), final_revision: sha('b'),
+    }).is_err());
+    assert!(store.apply(store.snapshot().revision, "stale-proof", ManagedCommand::RecordCriterionEvidence {
+        run_id: "run-v1".into(), criterion_id: "tests-pass".into(),
+        source_revision: sha('a'), evidence_digest: sha('d'), verifier_id: "rust-test-runner".into(),
+    }).is_err());
+    send(&mut store, "fresh-proof", ManagedCommand::RecordCriterionEvidence {
+        run_id: "run-v1".into(), criterion_id: "tests-pass".into(),
+        source_revision: sha('b'), evidence_digest: sha('d'), verifier_id: "rust-test-runner".into(),
+    });
+    assert!(store.apply(store.snapshot().revision, "wrong-final", ManagedCommand::FinalizeRun {
+        run_id: "run-v1".into(), final_revision: sha('a'),
+    }).is_err());
+    drop(store);
+    let mut restored = ManagedControl::open(root.path(), "goal-verified").unwrap();
+    assert_eq!(restored.snapshot().runs["run-v1"].phase, RunPhase::Verifying);
+    send(&mut restored, "final", ManagedCommand::FinalizeRun {
+        run_id: "run-v1".into(), final_revision: sha('b'),
+    });
+    assert_eq!(restored.snapshot().runs["run-v1"].phase, RunPhase::Succeeded);
+    assert!(restored.apply(restored.snapshot().revision, "late-cancel", ManagedCommand::RequestCancel {
+        run_id: "run-v1".into(),
+    }).is_err());
+}
+
+#[test]
+fn a_run_with_unsettled_unknown_attempt_cannot_enter_verification() {
+    let root = PrivateRoot::new();
+    let mut store = ManagedControl::open(root.path(), "goal-verify-unknown").unwrap();
+    accepted_run(&mut store);
+    send(&mut store, "task", ManagedCommand::AddTask {
+        run_id: "run-v1".into(), task_id: "task-a".into(), dependencies: vec![],
+    });
+    send(&mut store, "ready", ManagedCommand::MarkTaskReady { run_id: "run-v1".into(), task_id: "task-a".into() });
+    send(&mut store, "attempt", ManagedCommand::AdmitAttempt {
+        run_id: "run-v1".into(), task_id: "task-a".into(), attempt_id: "a-1".into(),
+    });
+    send(&mut store, "unknown", ManagedCommand::MarkAttemptUnknown {
+        run_id: "run-v1".into(), task_id: "task-a".into(), attempt_id: "a-1".into(),
+    });
+    assert!(store.apply(store.snapshot().revision, "bad-verification", ManagedCommand::BeginVerification {
+        run_id: "run-v1".into(), final_revision: sha('a'),
+    }).is_err());
+}
