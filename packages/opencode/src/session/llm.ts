@@ -32,6 +32,7 @@ import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
 import { SessionSupervisor, Service as SessionSupervisorService } from "@opencode-ai/core/session/supervisor"
+import { requireMediatedWorkflowProvider } from "./hosted-tools"
 import { createToolBatchContext, requireToolExecution, toolBatchMiddleware, type ToolBatchDefinition } from "./tool-batch"
 
 
@@ -111,6 +112,9 @@ const live: Layer.Layer<
       )
 
       const isWorkflow = language instanceof GitLabWorkflowLanguageModel
+      // This provider may execute tools server-side before our callbacks run.
+      // Do not treat provider approval hooks as kernel EffectHost admission.
+      requireMediatedWorkflowProvider(isWorkflow)
       const definitions: Record<string, ToolBatchDefinition> = { ...(input.toolDefinitions ?? {}) }
       const prepared = yield* LLMRequestPrep.prepare({
         ...input,

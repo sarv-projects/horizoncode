@@ -273,3 +273,37 @@ Examples that remain experimental/disabled until their runtime and benchmarks ac
 - [ ] Run schema/contract validator, V1/V2 binding tests and FEAT-001..014 actual integration. A passing generic typecheck or designed schema is not completion.
 
 This work is part of P6 Settings/UX but must be integrated before *new optional effectful features* are presented as executable. It does not replace P1.3 Guard completion.
+
+
+## P1 and P2 completion ledger — implementation gate, October 14 2026
+
+STATUS: This maps existing source to remaining work, not a new subsystem or claim of release readiness. Completion source is HANDOFF.md and exact passing CI/OS evidence; Gate 2 and Gate 3 remain OPEN.
+
+### P1: origins and required exact negative proof
+
+| Priority | Existing owner/origin | What must be proved |
+|---|---|---|
+| 1 | packages/opencode/src/session/prompt.ts: shellImpl -> spawner.spawn | All shell/process/Git/build/test effects require kernel PREPARE and one-use ExecutionHost lease before spawn. Validate cwd/argv/env, sandbox profile, output bounds, process tree, cancellation and UNKNOWN. Do not break direct UX without providing a guarded replacement. |
+| 2 | Same file: commandWork -> ConfigMarkdown.shell -> Process.text | No shell interpolation before Guard; denied, malformed or mixed substitutions spawn zero processes. |
+| 3 | Same file: handleSubtask -> TaskTool.execute | Parent permission, workspace fence, budget, model/harness and child scope intersect; no Task spawn or child mutation without Guard. |
+| 4 | packages/opencode/src/tool/registry.ts and hydrated plugin/hooks/MCP/code-mode implementations | Executable callbacks and network calls require pre-dispatch authority, not metadata classification or post-execution permission UI. Explicitly disable unmediated extensions. |
+| 5 | packages/opencode/src/session/llm.ts and provider adapters | Opaque GitLab hosted workflow blocked in PR #4; audit and preempt remaining hosted execution, remote MCP and native tool paths. |
+| 6 | packages/core/src/session, V1 legacy HTTP routes, maintenance jobs | All externally callable effectful operations cross the same kernel authority, including settings/auth/network and background jobs. |
+| 7 | LSP/DAP/REPL/browser/desktop/automation/external agents | Every enabled action has canonical scope, authenticated origin, pre-launch Guard, resource generation and OS-specific confinement tests; otherwise UNAVAILABLE. |
+| 8 | kernel/src/guard.rs and effect_host.rs | Generalize single files.write-only capability to complete atomic batches, durable PREPARED intents, exact one-use lease, receipts, UNKNOWN target reconciliation and no unsafe retry. |
+| 9 | packages/opencode/src/session/tool-batch.ts | Preserve PR #3 partial-frame lifecycle tests, PR #4 abort propagation and hard bounded provider-stream deadline, 32-call and 256/512 KiB byte ceilings. |
+
+P1 adversarial matrix: forged callback, stale call ID/capability, invalid streamed siblings, simultaneous conflicting effects, plugin/MCP alias bypass, symlink and path-swap attacks, environment/credential exposure, denied child shell, process escape, network/OS guarantee mismatch, explicit cancellation before and after PREPARE, lost target receipt and non-idempotent UNKNOWN. Unsupported host/platform capability must decline rather than claim best effort as enforced. Green typechecks are insufficient.
+
+### P2: execution sequence and production acceptance
+
+1. Authenticated Goal + immutable accepted FULL SpecVersion: objective, scope, constraints, criterion descriptions, budgets, project/workspace and source digests. A model or plugin cannot approve its own spec.
+2. Existing Rust durable owner gets real Run/Task/Attempt event control and SessionLink correlation without a second canonical transcript. Tasks depend on independently verified PASS; Attempts carry actor/agent/provider, policy/owner epoch, workspace and retry budget.
+3. Add bounded supervised scheduler, worker/worktree/resource leases, conflict graph, heartbeat, cancellation fences, explicit provider choice and guarded EffectHost dispatch. Worker completion alone is never Task PASS.
+4. Reconcile effects/leases after process crash. Unsettled active Attempts enter RECONCILING; never automatically retry non-idempotent UNKNOWN, erase dirty state or leak child processes.
+5. Trusted final verifier associates all accepted criteria with artifacts, test identities and current final integrated revision plus workspace overlay. Detect human edits/stale proof before SUCCEEDED; otherwise FAILED/NEEDS_YOU.
+6. Wire authenticated API/TUI, user steering, pause/resume/stop, restart/reconnect. Test fan-in dependencies, arbitrary crash at each effect stage, stale owner fences, duplicate delivery, budget exhaustion, manual approval, success/failure/NEEDS_YOU and native Windows capability truth.
+
+Current PR #4 implements only an INTERNAL OwnerLogV2 backed control projection and guarded stream hardening. It now has internal Task verification and criterion/final-revision state transitions, but NO independently authenticated verifier adapter, managed RPC/API, worker scheduler, effect target reconciliation, lease engine, or native Windows qualification. Keep P1 and P2 open until all above tests prove real end-to-end execution.
+
+Do not create new agent loops, tool authorities, separate Rust conversation stores or competing feature registries. Use source paths above, existing Owners in 17, execution contract 14, lifecycle 11, schemas 12 and task fixtures 32.

@@ -640,3 +640,145 @@ test("bounds the number of streaming tool IDs independently of terminal calls", 
   )
   expect(gate.context.outcomes.size).toBe(0)
 })
+
+
+test("turn cancellation interrupts a stalled provider before any ToolBatch admission", async () => {
+  const controller = new AbortController()
+  let preparations = 0
+  let upstreamCancelled = false
+  const gate = gateInput({
+    signal: controller.signal,
+    prepareToolBatch: async () => {
+      preparations++
+      throw new Error("cancelled response must not reach Guard")
+    },
+  })
+  const provider = new ReadableStream<LanguageModelV3StreamPart>({
+    start(stream) {
+      stream.enqueue({ type: "tool-input-start", id: "never_finished", toolName: "write" })
+      // Simulate a provider that never emits a terminal call or finish frame.
+    },
+    cancel() {
+      upstreamCancelled = true
+    },
+  })
+  const output = gateToolCallStream(provider, gate)
+  const reader = output.getReader()
+  const initial = await reader.read()
+  expect(initial.value?.type).toBe("tool-input-start")
+  const pending = reader.read()
+  controller.abort(new Error("turn cancelled"))
+  await expect(pending).rejects.toThrow()
+  expect(preparations).toBe(0)
+  expect(gate.context.outcomes.size).toBe(0)
+  expect(upstreamCancelled).toBe(true)
+})
+
+test("denies streamed delta and end frames without a matching start before any Guard admission", async () => {
+  for (const orphan of [
+    { type: "tool-input-delta", id: "orphan", delta: '{"filePath":"a"}' },
+    { type: "tool-input-end", id: "orphan" },
+  ] satisfies LanguageModelV3StreamPart[]) {
+    let preparations = 0
+    const gate = gateInput({
+      prepareToolBatch: async () => {
+        preparations++
+        throw new Error("malformed stream must never reach Guard")
+      },
+    })
+    await expect(
+      collect(gateToolCallStream(stream([orphan, toolCall("orphan", "write", '{"filePath":"/workspace/a.txt","content":"x"}'), finish]), gate)),
+    ).rejects.toThrow("Tool batch denied: streamed input without start")
+    expect(gate.context.outcomes.size).toBe(0)
+    expect(preparations).toBe(0)
+  }
+})
+
+test("denies duplicate stream starts for one call ID before effect dispatch", async () => {
+  const gate = gateInput()
+  await expect(
+    collect(gateToolCallStream(stream([
+      { type: "tool-input-start", id: "dup", toolName: "write" },
+      { type: "tool-input-start", id: "dup", toolName: "write" },
+      toolCall("dup", "write", '{"filePath":"/workspace/a.txt","content":"x"}'),
+      finish,
+    ]), gate)),
+  ).rejects.toThrow("Tool batch denied: duplicate streaming input start")
+  expect(gate.context.outcomes.size).toBe(0)
+})
+
+test("denies stream deltas or repeated end frames after input has ended", async () => {
+  for (const late of [
+    { type: "tool-input-delta", id: "ended", delta: "extra" },
+    { type: "tool-input-end", id: "ended" },
+  ] satisfies LanguageModelV3StreamPart[]) {
+    const gate = gateInput()
+    await expect(
+      collect(gateToolCallStream(stream([
+        { type: "tool-input-start", id: "ended", toolName: "read" },
+        { type: "tool-input-end", id: "ended" },
+        late,
+        toolCall("ended", "read", '{"filePath":"a"}'),
+        finish,
+      ]), gate)),
+    ).rejects.toThrow("Tool batch denied: streamed input after end")
+    expect(gate.context.outcomes.size).toBe(0)
+  }
+})
+
+test("denies extra partial frames after the terminal call for that ID", async () => {
+  const gate = gateInput()
+  await expect(
+    collect(gateToolCallStream(stream([
+      { type: "tool-input-start", id: "terminal", toolName: "write" },
+      toolCall("terminal", "write", '{"filePath":"/workspace/a.txt","content":"x"}'),
+      { type: "tool-input-delta", id: "terminal", delta: "late" },
+      finish,
+    ]), gate)),
+  ).rejects.toThrow("Tool batch denied: streamed input after terminal call")
+  expect(gate.context.outcomes.size).toBe(0)
+})
+
+test("accepts completed start/delta/end sequence with matching terminal call", async () => {
+  const gate = gateInput()
+  const output = await collect(gateToolCallStream(stream([
+    { type: "tool-input-start", id: "valid", toolName: "read" },
+    { type: "tool-input-delta", id: "valid", delta: '{"filePath":"a"}' },
+    { type: "tool-input-end", id: "valid" },
+    toolCall("valid", "read", '{"filePath":"a"}'),
+    finish,
+  ]), gate))
+  expect(output.some((part) => part.type === "tool-call")).toBe(true)
+  expect(requireToolExecution({
+    context: gate.context,
+    callID: "valid",
+    capability: readDefinition.capability,
+  })).toBeUndefined()
+})
+
+
+test("hard stream lifetime cancels a silent provider without admitting a write", async () => {
+  let preparations = 0
+  let cancelled = false
+  const gate = gateInput({
+    maxStreamDurationMs: 25,
+    prepareToolBatch: async () => {
+      preparations++
+      throw new Error("timed-out response must never reach Guard")
+    },
+  })
+  const provider = new ReadableStream<LanguageModelV3StreamPart>({
+    start(controller) {
+      controller.enqueue({ type: "tool-input-start", id: "timed_out_write", toolName: "write" })
+    },
+    cancel() {
+      cancelled = true
+    },
+  })
+  const reader = gateToolCallStream(provider, gate).getReader()
+  expect((await reader.read()).value?.type).toBe("tool-input-start")
+  await expect(reader.read()).rejects.toThrow()
+  expect(preparations).toBe(0)
+  expect(gate.context.outcomes.size).toBe(0)
+  expect(cancelled).toBe(true)
+})

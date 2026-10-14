@@ -14,6 +14,8 @@ python3 scripts/architecture/validate_convergence.py
 python3 scripts/architecture/validate_external_sources.py
 # Never silently skip positive Rust Guard tests due to an absent binary.
 cargo build --locked --manifest-path kernel/Cargo.toml --bin session_supervisor --quiet
+# P2 owner durability must execute its replay/fencing regressions in hosted CI.
+cargo test --locked --manifest-path kernel/Cargo.toml --test managed_control --quiet
 test -x kernel/target/debug/session_supervisor
 (
   cd packages/core
@@ -27,6 +29,7 @@ test -x kernel/target/debug/session_supervisor
   bun test --timeout 60000 test/session/tools.test.ts
   bun test --timeout 60000 test/session/run-state-owner.test.ts
   bun test --timeout 60000 test/session/tool-batch.test.ts
+  bun test --timeout 60000 test/session/hosted-tools.test.ts
   bun test --timeout 60000 test/tool/write.test.ts
   bun test --timeout 60000 test/session/prompt.test.ts -t Guard
   bun test --timeout 60000 test/session/prompt.test.ts -t 'V1 model write is admitted'
