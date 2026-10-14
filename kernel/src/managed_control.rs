@@ -145,6 +145,13 @@ fn id(value: &str) -> Result<(), ManagedError> {
     Ok(())
 }
 
+fn logical_command_digest(kind: &str, data: &Value) -> String {
+    // Idempotency identifies the logical operation, independent of the
+    // timestamp in OwnerLog's separately authenticated physical envelope.
+    let command = json!({"kind": kind, "data": data});
+    format!("blake3:{}", blake3::hash(command.to_string().as_bytes()).to_hex())
+}
+
 fn digest(value: &str) -> Result<(), ManagedError> {
     if value.len() != 71 || !value.starts_with("sha256:") ||
         !value.as_bytes()[7..].iter().all(u8::is_ascii_hexdigit) {
@@ -259,8 +266,13 @@ impl ManagedControl {
                 let delivery = envelope.get("deliveryId").and_then(Value::as_str).ok_or(ManagedError::Invalid("missing delivery"))?;
                 let command_digest = envelope.get("commandDigest").and_then(Value::as_str).ok_or(ManagedError::Invalid("missing command digest"))?;
                 if snapshot.deliveries.contains_key(delivery) { return Err(ManagedError::Invalid("duplicate physical delivery")); }
-                snapshot.apply(&ManagedCommand::decode(&event.kind, payload)?)?;
-                snapshot.deliveries.insert(delivery.to_owned(), command_digest.to_owned());
+                let command = ManagedCommand::decode(&event.kind, payload)?;
+                snapshot.apply(&command)?;
+                let logical = logical_command_digest(&event.kind, payload);
+                // OwnerLog already authenticates the physical command digest;
+                // this projection additionally records retry-equivalence.
+                if !command_digest.starts_with("blake3:") { return Err(ManagedError::Invalid("invalid physical command digest")); }
+                snapshot.deliveries.insert(delivery.to_owned(), logical);
             }
             cursor = batch.cursor;
             if !batch.has_more { break; }
@@ -285,11 +297,15 @@ impl ManagedControl {
             data, delivery_id: None, command_digest: None,
         };
         let command_digest = OwnerLogV2::command_digest(delivery_id, &[event.clone()])?;
-        // True retries must carry the same committed command bytes. Wall-clock
-        // observation timestamps must therefore be pinned by the caller in a
-        // future public API, rather than interpreted as idempotent here.
-        if self.snapshot.deliveries.contains_key(delivery_id) {
-            return Err(ManagedError::Conflict("delivery already committed; query status before retry"));
+        // An exact retry is successful even after the aggregate revision
+        // advanced. Reuse with a different command fails closed.
+        let logical = logical_command_digest(kind, &event.data);
+        if let Some(previous) = self.snapshot.deliveries.get(delivery_id) {
+            return if previous == &logical {
+                Ok(())
+            } else {
+                Err(ManagedError::Conflict("idempotency key reused for different command"))
+            };
         }
         if self.snapshot.revision != expected_revision { return Err(ManagedError::Conflict("stale managed revision")); }
         let mut next = self.snapshot.clone();
@@ -297,7 +313,7 @@ impl ManagedControl {
         event.delivery_id = Some(delivery_id.to_owned());
         event.command_digest = Some(command_digest.clone());
         let receipt = self.log.append_batch(delivery_id, &command_digest, &[event], self.cursor.as_ref())?;
-        next.deliveries.insert(delivery_id.to_owned(), command_digest);
+        next.deliveries.insert(delivery_id.to_owned(), logical);
         self.snapshot = next;
         self.cursor = Some(receipt.owner_cursor);
         Ok(())
