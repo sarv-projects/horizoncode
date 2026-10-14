@@ -224,3 +224,37 @@ Foreground TUI, CLI, SDK and background managed jobs are views over the *same* a
 - **Session import/resume:** enumerate supported external source formats, preview redacted metadata and ownership, user confirms snapshot import vs backend-native resume; never copy external credentials or claim live tool capabilities for a historic imported transcript.
 
 These are target runtime behaviours, subject to negative/long-run proof. §20 owns insertion points and §18 owns measurement methodology.
+
+## 15.20 End-to-end provider, tool, worker and completion algorithm
+
+This is the target implementation call graph, not a claim of current wiring. **Direct mode must remain cheap**: no automatic Goal, spec acceptance, Task DAG or 20 worker pool solely to answer a normal coding question.
+
+~~~text
+Core Session input + provider selection snapshot
+ -> freeze model/harness/account + user permissions + context epoch
+ -> build scoped context and bounded ActionDescriptor tool list
+ -> Provider transport stream with hard byte/call/finish deadlines
+ -> complete ToolBatch validation and pinned tool-schema digest
+ -> Rust Guard admission for each effectful origin (batch transactional preflight)
+ -> immutable PREPARED intent + single-use lease + optional approval
+ -> ExecutionHost with OS-backed effect boundary/process-tree ownership
+ -> bounded observation + receipt/UNKNOWN and Session-owned tool-result Part
+ -> updated source revision/context projection
+ -> optionally Rust managed Task verifier and next DAG-ready child
+ -> independent final integrated revision verification + Run terminal state
+ -> derived TUI/CLI/SDK events + resource/cost metrics
+~~~
+
+**Exact real source anchors at audited main:** `packages/core/src/session/supervisor.ts` exports `SessionSupervisor.Service.openForSession/watchSession/prepareToolBatch/approveEffect/executeWrite` and `SessionSupervisorClient.request/subscribe/receive/ack`; `packages/opencode/src/session/tool-batch.ts` exports `gateToolCallStream`/`requireToolExecution` with hard 32 calls, 256 KiB per-call arguments, 512 KiB total, 16,384 delta chunks, 10-minute maximum stream. Rust `kernel/src/guard.rs` permits narrow guarded `files.write` only; `kernel/src/effect_host.rs` prepares challenge, approval, write and receipt, **not universal process execution**. `kernel/src/managed_control.rs` is explicitly non-executing. Any further names below are future contracts, not callable code.
+
+**Provider turn algorithm:** create immutable turn snapshot {Session/message refs, selected provider/model/harness, tool registry generation, scope, context ledger epoch, max spend}. Provider output is untrusted; accumulate and size-check partial tool input, require the terminal finish/step conditions, normalize supported tool IDs before permissions, reject entire batch on schema/unknown effect class/oversize/unfinished stream, and forbid callback dispatch until Rust admissions are known. Pure reads get scoped bounded authorization; effects additionally get the durable §14 path. If a partly executed parallel approved batch fails, settle each admitted effect independently and present ordered results; do not claim atomic rollback of external operations.
+
+**Provider Doctor decision table:** offline missing account/model → FAIL configuration without network; catalog network/auth unavailable → UNKNOWN/typed route or auth error, no fallback; full user consent absent → NEEDS_APPROVAL before model call; full partial stream/no terminal → FAILED/UNKNOWN cost status (query provider if possible); 429 → bounded same route retry only if user consent/cost policy permits; unsupported structured tools → explicit capability UNAVAILABLE; local model out of VRAM → resource blocked and no remote fallback. All returned identifiers are redacted/opaque; spend observed only when usage from authoritative provider exists.
+
+**Managed executor (requires P2):** authenticated accepted SpecVersion → initialize Goal/Run immutable criteria and workspace scope → add finite DAG → compute READY after independent PASSED parents → resource and spend capacity admission → reserve Task/Attempt/WorkerExecution workspace/sandbox leases → spawn/attach headless agent → stream task context/progress/artifact refs → effectful worker calls use same Rust Guard → settle/reconcile → trusted Task verifier → dependency unblock → guarded integration → final Run-level independent verifier against current revision. A child does not acquire Session or Run ownership merely by having a process ID.
+
+**Interruption semantics:** new user steer may affect *future* provider step only; once a batch/effect is prepared its digest, args and lease are frozen, and cancellation fences later dispatch. Cancellation/timeout before send returns no effect; after send but before receipt returns UNKNOWN unless actual target proof resolves it. Host/kernel restart rotates owner epoch; never reuse prior one-use lease. A user request to stop all work is propagated to each owned child and reported per Task, distinguishing cancelled, still running, unknown and settled. No silent cross-session kill.
+
+**Runtime error mapping:** keep separate _validation DENIED_ vs _policy NEEDS_APPROVAL_ vs _unsupported UNAVAILABLE_ vs _capacity RESOURCE_BLOCKED_ vs _stale revision CONFLICT_ vs _transport retryable_ vs _effect UNKNOWN_. Use canonical typed error registry (§12) and preserve idempotency delivery key; log origin/session/attempt/source revision without raw secret/prompt contents. A failed provider call after a tool was dispatched cannot be replayed as a fresh tool effect merely by restarting the model request.
+
+**Fast path:** direct read/search/patch stays one canonical Session and existing host runner, mediated as needed; render/index/telemetry are bounded asynchronous derivatives. Managed background tasks reuse existing Core/provider connections when safe, with OS-sandboxed effectful children. Benchmark complete user-visible verified tasks, including retries and tool outputs, rather than only first-token latency.
