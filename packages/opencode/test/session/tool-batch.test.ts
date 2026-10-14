@@ -755,3 +755,30 @@ test("accepts completed start/delta/end sequence with matching terminal call", a
     capability: readDefinition.capability,
   })).toBeUndefined()
 })
+
+
+test("hard stream lifetime cancels a silent provider without admitting a write", async () => {
+  let preparations = 0
+  let cancelled = false
+  const gate = gateInput({
+    maxStreamDurationMs: 25,
+    prepareToolBatch: async () => {
+      preparations++
+      throw new Error("timed-out response must never reach Guard")
+    },
+  })
+  const provider = new ReadableStream<LanguageModelV3StreamPart>({
+    start(controller) {
+      controller.enqueue({ type: "tool-input-start", id: "timed_out_write", toolName: "write" })
+    },
+    cancel() {
+      cancelled = true
+    },
+  })
+  const reader = gateToolCallStream(provider, gate).getReader()
+  expect((await reader.read()).value?.type).toBe("tool-input-start")
+  await expect(reader.read()).rejects.toThrow()
+  expect(preparations).toBe(0)
+  expect(gate.context.outcomes.size).toBe(0)
+  expect(cancelled).toBe(true)
+})
