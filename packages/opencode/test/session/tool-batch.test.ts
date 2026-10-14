@@ -427,3 +427,57 @@ test("rejects oversized tool identity fields without tool dispatch", async () =>
     expect(gate.context.outcomes.size).toBe(0)
   }
 })
+
+test("accepts the documented maximum of 32 bounded read-only calls", async () => {
+  let preparations = 0
+  const gate = gateInput({
+    prepareToolBatch: async () => {
+      preparations++
+      throw new Error("read-only batch should not touch Rust")
+    },
+  })
+  const calls = Array.from({ length: 32 }, (_, index) =>
+    toolCall(`read_${index}`, "read", '{"filePath":"/workspace/a.txt"}'),
+  )
+  const output = await collect(gateToolCallStream(stream([...calls, finish]), gate))
+  expect(output.filter((part) => part.type === "tool-call")).toHaveLength(32)
+  expect(preparations).toBe(0)
+  for (const call of calls) {
+    if (call.type !== "tool-call") continue
+    expect(
+      requireToolExecution({
+        context: gate.context,
+        callID: call.toolCallId,
+        capability: readDefinition.capability,
+      }),
+    ).toBeUndefined()
+  }
+})
+
+test("oversized sibling cannot dispatch or Guard-admit an otherwise valid write", async () => {
+  let preparations = 0
+  const gate = gateInput({
+    prepareToolBatch: async () => {
+      preparations++
+      throw new Error("whole batch should be rejected by the stream limit")
+    },
+  })
+  const oversized = JSON.stringify({ filePath: "/workspace/a.txt", padding: "x".repeat(256 * 1024) })
+  await expect(
+    collect(
+      gateToolCallStream(
+        stream([
+          toolCall("first_write", "write", '{"filePath":"/workspace/a.txt","content":"new"}'),
+          toolCall("bad_read", "read", oversized),
+          finish,
+        ]),
+        gate,
+      ),
+    ),
+  ).rejects.toThrow("Tool batch limit exceeded: argument bytes")
+  expect(preparations).toBe(0)
+  expect(gate.context.outcomes.size).toBe(0)
+  expect(() =>
+    requireToolExecution({ context: gate.context, callID: "first_write", capability: writeDefinition.capability }),
+  ).toThrow("missing Rust Guard admission")
+})
