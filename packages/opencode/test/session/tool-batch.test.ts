@@ -558,3 +558,59 @@ test("internal marker never bypasses Rust admission for effectful capabilities",
     requireToolExecution({ context: gate.context, callID: "write_internal", capability: writeDefinition.capability, internal: true }),
   ).toThrow("no internal effect bypass")
 })
+
+test("bounds streaming tool-call argument deltas before terminal assembly", async () => {
+  const gate = gateInput()
+  const chunk = "x".repeat(160 * 1024)
+  const streaming = [
+    { type: "tool-call-streaming-start", toolCallId: "stream_read", toolName: "read" },
+    { type: "tool-call-delta", toolCallId: "stream_read", inputTextDelta: chunk },
+    { type: "tool-call-delta", toolCallId: "stream_read", inputTextDelta: chunk },
+  ] as LanguageModelV3StreamPart[]
+  await expect(collect(gateToolCallStream(stream([...streaming, finish]), gate))).rejects.toThrow(
+    "Tool batch limit exceeded: streamed argument bytes",
+  )
+  expect(gate.context.outcomes.size).toBe(0)
+})
+
+test("an uncompleted streaming tool input never receives a callback admission", async () => {
+  const gate = gateInput()
+  const parts = [
+    { type: "tool-call-streaming-start", toolCallId: "ghost_read", toolName: "read" },
+    { type: "tool-call-delta", toolCallId: "ghost_read", inputTextDelta: '{"filePath":"x"}' },
+    finish,
+  ] as LanguageModelV3StreamPart[]
+  await expect(collect(gateToolCallStream(stream(parts), gate))).rejects.toThrow(
+    "Incomplete provider response; tool calls withheld",
+  )
+  expect(gate.context.outcomes.size).toBe(0)
+})
+
+test("streaming tool name must match the canonical terminal call", async () => {
+  const gate = gateInput()
+  const parts = [
+    { type: "tool-call-streaming-start", toolCallId: "swapped", toolName: "read" },
+    toolCall("swapped", "write", '{"filePath":"/workspace/a.txt","content":"new"}'),
+    finish,
+  ] as LanguageModelV3StreamPart[]
+  await expect(collect(gateToolCallStream(stream(parts), gate))).rejects.toThrow(
+    "Tool batch denied: streaming tool identity mismatch",
+  )
+  expect(gate.context.outcomes.size).toBe(0)
+})
+
+test("legitimate streaming tool deltas retain an accepted terminal read call", async () => {
+  const gate = gateInput()
+  const parts = [
+    { type: "tool-call-streaming-start", toolCallId: "read_stream", toolName: "read" },
+    { type: "tool-call-delta", toolCallId: "read_stream", inputTextDelta: '{"filePath":' },
+    { type: "tool-call-delta", toolCallId: "read_stream", inputTextDelta: '"a.txt"}' },
+    toolCall("read_stream", "read", '{"filePath":"a.txt"}'),
+    finish,
+  ] as LanguageModelV3StreamPart[]
+  const output = await collect(gateToolCallStream(stream(parts), gate))
+  expect(output.some((part) => part.type === "tool-call")).toBe(true)
+  expect(
+    requireToolExecution({ context: gate.context, callID: "read_stream", capability: readDefinition.capability }),
+  ).toBeUndefined()
+})
