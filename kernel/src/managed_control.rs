@@ -317,6 +317,21 @@ impl ManagedControl {
             cursor = batch.cursor;
             if !batch.has_more { break; }
         }
+        // After a host crash we cannot infer whether a previously admitted
+        // Attempt launched external work or obtained an EffectReceipt. Do not
+        // resume it automatically. Recovery must obtain target-side evidence
+        // and explicitly settle UNKNOWN through the future EffectService.
+        for run in snapshot.runs.values_mut() {
+            let unsettled = run.tasks.values().any(|task| task.active_attempt.is_some());
+            if unsettled {
+                for task in run.tasks.values_mut() {
+                    if task.active_attempt.is_some() { task.unknown_effect = true; }
+                }
+                if run.phase == RunPhase::Running || run.phase == RunPhase::Paused {
+                    run.phase = RunPhase::Reconciling;
+                }
+            }
+        }
         Ok(Self { log, snapshot, cursor })
     }
 
