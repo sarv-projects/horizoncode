@@ -166,3 +166,15 @@ This is accepted engineering work, **not a feature-cut list**. Preserve the P0�
 | R5 developer canary | existing build tooling + Guarded rollout | explicit OFF developer preview with rollback, **not unreviewed self-modification** | security code hot-swap during UNKNOWN denied, failed rollback, build disk pressure |
 
 **Per-slice sign-off:** 1. exact owner/source/hydrated paths; 2. wire schema version + typed error; 3. user authorization/feature exposure; 4. state transition with durable vs derived distinction; 5. happy path **and** timeout/cancel/crash/unknown; 6. process/disk/token/cost resource charge; 7. source-revision/final outcome proof; 8. benchmark/task regression and native platform qualification; 9. raw CI commit/test/OS evidence in HANDOFF. Checklist owner: existing `docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md`. A task is not complete because its HLD/LLD is present.
+
+## 10.16 Complete accepted-journey coverage: ACP, visual edit and deploy
+
+These previously had normative user journeys (§§3.16–3.18), but not the same explicit function/contract/test coverage as resource work. They **remain part of implementation planning**, not silently excluded.
+
+- **External agent integration (P6):** separate existing pinned upstream ACP *server* from Horizon ACP *client*, native OpenCode backend and generic CLI/remote adapters. Implement version/auth/capability negotiation, session ownership, typed child result, correct model/grant/worker budget and cancel/UNKNOWN. Required owner: §29.19/§37.19 and ACP-001..008.
+- **Visual source edit (P5/P7):** supervised preview process → DOM/AX/source-map snapshot → bounded candidate path/digest/confidence → user-reviewed target selection → Guarded patch → re-observe/test/undo; no pixel-to-file guessing. Owner §20.13/§37.20 and VIS-001..004.
+- **Deployment with verification (P5/P9 integration):** explicit deployment target/account/environment → frozen artifact/source revision and price/credential scopes → approval → Guarded target effect and receipt → real deployed URL/version + health and critical-route check → independent criteria proof → guarded rollback/reconciliation if needed. Owner §14/§37.20 and DEP-001..008.
+- **No automatic availability promotion:** §33.30 candidate IDs are design-reserved; actual runtime, platform and credential adapters require compiled contracts and tests first. Unsupported remote/hosted effects must be disabled in governed mode.
+- **Release evidence:** test an actual user-selected available backend against a disposable example application, with mutation isolation and outcome proof, before describing these as working. Running a generic shell command does not fulfill the deployment API, and the existence of OpenCode's ACP server does not fulfill Horizon's outbound adapter.
+
+The single operative implementation tracker is the existing P0–P9 plus RC0–RC5 plan. Work can proceed on source-verified read-only adapter discovery in parallel with P1, but **no effectful rollout before universal Guard**.
