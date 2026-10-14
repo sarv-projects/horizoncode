@@ -188,3 +188,34 @@ A bounded `ToolTailView` maintains recent committed lines plus the current live 
 Resource columns on Mission Control: actual host/kernel and child process RSS/PSS/private bytes where supported; per-Session/Run/worker attribution, open process/FD/thread count, active build targets/worktrees, index/render/token/image cache bytes, local inference VRAM, cold/warm startup, p50/p95 keystroke and stream latency, rendering queue depth and dropped/coalesced ephemeral paints. Respect metric method/platform/source and mark UNKNOWN rather than zero. Provide deterministic disk/cache cleanup proposals, not silent deletion. Diagnostic export is local/redacted unless explicitly approved.
 
 Cache budgets: each Markdown highlight, Mermaid source/render, image placement, AST/index and decoded artifact cache has an upper bound on **count and bytes**, TTL/eviction and stale generation. JCode's particular caps are examples, not copied Horizon guarantees. Enforce cache leak tests under 10k messages, 1000 tiny deltas, 10/20 parallel sessions, terminal resize, idle 30m and repeated previews. §18.17 defines overall resource truth; §32.32 is acceptance.
+
+## 31.17 TUI resource-safe rendering and session orchestration algorithm
+
+The user interface observes canonical backend events and independently controls **paint**, never effect settlement. Match existing source owners: `packages/tui/src/app.tsx` is a tracked overlay; most underlying widgets/events reside in hydrated `opencode/packages/tui/src/`. The proposed scheduler must integrate with the existing terminal renderer, not create another TUI event loop.
+
+~~~ts
+type PaintReason = "USER_INPUT"|"STREAM_DELTA"|"TOOL_STATE"|"APPROVAL"|
+  "RESIZE"|"THEME"|"SCROLL"|"FOCUS"|"TIMER"|"RECOVERY"|"FULL_INVALIDATION";
+type LiveTailV1 = {
+  sessionId: string; messagePartId: string; sourceGeneration: string;
+  committedLineRefs: string[]; liveLine?: string; status: "RUNNING"|"SETTLED"|"UNKNOWN";
+  visibleBytes: number; fullArtifactRef?: string; fidelity: "FULL"|"SAMPLE";
+};
+type UiRedrawBudgetV1 = {
+  activeFrameMs: number; idleFrameMs: number; deepIdleFrameMs: number;
+  deepIdleAfterMs: number; maxQueuedDeltas: number; maxToolTailBytes: number;
+  maxToolTailLines: number; maxImageBytes: number; maxRenderCacheBytes: number;
+};
+~~~
+
+**Initial safety defaults** (tuning candidates, not perf guarantees): active stream redraw no faster than one frame per ~16 ms; idle 250 ms; deep idle 5000 ms after 30 s *without input or meaningful new data*. Input focus/cancel and approvals trigger immediate scheduling instead of waiting for slow idle animation; cap queue at 1024 **replaceable paint deltas per Session**, preserve durable event cursor/backpressure separately. A tool tail stores at most 200 lines/64 KiB of presentation text per active part; large stdout remains bounded immutable SourceArtifact with visible FULL/SAMPLE status. Rendering caches have both entry and byte caps chosen through §18.18 measured profile; never hold full decoded 100 MB log solely to draw a few tail lines.
+
+**Pipeline:** canonical event/part generation -> `normalizePaintEvent` (check Session and source rev) -> `stablePrefixDiff` -> `coalesceReplaceableDelta` -> `enqueueDirtyRegion` -> `chooseFrameDeadline(reason,active/idle)` -> `paintChangedCells` -> `recordFrameMetrics`. A terminal resize/theme epoch invalidates geometry and paints a full frame *once*, recording reason; repeated stream deltas should only invalidate bounded rows. Scrollback virtualization renders viewport + fixed overscan and lazily decodes artifacts. A chat turn finishing commits last tail into canonical transcript projection; ephemeral animation/progress never manufactures a new MessagePart.
+
+**Cross-session fairness:** each tab has its own stream cursor, queued delta byte limit, focus/scroll anchor and render generation; only foreground tab receives full-rate paints. Background tabs aggregate scoped unread/progress counters without repainting hidden transcript. Switching tab recreates viewport from canonical parts and applies latest committed cursor; it cannot duplicate a tool result or change Run status. A flood on Session A must not delay cancel/approval in Session B; render scheduling has separate priority from durable control and model transport.
+
+**Perceptual responsiveness:** measure (a) input event to queued UI update, (b) update to frame commit, (c) provider byte arrival to visible token, (d) renderer time and full-frame reasons, with p50/p95 and dropped/coalesced replaceable count. Network/provider duration is distinct. Resource panel labels Linux process PSS/RSS, native Windows private bytes, inference VRAM and byte units; per-Session logical share is ESTIMATED where one kernel serves many Sessions. Accessibility fallback has readable text and no rich terminal protocols.
+
+**Security:** escape terminal control sequences from model/tool stdout, sanitize ANSI/OSC links, cap image dimensions/bytes and terminal graphics leases, avoid leaking off-scope Session events. Token/cost figures reflect actual provider source or UNKNOWN. Export diagnostics is redacted opt-in. Any source revision/permission change invalidates unsafe preview and prohibits stale edit controls.
+
+**End-state verification:** (1) 1000 tiny stream deltas have bounded queue and accurate final text, (2) keyboard+approval responsive under active 20-Session background load, (3) SSH/tmux/no graphics has meaningful fallback, (4) idle CPU near measured baseline rather than busy loop, (5) reconnect/focus/scroll no duplicate parts, (6) 10k-part transcript and sampled 100 MB output bounded, (7) ephemeral queue eviction never drops durable cancellation/effect receipt, (8) user sees precise resource method/unknown status and provider warnings. See §32.33.
