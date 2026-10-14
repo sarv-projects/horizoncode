@@ -1,6 +1,8 @@
 # Universal Software Agent — Architecture v2 (OpenCode-first)
 
-**Status:** design and integration plan, not implemented product. **Date:** 2026-10-10. **Source:** uploaded v1 architecture, 1,496-line requirements research, user screenshot, repository and documentation inspection.
+**RETAINED SOURCE INPUT — NON-NORMATIVE FOR HORIZONCODE.** This whole document is historical design/research material, not operative implementation authority. Its internal “Normative precedence” statements apply only to its superseded internal draft chapters; they do **not** override the current `arch_V1/README.md`, frozen §17 decisions, topical `arch_V1` owners, `HANDOFF.md`, or the current converged implementation plan. Do not copy its proposed monorepo packages, Rust conversation model, or API as current HorizonCode facts.
+
+**Original status:** design and integration plan, not implemented product. **Date:** 2026-10-10. **Source:** uploaded v1 architecture, 1,496-line requirements research, user screenshot, repository and documentation inspection.
 
 **Normative precedence:** Chapters 09–13 + `contracts/v2` and additive migration override any conflicting text in original 01–08, which remain preserved for traceability. OpenCode is the base for providers, sessions and core tools. Explicit model selection, no silent routing. Safe limited permissions and pooled worktrees.
 

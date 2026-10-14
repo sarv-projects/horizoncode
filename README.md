@@ -171,6 +171,9 @@ The precise implementation record is [HANDOFF.md](HANDOFF.md). Product scope and
 HorizonCode is a project for developers who care about how agents *actually* complete work: behavior under failure, resource bounds, model choice, performance and reliable evidence.
 
 - [Issues and feature discussions](https://github.com/sarv-projects/horizoncode/issues)
+- [Contributing to HorizonCode](CONTRIBUTING.md)
+- [Security policy and vulnerability reporting](SECURITY.md)
+- [Documentation map](docs/README.md)
 - [Contributor and coding-agent rules](AGENTS.md)
 - [Architecture and design decisions](arch_V1/README.md)
 - [Implementation roadmap](docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md)
