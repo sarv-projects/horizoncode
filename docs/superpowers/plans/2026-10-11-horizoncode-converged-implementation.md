@@ -307,3 +307,44 @@ P1 adversarial matrix: forged callback, stale call ID/capability, invalid stream
 Current PR #4 implements only an INTERNAL OwnerLogV2 backed control projection and guarded stream hardening. It now has internal Task verification and criterion/final-revision state transitions, but NO independently authenticated verifier adapter, managed RPC/API, worker scheduler, effect target reconciliation, lease engine, or native Windows qualification. Keep P1 and P2 open until all above tests prove real end-to-end execution.
 
 Do not create new agent loops, tool authorities, separate Rust conversation stores or competing feature registries. Use source paths above, existing Owners in 17, execution contract 14, lifecycle 11, schemas 12 and task fixtures 32.
+
+## Resource-efficiency and JCode adoption implementation gates — 2026-10-15 (A-V2-30)
+
+**Baseline:** Horizon \`main@4e2086633d006f7d8b7709cb0df622f77a9b8d54\`, JCode \`1jehuang/jcode@1f612a7\`. This section records **newly accepted work, not completed work**. The normative owners are §17.10, §18.17, §20.11, §21.10, §29.17, §30.20, §31.16, §32.32, §33.29 and §37.15; this plan is the sole task-order tracker. Never interpret a checked research item as working runtime.
+
+### RC0 — baseline and resource instrumentation (independent of mutation enablement)
+- [x] Pin external JCode source and distinguish implemented vs Proposed/Design/Draft/Being implemented in §42.9.
+- [x] Record current per-Session \`SessionSupervisor.open\` / \`session_supervisor.rs\` process topology and Rust managed admission truth.
+- [ ] Add first-party \`scripts/perf/\` harness with Linux process-tree PSS/RSS/FD/CPU/threads, macOS footprint/native Windows private bytes. Tests for missing/permission-denied metrics and PID reuse; no fabricated zero.
+- [ ] Add redacted, bounded process-tree ResourceSampler with host/kernel/Session/Run/Attempt/child/cache/local-model attribution and compatible sampling period.
+- [ ] Record reproducible current Horizon/JCode controlled 1/5/10/20-session baseline and real task outcomes in \`docs/performance/evidence/\`, with exact commits, machine, build, warm/cold, embeddings, model selection and method.
+- [ ] Decide per-platform release budgets/regression ratchets from evidence, then add CI test. **Do not claim JCode's PSS values for Horizon.**
+
+### RC1 — mandatory P1 security and current supervisor
+- [ ] Complete enabled tool-origin interception (direct shell/process, Task/subagent, hooks/MCP/plugins, provider-hosted, LSP/DAP/REPL, browser/desktop/network/automation) with pre-dispatch Guard/lease/receipt/UNKNOWN and no-bypass tests. Unsupported origins remain unavailable, not implicitly trusted.
+- [ ] Measure baseline per-Session supervisor process count, per-SQLite observer cost, startup, watchdog/cursor and isolated effect write.
+- [ ] Prototype **read-only** shared Rust SessionLink multiplexing behind \`SessionSupervisor.Service\` with peer-auth binding, per-Session queue/cursor/epoch/cancellation, bounded ACK and cross-session negative tests.
+- [ ] Fault-inject one client abuse, one worker crash, kernel crash, malformed packet, conflicting owner and stale epoch; prove no cross-session read or mutation authority and no lost receipt.
+- [ ] Only then consider shared effect-host cutover with full §14 P1 tests; preserve existing interface and rollback. Run JC-RES-001/002/008/009/010.
+
+### RC2 — P2 useful managed execution and headless workers
+- [ ] Wire reviewed full SpecVersion acceptance, authenticated kernel RPC and Rust Task DAG scheduling over existing managed state (no second Task database or transcript).
+- [ ] Add resource-aware WorkerExecution/Attempt pool: lightweight read-only headless attachment, strict isolated process for untrusted effects; leases, cancel/kill tree/UNKNOWN settlement and idle reuse keyed by trust/config/workspace.
+- [ ] Typed DAG edges carry artifact ref/source revision/criteria; cycle/depth/member caps, independent coverage review and final integrated-revision verification. Complete concurrent task/edit and crash recovery tests.
+- [ ] Add source-generation-safe file-touch **advisory** index plus authoritative digest/lease precondition and collision UI. Run JC-RES-007/011/012/018.
+
+### RC3 — P3/P6 practical daily coding and compatibility
+- [ ] Provider Doctor offline/catalog/full under existing transport, model catalog and secret ownership; explicit spend confirmation, bounded requests and typed stream/tool-call diagnostics. JC-RES-013/014/015.
+- [ ] Add transparent provider prewarm **only** for consented no-spend pools; distinguish selected local model warm/load from API warmup and record actual cache hits or unknown.
+- [ ] Add one-owner external Session import preview/commit/resume with original provenance, no token/credential copy, no dual live transcript owner; test supported backend formats. JC-RES-019.
+- [ ] Cap/attribute context, index, Markdown/Mermaid/image, provider projection and tool-tail bytes; opt-in scope-bound local recall, no mandatory embedding/remote account. JC-RES-003/005/020.
+
+### RC4 — P7/P8 UX, operations and release acceptance
+- [ ] Adaptive idle/deep-idle redraw with full-frame reason tracing and bounded in-place tool-tail; stable focus/scroll on 10k messages, 1000 streaming deltas and reconnect. JC-RES-006/016/017.
+- [ ] Expose measured/estimated/unknown resource graph, per-Session/Attempt worker/process costs, provider diagnostics and conflict warnings in TUI/CLI and derived GUI/API (feature exposure truthful; experimental opt-in when necessary).
+- [ ] 10/20 Session real-work task success + crash/unknown effect/pressure/lease and cross-OS qualification; CI perf ratchet and installer/licensing; preserve no automatic paid fallback. JC-RES-001..020 plus existing §32 security/recovery cases.
+- [ ] Record exact binaries/build flags, benchmark raw evidence, negative/positive tests, platform matrix and user-approval gates in HANDOFF; append actual work diary to CURRENT_RUN.
+
+### Engineering rule
+
+Work on RC0 **without** claiming P1/P2 completion; proceed with required real Guard and managed execution in the existing Gate 2 → Gate 3 order. RC3/RC4 adapters may be designed/tested in isolation but must not expose effectful bypasses. \`README.md\` is a product page and must not become a RAM benchmark claim. Automatic hot-swap/self-dev remains developer-option work with independent rollback/security gates, not a reason to defer the fundamental engine.

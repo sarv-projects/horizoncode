@@ -262,3 +262,37 @@ Before any service becomes WIRED:
 10. update HANDOFF status.
 
 Research/source extraction in 42 does not skip these gates.
+
+## 37.15 ResourceSnapshot, ProviderDoctor, FileTouch and virtual Session LLD (A-V2-30)
+
+These are **proposed interfaces**, not existing RPC operations. Reuse the current \`SessionSupervisor.Service\`, Rust kernel/owner log, provider host, SessionStore, indexd and derived UI lanes. Before adding any new wire operation, define a single authoritative machine schema and versioned positive/negative fixture, map it into existing action IDs in §33 and preserve §14 Guard.
+
+\`\`\`ts
+type ResourceSampleV1 = {
+  owner: { kind: "host" | "kernel" | "session" | "run" | "attempt" | "worker" | "cache" | "local_model"; id: string };
+  metric: "pss_mib" | "rss_mib" | "private_bytes_mib" | "cpu_pct" | "threads" | "fds" | "vram_mib" | "disk_bytes";
+  value?: number; // absent when unknown
+  accuracy: "measured" | "estimated" | "unknown";
+  platform: "linux" | "macos" | "windows" | "other";
+  source: string; observedAt: string; processTreeGeneration: string;
+}
+type ProviderDoctorRequestV1 = {
+  providerId: string; modelId?: string; tier: "offline" | "catalog" | "full";
+  maxNetworkRequests: number; deadlineMs: number; costConsentRef?: string;
+}
+type FileTouchV1 = {
+  canonicalWorkspaceId: string; filePathRef: string; sessionId: string;
+  attemptId?: string; access: "read" | "write"; sourceRevision: string;
+  observedAt: string; expiresAt?: string;
+}
+\`\`\`
+
+**ResourceSampler adapter:** owns platform-specific process-tree discovery and per-owner quota/pressure sampling. PIDs must be combined with OS process-start generation/owner lease to prevent PID-reuse attribution; detached/unowned processes are not silently claimed. Linux PSS samples may be costly: rate-limit, sample off the UI event loop, redact paths, separate local inference and cap history. Platform unsupported counters remain unknown. Worker accounting includes child trees and OS hard limits where available, with no accidental foreign process cleanup.
+
+**VirtualSessionBroker candidate:** \`attach(authPeer, sourceSession, hostEpoch, policyRevision)\`, \`subscribe/ack(snapshotCursor)\`, \`admitBatch\`, \`reconcile\`, \`detach\`. Each virtual session has isolated principal, workspace, message/cursor, cancellation generation, owned leases, queue and credits. **No shared Guard mutation API is released** until peer auth, session confusion and crash recovery pass. A shared daemon is the candidate; existing per-session supervisors remain a functional rollback and measurable baseline.
+
+**ProviderDoctor adapter:** \`inspectOffline\` no network/credentials; \`inspectCatalog\` bounded declared endpoint discovery; \`testLive\` chat+stream+tool with explicit user-approved cost ref and audit receipt. Every step returns typed error/provider/model/capability/evidence and request budget; no hidden provider switch, secret echo or stale catalog claim.
+
+**FileTouch projection:** \`recordTouch\`, \`activitiesForPath\`, \`activitiesForSession\`, \`clearExpired\` with strict cardinality/TTL and canonical workspace mapping. Advisory only; actual writes still require Guard, lease and source hash/version. **TaskGraph/HeadlessBroker:** Rust managed scheduler controls DAG/readiness/admission; bound worker identities and artifact refs; background clients do not own another Task or transcript. **RendererDiagnostics:** bounded redraw reason/counters and tool-tail status, no durable state writes.
+
+These proposed signatures require schema/real-code review; do not mark them WIRED or advertise a public API from this document.

@@ -80,7 +80,7 @@ The canonical capability names live in 33. capability-registry-v1.json is a desi
 
 ## Current implementation status
 
-Architecture does not freeze implementation status. Read root HANDOFF.md and inspect the working tree/tests. Historical CURRENT_RUN.md entries are provenance only.
+Architecture does not freeze implementation status. Read root HANDOFF.md and inspect the working tree/tests. CURRENT_RUN.md is an activity/evidence diary, not an architecture or runtime-status authority.
 
 ## Change rule
 
@@ -92,3 +92,9 @@ A material architecture change requires:
 5. delivery dependency update when ordering changes.
 
 Never solve a conflict by adding another authority document.
+
+## Resource-efficiency and JCode source navigation
+
+Decision: **17.10 A-V2-30**. The authoritative process topology is §01/§13; RAM, telemetry, cache and OS/resource release gates §18.17; implementation file placements §20.11; worker/worktree/conflict ownership §21.10; subagents/DAG §29.17; context and memory §30.20; UI/render performance §31.16; task/benchmark matrix §32.32; capability IDs §33.29; runtime interfaces §37.15; exact JCode source pins/caveats §42.9.
+
+The executable checklist is the existing \`docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md\` RC0–RC4 section. \`docs/performance/README.md\` is a **measurement runbook only**, not an additional owner. \`HANDOFF.md\` records current verified status; root \`CURRENT_RUN.md\` is an append-only work/evidence diary, never another source of architecture or runtime truth. A line in the catalog or an unchecked task cannot be represented as an implemented feature.
