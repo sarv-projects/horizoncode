@@ -112,3 +112,13 @@ The direct coding path must not pay managed-work overhead unless needed. Indexin
 ## 1.11 Implementation map
 
 Exact existing package/service placement is 20 and runtime interfaces are 37. Capability names are 33. Current implementation status is HANDOFF.md.
+
+## 1.12 Multi-session resource topology and isolation
+
+**Observed versus target:** current \`packages/core/src/session/supervisor.ts\` spawns one Linux Rust \`session_supervisor\` process for each watched Session; \`kernel/src/bin/session_supervisor.rs\` is a one-connection observer/effect endpoint. The desired shared Rust kernel in §1.2 is architecture, **not evidence of an already deployed daemon**.
+
+A benchmark-gated shared process shall multiplex authenticated SessionLink observation, owner-epoch fenced Rust managed control and pre-authorized effects without owning Core transcripts or creating another scheduler. Each virtual Session scope holds its own principal, workspace binding, cursor, epoch, subscriptions, quotas, cancellation generation, permitted capability set and durable effect correlation. Shared object/index/provider-client caches are immutable, owner-scoped or safe to share; sensitive per-session contents and secret references must never cross scopes. Reconnect and restart restore from canonical owners, not UI state.
+
+Separate process isolation remains mandatory for untrusted execution (shell/build/test, plugin/MCP where required, browser/REPL/LSP/DAP/local inference), with OS-backed containment, process-tree accounting and bounded cleanup. Do not replace a security boundary with in-process checks only. One session's malformed frame, CPU-heavy subscription, infinite output, dead worker or failure must not monopolize the daemon or cause cross-session data leaks. Admission remains fail-closed if the kernel/Guard is unavailable.
+
+Architecture choice is decided by comparable task outcomes **and** PSS/private footprint, cold start, p95 input latency, fault containment, restart/cancel and authorization tests. Preserve the existing supervisor interface during migration and keep a rollback path. See §13.11, §18.17 and §32.32.

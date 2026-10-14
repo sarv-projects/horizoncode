@@ -130,3 +130,16 @@ Remote/cloud continuation, shared live collaboration, autonomous self-improvemen
 ## 10.13 Current gate
 
 Do not encode current progress here. HANDOFF.md is the bounded status checkpoint. The implementation agent starts from its first incomplete dependency, currently P1.3 after checking current source/tests prove those gates complete.
+
+## 10.14 JCode-informed capability adoption and resource gate dependencies (A-V2-30)
+
+This is accepted engineering work, **not a feature-cut list**. Preserve the P0–P9 dependency order and execute independent read-only measurement/UX research alongside P1/P2, without allowing an unguarded feature implementation to leapfrog the authoritative effect boundary.
+
+1. **Baseline and instrumentation (parallel with P1):** add whole-process-tree PSS/CPU/FD/disk/renderer/provider metrics, reference-hardware task fixtures (1/5/10/20 sessions), cold/warm/long-run controls and local redacted diagnostic export. Write a raw baseline with no invented JCode speed or Horizon RAM claim. §18.17/§32.32.
+2. **P1 effect and session boundary:** close shell/process, Task/subagent, MCP/plugin, provider-hosted and remaining mutations; complete cancellation/receipt/UNKNOWN tests. Instrument present Linux per-Session Rust observer before replacing it. A shared read-only observer prototype may be evaluated in isolation; no merged shared mutation host before equivalent isolation/authorization/recovery proof.
+3. **P2 managed end-to-end control:** authenticated accepted Goal/Spec, persistent DAG scheduler, bounded headless WorkerExecution/Attempt and artifact-based dependency passing, scope-safe worktree/resource leases, independent verifier and final-revision proof. Deduplicate sessions/caches/resources without ever duplicating task authority. §15/§21/§29.
+4. **P3/P6 developer essentials:** provider doctor (offline/catalog/full, paid consent), cross-session file-touch advisory and hashline/revision fences, safe external session import/resume, live provider/model/cost and worker health; add one public ActionDescriptor per capability, not a separate registry. §20/§33/§37.
+5. **P7 user-experience and memory:** adaptive paint/dirty-region redraw, compact live tool-tail, bounded output/Markdown/Mermaid/image/index caches, local memory dashboard and opt-in retrieval; operational alerts and Mission Control resource columns. Performance regression fixtures and local diagnostics are mandatory for claimed support.
+6. **P8/P9 proof and shipping:** 10/20-session real-work concurrency; exact error injections; cross-OS resource/security tests; installer/upgrade; legal/license review of any transplanted code; reproducible warm/cold startup and memory baseline. Only ship enabled capabilities whose own end-to-end gates pass.
+
+**Implementation tracker:** \`docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md\` contains exact checkboxes and ordering. \`HANDOFF.md\` is the current observed status; \`CURRENT_RUN.md\` is a dated evidence/work log, not an architecture authority. A source signature, Markdown contract or JCode benchmark never upgrades \`DESIGNED\` to \`TESTED\`.

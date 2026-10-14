@@ -155,3 +155,21 @@ Current PR branch has first-party changed overlays in `packages/core/`, `package
 | `opencode/packages/tui/src/config/index.tsx`, `opencode/packages/core/src/flag/flag.ts` | TUI preferences and inherited env flags | Not independent runtime authorization or substitute for Settings |
 
 Implement first the actual config/flag inventory and read-only derived exposure; then safe persistence with revision/conflict semantics; finally actionable TUI/GUI controls and capability gating. Do not build a second feature registry or accept a GUI-local switch as approval of backend effects. Runtime acceptance is §32 FEAT-001..014, not mere schema validation.
+
+## 20.11 Source-level seams for JCode-informed optimization (A-V2-30)
+
+Source observation on \`main\` at \`4e2086633d006f7d8b7709cb0df622f77a9b8d54\` (recheck before implementation):
+
+| Requirement | Existing source owner / insertion point | Truth |
+|---|---|---|
+| Session resource multiplex | \`packages/core/src/session/supervisor.ts\`: \`openForSession\`, \`watchSessionLoop\`, \`activeClients\`; \`kernel/src/bin/session_supervisor.rs\` | Per-session Linux process **exists**; shared daemon **not implemented** |
+| Rust durable control/recovery | \`kernel/src/managed_control.rs\`, \`owner_log.rs\`, \`effect_host.rs\`, \`request_cancellation.rs\` | Real primitives; managed executor and universal Guard **not complete** |
+| Provider Doctor | current \`packages/llm/src\` transport, host provider/config/secret owner and command/API projection | **Proposed** diagnostic adapter; no second credential store/model catalog |
+| Headless worker | existing Session runner + Rust Attempt/worker lease/ExecutionHost, client-independent request/result API | **Proposed**; do not spawn one full TUI/host per specialist |
+| File-touch/conflict projection | workspace/file events + \`files.patch\` revision checks and Rust workspace lease/fence | **Proposed** advisory read/write index; never replace authoritative hash/fence |
+| Memory accounting | existing host process/supervisor, Rust state/resources, indexd, TUI/app rendering | **Proposed** attributed metrics; no estimated vendor PSS as runtime truth |
+| Adaptive rendering/tool tail | \`packages/tui/src\` and existing Session event/UiEventMux owners | **Proposed** bounded stable-prefix + dirty-region scheduling |
+| Context/cache | current Core Session runner and context, \`indexd/src/lib.rs\` generation/overlay | partial foundations; cache audit/controlled eviction **proposed** |
+| External session import/resume | SessionLink/external native adapter via existing API, read-only metadata import | **Proposed**; never claim imported transcript is live dual-owned |
+
+Do not migrate JCode's entire agent/session tool runtime. Preserve exact Horizon capability IDs and approval/receipt path; add a measured adapter inside the owning package only. For every proposed seam, inspect all call sites, update typed protocol/contracts as needed, test callback/cancel/UNKNOWN cases and record the implementation status in HANDOFF before enabling the UI. Pin JCode source paths/licensing and confidence in §42.

@@ -317,3 +317,27 @@ A second mechanical inventory [ignored-reference-source-manifest.json](ignored-r
 
 Selected OMP code examined: packages/catalog/src/model-manager.ts, model-cache.ts, models.ts, pricing.ts; packages/ai/src/stream.ts, auth/select.ts, auth/cascade.ts, providers/inference-headers.ts; packages/coding-agent/src/config/model-registry.ts, model-resolver.ts; packages/tui/src/chat/figure-markdown.ts, svg-figure.ts, table-chart.ts, charts/chart-plan.ts, overlays/model-hub.ts; packages/coding-agent/src/tools/browser/tab-supervisor.ts and tools/computer/supervisor.ts.
 Adopt selectively: provider/model/auth/pricing and bounded visual UX. Reject duplication of OMP AgentSession, tool policy, host permissions or worktree authority. The registered immutable OMP commit remains the implementation pin until formally updated. This list is a bounded source review, not proof that every upstream file was read; code ports require full dependency/license/compatibility review. Native OpenCode backend uses official documented SDK/server APIs and cannot promise third-party promotional free model entitlement.
+
+## 42.9 JCode resource/runtime adoption source ledger — 2026-10-15
+
+**Pinned research:** \`1jehuang/jcode@1f612a7\` (user-supplied \`jcode-godmap.zip\`: derived source map of 157 readable Markdown files, not complete function bodies). HorizonCode observation: \`sarv-projects/horizoncode@4e2086633d006f7d8b7709cb0df622f77a9b8d54\` plus live \`main\` must be rechecked before implementation. External source code is **not** vendored by this documentation update. Licensing/attribution must be inspected before copying implementation.
+
+| Evidence | Source pinned at JCode snapshot | What is verified / caveat |
+|---|---|---|
+| Process topology and RAM benchmark | [README](https://github.com/1jehuang/jcode/blob/1f612a7/README.md), [bench_headless_memory.py](https://github.com/1jehuang/jcode/blob/1f612a7/scripts/bench_headless_memory.py) | Published Linux PSS, shared daemon and process-tree methodology; **not independently reproduced for Horizon**; configuration/embeddings alter totals |
+| Per-process resource accounting | [process_memory.rs](https://github.com/1jehuang/jcode/blob/1f612a7/crates/jcode-base/src/process_memory.rs) | Linux smaps/proc RSS/threads/allocator diagnostics; portability unverified |
+| Allocator experiments | [src/main.rs](https://github.com/1jehuang/jcode/blob/1f612a7/src/main.rs) | glibc \`mallopt\`/jemalloc configuration exists; benchmark-and-gate before reuse |
+| Cache regression budget | [MEMORY_BUDGET.md](https://github.com/1jehuang/jcode/blob/1f612a7/docs/MEMORY_BUDGET.md) | Specific Markdown/Mermaid cache entry/disk caps; JCode limits **not automatically Horizon caps** |
+| Cancellation race | [jcode-agent-runtime](https://github.com/1jehuang/jcode/blob/1f612a7/crates/jcode-agent-runtime/src/lib.rs) | Atomic epoch + async notify signalling; compare to Rust cancellation registry before adopting |
+| Cross-session file touches | [file_touch_service.rs](https://github.com/1jehuang/jcode/blob/1f612a7/crates/jcode-app-core/src/server/file_touch_service.rs) | Advisory forward/reverse read/write indexes; not a universal Guard |
+| Adaptive redraw | [redraw_schedule.rs](https://github.com/1jehuang/jcode/blob/1f612a7/crates/jcode-tui/src/tui/redraw_schedule.rs) | Idle/deep-idle pacing and full repaint reason attribution |
+| Bounded inline tail | [inline_tail.rs](https://github.com/1jehuang/jcode/blob/1f612a7/crates/jcode-app-core/src/agent/inline_tail.rs) | Live/committed text and in-place tool marker update with fixed budgets |
+| Provider Doctor | [PROVIDER_DOCTOR.md](https://github.com/1jehuang/jcode/blob/1f612a7/docs/PROVIDER_DOCTOR.md) | Offline/catalog/full tiers, cost transparency and live tool-call tests |
+| Memory/recall | [MEMORY_ARCHITECTURE.md](https://github.com/1jehuang/jcode/blob/1f612a7/docs/MEMORY_ARCHITECTURE.md) | Bounded relevance selection/Jev path; Godmap also contains embedding references from other paths; no mandatory remote memory dependency |
+| DAG swarms | [SWARM_TASK_GRAPH.md](https://github.com/1jehuang/jcode/blob/1f612a7/docs/SWARM_TASK_GRAPH.md) | Explicitly **Being implemented**; not proof all algorithms run in production |
+| Multisurface TUI | [MULTI_SESSION_CLIENT_ARCHITECTURE.md](https://github.com/1jehuang/jcode/blob/1f612a7/docs/MULTI_SESSION_CLIENT_ARCHITECTURE.md) | **Proposed** document, not shipped behaviour proof |
+| Modular extraction | [MODULAR_ARCHITECTURE_RFC.md](https://github.com/1jehuang/jcode/blob/1f612a7/docs/MODULAR_ARCHITECTURE_RFC.md) | **Draft**, avoid replicating large-crate refactor debt |
+| Safety/ambient ideas | [SAFETY_SYSTEM.md](https://github.com/1jehuang/jcode/blob/1f612a7/docs/SAFETY_SYSTEM.md) | **Design**; shell heuristics are not universal pre-dispatch mediation |
+| External resume | [RESUME_BEHAVIOR.md](https://github.com/1jehuang/jcode/blob/1f612a7/docs/RESUME_BEHAVIOR.md) | Documented UX with current/new terminal and import modes; test current code before assuming full compatibility |
+
+**Adoption method:** \`REUSE EXISTING\` / \`ADAPT ALGORITHM\` / \`SERVICE ADAPTER\` / \`REJECT\`; verify upstream license and exact commit/function/tests, preserve canonical Horizon owners and contract IDs, then execute §32 negative/restart/security/real-work acceptance. The acceptance decision A-V2-30 is in §17.10. Never publish the above external RAM figures as Horizon measurements.
