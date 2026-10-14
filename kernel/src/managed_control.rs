@@ -46,6 +46,7 @@ pub struct SpecVersion {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Task {
     pub dependencies: Vec<String>,
+    pub ready: bool,
     pub active_attempt: Option<String>,
     pub unknown_effect: bool,
 }
@@ -76,6 +77,7 @@ pub enum ManagedCommand {
     AcceptSpec { spec_id: String },
     StartRun { run_id: String, spec_id: String },
     AddTask { run_id: String, task_id: String, dependencies: Vec<String> },
+    MarkTaskReady { run_id: String, task_id: String },
     AdmitAttempt { run_id: String, task_id: String, attempt_id: String },
     MarkAttemptUnknown { run_id: String, task_id: String, attempt_id: String },
     PauseRun { run_id: String },
@@ -87,25 +89,27 @@ impl ManagedCommand {
     fn event(&self) -> (&'static str, Value) {
         match self {
             Self::CreateGoal { objective_digest } =>
-                ("goal.created", json!({"objectiveDigest": objective_digest})),
+                ("goal_created", json!({"objectiveDigest": objective_digest})),
             Self::ProposeSpec { spec_id, digest, criteria } =>
-                ("spec.proposed", json!({"specId": spec_id, "digest": digest, "criteria": criteria})),
+                ("spec_proposed", json!({"specId": spec_id, "digest": digest, "criteria": criteria})),
             Self::AcceptSpec { spec_id } =>
-                ("spec.accepted", json!({"specId": spec_id})),
+                ("spec_accepted", json!({"specId": spec_id})),
             Self::StartRun { run_id, spec_id } =>
-                ("run.started", json!({"runId": run_id, "specId": spec_id})),
+                ("run_started", json!({"runId": run_id, "specId": spec_id})),
             Self::AddTask { run_id, task_id, dependencies } =>
-                ("task.created", json!({"runId": run_id, "taskId": task_id, "dependencies": dependencies})),
+                ("task_proposed", json!({"runId": run_id, "taskId": task_id, "dependencies": dependencies})),
+            Self::MarkTaskReady { run_id, task_id } =>
+                ("task_ready", json!({"runId": run_id, "taskId": task_id})),
             Self::AdmitAttempt { run_id, task_id, attempt_id } =>
-                ("attempt.admitted", json!({"runId": run_id, "taskId": task_id, "attemptId": attempt_id})),
+                ("attempt_admitted", json!({"runId": run_id, "taskId": task_id, "attemptId": attempt_id})),
             Self::MarkAttemptUnknown { run_id, task_id, attempt_id } =>
-                ("attempt.unknown", json!({"runId": run_id, "taskId": task_id, "attemptId": attempt_id})),
+                ("attempt_unknown", json!({"runId": run_id, "taskId": task_id, "attemptId": attempt_id})),
             Self::PauseRun { run_id } =>
-                ("run.paused", json!({"runId": run_id})),
+                ("run_paused", json!({"runId": run_id})),
             Self::ResumeRun { run_id } =>
-                ("run.resumed", json!({"runId": run_id})),
+                ("run_resumed", json!({"runId": run_id})),
             Self::RequestCancel { run_id } =>
-                ("run.cancelling", json!({"runId": run_id})),
+                ("run_cancelling", json!({"runId": run_id})),
         }
     }
 
@@ -123,25 +127,27 @@ impl ManagedCommand {
         let count = payload.as_object()
             .ok_or(ManagedError::Invalid("managed event payload must be object"))?.len();
         let command = match kind {
-            "goal.created" if count == 1 =>
+            "goal_created" if count == 1 =>
                 Self::CreateGoal { objective_digest: field(payload, "objectiveDigest")? },
-            "spec.proposed" if count == 3 =>
+            "spec_proposed" if count == 3 =>
                 Self::ProposeSpec { spec_id: field(payload, "specId")?, digest: field(payload, "digest")?, criteria: list(payload, "criteria")? },
-            "spec.accepted" if count == 1 =>
+            "spec_accepted" if count == 1 =>
                 Self::AcceptSpec { spec_id: field(payload, "specId")? },
-            "run.started" if count == 2 =>
+            "run_started" if count == 2 =>
                 Self::StartRun { run_id: field(payload, "runId")?, spec_id: field(payload, "specId")? },
-            "task.created" if count == 3 =>
+            "task_proposed" if count == 3 =>
                 Self::AddTask { run_id: field(payload, "runId")?, task_id: field(payload, "taskId")?, dependencies: list(payload, "dependencies")? },
-            "attempt.admitted" if count == 3 =>
+            "task_ready" if count == 2 =>
+                Self::MarkTaskReady { run_id: field(payload, "runId")?, task_id: field(payload, "taskId")? },
+            "attempt_admitted" if count == 3 =>
                 Self::AdmitAttempt { run_id: field(payload, "runId")?, task_id: field(payload, "taskId")?, attempt_id: field(payload, "attemptId")? },
-            "attempt.unknown" if count == 3 =>
+            "attempt_unknown" if count == 3 =>
                 Self::MarkAttemptUnknown { run_id: field(payload, "runId")?, task_id: field(payload, "taskId")?, attempt_id: field(payload, "attemptId")? },
-            "run.paused" if count == 1 =>
+            "run_paused" if count == 1 =>
                 Self::PauseRun { run_id: field(payload, "runId")? },
-            "run.resumed" if count == 1 =>
+            "run_resumed" if count == 1 =>
                 Self::ResumeRun { run_id: field(payload, "runId")? },
-            "run.cancelling" if count == 1 =>
+            "run_cancelling" if count == 1 =>
                 Self::RequestCancel { run_id: field(payload, "runId")? },
             _ => return Err(ManagedError::Invalid("unknown managed event kind or fields")),
         };
@@ -217,7 +223,18 @@ impl ManagedSnapshot {
                         return Err(ManagedError::Conflict("task dependency invalid or duplicated"));
                     }
                 }
-                run.tasks.insert(task_id.clone(), Task { dependencies: dependencies.clone(), active_attempt: None, unknown_effect: false });
+                run.tasks.insert(task_id.clone(), Task { dependencies: dependencies.clone(), ready: false, active_attempt: None, unknown_effect: false });
+            }
+            ManagedCommand::MarkTaskReady { run_id, task_id } => {
+                let run = self.runs.get_mut(run_id).ok_or(ManagedError::Conflict("run missing"))?;
+                if run.phase != RunPhase::Running { return Err(ManagedError::Conflict("run fenced")); }
+                let task = run.tasks.get_mut(task_id).ok_or(ManagedError::Conflict("task missing"))?;
+                // Dependency PASS is not yet implemented, so the safe default
+                // is to withhold readiness for every dependent task.
+                if task.ready || !task.dependencies.is_empty() || task.unknown_effect || task.active_attempt.is_some() {
+                    return Err(ManagedError::Conflict("task dependencies not independently verified"));
+                }
+                task.ready = true;
             }
             ManagedCommand::AdmitAttempt { run_id, task_id, attempt_id } => {
                 id(attempt_id)?;
@@ -226,7 +243,7 @@ impl ManagedSnapshot {
                 if run.phase != RunPhase::Running { return Err(ManagedError::Conflict("run fenced")); }
                 let task = run.tasks.get_mut(task_id).ok_or(ManagedError::Conflict("task missing"))?;
                 // Without independent Task PASS, dependencies are never presumed satisfied.
-                if !task.dependencies.is_empty() || task.active_attempt.is_some() || task.unknown_effect {
+                if !task.ready || !task.dependencies.is_empty() || task.active_attempt.is_some() || task.unknown_effect {
                     return Err(ManagedError::Conflict("task not ready for another attempt"));
                 }
                 task.active_attempt = Some(attempt_id.clone());
