@@ -617,3 +617,53 @@ Use the same pinned repository, identical task set and selected model/provider o
 | JC-RES-020 | Optional local memory recall under hostile/stale input | Project scope, token caps, source label, failed recall safe, no secret remote injection |
 
 **Acceptance order:** test current source + numbers before optimization; introduce isolated shared-observer prototype; prove JC-RES-008/009/010 plus existing Guard suites before effect cutover; repeat full task/model/machine benchmark; promote only with correctness and security parity plus measured resource benefit. All platforms absent from the matrix are unverified, not green. Release claims include raw evidence paths, not an overall “fast” adjective.
+
+## 32.33 Source-level acceptance fixtures for A-V2-30 implementation-ready LLD
+
+Each case below must test **real code paths** (unit+cross-language contract+OS process integration+end-user task when relevant). Record test file, exact commit, selected platform/OS isolation backend, test invocation, result and raw artifact. Fixture names are recommended within current `kernel/tests/`, `packages/core/test/`, `packages/opencode/test/` and new `scripts/perf/`; a suggested path is not evidence that file exists today. Scenarios `JC-RES-001..020` remain the traceability IDs, with subcases to avoid large mock-only green suites.
+
+| Fixture/subcase | API/function target | Setup and fault injection | PASS evidence and invariant |
+|---|---|---|---|
+| JC-RES-001.A | `ResourceSampler.sample` | One Linux Session observer; get PID/start identity, idle 2m | process tree PSS+RSS, CPU/FD, zero unknown substituted; base includes Rust child |
+| JC-RES-001.B | `walkOwnedProcesses` | 5/10/20 Sessions, child exits during proc read | no PID double-count/crash; scope and partial UNKNOWN explicit |
+| JC-RES-002.A | `HeadlessBroker.enqueue/reserve` | five real model/tool rounds, 10/20 Sessions, recorded model config | verify task outcomes and total agent-tree memory; no new TUI process per read helper |
+| JC-RES-003.A | `ResourceSampler` local-model split | local LLM load/unload plus embeddings on/off | CPU RAM and VRAM separately and total inclusive, selected model unchanged |
+| JC-RES-004.A | `readCounters` Windows/macOS | native test runner, unsupported OS counter | correct platform method/private bytes; UNKNOWN rather than Linux PSS proxy |
+| JC-RES-005.A | `CacheLedger.insertIfCurrent/evictToBudget` | 10k parts, oversized render/images, cache pin while eviction | byte/entry bounded; pinned reader safe; canonical state still complete |
+| JC-RES-005.B | `UiToolTail` stream+artifact | 100MB stdout, partial UTF-8, many long lines | bounded presentation; streamed artifact FULL/SAMPLE and accurate truncated flags |
+| JC-RES-006.A | `PressureController` / renderer idle | 30min idle with daemon, 10+ tabs and render idle timers | no unbounded memory/FD/CPU/render growth, quantified slope and variability |
+| JC-RES-007.A | `HeadlessBroker` reuse | Read-only jobs with same workspace/model; incompatible principal in 21st job | safe compatible reuse, incompatible denied/new isolation, fair queue |
+| JC-RES-008.A | `VirtualSessionBroker.attach/subscribe` | authenticated A attempts cursor/Session ID/secret scope of B | no B events, no effect lease, typed denial; no cross-session cache |
+| JC-RES-008.B | `attach` replay | duplicate same idempotency key vs changed principal/revision | exact retry stable; changed binding CONFLICT |
+| JC-RES-009.A | `ExecutionHost.reconcile` / broker restart | kill one worker mid-write vs kill shared kernel post-dispatch pre-receipt | UNKNOWN persists; no duplicate file/remote effect; other scopes guarded |
+| JC-RES-009.B | `cancel_scope` generation | cancel old Attempt while new one enters queued state | old cancellation not inherited; one-use lease cannot replay |
+| JC-RES-010.A | `broker queue scheduler` | Session A 10k deltas + stuck reader; Session B cancel/approval | bounded queues, cancellation priority, exact ACK cursor recovery, no durable drop |
+| JC-RES-011.A | `FileTouchIndex` + Guard revision | two writers, one reader, user patch, symlink/rename/case path | advisory warns, hard digest/lease rejects stale write, readers don't block by touch alone |
+| JC-RES-012.A | `ResourceAdmission` | low memory/disk/FD, two builds, no process quota data | new workers queued/blocked; no foreign PID kill or source deletion |
+| JC-RES-012.B | `worktree release` | dirty, unknown owner, orphan processes, failed build | quarantined not deleted; only owned fully settled worktree released |
+| JC-RES-013.A | `ProviderDoctor.inspectOffline` | absent/invalid credentials, network deliberately disabled | no socket/credential read/billed inference; config diagnosis truthful |
+| JC-RES-014.A | `probeCatalog/probeFull` | mock and live test account with explicit capped consent | full chat/stream/tool payload, correct token/cost provenance and network count |
+| JC-RES-015.A | `ProviderDoctor` failures | 429, bad route, partial tool stream, stale catalog, cancellation after send | never silently route paid fallback; cost UNKNOWN when not reconcilable |
+| JC-RES-016.A | `UiRedrawScheduler` | ssh/tmux, resize, 10k transcript, input while background streaming | focus/scroll safe; p50/p95 and full-frame reason; no busy animation |
+| JC-RES-017.A | `LiveTailV1` reconnect | streaming → crash/reconnect → canonical result settle | no duplicate MessagePart; tail bounded, true final content |
+| JC-RES-018.A | `GraphAdmission` | cycle, cross-Run edge, change accepted SpecVersion, breadth limit | rejected before owner-log append; existing Run state unchanged |
+| JC-RES-018.B | `TaskVerifier/finalizer` | verifier checks rev N; user edits rev N+1 before terminal PASS | stale verdict cannot pass; final Run blocked until independent current-rev proof |
+| JC-RES-018.C | `child result collector` | orphan child after cancel, forged artifact/receipt, concurrent worker edit | reject wrong epoch/sha/lease, preserve previous evidence and unknown |
+| JC-RES-019.A | `SessionImportAdapter` | supported external transcript and hostile malformed input | user-selected snapshot/native owner only, source provenance, no credential import or dual writers |
+| JC-RES-020.A | `RecallCompiler` | two projects, poisoned retrieved text, revoked ACL and remote model unselected | no secret/cross-project or instruction injection, bounded tokens, opt-in only |
+| JC-RES-020.B | `cache invalidation` | editor overlay N+1 while asynchronous query for N is pending | N read reports generation; stale N edit denied, no unsafe cache upgrade |
+
+**Required integration pairings:** JC-RES-008/009/010 **plus the existing P1 Guard denial suite** before shared effect-host cutover; JC-RES-012/018 **plus P2 durable restart/UNKNOWN tests** before real managed work; JC-RES-001..006/016..017 **plus a same-machine correctness benchmark** before advertising RAM improvement. A test with a mock network does not qualify full Doctor billing behaviour; a Linux WSL test does not qualify native Windows.
+
+## 32.34 Documentation/contract static gate and implementation trace
+
+For every newly documented service/capability, enforce at PR time:
+- exactly one normative topic owner (§README), one canonical §33 ID, one permission/effect class and one runtime/provenance status; the name in §37 is not a duplicate registry;
+- no duplicate/out-of-order numbered headings within each architecture Markdown file; Markdown fences balanced, local cross-links resolved and table rows syntactically intact;
+- source reference resolves either as a tracked Horizon override or inside the pinned `opencode/` tree to be hydrated; no invented implemented root file; output status marks code/schema as DESIGNED until real module/adapter and tests exist;
+- immutable SourceDigest, owner epoch, source revision and Session ID have matching types across §11/§12/§13/§14/§37; no self-signed caller principal or unchecked effect origin;
+- new schema generated TS/Rust strict decoder and shared fixtures, with limits and unknown variants denied; no code silently bypasses the existing command/error registry;
+- every task in operative RC0–RC5 has a concrete function, location, test ID, success/negative/crash outcome and required platform/benchmark evidence before checkbox may be checked;
+- evidence in HANDOFF names actual commit+CI job/test, not a research report, vendor RAM number, checklist or mocked expected output.
+
+Static test suggestions: augment existing `scripts/architecture/validate_convergence.py` and `run_contract_tests.py` rather than writing a new competing validator; add fixtures that intentionally duplicate §2.9, invent unsupported error codes or point at an unhydrated nonexistent source. Current validation scripts catch heading collisions already; their checks are not proof of source-runtime correctness.
