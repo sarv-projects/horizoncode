@@ -174,3 +174,29 @@ The deployed Linux observer is currently one child process per Session. Evaluate
 - Rollout: reference existing per-session process path, shared read-only prototype, negative isolation tests, same-machine benchmarks, feature/capability negotiation, Linux qualification, then macOS/native Windows qualification. Windows named-pipe/ACL and storage semantics need independent proof; WSL results do not qualify native Windows.
 
 The machine schema must be versioned through §12/§13 protocol ownership; do not install a second self-asserting actor registry.
+
+## 13.12 Wire-level shared-session migration sequence and race handling (A-V2-30)
+
+**No second private protocol.** Extend current authenticated, length-prefixed MessagePack `HzKernelRpcV1` only through a feature-negotiated, versioned operation family. Existing constants in `kernel/src/protocol.rs` include `PROTOCOL_V1 = 1`, `MAX_BODY_BYTES = 1 MiB`, `MAX_EVENT_PAYLOAD_BYTES = 256 KiB`, `MAX_IDENTIFIER_BYTES = 256`, and interactive/durable deadline caps. Respect those hard limits; do not silently expand them for new telemetry/batches. Current `SessionSupervisorClient` provides `resumeCursor/subscribe/receive/ack/unsubscribe/stop/request`, plus `SessionSupervisor.Service.openForSession/watchSession/prepareToolBatch/approveEffect/executeWrite`. Keep that host API working through an adapter.
+
+**Proposed virtual-attachment operations** (reserve names under one negotiated feature such as `sessions.virtual.v1`; these are not in the current Rust dispatch yet):
+
+| Operation | Caller → owner | Request binding | Durable or derived result |
+|---|---|---|---|
+| `attach` | authenticated host → kernel | host build digest, peer identity, source store/instance, Session ID, workspace handle binding, policy revision, requested capabilities | revocable virtual attachment ID, owner epoch, authenticated scope, bounded cursor/window |
+| `subscribe_page` | host → kernel projection | attachment+source epoch+afterCursor+maxEvents+credit | ordered scoped events+pageEnd/retention-gap |
+| `ack_page` | host → projection | attachment+page ID+exact completed cursor | idempotent ACK or STALE; no partial advancement |
+| `detach` | host → kernel | attachment ID+epoch | drain subscriptions, revoke future ingress, **do not** cancel unrelated Run unless policy requests |
+| `cancel_scope` | trusted host → kernel | request/Attempt/Run ID+epoch+generation, authenticated owner | durable cancellation fence followed by best-effort signal and settlement |
+| `resource_snapshot` | scoped diagnostic caller → adapter | owner+metric set+age/deadline+bounded history | derived measured/unknown with redaction, never lease granting |
+| `effect_prepare/dispatch/reconcile` | existing guarded API bridge | same batch/intent/lease binding and single-use semantics as current §14 | Rust durable owner only, enabled **after** universal P1 proof |
+
+**Attach algorithm:** validate peer OS credentials and installation/build identity, then resolve Session/workspace identity from trusted host-owned mapping; caller cannot assert its own policy/principal. Allocate monotonically increasing attachment generation and opaque ID. Register bounded source cursor/queue credits, verify feature capability/OS support, report READY. A duplicate attach with the **same authenticated idempotency key and identical binding** returns existing attachment; changed binding fails CONFLICT. A stale attachment cannot be revived by choosing a new opaque ID without reauthentication.
+
+**Event order:** source owner emits ordered cursor → broker buffers bounded records per attachment → page boundary/checksum → client receives full page → client commits canonical projection page → client ACKs exact end cursor → broker releases page credits. Reconnect resumes from the last completed ACK; if retention gap, perform authenticated resnapshot and invalidate stale UI/read caches. A partial page or timeout advances **no** cursor. One slow Session must not block another; enforce fair credits and per-attachment output quotas.
+
+**Priority order:** durable cancellation/lease revocation/receipt acknowledgement > Guard mutation admission > Session snapshot/control > derived telemetry/paint. Use bounded weighted fair scheduling, **not** a global FIFO where a noisy Session starves cancel. Reject with typed queue capacity status when full; never queue an unbounded full prompt/raw tool stdout in Rust.
+
+**Crash/fence:** kernel supervisor incarnation rotates; all attached generations and leases from old incarnation reject. A new kernel reads Rust OwnerLog first, recovers unsettled effects as UNKNOWN, then reestablishes source projections from canonical Session backend. External process receipts use OS process-start identity/launch nonce, never PID alone. A daemon crash must not trigger blind replay of an external effect. A host crash revokes its owner epoch and only its authenticated attachments; unrelated users/workspaces remain contained.
+
+**Migration sequence:** (1) retain one-per-Session Linux child baseline; (2) add read-only multiplex feature negotiated with existing API; (3) prove concurrent attach/ACK, mixed authorization scopes, 20 Sessions, crash and slow-consumer protection; (4) explicitly compare process-tree PSS, RAM/fault containment and task correctness; (5) route one guarded effect class via proven shared broker; (6) progressive opt-in and rollback, Linux first, then native Windows/macOS. If shared service fails, revoke/settle existing leases **before** reconnecting to per-Session fallback; do not dual-run old and new effects. Signed binaries, install state and private socket ACLs remain release gates.
