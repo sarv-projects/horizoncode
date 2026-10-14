@@ -320,13 +320,13 @@ Adopt selectively: provider/model/auth/pricing and bounded visual UX. Reject dup
 
 ## 42.9 JCode resource/runtime adoption source ledger — 2026-10-15
 
-**Pinned research:** \`1jehuang/jcode@1f612a7\` (user-supplied \`jcode-godmap.zip\`: derived source map of 157 readable Markdown files, not complete function bodies). HorizonCode observation: \`sarv-projects/horizoncode@4e2086633d006f7d8b7709cb0df622f77a9b8d54\` plus live \`main\` must be rechecked before implementation. External source code is **not** vendored by this documentation update. Licensing/attribution must be inspected before copying implementation.
+**Pinned research:** `1jehuang/jcode@1f612a7` (user-supplied `jcode-godmap.zip`: derived source map of 157 readable Markdown files, not complete function bodies). HorizonCode observation: `sarv-projects/horizoncode@4e2086633d006f7d8b7709cb0df622f77a9b8d54` plus live `main` must be rechecked before implementation. External source code is **not** vendored by this documentation update. Licensing/attribution must be inspected before copying implementation.
 
 | Evidence | Source pinned at JCode snapshot | What is verified / caveat |
 |---|---|---|
 | Process topology and RAM benchmark | [README](https://github.com/1jehuang/jcode/blob/1f612a7/README.md), [bench_headless_memory.py](https://github.com/1jehuang/jcode/blob/1f612a7/scripts/bench_headless_memory.py) | Published Linux PSS, shared daemon and process-tree methodology; **not independently reproduced for Horizon**; configuration/embeddings alter totals |
 | Per-process resource accounting | [process_memory.rs](https://github.com/1jehuang/jcode/blob/1f612a7/crates/jcode-base/src/process_memory.rs) | Linux smaps/proc RSS/threads/allocator diagnostics; portability unverified |
-| Allocator experiments | [src/main.rs](https://github.com/1jehuang/jcode/blob/1f612a7/src/main.rs) | glibc \`mallopt\`/jemalloc configuration exists; benchmark-and-gate before reuse |
+| Allocator experiments | [src/main.rs](https://github.com/1jehuang/jcode/blob/1f612a7/src/main.rs) | glibc `mallopt`/jemalloc configuration exists; benchmark-and-gate before reuse |
 | Cache regression budget | [MEMORY_BUDGET.md](https://github.com/1jehuang/jcode/blob/1f612a7/docs/MEMORY_BUDGET.md) | Specific Markdown/Mermaid cache entry/disk caps; JCode limits **not automatically Horizon caps** |
 | Cancellation race | [jcode-agent-runtime](https://github.com/1jehuang/jcode/blob/1f612a7/crates/jcode-agent-runtime/src/lib.rs) | Atomic epoch + async notify signalling; compare to Rust cancellation registry before adopting |
 | Cross-session file touches | [file_touch_service.rs](https://github.com/1jehuang/jcode/blob/1f612a7/crates/jcode-app-core/src/server/file_touch_service.rs) | Advisory forward/reverse read/write indexes; not a universal Guard |
@@ -340,4 +340,4 @@ Adopt selectively: provider/model/auth/pricing and bounded visual UX. Reject dup
 | Safety/ambient ideas | [SAFETY_SYSTEM.md](https://github.com/1jehuang/jcode/blob/1f612a7/docs/SAFETY_SYSTEM.md) | **Design**; shell heuristics are not universal pre-dispatch mediation |
 | External resume | [RESUME_BEHAVIOR.md](https://github.com/1jehuang/jcode/blob/1f612a7/docs/RESUME_BEHAVIOR.md) | Documented UX with current/new terminal and import modes; test current code before assuming full compatibility |
 
-**Adoption method:** \`REUSE EXISTING\` / \`ADAPT ALGORITHM\` / \`SERVICE ADAPTER\` / \`REJECT\`; verify upstream license and exact commit/function/tests, preserve canonical Horizon owners and contract IDs, then execute §32 negative/restart/security/real-work acceptance. The acceptance decision A-V2-30 is in §17.10. Never publish the above external RAM figures as Horizon measurements.
+**Adoption method:** `REUSE EXISTING` / `ADAPT ALGORITHM` / `SERVICE ADAPTER` / `REJECT`; verify upstream license and exact commit/function/tests, preserve canonical Horizon owners and contract IDs, then execute §32 negative/restart/security/real-work acceptance. The acceptance decision A-V2-30 is in §17.10. Never publish the above external RAM figures as Horizon measurements.
