@@ -29,6 +29,7 @@ test -x kernel/target/debug/session_supervisor
   bun test --timeout 60000 test/session/tools.test.ts
   bun test --timeout 60000 test/session/run-state-owner.test.ts
   bun test --timeout 60000 test/session/tool-batch.test.ts
+  bun test --timeout 60000 test/session/hosted-tools.test.ts
   bun test --timeout 60000 test/tool/write.test.ts
   bun test --timeout 60000 test/session/prompt.test.ts -t Guard
   bun test --timeout 60000 test/session/prompt.test.ts -t 'V1 model write is admitted'
