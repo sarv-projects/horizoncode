@@ -388,3 +388,43 @@ interface HeadlessBrokerV1 {
 **Renderer update algorithm:** accept canonical event identity+source generation into bounded per-Session queue; stable committed prefix is immutable, live tool-tail has byte/line cap and is replaceable; coalesce only UI paint deltas, never receipts/approval/cancel. Maintain `dirtyRegion`, resize/theme generation, queued focus/scroll ownership; request immediate redraw for input, explicit deep-idle backoff for animations. Count repaint reason and render queue drops; persist full tool logs as artifact refs with truthful FULL/SAMPLE tag. On reconnect reconstruct from canonical parts plus event cursor, never from ephemeral tail cache.
 
 **Error/failure contract:** use canonical §12 `ErrorV1` code registry, not ad-hoc error strings. Before registering new names, map to existing stable codes (e.g. CONFLICT for a reused idempotency key), update schema/tests together and reject unknown error codes. Operational categories: `UNAVAILABLE` (unsupported platform/feature); `DENIED` (scope/policy); `STALE` (revision/epoch/cursor); `RESOURCE_BLOCKED` (bounded queue/capacity); `RECONCILING_UNKNOWN` (potentially executed effect); `PROVIDER_COST_APPROVAL_REQUIRED` (full Doctor); `PARTIAL_OBSERVATION` (measurement missing). These labels are **semantic categories**, not newly registered error-code enumerants. Every result includes typed category, retry class, origin, support status and redacted evidence ref.
+
+## 37.18 Multi-client SDK, source import/resume and opt-in developer service algorithms
+
+These are **proposed adapters** over the existing public Session/API plus Rust managed control and existing provider transport; do not create a new conversation, Task, Guard, SecretBroker or command catalog.
+
+~~~ts
+type SessionOriginV1 = {source:"HORIZON"|"OPENCODE"|"CODEX"|"CLAUDE"|"PI"|"OTHER"; sourceVersion?:string; sourceSessionRef:string; importTimeMs?:string};
+type ImportPreviewV1 = {
+  previewId:string; source:SessionOriginV1; availableParts:number;
+  originalOwner:string; formatVersion:string; omittedFields:string[];
+  warnings:string[]; containsSecrets:boolean; sourceDigest:string;
+};
+type ImportDecisionV1 = {
+  previewId:string; expectedSourceDigest:string; destinationBackend:string;
+  mode:"HISTORICAL_SNAPSHOT"|"NATIVE_RESUME"; userApprovalRef:string;
+};
+type ClientAttachmentV1 = {
+  attachmentId:string; canonicalSessionId:string; principalRef:string;
+  clientType:"TUI"|"CLI"|"DESKTOP"|"WEB"|"SDK"|"MOBILE";
+  ownerEpoch:string; eventCursor:string; readOnly:boolean;
+};
+type SteeringRequestV1 = {sessionId:string;expectedTurnEpoch:string;intent:"NEXT_TURN"|"CANCEL_AND_REPLACE"|"QUEUE";contentRef:string;idempotencyKey:string};
+~~~
+
+**Session import:** 
+1. `detectSources` enumerates supported source stores without reading arbitrary home-directory files or exporting credentials; unsupported format is UNAVAILABLE, not lossy silent import.
+2. `previewImport` validates structural version, bounded byte/part count, redacts token/keys and prompt-injection-bearing metadata, returns source digest and exact known field loss. Parsing is untrusted data; never run imported tool commands, install plugins or replay effects from source history.
+3. `commitImport` revalidates source digest/ACL/user approval/backend choice; for HISTORICAL_SNAPSHOT creates a new canonical Horizon-owned Session with immutable provenance and clearly historic tool parts; for NATIVE_RESUME binds to the selected external owner without duplicating its message writer. A backend-specific importer must not claim capability support or transfer credential identities by inference.
+4. Concurrent import with same idempotency key is once-only; changed source/destination causes CONFLICT. If source changes after preview, require a new preview; if source cannot be completely parsed, return typed partial/unavailable rather than silently dropping user conversations.
+5. `detachExternalSession` invalidates ClientAttachment and controlled SessionLink observation, not the external backend's unrelated processes; final import acceptance verifies owner, message count/hash lineage, secrets and CLI/TUI presentation.
+
+**Public multi-client SDK:** versioned authenticated read/control API projects existing Session messages/events, resource diagnostics and managed Run state. `attachClient(auth,session,afterCursor) → attachment+capabilities`; `subscribe/ack/replay` follow §13 and retain exact immutable source generation; `sendUserInput/steer/cancel` are user-origin actions with expected turn epoch and idempotency, not raw effect leases. Distinguish several viewing clients from the *one Session conversation writer/continuation owner*: input serialization ensures two clients cannot race to produce contradictory turns. A disconnected SDK cannot mark a Run cancelled unless its authorised control request committed; offline buffering is bounded and requires revalidation on reconnect.
+
+**Steering semantics:** NEXT_TURN queues an owned user message for after current settled provider step; QUEUE appends with stable FIFO/idempotency; CANCEL_AND_REPLACE first requests bounded fence, waits for current tool effects to settle or reports UNKNOWN, then creates a new turn epoch. A TUI keybinding or tmux paste is just a UI input mapping to the same API; terminal control sequences are sanitized. Untrusted model text cannot steer another Session, and current active effect arguments cannot be mutated after PREPARED.
+
+**Thin mobile/remote client:** a supported remote transport requires explicit user opt-in, authenticated TLS endpoint, per-user/session grants, nonce/replay/CSRF protections according to transport, bounded event replay and secret-free capability projection. No public Rust kernel socket, direct process lease API or credentials export. Unsupported remote hosting remains UNAVAILABLE, not a localhost listener exposed to the internet. Mobile is a client of existing SDK/API, not its own agent engine. Test network disconnect, revoked device, hostile event payload and concurrent desktop/mobile steering.
+
+**Developer self-code canary:** behind §17 A-V2-29 Experimental OFF by default, accept a reviewed candidate diff/spec only in a disposable isolated worktree; build/test/lint and signed/hash-attested artifact; measure resource/build outputs, require user approval and reversible activation point; drain old in-flight effects, rotate owner/process epoch, preserve canonical stores, run canary fixture with explicit acceptance, and rollback on failure. Never hot-swap Rust security/policy/guard code during active uncertain effects or let a model self-approve broad privileges. Build cache/worker cleanup uses ownership rules (§18.19). This is separately gated post-V1 work; defining it here does not make it available.
+
+**Cross-cutting error classes:** unsupported backend/version, malformed source, permission denied, stale preview/turn epoch, dual-writer conflict, client disconnected, approval missing, unconfirmed effects and canary rollback failure must each preserve a typed redacted outcome and never fabricate historical tool success.

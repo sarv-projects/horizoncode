@@ -255,3 +255,23 @@ TUI, CLI, web/desktop and SDK project the same authoritative diagnostics and `Fe
 - Imported sessions: preview provenance, source platform, whether import is historical snapshot or native live connection, loss of unsupported features and explicit confirmation; never impersonate an external client.
 
 UI acceptance lives in §32.32. Current source coverage is not inferred from these UX requirements.
+
+## 16.17 Exact resource and concurrent-session UI behaviour
+
+**One state projection** is consumed by TUI/desktop/web/CLI/SDK from the existing source owner. Every displayed availability badge resolves separately (a) DESIGNED/CODE_PRESENT/WIRED/TESTED, (b) stable/beta/experimental, (c) OS/provider/backend supported, (d) user requested/effective/locked Settings and (e) live health. No toggle can turn a design-only capability into an executable service.
+
+| User action / surface | Inputs | Visible output / callback | Failure/approval |
+|---|---|---|---|
+| Session switch | canonical Session ID and client event cursor | stable focus/scroll, selected provider/model/harness, unread progress, bounded current tail | stale cursor resnapshot, no input replay without confirmation |
+| Resource panel | owner scope, sampling interval, all-inclusive flag | process-tree PSS/RSS or private bytes by platform, shared kernel cost, local model RAM/VRAM, CPU/FD/disk, source/quality/age | unknown marked UNKNOWN; absent sampler does not show zero |
+| Add headless specialist | accepted Task/Attempt or direct scoped read request, profile, max cost/concurrency | queue/reservation status, wait reason, child receipt/artifact refs, cancel | resource blocked, scope denial, provider unavailable; no automatic worktree |
+| Provider Doctor | provider/model, offline/catalog/full tier, maximum time/request/spend | step-by-step redacted probe status, last test time, auth/model/stream/tool/cache provenance | catalog shows network permission, full shows estimated cap+explicit paid consent, aborted cost UNKNOWN |
+| File conflict | file revision and peer advisory touch summary | diff and source revision, rebase/revalidate/retry/cancel | never write over user edit by auto-repair |
+| Recall settings | project/user scope, local/remote selection, max tokens/results | last source list/freshness, enabled state and local resource impact | default off if non-local/unsupported, remote asks privacy/cost consent |
+| External import | source store/platform, digest preview, historical vs native | provenance, field/feature loss and destination single owner | approval required; stale preview/reparse rejection |
+| Experimental shared kernel | eligible build/OS, requested feature flag | safe restart/apply boundary, current fallback route, memory comparison only from measured data | unsupported platform disabled; rollback/error visible |
+| Worktree/worker cleanup | confirmed owned resource identifier | preview safe vs dirty vs unknown, bytes measured and last lease | never “clean all”; dirty/quarantined requires review |
+
+**Interaction law:** a user choosing a provider/model or changing an optional setting must see pending/effective state and whether a restart/new turn is required. UI only transmits typed user intent; the OS/process/Guard owner still checks actual execution eligibility. Resource pressure is not a reason for a silent provider change, automatic deleting caches owned by others or UI freeze. Render a reasoned unblock path (free owned safe cache, wait for Task, reduce selected concurrency, ask for approval) without claiming an unsafe shortcut.
+
+**Acceptance:** all above controls keyboard accessible in TUI, labels readable for beginner and expert, no duplicate Session owners in UI, 20-session stream stays navigable, failures show exact source/metric/OS, unknown measurements truthfully unknown, changing or revoking a permission invalidates visible action controls, spend confirmation auditable and no hidden remote telemetry.
