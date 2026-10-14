@@ -194,3 +194,39 @@ No extra agent runtime, feature registry or duplicate effect policy is introduce
 **Important distinction:** this does *not* implement stream-lifetime deadlines, bound arbitrary tool output or guard the remaining shell/Task/MCP/plugin/browser/desktop/etc. effect origins. Hosted/provider-executed effects still require genuine pre-dispatch control; returned denial cannot undo an already external action. P1.3 universal effect mediation and Windows release qualification remain open.
 
 **Verification chronology:** intermediate CI commits intentionally containing tests before implementation, or testing obsolete SDK event names/direct-call fixtures, failed. The current branch's full typecheck/Guard/ToolBatch test result must be read from the latest PR-head GitHub Actions check. Do **not** mark this slice TESTED/VERIFIED until that run actually passes. No local desktop smoke test, provider inference or release installation occurred.
+
+## P1/P2 runtime gate checkpoint — PR #4 (2026-10-14)
+
+**Source:** branch fix/p1-p2-guard-cancel-managed-foundation-20261014 from main at 5b989930. PR #3 is separately open. This is a targeted code-and-contract review, not a complete line-by-line audit of the hydrated upstream codebase.
+
+**P1 implemented in this PR:** propagate the turn AbortSignal through the streamed ToolBatch pipe; a stalled producer can no longer keep a cancelled response waiting for terminal flush. An explicit stalled-stream negative test denies effect dispatch. Provider timeouts and universal mutation coverage are NOT solved.
+
+**P2 implemented in this PR:** internal Rust managed control state backed by the existing durable OwnerLogV2. Tests cover immutable spec acceptance and Run admission, revision/idempotency, Task/Attempt admission, restart-persistent pause/cancel fences, UNKNOWN blocking and dependency safety. This service is NOT wired to production RPC, executor, scheduler, lease manager, authenticated approval, verifier or user interfaces. Do not describe Managed Runs as operational.
+
+### P1 effect-origin coverage (not a completion claim)
+
+| Origin | Current status | Remaining production requirement |
+|---|---|---|
+| V1/V2 provider ToolBatch | Bounded supported files.write, Rust effect path; cancellation improved here; PR #3 stream lifecycle pending | Provider deadlines, true cancellation, bounded stdout/results, UNKNOWN settlement, hostile provider fixtures |
+| Direct shell/process, Git/build/test | Existing direct spawn/interpolation entry points bypass universal Guard | Guard/ExecutionHost before spawn; handle-relative constraints, sandbox/lease; negative process bypass tests |
+| Subagents/Task/command | Direct TaskTool and command-template shell execution still exist | Parent scope and epoch/fence inheritance, child launch Guard, pre-interpolation mediation |
+| Plugins/skills/hooks/MCP | Runtime hook and MCP entry points still outside full mediated execution | Capability-scoped registration, enforced pre-dispatch admission and exfiltration limits |
+| Hosted/provider tools | Post-response denial cannot undo provider-side effects | Disable/pre-authorize before request; per-provider tests |
+| LSP/DAP/REPL, browser/desktop, network/settings/auth, automation | Not universally admitted | Canonical effect origin/target, lease, settlement and supported-OS denial tests |
+| Rust files.write | First positive guarded effect supported | Multi-resource policy, stale preconditions, receipt/reconciliation, platform qualification |
+
+### P2 managed lifecycle coverage (not a completion claim)
+
+| Aggregate | Present now | Next required |
+|---|---|---|
+| Goal/SpecVersion | Internal digest/criteria/acceptance projection | Authenticated reviewed immutable full spec, supersession/version history |
+| Run/Task/Attempt | Durable internal admission state | Worker scheduler, task readiness after independent PASS, resource/fence/lease integration |
+| Pause/resume/cancel/restart | Persisted admission fences with replay tests | Signal propagation, active effect settlement, real crash/reconnect tests |
+| Idempotency/UNKNOWN | Duplicate logical command recognition, UNKNOWN blocks readmission | EffectReceipt reconciler, safe retry/new attempt or NEEDS_YOU |
+| SessionLink | Read-only observer exists | Exact managed session correlation, authenticated API, one conversation owner |
+| Verification/final result | Design only | Trusted independent evidence; every criterion on final integrated revision, human-edit conflicts, terminal stop law |
+| OS support | Linux tests only | Native Windows storage, sandbox and process qualification |
+
+**Release sequence:** close universal P1 origins and bypass tests first; keep unsupported origins unavailable when a safe replacement is not ready. Then wire authenticated spec acceptance; durable scheduler/worker leases; effect receipt and reconciliation; independent verifier; cancellation/restart/long-horizon acceptance. Direct Session stays direct, no mandatory Goal.
+
+**Validation rule:** CI must pass on PR #4 final head with the explicit managed-control Rust restart tests and streamed cancellation test. A green source/typecheck alone is not a release or real-platform claim.
