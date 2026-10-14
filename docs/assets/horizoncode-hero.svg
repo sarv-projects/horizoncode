@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="350" viewBox="0 0 1280 350" role="img" aria-labelledby="title desc">
 <title id="title">HorizonCode</title>
-<desc id="desc">HorizonCode wordmark with a restrained circular horizon motif and the line Built for the whole job.</desc>
+<desc id="desc">HorizonCode wordmark with a restrained circular horizon motif and the line Built for the Future.</desc>
 <defs>
  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0e131c"/><stop offset="1" stop-color="#080b10"/></linearGradient>
  <linearGradient id="stroke" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#34475a" stop-opacity="0"/><stop offset=".55" stop-color="#83a9cd" stop-opacity=".65"/><stop offset="1" stop-color="#34475a" stop-opacity="0"/></linearGradient>
@@ -23,6 +23,6 @@
 <g transform="translate(75 57)" fill="none" stroke="#a9c0d6" stroke-width="3.5" stroke-linecap="square"><path d="M0 0V35M27 0V35M0 17.5H27"/><path d="M40 17.5H75" stroke="#547895" stroke-width="1.6"/></g>
 <text x="75" y="174" fill="#f1f3f5" font-size="76" font-weight="750" letter-spacing="-2.8" font-family="Inter, Arial, Helvetica, sans-serif">HORIZON<tspan fill="#a4b8cd">CODE</tspan></text>
 <path d="M80 201H145" stroke="#91bddc" stroke-width="3"/>
-<text x="75" y="258" fill="#ccd4dc" font-size="28" font-weight="400" letter-spacing=".2" font-family="Inter, Arial, Helvetica, sans-serif">Built for the whole job.</text>
-<text x="76" y="307" fill="#738396" font-size="13" font-weight="600" letter-spacing="3.7" font-family="Arial, Helvetica, sans-serif">TERMINAL-FIRST  /  OPEN DEVELOPMENT</text>
+<text x="75" y="258" fill="#ccd4dc" font-size="28" font-weight="400" letter-spacing=".2" font-family="Inter, Arial, Helvetica, sans-serif">Built for the Future.</text>
+<text x="76" y="307" fill="#738396" font-size="13" font-weight="600" letter-spacing="3.7" font-family="Arial, Helvetica, sans-serif">CODE  /  DELEGATE  /  VERIFY</text>
 </svg>
