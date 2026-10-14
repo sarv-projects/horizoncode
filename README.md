@@ -34,7 +34,7 @@ Keep the logo/hero above. Do not show upstream OpenCode footage as HorizonCode.
 
 <p align="center"><sub>Demo space reserved for real HorizonCode footage: explore → edit → test → verify.</sub></p>
 
-**Full walkthrough video:** a second slot is reserved for an actual longer recording showing a reviewed managed goal, task execution, recovery and final verification. It will be linked here only after the workflow is implemented and recorded.
+**Full walkthrough video:** see [the reserved video section](#the-full-run-on-screen) below. It will link to a real recording after the managed workflow is implemented and verified.
 
 <!--
 DEMO SLOT 02 — Add a real walkthrough video / poster after V1 acceptance.
@@ -107,6 +107,20 @@ The following is the **HorizonCode V1 product direction**, not a claim that ever
 This is the intended V1 flow; its production scheduler, integrations and independent verifier are still in development.
 
 </details>
+
+## The full run, on screen
+
+<!--
+VIDEO SLOT — Replace this artwork with a real video poster linked to
+an actual, published HorizonCode recording when managed V1 is verified.
+Show specification acceptance, Task progress, interruption/recovery and
+criterion-based final verification. Do not present this conceptual card as UI.
+-->
+<p align="center">
+  <img src="docs/assets/horizoncode-run-video-placeholder.svg" alt="Reserved space for a real managed-run walkthrough video; conceptual title card only" width="94%" />
+</p>
+
+<p align="center"><sub>Full workflow video space reserved. No pre-recorded or simulated product behavior is being represented here.</sub></p>
 
 ## Run from source
 
