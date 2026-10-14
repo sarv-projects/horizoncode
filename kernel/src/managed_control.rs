@@ -31,6 +31,7 @@ impl From<OwnerLogError> for ManagedError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunPhase {
     Running,
+    Paused,
     Reconciling,
     Cancelling,
 }
@@ -77,6 +78,8 @@ pub enum ManagedCommand {
     AddTask { run_id: String, task_id: String, dependencies: Vec<String> },
     AdmitAttempt { run_id: String, task_id: String, attempt_id: String },
     MarkAttemptUnknown { run_id: String, task_id: String, attempt_id: String },
+    PauseRun { run_id: String },
+    ResumeRun { run_id: String },
     RequestCancel { run_id: String },
 }
 
@@ -97,6 +100,10 @@ impl ManagedCommand {
                 ("attempt.admitted", json!({"runId": run_id, "taskId": task_id, "attemptId": attempt_id})),
             Self::MarkAttemptUnknown { run_id, task_id, attempt_id } =>
                 ("attempt.unknown", json!({"runId": run_id, "taskId": task_id, "attemptId": attempt_id})),
+            Self::PauseRun { run_id } =>
+                ("run.paused", json!({"runId": run_id})),
+            Self::ResumeRun { run_id } =>
+                ("run.resumed", json!({"runId": run_id})),
             Self::RequestCancel { run_id } =>
                 ("run.cancelling", json!({"runId": run_id})),
         }
@@ -130,6 +137,10 @@ impl ManagedCommand {
                 Self::AdmitAttempt { run_id: field(payload, "runId")?, task_id: field(payload, "taskId")?, attempt_id: field(payload, "attemptId")? },
             "attempt.unknown" if count == 3 =>
                 Self::MarkAttemptUnknown { run_id: field(payload, "runId")?, task_id: field(payload, "taskId")?, attempt_id: field(payload, "attemptId")? },
+            "run.paused" if count == 1 =>
+                Self::PauseRun { run_id: field(payload, "runId")? },
+            "run.resumed" if count == 1 =>
+                Self::ResumeRun { run_id: field(payload, "runId")? },
             "run.cancelling" if count == 1 =>
                 Self::RequestCancel { run_id: field(payload, "runId")? },
             _ => return Err(ManagedError::Invalid("unknown managed event kind or fields")),
@@ -229,6 +240,18 @@ impl ManagedSnapshot {
                 }
                 task.unknown_effect = true;
                 if run.phase == RunPhase::Running { run.phase = RunPhase::Reconciling; }
+            }
+            ManagedCommand::PauseRun { run_id } => {
+                let run = self.runs.get_mut(run_id).ok_or(ManagedError::Conflict("run missing"))?;
+                if run.phase != RunPhase::Running { return Err(ManagedError::Conflict("only running Runs can pause")); }
+                run.phase = RunPhase::Paused; // Durable admission fence precedes stopping workers.
+            }
+            ManagedCommand::ResumeRun { run_id } => {
+                let run = self.runs.get_mut(run_id).ok_or(ManagedError::Conflict("run missing"))?;
+                if run.phase != RunPhase::Paused || run.tasks.values().any(|task| task.unknown_effect) {
+                    return Err(ManagedError::Conflict("run not safely resumable"));
+                }
+                run.phase = RunPhase::Running;
             }
             ManagedCommand::RequestCancel { run_id } => {
                 let run = self.runs.get_mut(run_id).ok_or(ManagedError::Conflict("run missing"))?;
