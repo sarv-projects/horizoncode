@@ -434,3 +434,444 @@ test("denies malformed model terminal arguments before Guard preparation", async
     }),
   ).toThrow("invalid tool arguments")
 })
+
+test("bounds tool-call count before any read-only callback or Guard preparation", async () => {
+  let preparations = 0
+  const gate = gateInput({
+    prepareToolBatch: async () => {
+      preparations++
+      throw new Error("should not prepare an oversized batch")
+    },
+  })
+  const calls = Array.from({ length: 33 }, (_, index) =>
+    toolCall(`read_${index}`, "read", '{"filePath":"/workspace/a.txt"}'),
+  )
+  await expect(collect(gateToolCallStream(stream([...calls, finish]), gate))).rejects.toThrow(
+    "Tool batch limit exceeded: call count",
+  )
+  expect(preparations).toBe(0)
+  expect(gate.context.outcomes.size).toBe(0)
+})
+
+test("rejects excessive individual tool arguments before parsing or Guard", async () => {
+  let validations = 0
+  let preparations = 0
+  const gate = gateInput({
+    definitions: {
+      read: {
+        ...readDefinition,
+        validate: async (value) => {
+          validations++
+          return readDefinition.validate(value)
+        },
+      },
+    },
+    prepareToolBatch: async () => {
+      preparations++
+      throw new Error("must not reach Guard")
+    },
+  })
+  const huge = JSON.stringify({ filePath: "/workspace/a.txt", padding: "x".repeat(256 * 1024) })
+  await expect(
+    collect(gateToolCallStream(stream([toolCall("read_huge", "read", huge), finish]), gate)),
+  ).rejects.toThrow("Tool batch limit exceeded: argument bytes")
+  expect(validations).toBe(0)
+  expect(preparations).toBe(0)
+  expect(gate.context.outcomes.size).toBe(0)
+})
+
+test("rejects excessive aggregate arguments even for individually valid read calls", async () => {
+  let validations = 0
+  let preparations = 0
+  const gate = gateInput({
+    definitions: {
+      read: {
+        ...readDefinition,
+        validate: async (value) => {
+          validations++
+          return readDefinition.validate(value)
+        },
+      },
+    },
+    prepareToolBatch: async () => {
+      preparations++
+      throw new Error("must not reach Guard")
+    },
+  })
+  const payload = JSON.stringify({ filePath: "/workspace/a.txt", padding: "x".repeat(180 * 1024) })
+  const calls = [1, 2, 3].map((i) => toolCall(`read_${i}`, "read", payload))
+  await expect(collect(gateToolCallStream(stream([...calls, finish]), gate))).rejects.toThrow(
+    "Tool batch limit exceeded: aggregate argument bytes",
+  )
+  expect(validations).toBe(0)
+  expect(preparations).toBe(0)
+  expect(gate.context.outcomes.size).toBe(0)
+})
+
+test("rejects oversized tool identity fields without tool dispatch", async () => {
+  for (const entry of [
+    toolCall("x".repeat(300), "read", '{"filePath":"a"}'),
+    toolCall("read_id", "x".repeat(300), "{}"),
+  ]) {
+    const gate = gateInput()
+    await expect(collect(gateToolCallStream(stream([entry, finish]), gate))).rejects.toThrow(
+      "Tool batch limit exceeded: tool identity",
+    )
+    expect(gate.context.outcomes.size).toBe(0)
+  }
+})
+
+test("accepts the documented maximum of 32 bounded read-only calls", async () => {
+  let preparations = 0
+  const gate = gateInput({
+    prepareToolBatch: async () => {
+      preparations++
+      throw new Error("read-only batch should not touch Rust")
+    },
+  })
+  const calls = Array.from({ length: 32 }, (_, index) =>
+    toolCall(`read_${index}`, "read", '{"filePath":"/workspace/a.txt"}'),
+  )
+  const output = await collect(gateToolCallStream(stream([...calls, finish]), gate))
+  expect(output.filter((part) => part.type === "tool-call")).toHaveLength(32)
+  expect(preparations).toBe(0)
+  for (const call of calls) {
+    if (call.type !== "tool-call") continue
+    expect(
+      requireToolExecution({
+        context: gate.context,
+        callID: call.toolCallId,
+        capability: readDefinition.capability,
+      }),
+    ).toBeUndefined()
+  }
+})
+
+test("oversized sibling cannot dispatch or Guard-admit an otherwise valid write", async () => {
+  let preparations = 0
+  const gate = gateInput({
+    prepareToolBatch: async () => {
+      preparations++
+      throw new Error("whole batch should be rejected by the stream limit")
+    },
+  })
+  const oversized = JSON.stringify({ filePath: "/workspace/a.txt", padding: "x".repeat(256 * 1024) })
+  await expect(
+    collect(
+      gateToolCallStream(
+        stream([
+          toolCall("first_write", "write", '{"filePath":"/workspace/a.txt","content":"new"}'),
+          toolCall("bad_read", "read", oversized),
+          finish,
+        ]),
+        gate,
+      ),
+    ),
+  ).rejects.toThrow("Tool batch limit exceeded: argument bytes")
+  expect(preparations).toBe(0)
+  expect(gate.context.outcomes.size).toBe(0)
+  expect(() =>
+    requireToolExecution({ context: gate.context, callID: "first_write", capability: writeDefinition.capability }),
+  ).toThrow("missing validated ToolBatch admission")
+})
+
+test("read-only callback requires a completed, validated ToolBatch outcome", () => {
+  const gate = gateInput()
+  expect(() =>
+    requireToolExecution({
+      context: gate.context,
+      callID: "read_without_batch",
+      capability: readDefinition.capability,
+    }),
+  ).toThrow("missing validated ToolBatch admission")
+  expect(() =>
+    requireToolExecution({
+      context: undefined,
+      callID: "read_without_context",
+      capability: readDefinition.capability,
+    }),
+  ).toThrow("missing validated ToolBatch admission")
+})
+
+test("control callbacks require a completed validated internal-control batch", () => {
+  const control = { id: "tool.noop", effectClass: "control" } as const
+  expect(() =>
+    requireToolExecution({ context: createToolBatchContext(), callID: "control_unchecked", capability: control, internal: true }),
+  ).toThrow("missing validated ToolBatch admission")
+})
+
+test("validated read call ID cannot be reused for another capability", async () => {
+  const gate = gateInput()
+  await collect(gateToolCallStream(stream([toolCall("read_one", "read", '{"filePath":"a"}'), finish]), gate))
+  expect(() =>
+    requireToolExecution({
+      context: gate.context,
+      callID: "read_one",
+      capability: { id: "repo.search", effectClass: "read_only" },
+    }),
+  ).toThrow("capability does not match")
+  expect(
+    requireToolExecution({ context: gate.context, callID: "read_one", capability: readDefinition.capability }),
+  ).toBeUndefined()
+})
+
+test("Guard challenge is bound to the admitted capability, not only the call ID", async () => {
+  const gate = gateInput()
+  await collect(
+    gateToolCallStream(
+      stream([toolCall("write_one", "write", '{"filePath":"/workspace/a.txt","content":"new"}'), finish]),
+      gate,
+    ),
+  )
+  expect(() =>
+    requireToolExecution({
+      context: gate.context,
+      callID: "write_one",
+      capability: { id: "shell.exec", effectClass: "effect" },
+    }),
+  ).toThrow("capability does not match")
+  expect(
+    requireToolExecution({ context: gate.context, callID: "write_one", capability: writeDefinition.capability }),
+  )?.toMatchObject({ challengeID: "ch_1" })
+})
+
+test("internal marker never bypasses Rust admission for effectful capabilities", async () => {
+  const gate = gateInput({
+    definitions: { write: { ...writeDefinition, internal: true } },
+    prepareToolBatch: async () => ({ status: "denied", reason: "no internal effect bypass" }),
+  })
+  const parts = await collect(
+    gateToolCallStream(
+      stream([toolCall("write_internal", "write", '{"filePath":"/workspace/a.txt","content":"new"}'), finish]),
+      gate,
+    ),
+  )
+  expect(parts.filter((part) => part.type === "tool-call")).toHaveLength(1)
+  expect(() =>
+    requireToolExecution({ context: gate.context, callID: "write_internal", capability: writeDefinition.capability, internal: true }),
+  ).toThrow("no internal effect bypass")
+})
+
+test("bounds streaming tool-call argument deltas before terminal assembly", async () => {
+  const gate = gateInput()
+  const chunk = "x".repeat(160 * 1024)
+  const streaming = [
+    { type: "tool-input-start", id: "stream_read", toolName: "read" },
+    { type: "tool-input-delta", id: "stream_read", delta: chunk },
+    { type: "tool-input-delta", id: "stream_read", delta: chunk },
+  ] satisfies LanguageModelV3StreamPart[]
+  await expect(collect(gateToolCallStream(stream([...streaming, finish]), gate))).rejects.toThrow(
+    "Tool batch limit exceeded: streamed argument bytes",
+  )
+  expect(gate.context.outcomes.size).toBe(0)
+})
+
+test("an uncompleted streaming tool input never receives a callback admission", async () => {
+  const gate = gateInput()
+  const parts = [
+    { type: "tool-input-start", id: "ghost_read", toolName: "read" },
+    { type: "tool-input-delta", id: "ghost_read", delta: '{"filePath":"x"}' },
+    finish,
+  ] satisfies LanguageModelV3StreamPart[]
+  await expect(collect(gateToolCallStream(stream(parts), gate))).rejects.toThrow(
+    "Incomplete provider response; tool calls withheld",
+  )
+  expect(gate.context.outcomes.size).toBe(0)
+})
+
+test("streaming tool name must match the canonical terminal call", async () => {
+  const gate = gateInput()
+  const parts = [
+    { type: "tool-input-start", id: "swapped", toolName: "read" },
+    toolCall("swapped", "write", '{"filePath":"/workspace/a.txt","content":"new"}'),
+    finish,
+  ] satisfies LanguageModelV3StreamPart[]
+  await expect(collect(gateToolCallStream(stream(parts), gate))).rejects.toThrow(
+    "Tool batch denied: streaming tool identity mismatch",
+  )
+  expect(gate.context.outcomes.size).toBe(0)
+})
+
+test("legitimate streaming tool deltas retain an accepted terminal read call", async () => {
+  const gate = gateInput()
+  const parts = [
+    { type: "tool-input-start", id: "read_stream", toolName: "read" },
+    { type: "tool-input-delta", id: "read_stream", delta: '{"filePath":' },
+    { type: "tool-input-delta", id: "read_stream", delta: '"a.txt"}' },
+    toolCall("read_stream", "read", '{"filePath":"a.txt"}'),
+    finish,
+  ] satisfies LanguageModelV3StreamPart[]
+  const output = await collect(gateToolCallStream(stream(parts), gate))
+  expect(output.some((part) => part.type === "tool-call")).toBe(true)
+  expect(
+    requireToolExecution({ context: gate.context, callID: "read_stream", capability: readDefinition.capability }),
+  ).toBeUndefined()
+})
+
+test("bounds aggregate streamed tool inputs even when each stays below its own limit", async () => {
+  const gate = gateInput()
+  const parts: LanguageModelV3StreamPart[] = []
+  for (let index = 0; index < 4; index++) {
+    parts.push({ type: "tool-input-start", id: `stream_${index}`, toolName: "read" })
+    parts.push({ type: "tool-input-delta", id: `stream_${index}`, delta: "x".repeat(150 * 1024) })
+  }
+  await expect(collect(gateToolCallStream(stream([...parts, finish]), gate))).rejects.toThrow(
+    "Tool batch limit exceeded: aggregate streamed argument bytes",
+  )
+  expect(gate.context.outcomes.size).toBe(0)
+})
+
+test("bounds the number of streaming tool IDs independently of terminal calls", async () => {
+  const gate = gateInput()
+  const parts: LanguageModelV3StreamPart[] = Array.from({ length: 33 }, (_, index) => ({
+    type: "tool-input-start",
+    id: `stream_${index}`,
+    toolName: "read",
+  }))
+  await expect(collect(gateToolCallStream(stream([...parts, finish]), gate))).rejects.toThrow(
+    "Tool batch limit exceeded: streaming call count",
+  )
+  expect(gate.context.outcomes.size).toBe(0)
+})
+
+
+test("turn cancellation interrupts a stalled provider before any ToolBatch admission", async () => {
+  const controller = new AbortController()
+  let preparations = 0
+  let upstreamCancelled = false
+  const gate = gateInput({
+    signal: controller.signal,
+    prepareToolBatch: async () => {
+      preparations++
+      throw new Error("cancelled response must not reach Guard")
+    },
+  })
+  const provider = new ReadableStream<LanguageModelV3StreamPart>({
+    start(stream) {
+      stream.enqueue({ type: "tool-input-start", id: "never_finished", toolName: "write" })
+      // Simulate a provider that never emits a terminal call or finish frame.
+    },
+    cancel() {
+      upstreamCancelled = true
+    },
+  })
+  const output = gateToolCallStream(provider, gate)
+  const reader = output.getReader()
+  const initial = await reader.read()
+  expect(initial.value?.type).toBe("tool-input-start")
+  const pending = reader.read()
+  controller.abort(new Error("turn cancelled"))
+  await expect(pending).rejects.toThrow()
+  expect(preparations).toBe(0)
+  expect(gate.context.outcomes.size).toBe(0)
+  expect(upstreamCancelled).toBe(true)
+})
+
+test("denies streamed delta and end frames without a matching start before any Guard admission", async () => {
+  for (const orphan of [
+    { type: "tool-input-delta", id: "orphan", delta: '{"filePath":"a"}' },
+    { type: "tool-input-end", id: "orphan" },
+  ] satisfies LanguageModelV3StreamPart[]) {
+    let preparations = 0
+    const gate = gateInput({
+      prepareToolBatch: async () => {
+        preparations++
+        throw new Error("malformed stream must never reach Guard")
+      },
+    })
+    await expect(
+      collect(gateToolCallStream(stream([orphan, toolCall("orphan", "write", '{"filePath":"/workspace/a.txt","content":"x"}'), finish]), gate)),
+    ).rejects.toThrow("Tool batch denied: streamed input without start")
+    expect(gate.context.outcomes.size).toBe(0)
+    expect(preparations).toBe(0)
+  }
+})
+
+test("denies duplicate stream starts for one call ID before effect dispatch", async () => {
+  const gate = gateInput()
+  await expect(
+    collect(gateToolCallStream(stream([
+      { type: "tool-input-start", id: "dup", toolName: "write" },
+      { type: "tool-input-start", id: "dup", toolName: "write" },
+      toolCall("dup", "write", '{"filePath":"/workspace/a.txt","content":"x"}'),
+      finish,
+    ]), gate)),
+  ).rejects.toThrow("Tool batch denied: duplicate streaming input start")
+  expect(gate.context.outcomes.size).toBe(0)
+})
+
+test("denies stream deltas or repeated end frames after input has ended", async () => {
+  for (const late of [
+    { type: "tool-input-delta", id: "ended", delta: "extra" },
+    { type: "tool-input-end", id: "ended" },
+  ] satisfies LanguageModelV3StreamPart[]) {
+    const gate = gateInput()
+    await expect(
+      collect(gateToolCallStream(stream([
+        { type: "tool-input-start", id: "ended", toolName: "read" },
+        { type: "tool-input-end", id: "ended" },
+        late,
+        toolCall("ended", "read", '{"filePath":"a"}'),
+        finish,
+      ]), gate)),
+    ).rejects.toThrow("Tool batch denied: streamed input after end")
+    expect(gate.context.outcomes.size).toBe(0)
+  }
+})
+
+test("denies extra partial frames after the terminal call for that ID", async () => {
+  const gate = gateInput()
+  await expect(
+    collect(gateToolCallStream(stream([
+      { type: "tool-input-start", id: "terminal", toolName: "write" },
+      toolCall("terminal", "write", '{"filePath":"/workspace/a.txt","content":"x"}'),
+      { type: "tool-input-delta", id: "terminal", delta: "late" },
+      finish,
+    ]), gate)),
+  ).rejects.toThrow("Tool batch denied: streamed input after terminal call")
+  expect(gate.context.outcomes.size).toBe(0)
+})
+
+test("accepts completed start/delta/end sequence with matching terminal call", async () => {
+  const gate = gateInput()
+  const output = await collect(gateToolCallStream(stream([
+    { type: "tool-input-start", id: "valid", toolName: "read" },
+    { type: "tool-input-delta", id: "valid", delta: '{"filePath":"a"}' },
+    { type: "tool-input-end", id: "valid" },
+    toolCall("valid", "read", '{"filePath":"a"}'),
+    finish,
+  ]), gate))
+  expect(output.some((part) => part.type === "tool-call")).toBe(true)
+  expect(requireToolExecution({
+    context: gate.context,
+    callID: "valid",
+    capability: readDefinition.capability,
+  })).toBeUndefined()
+})
+
+
+test("hard stream lifetime cancels a silent provider without admitting a write", async () => {
+  let preparations = 0
+  let cancelled = false
+  const gate = gateInput({
+    maxStreamDurationMs: 25,
+    prepareToolBatch: async () => {
+      preparations++
+      throw new Error("timed-out response must never reach Guard")
+    },
+  })
+  const provider = new ReadableStream<LanguageModelV3StreamPart>({
+    start(controller) {
+      controller.enqueue({ type: "tool-input-start", id: "timed_out_write", toolName: "write" })
+    },
+    cancel() {
+      cancelled = true
+    },
+  })
+  const reader = gateToolCallStream(provider, gate).getReader()
+  expect((await reader.read()).value?.type).toBe("tool-input-start")
+  await expect(reader.read()).rejects.toThrow()
+  expect(preparations).toBe(0)
+  expect(gate.context.outcomes.size).toBe(0)
+  expect(cancelled).toBe(true)
+})

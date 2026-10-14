@@ -259,11 +259,14 @@ export class RuntimeConfig extends Context.Service<RuntimeConfig, RuntimeConfigO
   "@opencode/SessionSupervisorRuntime",
 ) {}
 
+export type GuardApprovalErrorCode = "approval-not-found" | "approval-conflict" | "approval-invalid"
+
 export class SessionSupervisorError extends Schema.TaggedErrorClass<SessionSupervisorError>()(
   "SessionSupervisorError",
   {
     stage: Schema.String,
     reason: Schema.String,
+    approvalCode: Schema.optional(Schema.Literals(["approval-not-found", "approval-conflict", "approval-invalid"])),
   },
 ) {
   override get message() {
@@ -355,8 +358,8 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionSupervisor") {}
 
-function fail(stage: string, reason: string) {
-  return new SessionSupervisorError({ stage, reason })
+function fail(stage: string, reason: string, approvalCode?: GuardApprovalErrorCode) {
+  return new SessionSupervisorError({ stage, reason, ...(approvalCode === undefined ? {} : { approvalCode }) })
 }
 
 // Nested scopes from one backend share a lease; a second backend fails closed.
@@ -1959,15 +1962,14 @@ const layer = Layer.effect(
     }) {
       const trusted = yield* TrustedPrincipalContext
       if (input.decision !== "allow_once" && input.decision !== "deny") {
-        return yield* Effect.fail(fail("approval-invalid", "Guard approval decision is invalid"))
+        return yield* Effect.fail(fail("approval-invalid", "Guard approval decision is invalid", "approval-invalid"))
       }
       const pending = pendingApprovals.get(input.approvalID)
       if (!pending) {
+        const closed = closedApprovals.has(input.approvalID)
+        const code = closed ? "approval-conflict" : "approval-not-found"
         return yield* Effect.fail(
-          fail(
-            closedApprovals.has(input.approvalID) ? "approval-conflict" : "approval-not-found",
-            closedApprovals.has(input.approvalID) ? "Guard approval is no longer active" : "Guard approval was not found",
-          ),
+          fail(code, closed ? "Guard approval is no longer active" : "Guard approval was not found", code),
         )
       }
       const expected = pending.principal
@@ -1980,17 +1982,17 @@ const layer = Layer.effect(
         (expected.kind === actual.kind &&
           (expected.kind === "host_os" || (actual.kind === "server_auth" && expected.subject === actual.subject)))
       if (!validPrincipal || !samePrincipal) {
-        return yield* Effect.fail(fail("approval-not-found", "Guard approval was not found"))
+        return yield* Effect.fail(fail("approval-not-found", "Guard approval was not found", "approval-not-found"))
       }
       if (Date.now() >= pending.request.expiresAtUnixMs) {
         pendingApprovals.delete(input.approvalID)
         closedApprovals.set(input.approvalID, Date.now())
-        yield* Deferred.fail(pending.decision, fail("approval-conflict", "Guard approval expired"))
+        yield* Deferred.fail(pending.decision, fail("approval-conflict", "Guard approval expired", "approval-conflict"))
         yield* events.publish(GuardApprovalResolved, {
           approvalID: input.approvalID,
           decision: "expired",
         })
-        return yield* Effect.fail(fail("approval-conflict", "Guard approval expired"))
+        return yield* Effect.fail(fail("approval-conflict", "Guard approval expired", "approval-conflict"))
       }
       pendingApprovals.delete(input.approvalID)
       closedApprovals.set(input.approvalID, Date.now())

@@ -1,4 +1,6 @@
 import type { LanguageModelV3Middleware, LanguageModelV3StreamPart } from "@ai-sdk/provider"
+import { Buffer } from "node:buffer"
+import { randomUUID } from "node:crypto"
 import type {
   EffectAdmission,
   EffectChallenge,
@@ -14,6 +16,19 @@ export type ToolBatchPreparation = {
   readonly execution: unknown
 }
 
+// Bound provider-supplied tool calls at the streaming boundary, before parsing,
+// asynchronous validation, Guard preparation or callback dispatch. These limits
+// intentionally apply to read-only calls too, so a provider cannot build an
+// unbounded pending array while waiting for a terminal tool-calls finish.
+const MAX_TOOL_BATCH_CALLS = 32
+const MAX_TOOL_CALL_ARGUMENT_BYTES = 256 * 1024
+const MAX_TOOL_BATCH_ARGUMENT_BYTES = 512 * 1024
+const MAX_TOOL_IDENTITY_BYTES = 256
+const MAX_TOOL_STREAM_DELTA_CHUNKS = 16_384
+// Covers a silent provider that never emits another frame or terminal finish.
+// This is a hard upper bound even if an internal caller requests a larger value.
+const MAX_TOOL_STREAM_DURATION_MS = 10 * 60 * 1000
+
 export type ToolBatchDefinition = {
   readonly capability: Capability
   readonly schema: unknown
@@ -24,10 +39,10 @@ export type ToolBatchDefinition = {
 }
 
 export type ToolCallOutcome =
-  | { readonly status: "allowed" }
-  | { readonly status: "no_effect"; readonly execution: unknown }
-  | { readonly status: "prepared"; readonly lease: EffectLease; readonly execution?: unknown }
-  | { readonly status: "admitted"; readonly challenge: EffectChallenge; readonly execution?: unknown }
+  | { readonly status: "allowed"; readonly capabilityID: string }
+  | { readonly status: "no_effect"; readonly capabilityID: string; readonly execution: unknown }
+  | { readonly status: "prepared"; readonly capabilityID: string; readonly lease: EffectLease; readonly execution?: unknown }
+  | { readonly status: "admitted"; readonly capabilityID: string; readonly challenge: EffectChallenge; readonly execution?: unknown }
   | { readonly status: "denied"; readonly reason: string }
 
 export type ToolBatchContext = {
@@ -44,24 +59,39 @@ export function toolCallOutcome(context: unknown, callID?: string): ToolCallOutc
   if (!(outcomes instanceof Map)) return undefined
   const value: unknown = outcomes.get(callID)
   if (typeof value !== "object" || value === null || !("status" in value)) return undefined
-  if (value.status === "no_effect" && "execution" in value) {
-    return { status: "no_effect", execution: value.execution }
+  if (
+    value.status === "no_effect" &&
+    "capabilityID" in value && typeof value.capabilityID === "string" &&
+    "execution" in value
+  ) {
+    return { status: "no_effect", capabilityID: value.capabilityID, execution: value.execution }
   }
-  if (value.status === "allowed") return { status: "allowed" }
+  if (value.status === "allowed" && "capabilityID" in value && typeof value.capabilityID === "string")
+    return { status: "allowed", capabilityID: value.capabilityID }
   if (value.status === "denied" && "reason" in value && typeof value.reason === "string")
     return { status: "denied", reason: value.reason }
-  if (value.status === "prepared" && "lease" in value && isEffectLease(value.lease)) {
+  if (
+    value.status === "prepared" &&
+    "capabilityID" in value && typeof value.capabilityID === "string" &&
+    "lease" in value && isEffectLease(value.lease)
+  ) {
     return {
       status: "prepared",
+      capabilityID: value.capabilityID,
       lease: value.lease,
-      ...("execution" in value ? { execution: value.execution } : {}),
+      ...( "execution" in value ? { execution: value.execution } : {}),
     }
   }
-  if (value.status === "admitted" && "challenge" in value && isEffectChallenge(value.challenge)) {
+  if (
+    value.status === "admitted" &&
+    "capabilityID" in value && typeof value.capabilityID === "string" &&
+    "challenge" in value && isEffectChallenge(value.challenge)
+  ) {
     return {
       status: "admitted",
+      capabilityID: value.capabilityID,
       challenge: value.challenge,
-      ...("execution" in value ? { execution: value.execution } : {}),
+      ...( "execution" in value ? { execution: value.execution } : {}),
     }
   }
   return undefined
@@ -104,6 +134,9 @@ export function requireToolExecution(input: {
 }): EffectChallenge | EffectLease | undefined {
   const outcome = toolCallOutcome(input.context, input.callID)
   if (outcome?.status === "denied") throw new Error(`Tool batch denied: ${outcome.reason}`)
+  if (!outcome) throw new Error("Tool batch denied: missing validated ToolBatch admission")
+  if (outcome.capabilityID !== input.capability.id)
+    throw new Error("Tool batch denied: capability does not match admitted call")
 
   if (input.capability.effectClass === "effect") {
     if (outcome?.status === "no_effect") return undefined
@@ -114,9 +147,10 @@ export function requireToolExecution(input: {
   if (input.capability.effectClass === "unknown") {
     throw new Error("Tool batch denied: capability is unknown")
   }
-  if (input.capability.effectClass === "control" && !input.internal) {
+  if (input.capability.effectClass === "control" && !input.internal)
     throw new Error("Tool batch denied: unsupported control capability")
-  }
+  if (outcome.status !== "allowed")
+    throw new Error("Tool batch denied: non-effect capability lacks validated batch allowance")
   return undefined
 }
 
@@ -125,6 +159,8 @@ export type ToolBatchGateInput = {
   readonly locationRef: typeof Location.Ref.Type
   readonly turnContextDigest: string
   readonly signal: AbortSignal
+  /** Internal test override; runtime values cannot extend the hard cap. */
+  readonly maxStreamDurationMs?: number
   readonly definitions: Readonly<Record<string, ToolBatchDefinition>>
   readonly prepareToolBatch: (request: {
     readonly sessionID: string
@@ -151,13 +187,110 @@ export function gateToolCallStream(
   input: ToolBatchGateInput,
 ): ReadableStream<LanguageModelV3StreamPart> {
   const pending: Extract<LanguageModelV3StreamPart, { type: "tool-call" }>[] = []
+  let pendingArgumentBytes = 0
+  // Partial arguments can arrive in thousands of provider stream frames before
+  // the final tool-call event. Count bytes, IDs and frames without retaining
+  // argument text: terminal parts still own complete-batch authorization.
+  const partialIDs = new Set<string>()
+  const partialNames = new Map<string, string>()
+  const partialEnded = new Set<string>()
+  const terminalIDs = new Set<string>()
+  const partialBytes = new Map<string, number>()
+  let partialArgumentBytes = 0
+  let partialChunks = 0
   let finish: Extract<LanguageModelV3StreamPart, { type: "finish" }> | undefined
 
+  const requestedDuration = input.maxStreamDurationMs
+  const durationMs = requestedDuration === undefined
+    ? MAX_TOOL_STREAM_DURATION_MS
+    : Number.isFinite(requestedDuration)
+      ? Math.min(MAX_TOOL_STREAM_DURATION_MS, Math.max(1, requestedDuration))
+      : MAX_TOOL_STREAM_DURATION_MS
+  const lifetime = AbortSignal.any([input.signal, AbortSignal.timeout(durationMs)])
   return stream.pipeThrough(
     new TransformStream<LanguageModelV3StreamPart, LanguageModelV3StreamPart>({
       transform(part, controller) {
         if (finish) throw new Error("Provider emitted data after finish")
+        // AI SDK Provider V3 emits tool-input-start/delta/end before the
+        // complete tool-call. Track partial bytes without storing or approving
+        // incomplete arguments. Tool callbacks execute only after terminal
+        // batch validation.
+        if (
+          part.type === "tool-input-start" ||
+          part.type === "tool-input-delta" ||
+          part.type === "tool-input-end"
+        ) {
+          const callID = part.id
+          if (typeof callID !== "string" || Buffer.byteLength(callID, "utf8") > MAX_TOOL_IDENTITY_BYTES)
+            throw new Error("Tool batch limit exceeded: tool identity")
+          if (terminalIDs.has(callID))
+            throw new Error("Tool batch denied: streamed input after terminal call")
+          if (part.type === "tool-input-start") {
+            if (partialIDs.has(callID))
+              throw new Error("Tool batch denied: duplicate streaming input start")
+            if (partialIDs.size >= MAX_TOOL_BATCH_CALLS)
+              throw new Error("Tool batch limit exceeded: streaming call count")
+            const name = part.toolName
+            if (typeof name !== "string" || Buffer.byteLength(name, "utf8") > MAX_TOOL_IDENTITY_BYTES)
+              throw new Error("Tool batch limit exceeded: tool identity")
+            partialIDs.add(callID)
+            partialNames.set(callID, name)
+          } else {
+            if (!partialIDs.has(callID))
+              throw new Error("Tool batch denied: streamed input without start")
+            if (partialEnded.has(callID))
+              throw new Error("Tool batch denied: streamed input after end")
+            if (part.type === "tool-input-end") partialEnded.add(callID)
+          }
+          if (part.type === "tool-input-delta") {
+            partialChunks++
+            if (partialChunks > MAX_TOOL_STREAM_DELTA_CHUNKS)
+              throw new Error("Tool batch limit exceeded: streaming chunk count")
+            const delta = part.delta
+            if (typeof delta !== "string")
+              throw new Error("Tool batch limit exceeded: invalid streamed arguments")
+            if (delta.length > MAX_TOOL_CALL_ARGUMENT_BYTES)
+              throw new Error("Tool batch limit exceeded: streamed argument bytes")
+            const bytes = Buffer.byteLength(delta, "utf8")
+            if (bytes > MAX_TOOL_CALL_ARGUMENT_BYTES - (partialBytes.get(callID) ?? 0))
+              throw new Error("Tool batch limit exceeded: streamed argument bytes")
+            if (bytes > MAX_TOOL_BATCH_ARGUMENT_BYTES - partialArgumentBytes)
+              throw new Error("Tool batch limit exceeded: aggregate streamed argument bytes")
+            partialBytes.set(callID, (partialBytes.get(callID) ?? 0) + bytes)
+            partialArgumentBytes += bytes
+          }
+          controller.enqueue(part)
+          return
+        }
         if (part.type === "tool-call") {
+          // A completed call is a terminal assertion for its ID. Subsequent
+          // partial frames cannot mutate what was validated for this batch.
+          terminalIDs.add(part.toolCallId)
+          const streamedName = partialNames.get(part.toolCallId)
+          if (streamedName !== undefined && streamedName !== part.toolName)
+            throw new Error("Tool batch denied: streaming tool identity mismatch")
+          if (pending.length >= MAX_TOOL_BATCH_CALLS)
+            throw new Error("Tool batch limit exceeded: call count")
+          // The provider protocol defines input as JSON text. Reject malformed
+          // runtime shapes rather than allowing an object to evade byte caps.
+          if (typeof part.toolCallId !== "string" || typeof part.toolName !== "string")
+            throw new Error("Tool batch limit exceeded: tool identity")
+          if (
+            Buffer.byteLength(part.toolCallId, "utf8") > MAX_TOOL_IDENTITY_BYTES ||
+            Buffer.byteLength(part.toolName, "utf8") > MAX_TOOL_IDENTITY_BYTES
+          ) throw new Error("Tool batch limit exceeded: tool identity")
+          if (typeof part.input !== "string")
+            throw new Error("Tool batch limit exceeded: invalid argument representation")
+          // Fast character-count rejection avoids scanning huge ASCII payloads.
+          // Byte length is authoritative for non-ASCII JSON text.
+          if (part.input.length > MAX_TOOL_CALL_ARGUMENT_BYTES)
+            throw new Error("Tool batch limit exceeded: argument bytes")
+          const bytes = Buffer.byteLength(part.input, "utf8")
+          if (bytes > MAX_TOOL_CALL_ARGUMENT_BYTES)
+            throw new Error("Tool batch limit exceeded: argument bytes")
+          if (bytes > MAX_TOOL_BATCH_ARGUMENT_BYTES - pendingArgumentBytes)
+            throw new Error("Tool batch limit exceeded: aggregate argument bytes")
+          pendingArgumentBytes += bytes
           pending.push(part)
           return
         }
@@ -175,8 +308,10 @@ export function gateToolCallStream(
             : rawFinishReason !== null && typeof rawFinishReason === "object" && "unified" in rawFinishReason
               ? rawFinishReason.unified
               : undefined
-        if (pending.length > 0 && normalizedFinishReason !== "tool-calls")
-          throw new Error("Incomplete provider response; tool calls withheld")
+        if (
+          (pending.length > 0 && normalizedFinishReason !== "tool-calls") ||
+          [...partialIDs].some((id) => !pending.some((call) => call.toolCallId === id))
+        ) throw new Error("Incomplete provider response; tool calls withheld")
         if (pending.length > 0) {
           if (input.signal.aborted) throw input.signal.reason ?? new DOMException("Aborted", "AbortError")
           await admitBatch(pending, input)
@@ -186,6 +321,7 @@ export function gateToolCallStream(
         if (finish) controller.enqueue(finish)
       },
     }),
+    { signal: lifetime },
   )
 }
 
@@ -251,6 +387,7 @@ async function admitBatch(
     ) {
       input.context.outcomes.set(prepared[0]!.call.callID, {
         status: "no_effect",
+        capabilityID: prepared[0]!.call.capabilityID,
         execution: prepared[0]!.execution ?? [],
       })
       return
@@ -258,9 +395,12 @@ async function admitBatch(
   }
   if (
     prepared.every(({ definition }) => definition.capability.effectClass === "read_only") ||
-    (prepared.length === 1 && prepared[0]!.definition.internal === true)
+    (prepared.length === 1 &&
+      prepared[0]!.definition.internal === true &&
+      prepared[0]!.definition.capability.effectClass === "control")
   ) {
-    for (const { call } of prepared) input.context.outcomes.set(call.callID, { status: "allowed" })
+    for (const { call } of prepared)
+      input.context.outcomes.set(call.callID, { status: "allowed", capabilityID: call.capabilityID })
     return
   }
 
@@ -289,6 +429,7 @@ async function admitBatch(
     if (!isEffectLease(admission.lease)) return deny("Rust returned an invalid capability lease")
     input.context.outcomes.set(call.callID, {
       status: "prepared",
+      capabilityID: call.capabilityID,
       lease: admission.lease,
       ...(execution !== undefined ? { execution } : {}),
     })
@@ -298,6 +439,7 @@ async function admitBatch(
   if (call.capabilityID === "terminal.run") {
     input.context.outcomes.set(call.callID, {
       status: "admitted",
+      capabilityID: call.capabilityID,
       challenge: admission.challenge,
       ...(execution !== undefined ? { execution } : {}),
     })
@@ -336,6 +478,7 @@ async function admitBatch(
   }
   input.context.outcomes.set(call.callID, {
     status: "admitted",
+    capabilityID: call.capabilityID,
     challenge: admission.challenge,
     ...(execution !== undefined ? { execution } : {}),
   })

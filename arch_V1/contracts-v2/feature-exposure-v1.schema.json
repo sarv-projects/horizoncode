@@ -1,0 +1,340 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://horizoncode.local/contracts-v2/feature-exposure-v1.schema.json",
+  "title": "FeatureExposureV1",
+  "description": "Schema for a derived optional-feature Settings/UX projection; not an independent feature registry, implementation proof, or permission grant. Owner: arch_V1/16-UX-SETTINGS-ECOSYSTEM.md §16.15.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "featureId",
+    "settingKey",
+    "title",
+    "description",
+    "releaseClass",
+    "optional",
+    "audience",
+    "defaultEnabled",
+    "supportedScopes",
+    "applyBoundary",
+    "capabilityIds",
+    "state"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "featureId": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9._-]*$"
+    },
+    "settingKey": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Existing config owner is authoritative. Unique and stable, not a parallel capability ID."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "releaseClass": {
+      "enum": [
+        "stable",
+        "beta",
+        "experimental"
+      ],
+      "description": "Experimental is a release/stability class, separate from runtime implementation maturity and availability."
+    },
+    "optional": {
+      "const": true
+    },
+    "audience": {
+      "enum": [
+        "public",
+        "developer"
+      ],
+      "description": "Developer features are visible only to an eligible developer channel/build; never override policy or Guard."
+    },
+    "defaultEnabled": {
+      "type": "boolean"
+    },
+    "supportedScopes": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 1,
+      "items": {
+        "enum": [
+          "user",
+          "project",
+          "session"
+        ]
+      }
+    },
+    "applyBoundary": {
+      "enum": [
+        "live",
+        "next_turn",
+        "next_session",
+        "restart"
+      ]
+    },
+    "capabilityIds": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Canonical IDs defined by §33; empty for settings-only UI or backend choices."
+    },
+    "prerequisites": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "riskNotes": {
+      "type": "string"
+    },
+    "costNotes": {
+      "type": "string"
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "implementationStatus",
+        "requestedEnabled",
+        "effectiveEnabled",
+        "effectiveState",
+        "valueSource"
+      ],
+      "properties": {
+        "implementationStatus": {
+          "enum": [
+            "designed",
+            "code_present",
+            "wired",
+            "tested",
+            "verified",
+            "released"
+          ],
+          "description": "Implementation evidence state, distinct from releaseClass and runtime effectiveState. Unavailable belongs to effectiveState."
+        },
+        "requestedEnabled": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Null means no user override; config owner resolves default and policy precedence."
+        },
+        "effectiveEnabled": {
+          "type": "boolean"
+        },
+        "effectiveState": {
+          "enum": [
+            "on",
+            "off",
+            "blocked",
+            "pending_apply",
+            "unavailable"
+          ],
+          "description": "True effective state for current workspace/account/platform/policy and active session."
+        },
+        "valueSource": {
+          "enum": [
+            "default",
+            "user",
+            "project",
+            "session",
+            "system_policy",
+            "unknown"
+          ]
+        },
+        "blockedReason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pendingApplyAt": {
+          "enum": [
+            "next_turn",
+            "next_session",
+            "restart"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "effectiveEnabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "effectiveEnabled"
+            ]
+          },
+          "then": {
+            "properties": {
+              "effectiveState": {
+                "enum": [
+                  "on",
+                  "pending_apply"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "effectiveState": {
+                "const": "on"
+              }
+            },
+            "required": [
+              "effectiveState"
+            ]
+          },
+          "then": {
+            "properties": {
+              "effectiveEnabled": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "effectiveState": {
+                "enum": [
+                  "off",
+                  "blocked",
+                  "unavailable"
+                ]
+              }
+            },
+            "required": [
+              "effectiveState"
+            ]
+          },
+          "then": {
+            "properties": {
+              "effectiveEnabled": {
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "effectiveState": {
+                "enum": [
+                  "blocked",
+                  "unavailable"
+                ]
+              }
+            },
+            "required": [
+              "effectiveState"
+            ]
+          },
+          "then": {
+            "required": [
+              "blockedReason"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "effectiveState": {
+                "const": "pending_apply"
+              }
+            },
+            "required": [
+              "effectiveState"
+            ]
+          },
+          "then": {
+            "required": [
+              "pendingApplyAt"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "implementationStatus": {
+                "enum": [
+                  "designed",
+                  "code_present"
+                ]
+              }
+            },
+            "required": [
+              "implementationStatus"
+            ]
+          },
+          "then": {
+            "properties": {
+              "effectiveEnabled": {
+                "const": false
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "releaseClass": {
+            "const": "experimental"
+          }
+        },
+        "required": [
+          "releaseClass"
+        ]
+      },
+      "then": {
+        "properties": {
+          "defaultEnabled": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "audience": {
+            "const": "developer"
+          }
+        },
+        "required": [
+          "audience"
+        ]
+      },
+      "then": {
+        "properties": {
+          "defaultEnabled": {
+            "const": false
+          }
+        }
+      }
+    }
+  ]
+}

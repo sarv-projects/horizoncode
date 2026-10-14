@@ -20,7 +20,7 @@ import {
   WorkspaceRoutingQuery,
   WorkspaceRoutingQueryFields,
 } from "../middleware/workspace-routing"
-import { ApiNotFoundError, PermissionNotFoundError, ServiceUnavailableError, SessionBusyError } from "../errors"
+import { ApiNotFoundError, ConflictError, PermissionNotFoundError, ServiceUnavailableError, SessionBusyError } from "../errors"
 import { described } from "./metadata"
 import { QueryBoolean } from "./query"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -76,7 +76,6 @@ export const PermissionResponsePayload = Schema.Struct({
 })
 
 export const GuardApprovalPayload = Schema.Struct({
-  approvalID: Schema.String,
   decision: Schema.Literals(["allow_once", "deny"]),
 })
 export const SessionPaths = {
@@ -99,7 +98,7 @@ export const SessionPaths = {
   prompt: `${root}/:sessionID/message`,
   promptAsync: `${root}/:sessionID/prompt_async`,
   command: `${root}/:sessionID/command`,
-  guardApproval: `${root}/guard-approval`,
+  guardApproval: "/guard/approval/:approvalID/reply",
   shell: `${root}/:sessionID/shell`,
   revert: `${root}/:sessionID/revert`,
   unrevert: `${root}/:sessionID/unrevert`,
@@ -372,13 +371,14 @@ export const SessionApi = HttpApi.make("session")
           }),
         ),
         HttpApiEndpoint.post("guardApproval", SessionPaths.guardApproval, {
+          params: { approvalID: Schema.String },
           query: WorkspaceRoutingQuery,
           payload: GuardApprovalPayload,
           success: Schema.Boolean,
-          error: [HttpApiError.BadRequest, ServiceUnavailableError],
+          error: [HttpApiError.BadRequest, HttpApiError.NotFound, ConflictError, ServiceUnavailableError],
         }).annotateMerge(
           OpenApi.annotations({
-            identifier: "session.guardApproval",
+            identifier: "guard.approval.reply",
             summary: "Reply to a Guard approval request",
             description: "Allow a prepared effect once or deny it.",
           }),

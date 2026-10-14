@@ -10,6 +10,7 @@ import { Session } from "@/session/session"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { SessionProcessor } from "@/session/processor"
 import { SessionTools } from "@/session/tools"
+import { createToolBatchContext } from "@/session/tool-batch"
 import { Tool } from "@/tool/tool"
 import { ToolRegistry } from "@/tool/registry"
 import { Truncate } from "@/tool/truncate"
@@ -118,7 +119,7 @@ it.instance(
         state: {
           status: "running",
           input: {},
-          time: { start: 100 },
+          time: { start: 100 }
         },
       }
       const updates: number[] = []
@@ -161,6 +162,9 @@ it.instance(
       const execute = tools.tools.timing?.execute
       if (!execute) throw new Error("timing tool is missing execute")
 
+      const batch = createToolBatchContext()
+      batch.outcomes.set(callID, { status: "allowed", capabilityID: "diagnostic.timing" })
+
       yield* Effect.promise(() =>
         execute(
           {},
@@ -168,6 +172,7 @@ it.instance(
             toolCallId: callID,
             abortSignal: new AbortController().signal,
             messages: [],
+            experimental_context: batch,
           },
         ),
       )

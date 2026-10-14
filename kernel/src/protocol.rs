@@ -116,6 +116,8 @@ pub struct KernelHelloResultV1 {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KernelHelloRejectedV1 {
+    pub supervisor_nonce: String,
+    pub process_incarnation: String,
     pub error: TypedErrorV1,
 }
 
@@ -353,11 +355,26 @@ pub fn write_message<W: Write>(
     Ok(())
 }
 
+fn control_metadata(control: &RpcControlV1) -> (u64, &str) {
+    match control {
+        RpcControlV1::Subscribe { owner_epoch, process_incarnation, .. }
+        | RpcControlV1::Unsubscribe { owner_epoch, process_incarnation, .. }
+        | RpcControlV1::Ack { owner_epoch, process_incarnation, .. }
+        | RpcControlV1::PageEnd { owner_epoch, process_incarnation, .. }
+        | RpcControlV1::ResnapshotRequired { owner_epoch, process_incarnation, .. }
+        | RpcControlV1::CancelRequest { owner_epoch, process_incarnation, .. }
+        | RpcControlV1::Ping { owner_epoch, process_incarnation, .. } => (*owner_epoch, process_incarnation),
+    }
+}
 pub(crate) fn validate_message(message: &RpcMessageV1) -> Result<(), ProtocolError> {
     match message {
         RpcMessageV1::Hello(hello) => validate_hello(hello),
         RpcMessageV1::HelloResult(result) => validate_hello_result(result),
-        RpcMessageV1::HelloRejected(rejected) => validate_typed_error(&rejected.error),
+        RpcMessageV1::HelloRejected(rejected) => {
+            text("supervisorNonce", &rejected.supervisor_nonce, MAX_IDENTIFIER_BYTES)?;
+            text("processIncarnation", &rejected.process_incarnation, MAX_IDENTIFIER_BYTES)?;
+            validate_typed_error(&rejected.error)
+        }
         RpcMessageV1::StartupStatus(status) => match status.as_ref() {
             KernelStartupStatusV1::Starting | KernelStartupStatusV1::Ready => Ok(()),
             KernelStartupStatusV1::Failed(error) => validate_typed_error(error),
@@ -431,12 +448,16 @@ pub(crate) fn validate_message(message: &RpcMessageV1) -> Result<(), ProtocolErr
             text("eventType", &event.event_type, MAX_IDENTIFIER_BYTES)?;
             validate_value_bound("payload", &event.payload, MAX_EVENT_PAYLOAD_BYTES)
         }
-        RpcMessageV1::Control(control) => match control.as_ref() {
+        RpcMessageV1::Control(control) => {
+            let (owner_epoch, process_incarnation) = control_metadata(control);
+            validate_frame_metadata(owner_epoch, process_incarnation)?;
+            match control.as_ref() {
             RpcControlV1::Subscribe {
                 subscription_id,
                 owner_kind,
                 owner_id,
                 after,
+                ..
             } => {
                 text("subscriptionId", subscription_id, MAX_IDENTIFIER_BYTES)?;
                 text("ownerKind", owner_kind, MAX_IDENTIFIER_BYTES)?;
@@ -452,12 +473,13 @@ pub(crate) fn validate_message(message: &RpcMessageV1) -> Result<(), ProtocolErr
                 }
                 Ok(())
             }
-            RpcControlV1::Unsubscribe { subscription_id } => {
+            RpcControlV1::Unsubscribe { subscription_id, .. } => {
                 text("subscriptionId", subscription_id, MAX_IDENTIFIER_BYTES)
             }
             RpcControlV1::Ack {
                 subscription_id,
                 through,
+                ..
             } => {
                 text("subscriptionId", subscription_id, MAX_IDENTIFIER_BYTES)?;
                 validate_cursor(through)
@@ -474,6 +496,7 @@ pub(crate) fn validate_message(message: &RpcMessageV1) -> Result<(), ProtocolErr
                 subscription_id,
                 requested,
                 latest,
+                ..
             } => {
                 text("subscriptionId", subscription_id, MAX_IDENTIFIER_BYTES)?;
                 validate_cursor(requested)?;
@@ -488,11 +511,12 @@ pub(crate) fn validate_message(message: &RpcMessageV1) -> Result<(), ProtocolErr
                 }
                 Ok(())
             }
-            RpcControlV1::CancelRequest { request_id } => {
+            RpcControlV1::CancelRequest { request_id, .. } => {
                 text("requestId", request_id, MAX_IDENTIFIER_BYTES)
             }
-            RpcControlV1::Ping { nonce } => text("nonce", nonce, MAX_IDENTIFIER_BYTES),
-        },
+            RpcControlV1::Ping { nonce, .. } => text("nonce", nonce, MAX_IDENTIFIER_BYTES),
+            }
+        }
     }
 }
 
@@ -1043,6 +1067,7 @@ fn message_to_value(message: &RpcMessageV1) -> Value {
                 owner_kind,
                 owner_id,
                 after,
+                ..
             } => {
                 put(&mut map, "kind", string("subscribe"));
                 put(&mut map, "subscriptionId", string(subscription_id));
@@ -1050,13 +1075,14 @@ fn message_to_value(message: &RpcMessageV1) -> Value {
                 put(&mut map, "ownerId", string(owner_id));
                 put_optional(&mut map, "after", after.as_ref().map(cursor_to_value));
             }
-            RpcControlV1::Unsubscribe { subscription_id } => {
+            RpcControlV1::Unsubscribe { subscription_id, .. } => {
                 put(&mut map, "kind", string("unsubscribe"));
                 put(&mut map, "subscriptionId", string(subscription_id));
             }
             RpcControlV1::Ack {
                 subscription_id,
                 through,
+                ..
             } => {
                 put(&mut map, "kind", string("ack"));
                 put(&mut map, "subscriptionId", string(subscription_id));
@@ -1082,7 +1108,7 @@ fn message_to_value(message: &RpcMessageV1) -> Value {
                 put(&mut map, "requested", cursor_to_value(requested));
                 put(&mut map, "latest", cursor_to_value(latest));
             }
-            RpcControlV1::CancelRequest { request_id } => {
+            RpcControlV1::CancelRequest { request_id, .. } => {
                 put(&mut map, "kind", string("cancel_request"));
                 put(&mut map, "requestId", string(request_id));
             }

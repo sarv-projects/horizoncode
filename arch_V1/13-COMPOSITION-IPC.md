@@ -54,15 +54,17 @@ Shutdown:
 
 Private transport is authenticated local IPC using bounded length-prefixed MessagePack HzKernelRpcV1.
 
-Every frame carries:
-- protocol version;
+The bootstrap handshake is the only exception to owner-epoch fencing. `KernelHelloV1` and `KernelHelloRejectedV1` are bound to the supervisor nonce and process incarnation; they do not claim an established owner epoch. `KernelHelloResultV1` echoes that binding and establishes the required positive durable owner epoch.
+
+Every subsequent request, response, event, control, page, ACK, and ping frame carries:
+- exact negotiated protocol version;
 - request/event ID;
 - caller/service;
-- owner epoch/incarnation;
+- exact positive owner epoch and process incarnation;
 - payload type;
-- payload byte bound/checksum where required.
+- bounded payload byte length/checksum where required.
 
-Unknown message/version/oversize payload fails closed.
+The host validates epoch/incarnation before dispatch. Missing or stale values, unknown message/version, and oversized payloads fail closed.
 
 ## 13.4 Session observation
 

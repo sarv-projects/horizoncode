@@ -2,7 +2,7 @@ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Agent } from "@/agent/agent"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Pty } from "@opencode-ai/core/pty"
-import { ServerAuth } from "@/server/auth"
+import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Command } from "@/command"
@@ -40,7 +40,7 @@ import {
   SummarizePayload,
   UpdatePayload,
 } from "../groups/session"
-import { PermissionNotFoundError, ServiceUnavailableError } from "../errors"
+import { ConflictError, PermissionNotFoundError, ServiceUnavailableError } from "../errors"
 import * as SessionError from "./session-errors"
 
 const SHELL_UNAVAILABLE_MESSAGE =
@@ -67,9 +67,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const summary = yield* SessionSummary.Service
     const events = yield* EventV2Bridge.Service
     const pty = yield* Pty.Service
-    const serverAuth = yield* ServerAuth.Config
     const scope = yield* Scope.Scope
-
     const list = Effect.fn("SessionHttpApi.list")(function* (ctx: { query: typeof ListQuery.Type }) {
       const directory = ctx.query.directory ? yield* InstanceState.directory : undefined
       return yield* session.list({
@@ -440,22 +438,27 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return true
     })
     const guardApproval = Effect.fn("SessionHttpApi.guardApproval")(function* (ctx: {
+      params: { approvalID: string }
       payload: typeof GuardApprovalPayload.Type
     }) {
-      if (!ServerAuth.required(serverAuth))
-        return yield* new ServiceUnavailableError({
-          message: "Guard approvals require validated server authentication.",
-          service: "guard.approval",
-        })
-      yield* pty.replyGuardApproval(ctx.payload).pipe(
-        Effect.mapError(
-          () =>
-            new ServiceUnavailableError({
-              message: "Guard approval could not be resolved.",
-              service: "guard.approval",
-            }),
-        ),
-      )
+      const principal = yield* Effect.serviceOption(TrustedPrincipalContext)
+      if (Option.isNone(principal)) return yield* new HttpApiError.NotFound({})
+      yield* pty
+        .replyGuardApproval({ approvalID: ctx.params.approvalID, decision: ctx.payload.decision })
+        .pipe(
+          Effect.catchTag("SessionSupervisorError", (error) => {
+            switch (error.stage) {
+              case "approval-not-found":
+                return Effect.fail(new HttpApiError.NotFound({}))
+              case "approval-conflict":
+                return Effect.fail(new ConflictError({ message: "Guard approval is no longer active" }))
+              case "approval-invalid":
+                return Effect.fail(new HttpApiError.BadRequest({}))
+              default:
+                return Effect.fail(error)
+            }
+          }),
+        )
       return true
     })
 

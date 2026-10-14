@@ -76,28 +76,8 @@ Historical architecture/work logs are non-normative. The committed-base historic
 4. Native OpenCode adapter is DESIGN only. No production official-runtime lifecycle/session bridge is wired.
 5. horizoncode npm/CLI identity is planned, not published. Internal @opencode-ai identifiers remain compatibility dependencies until a tested migration. hzcode is an optional future command alias.
 6. Beginner visual-edit/deploy journey is designed but not implemented. Preview, source selection, deployment verification and rollback require real acceptance tests.
-7. CI full-validation workflow exists locally but has not executed on GitHub; local Turbo typecheck success is not GitHub Actions CI success.
-The guarded terminal contract is accepted/review READY in `.slim/deepwork/horizon-guarded-pty.md` `#4232`. One host-scoped `hz-kernel` in the existing kernel crate owns Guard/EffectHost/ExecutionHost and terminal processes across dynamically registered Locations; Core holds one host manager plus per-Session projection workers. No global workspace root or second process manager. User approval is explicit `allow_once`/`deny`, challenge-bound and one-use; terminal grants are full-access, never sandboxed. Details and wire bounds live in `arch_V1/14`, `30`, `32`, `33`, `37` and the operative plan.
-   Historical OpenCode overlay verification on 2026-10-12: typecheck; targeted suite (614 passed, 1 skipped, 0 failed; 1,843 assertions across 58 files); changed-source Prettier checks; `git diff --check`; overlay visibility audit; pinned-source bootstrap. The MCP CLI test used a local loopback server and observed zero requests. This was an earlier source snapshot; the focused 2026-10-13 results below are the current evidence. No full-workspace or Windows acceptance was exercised.
-Current runtime evidence (2026-10-13): `packages/core/test/session-projector.test.ts` passed 10 tests / 23 assertions. Core and OpenCode typechecks passed after the projection and route composition fixes. Local Linux acceptance used the existing `session_supervisor` binary, a test-only observer manifest, and a local mock provider: TUI Guarded write, `/undo`, and `/redo` changed the workspace file `before` -> `after` -> `before` -> `after`; WebView `Revert message` and `Restore message` invoked `POST /session/:id/revert` and `/unrevert`, both HTTP 200, and changed the file `after` -> `before` -> `after`. The TUI outside-worktree attempt was rejected as `path_outside_or_unsafe`; its sentinel stayed `before`. The V1/Core bridge persists validated relative `restoreFiles` and resolves them to legacy absolute paths for API reads. The in-memory OpenCode `revert-compact` test cannot exercise Rust observation because the sidecar cannot observe in-memory EventV2 DBs; file-backed runtime E2E covers restore. Fixed the V2 prompt-wake failure by passing `createRoutes` Layer replacements into `buildLocationServiceMap`; focused retry/promotion test passed 1 / 10 assertions, full `httpapi-session.test.ts` passed 27 / 148. PTY service suite `cd packages/core && bun test --timeout 30000 test/pty/pty-session.test.ts` passed 7/7 on Linux; it exercises current PTY behavior only, not Guard mediation. Existing evidence remains: kernel 160 tests / 15 suites; VCS 13 / 24 and Workspace 37 / 127 through local Rust supervisor; TUI workspace confirmation 1 / 1. Full 36-package Turbo typecheck and Windows acceptance were not run.
-
-Question/clarification audit: `question`/`question.ask` code is present, wired in WebView and two TUI paths, and service/component/mock-tested, including multiple questions, MCQ/single-vs-multi choice, custom text, answer and dismissal. It is not specified as a canonical architecture/capability/acceptance item and has no live-runtime evidence. WebView uses V2 question routes; the new TUI lists through V2 but replies/rejects through V1. This is not Guard permission `ASK`. Record this as a V1 design/route-parity/runtime-verification gap; do not claim `question.ask` planned or verified.
-## Current terminal implementation checkpoint — 2026-10-13
-
-The source slice is **partial, unintegrated and unverified**. The existing V1 `/pty` and V2 `/api/pty` live route still reaches Bun `Pty.Service` until a full guarded cutover; no terminal-slice tests/builds/formatters were run.
-
-- Rust additions include `kernel/src/terminal.rs` (validation, grant/replay/cursor primitives) and `kernel/src/terminal_process.rs` (reported Linux PTY and cfg(windows) ConPTY/Job Object backend). No test/build verified these modules. Process-tree kill-on-owner-close is not proven; the Windows peer/state-directory DACL/owner proof is explicitly unresolved.
-- `session_supervisor` was changed to projection/ACK-only and `ownerEpoch` was added to HelloResult, but no integrated `hz-kernel` host binary/lease owner/multiplexed RPC/EffectHost dispatch/terminal service/artifact/recovery is proven. Removing the per-session effect owner before its host replacement works leaves a migration regression risk.
-- Core `packages/core/src/session/supervisor.ts` has partial host launcher/client/Location APIs; `packages/core/src/trusted-principal.ts` defines the agreed context. Missing: positive epoch propagation/fencing, working Guard prepare/resolve and lease consumption, challenge reply lifecycle, PTY host calls/events and `SessionV2.shell`; direct Core file-effect migration remains incomplete.
-- Root OpenCode, route and UI modules are not complete. The ShellAndTui handoff only claims a TUI error-visibility edit, app submission test update and session route description edit. Model `bash`, user `!`, GuardApproval UI, V1/V2 ingress/ticket/origin migration, WebView PTY adapter and every files.* caller have no verified end-to-end cutover.
-- `TerminalDocs` updated `arch_V1/14`, `30`, `32`, `33`, `37`, `10-DELIVERY.md`, capability registry and plan; this handoff also records approvalID-only reply lookup and 404/409/400 mapping. There is no root `SPEC-CHANGELOG.md`; no such file was created.
-- New source files `kernel/src/terminal.rs`, `kernel/src/terminal_process.rs`, and `packages/core/src/trusted-principal.ts` are ignored by `.gitignore:6 (*)`, so Git status omits them. Review the user's dirty `.gitignore` and overlay-visibility rule, then explicitly allowlist first-party changes before relying on Git diff/commit.
-- Accidental edits under the nested reference-only `opencode/` checkout were restored using the inspected diff; recheck that subtree is clean. Do not use it as implementation target.
-- All terminal agents were parked in the latest agent-list check. `RustTerminalKernel.HostLeaseWindows` reported bounded accept/retry work, but DACL/owner validation remains unfinished. Check `history://` before touching shared files; preserve their incomplete changes.
-- Reference-gap rule (user re-emphasized): for unknown/missing features inspect pinned OpenCode and Oh My Pi implementation, especially Oh My Pi Settings behavior/source/state/tests, not screenshots alone. Root `AGENTS.md` carries the durable rule; no source was copied for this terminal contract.
-
-V1 is **not release-ready**. P1.3 remains the active gate; later P2–P9 gates and Windows-native acceptance remain open. The user requires both WebView and terminal/TUI. Built-in `question`/`question.ask` supports multiple questions/MCQ in code and mock tests but remains absent from canonical plan/catalog/acceptance and lacks live runtime evidence; this is separate from Guard permission `ASK`.
-
+7. As of the 2026-10-12 local evidence snapshot, GitHub Actions had not run. PR #1 subsequently obtained a successful full-validation workflow for commit `c325172492da5741ed416eb018bf724612a6ccf2` (run `38476485241`); see the dated PR completion audit below for current limitations. A green workflow is not proof of Experimental Settings runtime implementation.
+8. Moving-tree caveat: after the green Turbo run, additional kernel source/tests changed and four legacy memory/thread schema prototype files were moved into a newly Git-visible non-normative archive. A source-import scan found no remaining imports of those prototype identifiers in the active kernel/Core/OpenCode/schema/server/indexd roots. These later edits were not part of the completed Turbo/Guard test snapshot and require a fresh final validation when all writers have finished.
 
 ## Git and source model
 
@@ -140,9 +120,116 @@ OpenCode promotional Zen free models remain eligibility-restricted. Native OpenC
 
 ## Next exact engineering work
 
-1. Recheck Git status, ignored paths, active agents/processes and disk. Preserve the full dirty tree, keep nested `opencode/` read-only, and do not commit/push/reset/clean.
-2. Finish and integrate the Rust host singleton, durable cross-platform epoch/lease and authenticated RPC; restore Guarded file effects through the host before removing any old path; implement dynamic Locations, terminal process/input/resize/cancel/status/events, bounded artifacts/search and UNKNOWN/recovery.
-3. Finish Core host supervision, trusted principal context, epoch fencing, Guard challenge/one-use lease prepare/resolve/execute APIs, PTY/event adapter and V2 `Session.shell`; migrate all direct Core file-effect callers.
-4. Finish OpenCode model ToolBatch `bash`/files.* migration; root V1/V2 PTY/ticket/origin/reply routes; WebView terminal panel adapter; TUI/app/CLI `!` shell and shared explicit GuardApproval UI. No `Permission` autoaccept/always, `ctx.ask`, direct Bun process, or fallback.
-5. Review all diffs and Git visibility, then run targeted Rust/Core/OpenCode/TUI/app checks plus live Linux allow/deny/recovery smoke for both WebView and TUI. Native Windows ConPTY, Job Object, named-pipe SID/ACL/peer/fencing acceptance is mandatory; WSL/cross-compilation is not acceptance.
-6. Only after P1.3 is complete, continue P2–P9 in the operative plan; the previous 36-package typecheck and local revert/VCS/Workspace tests do not verify this slice.
+1. Complete the full-workspace typecheck/release-gate work separately from the fast push gate.
+2. Continue P1.3 with direct shell/process/Task and other active mutation origins, fail-closing unsupported paths.
+3. Keep overlay-visibility and clean-clone gates green for every new source edit.
+4. Only after the Guard boundary is broad enough, prototype selective OMP transport under the existing direct-session owner.
+5. Prototype the independent official OpenCode native adapter with lifecycle/version/permission/restart tests.
+6. Implement beginner preview/visual-edit/deploy verification only with rollback and observable-result tests.
+
+## GitHub PR #1 implementation completion audit — 2026-10-14 (remote source only)
+
+Reviewed the active architecture/implementation plan and the relevant source paths for optional Settings, experimental flags, TUI and GUI. This is a **targeted line/path review of the related implementation**, not a claim to have read and verified every file in the ~7,700-entry checkout tree. Review reference `c325172492da5741ed416eb018bf724612a6ccf2` plus subsequent audit edits on the draft PR branch. Current main remains at `dead4339cae87f9e48c25e4e9586096d600bb164` during this audit.
+
+| Gate/feature | Observed source or evidence | Honest completion |
+|---|---|---|
+| P1.2-B observer | Previous source-and-test-bound handoff evidence (§ above) | Locally VERIFIED only for its stated test scope; not evidence for all platforms |
+| P1.3 universal effects | Real V1/V2 Rust-mediated guarded write only; other effect origins still inventoried but not migrated | INCOMPLETE (current implementation gate) |
+| Experimental feature **design** | §16.15, §17.9, §20.10.1, §32 FEAT-001..014, §33.28, `contracts-v2/feature-exposure-v1.schema.json` | DESIGNED |
+| Experimental feature **static tests** | Positive/negative fixtures added to `scripts/architecture/validate_convergence.py` | CODE_PRESENT; record execution on this PR head before TESTED |
+| Runtime feature-exposure descriptor / config precedence | Core V2 config, V1 config and migration, OpenCode instance config and env RuntimeFlags inspected | NOT IMPLEMENTED |
+| Explicit per-feature experimental opt-in & blocked state | Broad inherited `OPENCODE_EXPERIMENTAL` controls exist; no new governed resolver | NOT IMPLEMENTED |
+| TUI Features/Experimental Settings and readable tags | Existing app/command palette/status inspected; no matching metadata/view | NOT IMPLEMENTED |
+| GUI/web Features/Experimental Settings | Existing desktop/web dialog only offers General, Shortcuts, Servers, Providers and Models | NOT IMPLEMENTED |
+| Backend/API/TUI/GUI parity and migration | No FEAT-001..014 executable integration suite observed | NOT VERIFIED |
+| Other planned V1 capability families | Current root architecture §10/§33 and status above describe target vs implementation | Not declared complete by documentation or this audit |
+
+CI chronology: `HorizonCode full validation` GitHub Actions run [38476485241](https://github.com/sarv-projects/horizoncode/actions/runs/38476485241) passed for `c325172492da5741ed416eb018bf724612a6ccf2` after restoring the nested Bun `packages/opencode` workspace. That is real CI for that commit, **not runtime verification of Experimental Settings**. New audit-branch commits require fresh CI and schema checks. Do not carry old “zero workflow runs” claims forward as present-tense truth.
+
+Next: first P1.3 effect-origin migration, then implement `FeatureExposureV1` through the existing config owner; UI surfaces read authoritative effective state. §20.10.1 lists concrete code locations, §32 FEAT-001..014 lists acceptance, and the operative plan records unchecked implementation steps. No source-runtime feature implementation has been completed by this audit.
+
+## Feature Settings implementation checkpoint — 2026-10-14 (supersedes earlier design-only status)
+
+Code now exists **on draft PR #1 only**, not on `main`:
+- `packages/core/src/v1/config/feature-exposure.ts` — derived metadata for existing backend config; stable compaction auto/prune options and three unavailable Experimental candidates. This is not an independent settings registry or policy authority.
+- `packages/core/test/config/feature-exposure.test.ts` — focused Bun tests for defaults, disabled experiments, unique IDs and safe minimal patches.
+- `packages/tui/src/component/dialog-features.tsx` and `packages/tui/src/app.tsx` — working-code candidate for `/features` with explicit Experimental labels and existing SDK config read/update.
+- `packages/app/src/components/settings-v2/features.tsx` and `dialog-settings-v2.tsx` — desktop/web Features and Experimental tabs using existing server-global config updates; GUI-local `settings.v3` is not used for backend authorization.
+- `scripts/architecture/run_full_gate.sh` runs the focused Bun test **from the Core package directory**, respecting the pinned upstream `bunfig.toml` test-root restriction.
+
+**Verified as of this checkpoint:** the GitHub full-validation workflow passed the pure feature resolver commit, TUI dialog/app wiring commit, and desktop/web feature view+tabs commit `50949e9f63bd740ad3deb8fe29b3a33a653763da`. The first attempt to run the *new* test command from monorepo root failed due to intentionally disabled root test discovery, not type errors; the package-local invocation is committed and must pass its own PR-head workflow. No interactive device smoke test was run.
+
+**Still open:** feature-specific runtime server projection (UI currently derives from *server-returned config* using shared code), source-precedence / lock-source resolution, revision-aware concurrent writes, active-session pending-apply fidelity, arbitrary optional-feature inventory and FEAT-001..014 end-to-end tests. The three experimental engine backends remain unavailable even when listed, and P1.3 universal mutation mediation is a separate unfinished gate. This is a real initial product UI/config slice, not completed full Experimental infrastructure.
+
+## V1 release-gap inventory and P1.3 bounded ToolBatch slice — 2026-10-14
+
+Evidence boundary: targeted normative owners (§10, §14, §17, §18, §32), operative checklist and the current source/tests under `packages/opencode/src/session/tool-batch.ts` and `packages/opencode/test/session/tool-batch.test.ts`. This is **not** a claim that every tracked line or every future capability has been tested. PR commits are not on `main`; `HorizonCode full validation` last passed on prior PR head `eb57b447a239e5fc9acac33f3afe9f3153d5b2c4`. Await a **new passing run on the final slice commit** before marking this slice tested.
+
+| V1 requirement | What is still needed to claim release completion |
+|---|---|
+| P0 pin/provenance | Preserve upstream snapshot and legal notices; full redistributable-license and packaging proof is still P9 |
+| P1.2-B Session observer | Existing positive local evidence; platform/restart/support matrix must match shipped platforms |
+| P1.3 universal Guard | Shell/process, Task/subagent, MCP/plugin/hook, hosted provider, network/settings/auth, LSP/DAP, browser, desktop, REPL, automation and external agent effect origins remain unverified or gated; active release blocker |
+| P2 managed control | Accepted SpecVersion, durable Goal/Run/Task/Attempt, leases, pause/cancel, restart, unknown-effect reconciliation, evidence-bound final result |
+| P3 coding/RepoIntel | Guarded normal read/search/patch/build/test/diff/retry; revision-safe edit; lexical/symbol index/update and measured latency |
+| P4 language/debug/REPL | LSP edit safety, DAP lifecycle/evaluate isolation, bounded Python/JS worker and restart tests |
+| P5 browser/desktop/web | Per-OS real interaction safety, stale-ref/permission tests; web search cost/auth/source provenance |
+| P6 agents/settings | Typed bounded subagents, plugin/skill/hook/MCP trust; provider/model UX, one ActionDescriptor, server-authoritative optional Settings with source/lock/revision/pending and TUI/GUI/API parity; current `/features` slice is partial |
+| P7 UI/artifacts/automation | Stable streaming/scroll, bounded UI mux/renderer, source-faithful artifacts/SVG/Mermaid/tables, measured costs and durable jobs |
+| P8 long horizon | Real crash/recovery and stop-budget tests, bounded worktree parallelism, final outcome verification and cross-model evaluation |
+| P9 ship | Legal/attribution, signing/update scope, native **Windows** sandbox/durability qualification, install/upgrade/migration, package name/CLI, clean-machine and security/UX/performance release gates |
+
+**This implementation slice:** the pinned V1 streamed `tool-call` terminal gate now limits **32 tool calls**, **256 KiB per call JSON argument**, **512 KiB aggregate arguments**, and **256 UTF-8 bytes** each for the tool name/call ID, rejecting before accumulation, parsing, validation, Guard preparation, or local callback dispatch. Tests cover overflow count, single/aggregate bytes, overlong identities, valid 32-read boundary and mixed valid write plus oversized read. These numbers are safety ceilings for provider **terminal `tool-call` parts**, not coverage of stream lifetime, partial tool-input deltas, arbitrary stdout, overall tool results, memory across sessions, blocked provider-executed tools or external effect origins.
+
+Remaining P1.3 work in priority order: (1) bounded partial tool-call delta/stream timeout and cancellation semantics; (2) source-by-source shell/process/Task admission or explicit unavailable; (3) stable permission/lease and durable effect/UNKNOWN recovery across the rest; (4) no-effect bypass tests for every enabled origin. Green tests for this limited bound do **not** close Gate 2.
+
+No extra agent runtime, feature registry or duplicate effect policy is introduced by this slice.
+
+## P1.3 ToolBatch callback provenance and AI SDK V3 partial-input budget — PR #2 (2026-10-14)
+
+**Repository state:** PR #1 was merged into `main` as `ee1db242a76c0d7a6153f7d644af565b954ab0df`, and its final head `c8027ad004c9ac8a29c69832fc6605c7c4a29464` passed GitHub full validation (run 38508152414). Earlier text describing PR #1 as only a draft/branch is historical. PR #2, `fix/p1-3-tool-batch-provenance-and-delta-budget`, is a distinct **unmerged** implementation slice from that main commit.
+
+**New implementation on PR #2:**
+- `packages/opencode/src/session/tool-batch.ts`: each allowed/admitted callback result includes the pinned canonical capability ID. No read-only or internal-control callback is permitted merely because a call ID is supplied without a completed and validated batch decision. A reused call ID for another capability is denied. `internal: true` bypasses Rust preparation **only for a single actual control** capability, not an effectful tool.
+- The middleware bounds AI SDK **V3 `tool-input-start`/`tool-input-delta`/`tool-input-end`** frames by ID count, per-call/aggregate UTF-8 argument bytes and delta-frame count without accumulating full argument text. A partial ID without a terminal `tool-call` and a streaming/final tool-name mismatch fail closed before any callback.
+- `packages/opencode/test/session/tool-batch.test.ts`: negative/positive tests cover read/control callback admission, capability confusion, internal-effect denial, streamed overflow, missing terminal, mismatched names and acceptable valid streaming input. The isolated metadata test in `test/session/tools.test.ts` explicitly supplies its simulated validated read-only outcome; direct calls without admission remain denied.
+
+**Important distinction:** this does *not* implement stream-lifetime deadlines, bound arbitrary tool output or guard the remaining shell/Task/MCP/plugin/browser/desktop/etc. effect origins. Hosted/provider-executed effects still require genuine pre-dispatch control; returned denial cannot undo an already external action. P1.3 universal effect mediation and Windows release qualification remain open.
+
+**Verification chronology:** intermediate CI commits intentionally containing tests before implementation, or testing obsolete SDK event names/direct-call fixtures, failed. The current branch's full typecheck/Guard/ToolBatch test result must be read from the latest PR-head GitHub Actions check. Do **not** mark this slice TESTED/VERIFIED until that run actually passes. No local desktop smoke test, provider inference or release installation occurred.
+
+## P1/P2 runtime gate checkpoint — PR #4 (2026-10-14)
+
+**Source:** branch fix/p1-p2-guard-cancel-managed-foundation-20261014 from main at 5b989930. PR #3 is separately open. This is a targeted code-and-contract review, not a complete line-by-line audit of the hydrated upstream codebase.
+
+**P1 implemented in this PR (latest branch):** propagate cancellation to the provider stream; enforce a ten-minute upper bound on stream lifetime even when it stops emitting frames; import all five malformed SDK V3 partial lifecycle tests from PR #3 into this branch; deny unmediated GitLab workflow-model execution before provider request. These changes are NOT universal Guard mediation, and provider connection setup/remote executed effects still require dedicated proof.
+
+**P2 implemented in this PR (latest branch):** internal Rust managed control state backed by durable OwnerLogV2. Tests cover accepted spec, Task READY/dependency and Attempt admission, replay-safe pause/cancel/idempotency, UNKNOWN after admitted-but-unsettled restart, and Task PASS/criterion evidence/final-revision Run finalization transitions. The evidence commands are internal ONLY and are not a trusted verifier: production RPC, executor, scheduler, resource leases, authenticated acceptance, independent verification of submitted evidence and UI remain unwired. Do not describe managed Runs as operational.
+
+### P1 effect-origin coverage (not a completion claim)
+
+| Origin | Current status | Remaining production requirement |
+|---|---|---|
+| V1/V2 provider ToolBatch | Bounded files.write; PR #3 partial lifecycle code incorporated into this branch; abort and hard ten-minute stream deadline included | Pre-stream/provider request deadlines, true process cancellation, stdout/results, UNKNOWN settlement, hostile hosted/provider fixtures |
+| Direct shell/process, Git/build/test | Existing direct spawn/interpolation entry points bypass universal Guard | Guard/ExecutionHost before spawn; handle-relative constraints, sandbox/lease; negative process bypass tests |
+| Subagents/Task/command | Direct TaskTool and command-template shell execution still exist | Parent scope and epoch/fence inheritance, child launch Guard, pre-interpolation mediation |
+| Plugins/skills/hooks/MCP | Runtime hook and MCP entry points still outside full mediated execution | Capability-scoped registration, enforced pre-dispatch admission and exfiltration limits |
+| Hosted/provider tools | Post-response denial cannot undo provider-side effects | Disable/pre-authorize before request; per-provider tests |
+| LSP/DAP/REPL, browser/desktop, network/settings/auth, automation | Not universally admitted | Canonical effect origin/target, lease, settlement and supported-OS denial tests |
+| Rust files.write | First positive guarded effect supported | Multi-resource policy, stale preconditions, receipt/reconciliation, platform qualification |
+
+### P2 managed lifecycle coverage (not a completion claim)
+
+| Aggregate | Present now | Next required |
+|---|---|---|
+| Goal/SpecVersion | Internal digest/criteria/acceptance projection | Authenticated reviewed immutable full spec, supersession/version history |
+| Run/Task/Attempt | Durable internal admission state | Worker scheduler, task readiness after independent PASS, resource/fence/lease integration |
+| Pause/resume/cancel/restart | Persisted admission fences with replay tests | Signal propagation, active effect settlement, real crash/reconnect tests |
+| Idempotency/UNKNOWN | Duplicate logical command recognition, UNKNOWN blocks readmission | EffectReceipt reconciler, safe retry/new attempt or NEEDS_YOU |
+| SessionLink | Read-only observer exists | Exact managed session correlation, authenticated API, one conversation owner |
+| Verification/final result | Internal Task PASS, criterion revision and Run finalization transitions with tests | AUTHENTICATED independent verifier/receipt source, current actual revision/human edit detection, authenticated terminal action and real-work acceptance |
+| OS support | Linux tests only | Native Windows storage, sandbox and process qualification |
+
+**Release sequence:** close universal P1 origins and bypass tests first; keep unsupported origins unavailable when a safe replacement is not ready. Then wire authenticated spec acceptance; durable scheduler/worker leases; effect receipt and reconciliation; independent verifier; cancellation/restart/long-horizon acceptance. Direct Session stays direct, no mandatory Goal.
+
+**Validation rule:** CI must pass on PR #4 final head with the explicit managed-control Rust restart tests and streamed cancellation test. A green source/typecheck alone is not a release or real-platform claim.

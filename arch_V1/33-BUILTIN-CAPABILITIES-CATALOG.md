@@ -631,3 +631,13 @@ capabilities cannot masquerade as supported.
 ## 33.27 Canonical naming, aliases and unknown effect class
 
 The §33 tool IDs are the sole canonical names. contracts-v2/capability-registry-v1.json is a design-time inventory/alias seed derived from this catalog; it is NOT evidence that all listed tools work. Prior fs.*, exec.*, agent.* spellings and impact.analyze are mapped to existing canonical targets with their same effect classification, authorization and schema generation. Ambiguous/missing aliases deny. UNKNOWN effect class is fail-closed; the source owner must classify it before use. The service method/error/generation requirements are §37.
+
+## 33.28 Feature exposure class and optional settings reconciliation (A-V2-29)
+
+Canonical capability IDs and the runtime tool authority remain owned here and in their existing host registry; **`FeatureExposureV1` is a UI/settings projection, not a second capability registry**. Its machine-validation contract lives in `contracts-v2/feature-exposure-v1.schema.json`; its UX/precedence and surface behavior are solely §16.15.
+
+For every **user-optional** feature, the owner provides one discoverable setting with unique key and a release class of `experimental`, `beta` or `stable`. Related capability IDs are refs to this catalog, never copied/aliased independently to widen permission. Pure presentation/optimization options may have no capability ID and use the existing owning config instead. Product Settings, CLI config inspection, TUI labels and eventual desktop/web/API views must all derive the same descriptor/effective-state resolution.
+
+Do not confuse release class with code readiness: `experimental` does not imply CODE_PRESENT or WIRED, and runtime cannot expose unimplemented tools. Every optional **experiment** defaults disabled until explicitly enabled in an eligible build/channel and passes its own Guard/platform/security gates. A blocked or absent feature is disabled with a reason; enabling its setting cannot authorize a denied tool, start an unapproved external effect or silently bill a provider. Source provenance, settings value/source/apply boundary, eligibility and effective status are surfaced per §16.15.
+
+Runtime validation must reject duplicate setting keys, nonexistent referenced capability IDs, missing Settings entries for exposed optional features, default-enabled experiments, developer-only experiments advertised as public, and inconsistencies between TUI/API/Settings effective state.
