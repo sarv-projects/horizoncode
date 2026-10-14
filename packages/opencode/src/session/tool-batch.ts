@@ -142,19 +142,23 @@ export function gateToolCallStream(
     new TransformStream<LanguageModelV3StreamPart, LanguageModelV3StreamPart>({
       transform(part, controller) {
         if (finish) throw new Error("Provider emitted data after finish")
-        // ProviderV3 implementations differ in the name of their streamed
-        // argument field. Bound both spellings and never treat a partial delta
-        // as permission to execute a tool.
-        const kind: string = part.type
-        if (kind === "tool-call-streaming-start" || kind === "tool-call-delta") {
-          const callID: unknown = "toolCallId" in part ? part.toolCallId : undefined
+        // AI SDK Provider V3 emits tool-input-start/delta/end before the
+        // complete tool-call. Track partial bytes without storing or approving
+        // incomplete arguments. Tool callbacks execute only after terminal
+        // batch validation.
+        if (
+          part.type === "tool-input-start" ||
+          part.type === "tool-input-delta" ||
+          part.type === "tool-input-end"
+        ) {
+          const callID = part.id
           if (typeof callID !== "string" || Buffer.byteLength(callID, "utf8") > MAX_TOOL_IDENTITY_BYTES)
             throw new Error("Tool batch limit exceeded: tool identity")
           if (!partialIDs.has(callID) && partialIDs.size >= MAX_TOOL_BATCH_CALLS)
             throw new Error("Tool batch limit exceeded: streaming call count")
           partialIDs.add(callID)
-          const name: unknown = "toolName" in part ? part.toolName : undefined
-          if (name !== undefined) {
+          if (part.type === "tool-input-start") {
+            const name = part.toolName
             if (typeof name !== "string" || Buffer.byteLength(name, "utf8") > MAX_TOOL_IDENTITY_BYTES)
               throw new Error("Tool batch limit exceeded: tool identity")
             const previous = partialNames.get(callID)
@@ -162,12 +166,11 @@ export function gateToolCallStream(
               throw new Error("Tool batch denied: streaming tool identity mismatch")
             partialNames.set(callID, name)
           }
-          if (kind === "tool-call-delta") {
+          if (part.type === "tool-input-delta") {
             partialChunks++
             if (partialChunks > MAX_TOOL_STREAM_DELTA_CHUNKS)
               throw new Error("Tool batch limit exceeded: streaming chunk count")
-            const delta: unknown =
-              "inputTextDelta" in part ? part.inputTextDelta : "argsTextDelta" in part ? part.argsTextDelta : undefined
+            const delta = part.delta
             if (typeof delta !== "string")
               throw new Error("Tool batch limit exceeded: invalid streamed arguments")
             if (delta.length > MAX_TOOL_CALL_ARGUMENT_BYTES)
