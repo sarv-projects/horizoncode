@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="350" viewBox="0 0 1280 350" role="img" aria-labelledby="title desc">
+<title id="title">HorizonCode</title>
+<desc id="desc">HorizonCode wordmark with a restrained circular horizon motif and the line Built for the whole job.</desc>
+<defs>
+ <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0e131c"/><stop offset="1" stop-color="#080b10"/></linearGradient>
+ <linearGradient id="stroke" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#34475a" stop-opacity="0"/><stop offset=".55" stop-color="#83a9cd" stop-opacity=".65"/><stop offset="1" stop-color="#34475a" stop-opacity="0"/></linearGradient>
+ <radialGradient id="halo" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#78a5ce" stop-opacity=".13"/><stop offset=".58" stop-color="#7298c2" stop-opacity=".035"/><stop offset="1" stop-color="#7298c2" stop-opacity="0"/></radialGradient>
+ <clipPath id="right"><rect x="900" y="0" width="380" height="350"/></clipPath>
+</defs>
+<rect width="1280" height="350" fill="url(#bg)"/>
+<path d="M0 1H1280V349H0Z" fill="none" stroke="#2c3946" stroke-opacity=".5" stroke-width="2"/>
+<g clip-path="url(#right)">
+ <circle cx="1100" cy="213" r="285" fill="url(#halo)"/>
+ <g fill="none" stroke="#64809e" stroke-opacity=".21" stroke-width="1.6">
+  <circle cx="1105" cy="226" r="86"/><circle cx="1105" cy="226" r="116"/><circle cx="1105" cy="226" r="149"/><circle cx="1105" cy="226" r="185"/><circle cx="1105" cy="226" r="225"/>
+ </g>
+ <path d="M885 226H1280" stroke="url(#stroke)" stroke-width="2"/>
+ <path d="M971 226 A134 134 0 0 1 1239 226" fill="none" stroke="#bed9ed" stroke-opacity=".72" stroke-width="3"/>
+ <path d="M992 226 A113 113 0 0 1 1218 226" fill="none" stroke="#7597b6" stroke-opacity=".48" stroke-width="1.5"/>
+ <path d="M1105 0V350" stroke="#5b728a" stroke-opacity=".1" stroke-width="1.5"/>
+ <path d="M902 273 H1279 M902 299 H1279 M902 326 H1279" fill="none" stroke="#7d99af" stroke-opacity=".09"/>
+</g>
+<g transform="translate(75 57)" fill="none" stroke="#a9c0d6" stroke-width="3.5" stroke-linecap="square"><path d="M0 0V35M27 0V35M0 17.5H27"/><path d="M40 17.5H75" stroke="#547895" stroke-width="1.6"/></g>
+<text x="75" y="174" fill="#f1f3f5" font-size="76" font-weight="750" letter-spacing="-2.8" font-family="Inter, Arial, Helvetica, sans-serif">HORIZON<tspan fill="#a4b8cd">CODE</tspan></text>
+<path d="M80 201H145" stroke="#91bddc" stroke-width="3"/>
+<text x="75" y="258" fill="#ccd4dc" font-size="28" font-weight="400" letter-spacing=".2" font-family="Inter, Arial, Helvetica, sans-serif">Built for the whole job.</text>
+<text x="76" y="307" fill="#738396" font-size="13" font-weight="600" letter-spacing="3.7" font-family="Arial, Helvetica, sans-serif">TERMINAL-FIRST  /  OPEN DEVELOPMENT</text>
+</svg>
