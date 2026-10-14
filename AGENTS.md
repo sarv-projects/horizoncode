@@ -98,6 +98,8 @@ During P1/P2 implementation, read RC0–RC4 in the existing operative plan once;
 - Worker admission is limited by actual RAM/CPU/FD/disk/worktree pressure and parent permission. A file-touch warning is advisory, never substitute for revision/hash/lease Guard. Provider Doctor full tier is spend-bearing and requires explicit user consent; no hidden prewarming, credential echo or paid fallback.
 - Update the exact §32.32 JC-RES test rows, observed platform/commit/test data and user-visible status. Add new feature exposure in existing config/capability owners only after WIRED; experimental is not synonymous with working. No performance change may weaken correctness, security or independent verification.
 
+For JCode-informed RAM/worker/protocol features: read §01.13 HLD and the exact §37.16–18 function interfaces, §20.12 hydrated source seams, §18.18 pressure/eviction algorithm, §21.11 worker leases, §29.18 task DAG, §32.33 tests, then RC0–RC5. **A designed type is not implemented until machine schema, source, negative tests and actual OS measurements exist.**
+
 ## Source reuse
 
 External repositories are research/source references only. Use exact immutable pins from arch_V1/42. Before copying/translating code:

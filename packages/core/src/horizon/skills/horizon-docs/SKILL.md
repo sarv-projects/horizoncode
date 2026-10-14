@@ -78,3 +78,7 @@ Never infer a later state from Markdown, JSON Schema, catalog membership, mocks 
 
 Never inject the entire architecture into a task prompt.
 For implementation, usually 3–5 relevant documents plus exact source/tests are enough.
+
+## Resource/RAM/JCode implementation lookup (A-V2-30)
+
+For the resource-efficiency implementation request, read §01.13 HLD, §11.20 state, §12.16 schema, §13.12 IPC, §15.20 call graph, §18.17–19 RAM/OS, §20.12 exact hydrated source paths, §21.11 leases/worktrees, §29.18 DAG, §30.21 cache/recall, §31.17 TUI, §37.16–18 proposed APIs and §32.33–34 tests. The one executable checklist is root current plan RC0–RC5; HANDOFF determines what is *actually implemented*. Do not load the retained upstream Markdown/architecture archive as current authority.

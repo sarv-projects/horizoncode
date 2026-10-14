@@ -267,25 +267,7 @@ Research/source extraction in 42 does not skip these gates.
 
 These are **proposed interfaces**, not existing RPC operations. Reuse the current `SessionSupervisor.Service`, Rust kernel/owner log, provider host, SessionStore, indexd and derived UI lanes. Before adding any new wire operation, define a single authoritative machine schema and versioned positive/negative fixture, map it into existing action IDs in §33 and preserve §14 Guard.
 
-```ts
-type ResourceSampleV1 = {
-  owner: { kind: "host" | "kernel" | "session" | "run" | "attempt" | "worker" | "cache" | "local_model"; id: string };
-  metric: "pss_mib" | "rss_mib" | "private_bytes_mib" | "cpu_pct" | "threads" | "fds" | "vram_mib" | "disk_bytes";
-  value?: number; // absent when unknown
-  accuracy: "measured" | "estimated" | "unknown";
-  platform: "linux" | "macos" | "windows" | "other";
-  source: string; observedAt: string; processTreeGeneration: string;
-}
-type ProviderDoctorRequestV1 = {
-  providerId: string; modelId?: string; tier: "offline" | "catalog" | "full";
-  maxNetworkRequests: number; deadlineMs: number; costConsentRef?: string;
-}
-type FileTouchV1 = {
-  canonicalWorkspaceId: string; filePathRef: string; sessionId: string;
-  attemptId?: string; access: "read" | "write"; sourceRevision: string;
-  observedAt: string; expiresAt?: string;
-}
-```
+**Canonical interface details:** §37.16 owns ResourceSampler metric names/units/decimal counter types; §37.17 owns Provider Doctor, file touches, worker and UI algorithms; §37.18 owns import/SDK/steering/canary. Any earlier illustrative wire fields must be interpreted using §12.16's generated machine schema, not as competing definitions.
 
 **ResourceSampler adapter:** owns platform-specific process-tree discovery and per-owner quota/pressure sampling. PIDs must be combined with OS process-start generation/owner lease to prevent PID-reuse attribution; detached/unowned processes are not silently claimed. Linux PSS samples may be costly: rate-limit, sample off the UI event loop, redact paths, separate local inference and cap history. Platform unsupported counters remain unknown. Worker accounting includes child trees and OS hard limits where available, with no accidental foreign process cleanup.
 

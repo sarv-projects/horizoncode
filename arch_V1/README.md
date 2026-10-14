@@ -95,6 +95,6 @@ Never solve a conflict by adding another authority document.
 
 ## Resource-efficiency and JCode source navigation
 
-Decision: **17.10 A-V2-30**. The authoritative process topology is §01/§13; RAM, telemetry, cache and OS/resource release gates §18.17; implementation file placements §20.11; worker/worktree/conflict ownership §21.10; subagents/DAG §29.17; context and memory §30.20; UI/render performance §31.16; task/benchmark matrix §32.32; capability IDs §33.29; runtime interfaces §37.15; exact JCode source pins/caveats §42.9.
+Decision: **17.10 A-V2-30**. HLD is §01.13, state machines §11.20, generated machine contract requirements §12.16, exact IPC §13.12, effect security §14, runtime call graph §15.20, resource/OS/release §18.17–19, hydrated source map §20.12, worker/worktree/conflict §21.11, subagent DAG §29.18, context/cache §30.21, UI scheduler §31.17, detailed test/source gates §32.33–34, capability IDs §33.29, proposed service interfaces §37.16–18, exact JCode provenance and all 24 source-candidates §42.9–10.
 
 The executable checklist is the existing `docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md` RC0–RC4 section. `docs/performance/README.md` is a **measurement runbook only**, not an additional owner. `HANDOFF.md` records current verified status; root `CURRENT_RUN.md` is an append-only work/evidence diary, never another source of architecture or runtime truth. A line in the catalog or an unchecked task cannot be represented as an implemented feature.
