@@ -10,6 +10,7 @@ import { Session } from "@/session/session"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { SessionProcessor } from "@/session/processor"
 import { SessionTools } from "@/session/tools"
+import { createToolBatchContext } from "@/session/tool-batch"
 import { Tool } from "@/tool/tool"
 import { ToolRegistry } from "@/tool/registry"
 import { Truncate } from "@/tool/truncate"
@@ -148,6 +149,11 @@ it.effect("preserves running tool start time across metadata updates", () =>
     const execute = tools.tools.timing?.execute
     if (!execute) throw new Error("timing tool is missing execute")
 
+    // This is an isolated metadata test that calls the callback directly,
+    // rather than through the provider stream. Supply the exact read-only
+    // admission a completed ToolBatch would have produced.
+    const batch = createToolBatchContext()
+    batch.outcomes.set(callID, { status: "allowed", capabilityID: "diagnostic.timing" })
     yield* Effect.promise(() =>
       execute(
         {},
@@ -155,6 +161,7 @@ it.effect("preserves running tool start time across metadata updates", () =>
           toolCallId: callID,
           abortSignal: new AbortController().signal,
           messages: [],
+          experimental_context: batch,
         },
       ),
     )
