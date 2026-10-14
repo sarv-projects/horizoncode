@@ -177,3 +177,30 @@ fn pause_is_a_durable_admission_fence_and_resume_restores_only_safe_work() {
     });
     assert_eq!(restored.snapshot().runs["run-v1"].phase, RunPhase::Running);
 }
+
+
+#[test]
+fn restarting_with_admitted_but_unsettled_attempt_fences_execution_as_unknown() {
+    let root = PrivateRoot::new();
+    let mut store = ManagedControl::open(root.path(), "goal-crash").unwrap();
+    accepted_run(&mut store);
+    send(&mut store, "task", ManagedCommand::AddTask {
+        run_id: "run-v1".into(), task_id: "task-a".into(), dependencies: vec![],
+    });
+    send(&mut store, "ready", ManagedCommand::MarkTaskReady {
+        run_id: "run-v1".into(), task_id: "task-a".into(),
+    });
+    send(&mut store, "attempt", ManagedCommand::AdmitAttempt {
+        run_id: "run-v1".into(), task_id: "task-a".into(), attempt_id: "attempt-one".into(),
+    });
+    drop(store); // Crash between task admission and any observed receipt.
+    let mut restored = ManagedControl::open(root.path(), "goal-crash").unwrap();
+    assert_eq!(restored.snapshot().runs["run-v1"].phase, RunPhase::Reconciling);
+    assert!(restored.snapshot().runs["run-v1"].tasks["task-a"].unknown_effect);
+    assert!(restored.apply(restored.snapshot().revision, "new", ManagedCommand::AdmitAttempt {
+        run_id: "run-v1".into(), task_id: "task-a".into(), attempt_id: "attempt-two".into(),
+    }).is_err());
+    assert!(restored.apply(restored.snapshot().revision, "resume", ManagedCommand::ResumeRun {
+        run_id: "run-v1".into(),
+    }).is_err());
+}
