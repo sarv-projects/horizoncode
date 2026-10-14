@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="664" viewBox="0 0 1280 664" role="img" aria-labelledby="title description">
+<title id="title">HorizonCode demo space</title>
+<desc id="description">Reserved space for a real HorizonCode coding session screen recording. This graphic is not a product screenshot.</desc>
+<defs>
+ <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#101722"/><stop offset="1" stop-color="#090d13"/></linearGradient>
+ <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#7491ae" stop-opacity="0"/><stop offset=".52" stop-color="#a0bbd3"/><stop offset="1" stop-color="#7491ae" stop-opacity="0"/></linearGradient>
+ <radialGradient id="glow" cx="50%" cy="49%" r="51%"><stop stop-color="#587b9b" stop-opacity=".13"/><stop offset="1" stop-color="#587b9b" stop-opacity="0"/></radialGradient>
+</defs>
+<rect width="1280" height="664" rx="20" fill="url(#bg)"/>
+<rect x="1" y="1" width="1278" height="662" rx="19" fill="none" stroke="#39495a" stroke-opacity=".7" stroke-width="2"/>
+<rect x="32" y="32" width="1216" height="600" rx="14" fill="#080d15" stroke="#2b3b4b" stroke-width="2"/>
+<path d="M32 83H1248" stroke="#273747" stroke-width="2"/>
+<g fill="#687e92"><circle cx="64" cy="58" r="6"/><circle cx="86" cy="58" r="6"/><circle cx="108" cy="58" r="6"/></g>
+<text x="640" y="63" font-family="Arial, sans-serif" font-size="15" letter-spacing="3.2" font-weight="700" text-anchor="middle" fill="#8ea7bd">HORIZONCODE  /  PRODUCT DEMO</text>
+<rect x="100" y="118" width="1080" height="452" rx="20" fill="url(#glow)"/>
+<circle cx="640" cy="303" r="72" fill="#111d2b" stroke="#8fa8c2" stroke-opacity=".65" stroke-width="3"/>
+<path d="M623 268L623 338L679 303Z" fill="#c6d8e9"/>
+<text x="640" y="422" font-family="Arial, sans-serif" font-size="31" font-weight="600" text-anchor="middle" fill="#e5edf5">See HorizonCode in action</text>
+<text x="640" y="468" font-family="Arial, sans-serif" font-size="18" font-weight="400" text-anchor="middle" fill="#94a9be">Reserved for a recording from the real application</text>
+<path d="M340 517H940" stroke="url(#accent)" stroke-width="2"/>
+<text x="640" y="594" font-family="Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="3" text-anchor="middle" fill="#6d879f">EXPLORE  ·  BUILD  ·  VERIFY</text>
+</svg>

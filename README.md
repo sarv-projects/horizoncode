@@ -1,146 +1,187 @@
-<div align="center">
+<p align="center">
+  <img src="docs/assets/horizoncode-hero.svg" alt="HorizonCode — Built for the Future" width="100%" />
+</p>
 
-# HorizonCode
+<p align="center">
+  <strong>One coding agent. From the first edit to the final verified result.</strong>
+</p>
 
-### Don't just write the code. Finish the work.
+<p align="center">
+  Code interactively. Delegate larger jobs. Keep your models, tools, and execution under your control.
+</p>
 
-**A terminal-first coding agent for the work that doesn't fit in one prompt.**
-
-Explore a repository. Make a change. Check the result. And, as managed execution develops, keep larger jobs moving without losing the plan, the evidence, or control of your machine.
-
-[Get started](#get-started) · [Why HorizonCode](#why-horizoncode) · [What's ready](#where-things-stand) · [Contribute](#built-for-contributors)
-
-</div>
+<p align="center">
+  <a href="#see-it-in-action">See it in action</a> ·
+  <a href="#why-horizoncode">Why HorizonCode</a> ·
+  <a href="#what-you-can-build-with">Features</a> ·
+  <a href="#run-from-source">Get started</a> ·
+  <a href="#project-status">Status</a>
+</p>
 
 ---
 
-## Code isn't done when the diff looks right.
+## See it in action
 
-A real coding task starts with a repository and ends with something you can inspect: changed files, test results, and a clear account of what's still open. The model's answer is only one part of it.
+<!--
+DEMO SLOT 01 — Replace the SVG with a real, unedited HorizonCode TUI recording.
+Recommended: docs/media/horizoncode-demo.gif (or .webp), 16:9; show a real
+repository, request, tool activity, a patch, and evidence/test output.
+Keep the logo/hero above. Do not show upstream OpenCode footage as HorizonCode.
+-->
+<p align="center">
+  <img src="docs/assets/horizoncode-demo-placeholder.svg" alt="Reserved space for a real HorizonCode coding-session demo; not a product screenshot" width="94%" />
+</p>
 
-HorizonCode puts the rest of the job back in the picture.
+<p align="center"><sub>Demo space reserved for real HorizonCode footage: explore → edit → test → verify.</sub></p>
 
-- **Start immediately.** Work in an interactive coding session without creating a project plan just to fix a bug.
-- **Keep your choices.** Choose the provider, model, and workflow you want; the agent should not silently substitute another.
-- **See the evidence.** Tool results, tests, and repository state matter more than an agent saying “done.”
-- **Go beyond one session.** The developing managed-work system is designed to preserve goals, task progress, recovery state, and final acceptance criteria across interruptions.
+**Full walkthrough video:** see [the reserved video section](#the-full-run-on-screen) below. It will link to a real recording after the managed workflow is implemented and verified.
 
-## Two ways to work
+<!--
+DEMO SLOT 02 — Add a real walkthrough video / poster after V1 acceptance.
+Suggested: "From Goal to verified Run" (2–4 minutes), hosted on GitHub Releases
+or a supported video site. Link a real thumbnail; never a dead video URL.
+-->
 
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <h3>Direct coding</h3>
-      <p><strong>For the change in front of you.</strong></p>
-      <p>Open a repository and get moving: explore code, investigate errors, discuss approaches, and make focused edits through the interactive coding interface.</p>
-      <p>No mandatory Goal, scheduler, or ceremony.</p>
-      <p><strong>Available in the development build.</strong> Effectful tools are still being brought under HorizonCode's execution controls.</p>
-    </td>
-    <td width="50%" valign="top">
-      <h3>Managed work</h3>
-      <p><strong>For the job that takes more than one turn.</strong></p>
-      <p>The intended flow is a reviewed goal and specification, a durable run, explicit tasks and attempts, supervised execution, recovery, and evidence-backed verification.</p>
-      <p><strong>Under active development.</strong> Durable Rust control-state foundations exist, but the managed scheduler, workers, and independent verifier are not ready for general use.</p>
-    </td>
-  </tr>
-</table>
+## Built for the small fix. And the long haul.
 
-## Why HorizonCode
+Most coding agents are good at answering your next prompt. Bigger engineering work has a different problem: the plan changes, context disappears, an effect fails, a process restarts, and the final answer still needs to be checked.
 
-### Your model. Your call.
+HorizonCode is designed for **both** without forcing you into a heavyweight workflow for everyday edits.
 
-Use the models and providers you choose. A coding agent shouldn't secretly switch them, expand its permissions, or turn a failed operation into a confident-looking answer.
+| **Direct coding** | **Managed work — V1 direction** |
+| --- | --- |
+| Start in a repository. Explore, ask, modify, debug and iterate in an interactive session. | Define a goal, review the specification, and let a bounded Run coordinate tasks and attempts. |
+| No mandatory project setup or Goal object. Choose your model and get to work. | Pause, inspect, resume or cancel; retain durable state across interruptions. |
+| The fast path for the change in front of you. | The long path for migrations, multi-step changes, and jobs that need proof of completion. |
 
-### The job shouldn't vanish with the session.
+**The distinction:** a completed chat response is not the same thing as a completed engineering task. Managed Runs are designed to finish only when their acceptance criteria have evidence against the final repository revision.
 
-Features, migrations, and difficult bugs rarely fit in one turn. Managed work is being built around durable goals, explicit attempts, and recovery that survives interruptions—not a longer chat transcript.
+## Why HorizonCode?
 
-### Tools shouldn't bypass the rules.
+### The result matters more than the response
 
-A plugin, shell command, or subagent shouldn't find a back door around approval. HorizonCode's Rust Guard is moving execution behind one checked boundary. A narrow set of effects is implemented today; **universal mutation coverage is still in progress**.
+A model can say a change is complete while tests are red. HorizonCode's planned verification loop checks the outcome—not just the assistant's confidence. Final state, tests, evidence and unresolved work remain visible.
 
-### Keep the developer experience.
+### Your models. Your rules.
 
-Interactive terminal coding, provider choice, sessions, and extensions are worth keeping. HorizonCode is adding execution accountability and durable work without forcing every small edit through a project manager.
+Choose your own provider, model and workflow. Local and smaller models are part of the intended experience, not an afterthought. HorizonCode's product rule is simple: **no silent model swap, hidden paid fallback, or surprise cost escalation.**
 
-## Get started
+### One place to work. More ways to work.
 
-HorizonCode is currently **source-first developer software**, not a finished downloadable CLI release. The repository contains the application workspace, a pinned source base, and HorizonCode's own Rust kernel and integration changes.
+Stay in a fast terminal interface; use web and desktop views when they make more sense. Explore source, inspect diffs, follow active tasks and work with rich artifacts. All surfaces are intended to operate over the same underlying sessions and controls.
 
-### Run the development build
+### Tools with real boundaries
 
-On **Linux**, with Git, Python 3, [Bun 1.3.14](https://bun.sh/), and a current [Rust toolchain](https://rustup.rs/) installed:
+An agent's command, subagent, plugin or MCP server should not quietly outrun its permissions. HorizonCode is building one Guard/ExecutionHost path for mutations, with approval, bounded execution, effect receipts and reconciliation when the outcome is uncertain.
+
+### Built to recover, not just retry
+
+Long-running work needs more than a large context window. The managed runtime is designed around durable tasks, bounded workers, resource/worktree leases, cancellation, restart recovery and independent final verification—not blindly rerunning uncertain effects.
+
+## What you can build with
+
+The following is the **HorizonCode V1 product direction**, not a claim that every capability is already operational. Current implementation status is below.
+
+| | V1 capability | Why it matters |
+| --- | --- | --- |
+| **01** | **Repository intelligence & precise edits** | Symbol-aware navigation, search, Git-aware changes, stale-edit protection and efficient context handling. |
+| **02** | **Specialized agents & delegation** | Build, plan, explore and review; hand bounded work to specialists without losing the parent task or its permissions. |
+| **03** | **A complete developer toolbox** | Language servers, code actions, debugging, terminal/build/test tools, and supervised Python/JavaScript REPLs. |
+| **04** | **Browser, desktop & web research** | Inspect pages and UI behavior, interact with supported applications and bring sourced web results into coding work. |
+| **05** | **Skills, hooks, plugins & MCP** | Reuse and extend tools through a capability-aware integration layer rather than one-off agent configurations. |
+| **06** | **Durable managed execution** | Reviewed goals, persistent Runs, dependency-aware Tasks, bounded worktrees and crash-safe recovery. |
+| **07** | **Verification & evidence** | Connect changes to tests, artifact results, acceptance criteria and the final integrated repository state. |
+| **08** | **Cost, tokens & observability** | See selected models, provider usage, costs, failure signals and execution history instead of guessing where resources went. |
+| **09** | **A serious, progressive UI** | Fast streaming TUI; accessible web/desktop surfaces; diffs, artifacts, charts and clear task status. |
+| **10** | **Control over experiments** | Optional features are discoverable in Settings; Experimental capabilities are clearly labeled and never silently enabled. |
+
+<details>
+<summary><strong>How HorizonCode intends to finish a managed job</strong></summary>
+
+1. **Describe the outcome.** Turn the request into a reviewable, versioned specification with explicit acceptance criteria.
+2. **Approve the plan.** The user accepts the scope before effectful managed execution begins.
+3. **Execute bounded work.** Tasks run with scoped tools, permissions, budgets and resource leases.
+4. **Recover safely.** Unknown effects are reconciled instead of blindly retried; interrupted work can be inspected and resumed.
+5. **Verify the integrated result.** Check the final repository revision against the accepted criteria. The model's final message alone is never sufficient.
+
+This is the intended V1 flow; its production scheduler, integrations and independent verifier are still in development.
+
+</details>
+
+## The full run, on screen
+
+<!--
+VIDEO SLOT — Replace this artwork with a real video poster linked to
+an actual, published HorizonCode recording when managed V1 is verified.
+Show specification acceptance, Task progress, interruption/recovery and
+criterion-based final verification. Do not present this conceptual card as UI.
+-->
+<p align="center">
+  <img src="docs/assets/horizoncode-run-video-placeholder.svg" alt="Reserved space for a real managed-run walkthrough video; conceptual title card only" width="94%" />
+</p>
+
+<p align="center"><sub>Full workflow video space reserved. No pre-recorded or simulated product behavior is being represented here.</sub></p>
+
+## Run from source
+
+HorizonCode is currently a **source-build developer preview**. Official `horizoncode` installers and standalone releases are not yet available.
+
+**Prerequisites:** Linux, Git, Python 3, [Bun 1.3.14](https://bun.sh/) and [Rust](https://rustup.rs/).
 
 ```bash
 git clone https://github.com/sarv-projects/horizoncode.git
 cd horizoncode
 
-# Restore source files not duplicated in the tracked working overlays.
+# Restore the pinned source files without overwriting HorizonCode changes.
 python3 scripts/architecture/bootstrap_source.py --apply
 
-# Install the pinned workspace dependencies and build the supervisor.
 bun install --frozen-lockfile
 cargo build --locked --manifest-path kernel/Cargo.toml --bin session_supervisor
 
-# Launch the development CLI.
+# Launch the current development terminal application.
 bun run dev
 ```
 
-The development CLI still carries some inherited package/command naming while HorizonCode's own release packaging is being prepared.
+The development entrypoint and some internal packages still use inherited command names. No fake `curl | sh` installer or unpublished package name is offered here.
 
-> [!IMPORTANT]
-> **Developer preview, not a production security boundary.** Supported Guard actions and platform guarantees are still being completed. Linux is the current primary validation target; do not assume Windows/macOS isolation or all plugin, shell, MCP, and subagent paths are fully mediated yet.
-
-### Validate the workspace
+To run the project's validation gate:
 
 ```bash
-# Architecture/source checks, Rust supervisor tests, and workspace typechecks.
 bun run horizon:full-gate
 ```
 
-The GitHub Actions workflow also runs this gate. A green CI check proves the tested slice; it does not imply every planned capability or platform is release-ready.
+## Project status
 
-## Where things stand
+HorizonCode is being implemented in public. **Interactive coding and the existing application foundation are present; the full managed-coding product is not yet released.**
 
-HorizonCode is being developed in the open. Here's the useful distinction between what is present and what's still ahead.
-
-| In the development tree | Being built and verified |
+| In the repository now | Still being completed for V1 |
 | --- | --- |
-| Interactive coding sessions and model/provider workflows | Durable managed jobs connected to real workers |
-| Terminal UI and existing web/desktop foundations | A cohesive HorizonCode-branded release experience |
-| Bounded provider ToolBatch validation and cancellation | Guard coverage for every enabled mutation origin |
-| A Rust-supervised effect path for supported file writes | Broader sandboxed process, plugin, MCP, and browser execution |
-| Durable Goal / SpecVersion / Run / Task / Attempt state foundations | End-to-end crash recovery and independently verified completion |
-| Optional and Experimental feature surfaces | More fully wired feature eligibility, settings, and runtime parity |
+| Direct interactive sessions and provider/model selection | Complete branded installation and release packaging |
+| Existing terminal, web and desktop application foundations | Unified, verified HorizonCode UX across those surfaces |
+| Rust Guard for supported approved file writes; bounded ToolBatch validation | Universal mediation of shell, process, plugin, MCP, subagent and other mutations |
+| Durable internal Goal / SpecVersion / Run / Task / Attempt event state | Authenticated managed UI, production scheduler/workers, leases and effect reconciliation |
+| Optional-feature surfaces and Experimental labels | End-to-end feature eligibility, independent verification and cross-platform security qualification |
 
-Capabilities move into the ready column when their execution paths and regression tests are verified. See [HANDOFF.md](HANDOFF.md) for the current evidence and blockers.
+**Security note:** this is not a fully sandboxed, cross-platform production release. Specific execution paths and supported operating systems must pass their own tests before those protections can be claimed.
 
-## Built for contributors
+The precise implementation record is [HANDOFF.md](HANDOFF.md). Product scope and release gates are in [the delivery plan](arch_V1/10-DELIVERY.md).
 
-This repository is a working engineering project, not just a concept page.
+## Contribute & follow development
 
-| Start here | What you'll find |
-| --- | --- |
-| [AGENTS.md](AGENTS.md) | How to inspect, implement, test, and hand off changes |
-| [Architecture index](arch_V1/README.md) | The small set of current architecture authorities |
-| [Implementation plan](docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md) | The dependency-ordered roadmap and acceptance work |
-| [HANDOFF.md](HANDOFF.md) | What is actually implemented, tested, and still blocked |
-| [GitHub Issues](https://github.com/sarv-projects/horizoncode/issues) | Bugs, discussion, and concrete work to pick up |
+HorizonCode is a project for developers who care about how agents *actually* complete work: behavior under failure, resource bounds, model choice, performance and reliable evidence.
 
-Before opening a substantial change, check the implementation plan and current handoff. The [source hydration script](scripts/architecture/bootstrap_source.py) deliberately preserves first-party changes instead of overwriting them with the pinned source snapshot.
+- [Issues and feature discussions](https://github.com/sarv-projects/horizoncode/issues)
+- [Contributor and coding-agent rules](AGENTS.md)
+- [Architecture and design decisions](arch_V1/README.md)
+- [Implementation roadmap](docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md)
 
-## Credits and licensing
+## Credits & licensing
 
-HorizonCode is an independent project by [sarv-projects](https://github.com/sarv-projects). Its interactive codebase builds on [OpenCode](https://github.com/anomalyco/opencode); the preserved source and MIT copyright notice are in [`opencode/`](opencode/) and [`opencode/LICENSE`](opencode/LICENSE). HorizonCode is not affiliated with the OpenCode maintainers.
+HorizonCode is developed independently by [sarv-projects](https://github.com/sarv-projects). Its interactive coding foundation incorporates [OpenCode](https://github.com/anomalyco/opencode); preserved upstream source and copyright notices are in [`opencode/`](opencode/) and [`opencode/LICENSE`](opencode/LICENSE). HorizonCode is not affiliated with the OpenCode maintainers.
 
-The project is still completing root-level licensing, third-party notices, and release packaging. Existing upstream license and attribution obligations remain applicable.
+Root-level license/third-party notices and final distribution packaging are being completed before release. Existing upstream attribution obligations remain in force.
 
 ---
 
-<div align="center">
-
-**HorizonCode — from the first edit to the finished job.**
-
-[Explore the code](https://github.com/sarv-projects/horizoncode) · [See what's next](docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md)
-
-</div>
+<p align="center"><strong>HorizonCode — Built for the Future.</strong></p>
+<p align="center"><sub>From your next edit to your next big engineering job.</sub></p>

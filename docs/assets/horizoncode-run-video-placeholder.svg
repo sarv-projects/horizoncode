@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="600" viewBox="0 0 1280 600" role="img" aria-labelledby="title description">
+<title id="title">HorizonCode managed run video slot</title>
+<desc id="description">Reserved space for an actual recording of a managed run; conceptual video title card, not a product screenshot.</desc>
+<defs>
+  <linearGradient id="background" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0d1420"/><stop offset="1" stop-color="#090b10"/></linearGradient>
+  <linearGradient id="line" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#32455a"/><stop offset=".5" stop-color="#98adc5"/><stop offset="1" stop-color="#32455a"/></linearGradient>
+</defs>
+<rect width="1280" height="600" rx="20" fill="url(#background)"/>
+<rect x="1" y="1" width="1278" height="598" rx="19" stroke="#354558" stroke-width="2" fill="none"/>
+<text x="76" y="86" fill="#7795b0" font-family="Arial,sans-serif" font-size="17" letter-spacing="3.6" font-weight="700">HORIZONCODE / FULL RUN</text>
+<text x="76" y="154" fill="#eef3f8" font-family="Arial,sans-serif" font-size="46" font-weight="700">From a goal to a verified result.</text>
+<text x="77" y="197" fill="#a7b8c8" font-family="Arial,sans-serif" font-size="20">A place for the real walkthrough, recorded in the finished app.</text>
+<g stroke="url(#line)" fill="none" stroke-width="3"><path d="M156 322H1124"/></g>
+<g font-family="Arial,sans-serif" font-weight="600" font-size="18" text-anchor="middle">
+  <g><circle cx="170" cy="322" r="36" fill="#152234" stroke="#7896b1" stroke-width="2"/><text x="170" y="328" fill="#ebf1f6">01</text><text x="170" y="396" fill="#d0dce5">SPEC</text></g>
+  <g><circle cx="483" cy="322" r="36" fill="#152234" stroke="#7896b1" stroke-width="2"/><text x="483" y="328" fill="#ebf1f6">02</text><text x="483" y="396" fill="#d0dce5">TASKS</text></g>
+  <g><circle cx="796" cy="322" r="36" fill="#152234" stroke="#7896b1" stroke-width="2"/><text x="796" y="328" fill="#ebf1f6">03</text><text x="796" y="396" fill="#d0dce5">EXECUTE</text></g>
+  <g><circle cx="1109" cy="322" r="36" fill="#152234" stroke="#7896b1" stroke-width="2"/><text x="1109" y="328" fill="#ebf1f6">04</text><text x="1109" y="396" fill="#d0dce5">VERIFY</text></g>
+</g>
+<path d="M76 492H1204" stroke="#2b3b4a" stroke-width="2"/>
+<text x="640" y="542" fill="#7f96ad" font-family="Arial,sans-serif" font-size="16" text-anchor="middle" letter-spacing="2.1">REAL VIDEO FOOTAGE GOES HERE · V1 WALKTHROUGH SLOT</text>
+</svg>
