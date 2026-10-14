@@ -696,3 +696,22 @@ These close missing acceptance links for existing §§3.16–3.18. All are **req
 | DEP-008 | Native Windows or macOS remote tool/sandbox guarantee missing | honest platform UNAVAILABLE; WSL not counted as native Windows |
 
 Add fixtures under the existing §32 test catalog and appropriate hydrated provider/ACP/Guard source test directories, record live fixture auth/OS limitations, and bind each PASS to a current source commit and proof artifact. User consent/Guard tests must run at real effect pre-dispatch and final revision layers. A proposal table does not count as an executable suite.
+
+## 32.36 Public-facing documentation and authority regression tests
+
+Docs can cause operational mistakes independently of code. Add these checks to the existing architecture validator instead of creating another documentation/ownership registry.
+
+| ID | Fault fixture | Required result |
+|---|---|---|
+| DOC-001 | root SECURITY.md references upstream OpenCode advisory/email as Horizon reporting path | fail validation; require HorizonCode-scoped contact instructions and no invented private channel |
+| DOC-002 | root CONTRIBUTING.md sends bug reports/PRs to OpenCode issues or uses OpenCode's policy as binding Horizon instructions | fail; preserve upstream guide only under `opencode/` |
+| DOC-003 | archived/source-input v2 doc asserts stronger current priority than `arch_V1/README.md` | explicit non-normative banner and current HLD owner win |
+| DOC-004 | an accepted §03 journey has no §33 capability or non-tool rationale, §37 source owner and §32 acceptance coverage | fail traceability; particularly ACP outbound, visual edit, deployment, rollback |
+| DOC-005 | an upstream agent-side ACP server is described as an implemented Horizon outbound ACP client | fail source-based status check |
+| DOC-006 | missing root license/notice for a claimed release with incorporated upstream MIT source | block release gate; preserve upstream copyright/permission notice |
+| DOC-007 | candidate tool/feature listed as registered and callable solely because it appears in Markdown, while no machine contract/backend exists | fail availability/status check; remain DESIGNED/UNAVAILABLE |
+| DOC-008 | README claims native Windows, zero RAM overhead, full sandbox or universal Guard on docs-only evidence | fail claim-evidence gate; require platform/task and OS evidence |
+| DOC-009 | operative plan omits one accepted owner/test link or points to archived current-run as the authoritative checkpoint | fail; one current `HANDOFF.md`, one operative plan, source and code test refs |
+| DOC-010 | a Markdown reference points to a missing relative file/heading or duplicates a numbered active § heading | fail existing architecture static gate; historic non-operative documents are reported separately |
+
+Static assertions alone are not proof of runtime security, user experience or deployment health; implement each in the existing validator/tests with both negative and positive fixtures before claiming it is enforced. This section is a documented test requirement, not proof that DOC-001..010 are automated today.
