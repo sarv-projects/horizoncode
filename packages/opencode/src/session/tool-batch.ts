@@ -242,6 +242,10 @@ export function gateToolCallStream(
         if (finish) controller.enqueue(finish)
       },
     }),
+    // A cancelled turn must terminate an unfinished provider stream even if no
+    // further frames arrive. Otherwise flush() is never reached and the pending
+    // batch stays stuck awaiting an upstream producer.
+    { signal: input.signal },
   )
 }
 
