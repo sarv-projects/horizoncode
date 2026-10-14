@@ -133,6 +133,8 @@ export function gateToolCallStream(
   // argument text: terminal parts still own complete-batch authorization.
   const partialIDs = new Set<string>()
   const partialNames = new Map<string, string>()
+  const partialEnded = new Set<string>()
+  const terminalIDs = new Set<string>()
   const partialBytes = new Map<string, number>()
   let partialArgumentBytes = 0
   let partialChunks = 0
@@ -154,17 +156,24 @@ export function gateToolCallStream(
           const callID = part.id
           if (typeof callID !== "string" || Buffer.byteLength(callID, "utf8") > MAX_TOOL_IDENTITY_BYTES)
             throw new Error("Tool batch limit exceeded: tool identity")
-          if (!partialIDs.has(callID) && partialIDs.size >= MAX_TOOL_BATCH_CALLS)
-            throw new Error("Tool batch limit exceeded: streaming call count")
-          partialIDs.add(callID)
+          if (terminalIDs.has(callID))
+            throw new Error("Tool batch denied: streamed input after terminal call")
           if (part.type === "tool-input-start") {
+            if (partialIDs.has(callID))
+              throw new Error("Tool batch denied: duplicate streaming input start")
+            if (partialIDs.size >= MAX_TOOL_BATCH_CALLS)
+              throw new Error("Tool batch limit exceeded: streaming call count")
             const name = part.toolName
             if (typeof name !== "string" || Buffer.byteLength(name, "utf8") > MAX_TOOL_IDENTITY_BYTES)
               throw new Error("Tool batch limit exceeded: tool identity")
-            const previous = partialNames.get(callID)
-            if (previous !== undefined && previous !== name)
-              throw new Error("Tool batch denied: streaming tool identity mismatch")
+            partialIDs.add(callID)
             partialNames.set(callID, name)
+          } else {
+            if (!partialIDs.has(callID))
+              throw new Error("Tool batch denied: streamed input without start")
+            if (partialEnded.has(callID))
+              throw new Error("Tool batch denied: streamed input after end")
+            if (part.type === "tool-input-end") partialEnded.add(callID)
           }
           if (part.type === "tool-input-delta") {
             partialChunks++
@@ -187,6 +196,9 @@ export function gateToolCallStream(
           return
         }
         if (part.type === "tool-call") {
+          // A completed call is a terminal assertion for its ID. Subsequent
+          // partial frames cannot mutate what was validated for this batch.
+          terminalIDs.add(part.toolCallId)
           const streamedName = partialNames.get(part.toolCallId)
           if (streamedName !== undefined && streamedName !== part.toolName)
             throw new Error("Tool batch denied: streaming tool identity mismatch")
@@ -242,9 +254,6 @@ export function gateToolCallStream(
         if (finish) controller.enqueue(finish)
       },
     }),
-    // A cancelled turn must terminate an unfinished provider stream even if no
-    // further frames arrive. Otherwise flush() is never reached and the pending
-    // batch stays stuck awaiting an upstream producer.
     { signal: input.signal },
   )
 }
