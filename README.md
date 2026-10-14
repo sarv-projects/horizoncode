@@ -8,7 +8,7 @@
 
 Explore a repository. Make a change. Check the result. And, as managed execution develops, keep larger jobs moving without losing the plan, the evidence, or control of your machine.
 
-[Get started](#get-started) · [Why HorizonCode](#why-horizoncode) · [What's ready](#where-things-stand) · [Development](#developing-horizoncode)
+[Get started](#get-started) · [Why HorizonCode](#why-horizoncode) · [What's ready](#where-things-stand) · [Contribute](#built-for-contributors)
 
 </div>
 
@@ -30,32 +30,21 @@ HorizonCode is being built around that entire job.
 ## Two ways to work
 
 <table>
-<tr>
-<td width="50%" valign="top">
-
-### Direct coding
-
-**For the change in front of you.**
-
-Open a repository and get moving: explore code, investigate errors, discuss approaches, and make focused edits through the interactive coding interface.
-
-No mandatory Goal, scheduler, or ceremony.
-
-**Available in the development build**, based on the current terminal/session experience. Effectful tools are still being brought under HorizonCode's execution controls.
-
-</td>
-<td width="50%" valign="top">
-
-### Managed work
-
-**For the job that takes more than one turn.**
-
-The intended flow is a reviewed goal and specification, a durable run, explicit tasks and attempts, supervised execution, recovery, and evidence-backed verification.
-
-**Under active development.** Durable Rust control-state foundations exist, but the complete managed scheduler, worker integration, and independent verifier are not ready for general use.
-
-</td>
-</tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>Direct coding</h3>
+      <p><strong>For the change in front of you.</strong></p>
+      <p>Open a repository and get moving: explore code, investigate errors, discuss approaches, and make focused edits through the interactive coding interface.</p>
+      <p>No mandatory Goal, scheduler, or ceremony.</p>
+      <p><strong>Available in the development build.</strong> Effectful tools are still being brought under HorizonCode's execution controls.</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>Managed work</h3>
+      <p><strong>For the job that takes more than one turn.</strong></p>
+      <p>The intended flow is a reviewed goal and specification, a durable run, explicit tasks and attempts, supervised execution, recovery, and evidence-backed verification.</p>
+      <p><strong>Under active development.</strong> Durable Rust control-state foundations exist, but the managed scheduler, workers, and independent verifier are not ready for general use.</p>
+    </td>
+  </tr>
 </table>
 
 ## Why HorizonCode
