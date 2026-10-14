@@ -632,18 +632,18 @@ Runtime validation must reject duplicate setting keys, nonexistent referenced ca
 
 ## 33.29 Resource, provider and session interoperability candidate IDs (A-V2-30)
 
-The following **reserved DESIGN targets** extend the existing canonical catalog; they do **not** imply registered runtime tools, working CLI commands or an implementation in \`capability-registry-v1.json\`. Integrate IDs through the **existing** owner and schema registry only when a corresponding implementation and permission class are proven; do not create a second tool registry.
+The following **reserved DESIGN targets** extend the existing canonical catalog; they do **not** imply registered runtime tools, working CLI commands or an implementation in `capability-registry-v1.json`. Integrate IDs through the **existing** owner and schema registry only when a corresponding implementation and permission class are proven; do not create a second tool registry.
 
 | Candidate ID | Effect class / owner | Intended interface |
 |---|---|---|
-| \`diagnostics.resource.snapshot\` | scoped read / host + Rust resource owner | PSS/RSS/private/CPU/FD/cache/disk with units, method, provenance and owner |
-| \`diagnostics.resource.history\` | scoped read / derived redacted diagnostics | bounded owner/time-filtered resource samples |
-| \`providers.doctor\` | offline read; catalog network read; full authenticated paid effect requiring explicit grant / provider transport | tiered model route/auth/catalog/chat/stream/tool diagnostics |
-| \`sessions.file_activity\` | scoped read / derived workspace index | peer file touches and observed revision; advisory only |
-| \`sessions.import.preview\` | bounded read / external source adapter | provenance, supported fields and single-owner choice |
-| \`sessions.import.commit\` | guarded filesystem/session mutation / canonical Session owner | confirmed copy/handoff, immutable origin refs; not live dual ownership |
-| \`workers.resources\` | scoped read / Rust control plus OS measurement adapter | actual leases/worker capacity/pressure |
-| \`tasks.graph.inspect\` | scoped read / Rust managed control | ready/blocked graph, dependency edges and artifact refs |
-| \`ui.tool_tail.inspect\` | scoped read / UiEventMux presentation | bounded current live tool activity; never canonical result authority |
+| `diagnostics.resource.snapshot` | scoped read / host + Rust resource owner | PSS/RSS/private/CPU/FD/cache/disk with units, method, provenance and owner |
+| `diagnostics.resource.history` | scoped read / derived redacted diagnostics | bounded owner/time-filtered resource samples |
+| `providers.doctor` | offline read; catalog network read; full authenticated paid effect requiring explicit grant / provider transport | tiered model route/auth/catalog/chat/stream/tool diagnostics |
+| `sessions.file_activity` | scoped read / derived workspace index | peer file touches and observed revision; advisory only |
+| `sessions.import.preview` | bounded read / external source adapter | provenance, supported fields and single-owner choice |
+| `sessions.import.commit` | guarded filesystem/session mutation / canonical Session owner | confirmed copy/handoff, immutable origin refs; not live dual ownership |
+| `workers.resources` | scoped read / Rust control plus OS measurement adapter | actual leases/worker capacity/pressure |
+| `tasks.graph.inspect` | scoped read / Rust managed control | ready/blocked graph, dependency edges and artifact refs |
+| `ui.tool_tail.inspect` | scoped read / UiEventMux presentation | bounded current live tool activity; never canonical result authority |
 
-All tool-visible schemas are bounded and discoverable progressively. Headless workers, file activity, process resource sampling and adaptive render need not be exposed to the model by default. For each candidate, update \`ActionDescriptor\`, capability machine registry, platform support matrix, permission/feature exposure and §32 tests **together** when promoted to WIRED. Read-only is not “permission-free”; network/cost and user privacy require authorization. This inventory is not an invitation for a plugin to supply its own authority.
+All tool-visible schemas are bounded and discoverable progressively. Headless workers, file activity, process resource sampling and adaptive render need not be exposed to the model by default. For each candidate, update `ActionDescriptor`, capability machine registry, platform support matrix, permission/feature exposure and §32 tests **together** when promoted to WIRED. Read-only is not “permission-free”; network/cost and user privacy require authorization. This inventory is not an invitation for a plugin to supply its own authority.
