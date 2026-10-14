@@ -1,6 +1,6 @@
 #![cfg(target_os = "linux")]
 
-use horizoncode_kernel::managed_control::{ManagedCommand, ManagedControl, ManagedError, RunPhase};
+use horizoncode_kernel::managed_control::{AttemptPhase, ManagedCommand, ManagedControl, ManagedError, RunPhase};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -130,6 +130,7 @@ fn unknown_attempt_blocks_retries_and_remains_unknown_after_replay() {
     let mut restored = ManagedControl::open(root.path(), "goal-unknown").unwrap();
     assert_eq!(restored.snapshot().runs["run-v1"].phase, RunPhase::Reconciling);
     assert!(restored.snapshot().runs["run-v1"].tasks["task-a"].unknown_effect);
+    assert_eq!(restored.snapshot().attempts["attempt-one"].phase, AttemptPhase::Unknown);
     assert!(restored.apply(restored.snapshot().revision, "retry", ManagedCommand::AdmitAttempt {
         run_id: "run-v1".into(), task_id: "task-a".into(), attempt_id: "attempt-two".into(),
     }).is_err());
@@ -197,6 +198,7 @@ fn restarting_with_admitted_but_unsettled_attempt_fences_execution_as_unknown() 
     let mut restored = ManagedControl::open(root.path(), "goal-crash").unwrap();
     assert_eq!(restored.snapshot().runs["run-v1"].phase, RunPhase::Reconciling);
     assert!(restored.snapshot().runs["run-v1"].tasks["task-a"].unknown_effect);
+    assert_eq!(restored.snapshot().attempts["attempt-one"].phase, AttemptPhase::Unknown);
     assert!(restored.apply(restored.snapshot().revision, "new", ManagedCommand::AdmitAttempt {
         run_id: "run-v1".into(), task_id: "task-a".into(), attempt_id: "attempt-two".into(),
     }).is_err());
@@ -263,6 +265,8 @@ fn verified_task_unblocks_dependency_but_run_requires_fresh_all_criteria_evidenc
         run_id: "run-v1".into(), final_revision: sha('b'),
     });
     assert_eq!(restored.snapshot().runs["run-v1"].phase, RunPhase::Succeeded);
+    assert_eq!(restored.snapshot().attempts["a-1"].phase, AttemptPhase::Verified);
+    assert_eq!(restored.snapshot().attempts["b-1"].phase, AttemptPhase::Verified);
     assert!(restored.apply(restored.snapshot().revision, "late-cancel", ManagedCommand::RequestCancel {
         run_id: "run-v1".into(),
     }).is_err());
