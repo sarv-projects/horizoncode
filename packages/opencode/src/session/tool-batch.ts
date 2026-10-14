@@ -13,6 +13,9 @@ const MAX_TOOL_CALL_ARGUMENT_BYTES = 256 * 1024
 const MAX_TOOL_BATCH_ARGUMENT_BYTES = 512 * 1024
 const MAX_TOOL_IDENTITY_BYTES = 256
 const MAX_TOOL_STREAM_DELTA_CHUNKS = 16_384
+// Covers a silent provider that never emits another frame or terminal finish.
+// This is a hard upper bound even if an internal caller requests a larger value.
+const MAX_TOOL_STREAM_DURATION_MS = 10 * 60 * 1000
 
 export type ToolBatchDefinition = {
   readonly capability: Capability
@@ -102,6 +105,8 @@ export type ToolBatchGateInput = {
   readonly sessionID: string
   readonly turnContextDigest: string
   readonly signal: AbortSignal
+  /** Internal test override; runtime values cannot extend the hard cap. */
+  readonly maxStreamDurationMs?: number
   readonly definitions: Readonly<Record<string, ToolBatchDefinition>>
   readonly prepareToolBatch: (request: {
     readonly sessionID: string
@@ -140,6 +145,13 @@ export function gateToolCallStream(
   let partialChunks = 0
   let finish: Extract<LanguageModelV3StreamPart, { type: "finish" }> | undefined
 
+  const requestedDuration = input.maxStreamDurationMs
+  const durationMs = requestedDuration === undefined
+    ? MAX_TOOL_STREAM_DURATION_MS
+    : Number.isFinite(requestedDuration)
+      ? Math.min(MAX_TOOL_STREAM_DURATION_MS, Math.max(1, requestedDuration))
+      : MAX_TOOL_STREAM_DURATION_MS
+  const lifetime = AbortSignal.any([input.signal, AbortSignal.timeout(durationMs)])
   return stream.pipeThrough(
     new TransformStream<LanguageModelV3StreamPart, LanguageModelV3StreamPart>({
       transform(part, controller) {
@@ -254,7 +266,7 @@ export function gateToolCallStream(
         if (finish) controller.enqueue(finish)
       },
     }),
-    { signal: input.signal },
+    { signal: lifetime },
   )
 }
 
