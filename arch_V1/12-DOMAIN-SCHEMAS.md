@@ -282,7 +282,7 @@ Historical ThreadV1/TurnV1/ProviderAttempt/CompactionRecord-as-Rust-conversation
 
 Any existing code type with those names is treated as legacy/prototype until explicitly mapped to the current owner model and acceptance tests.
 
-## 12.9 Proposed resource diagnostics and session-attachment schema mapping (A-V2-30)
+## 12.15 Proposed resource diagnostics and session-attachment schema mapping (A-V2-30)
 
 Before any resource, provider-doctor, file-touch or shared-kernel endpoint is WIRED, define versioned single-owner typed schemas for `ResourceSampleV1`, `ProviderDoctorRequest/ResultV1`, `FileTouchV1` and any `VirtualSessionAttachmentV1` in `contracts-v2`, with generated TypeScript/Rust conformance tests. §37.15 contains **illustrative interfaces**, not machine-enforced schemas and not new authority.
 

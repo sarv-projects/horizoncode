@@ -150,7 +150,7 @@ Metrics record provenance: measured, estimated or unknown.
 
 Any event family that would recreate a Rust canonical conversational Thread is invalid under 17.
 
-## 4.9 Resource observations and shared-kernel restart semantics (A-V2-30)
+## 4.12 Resource observations and shared-kernel restart semantics (A-V2-30)
 
 Resource samples, render queue deltas, file-touch warnings and Provider Doctor progress are bounded projections/events; they may be coalesced/dropped under backpressure and must not be replayed as canonical write/evidence history. In contrast, policy revision, virtual Session attachment/owner epoch, WorkerExecution/Attempt lease, cancellation generation, effect PREPARED/UNKNOWN/SETTLED and independent Verification remain fenced/durable in their established owners. A task cannot become PASS from a paint/event-counters stream.
 

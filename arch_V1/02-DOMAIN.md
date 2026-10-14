@@ -156,7 +156,7 @@ Host registries own configuration/presentation.
 Derived services own rebuildable indexes/observations.
 No research/source repository is a runtime owner.
 
-## 2.9 Resource and activity projections (A-V2-30)
+## 2.12 Resource and activity projections (A-V2-30)
 
 `ResourceSample`, `FileTouch`, `ToolTailView`, provider-doctor observations and TUI paint counters are **derived/ephemeral projections**, not new canonical Session, Run, Task, Attempt, WorkerExecution, EffectIntent or Evidence owners. Their identities bind to owner type/ID, OS process start generation, workspace/revision, observation time/source and measurement method. A PID alone is never an owner identity. Losing derived measurements must not erase a Task, receipt or accepted spec.
 

@@ -255,7 +255,7 @@ For each state machine:
 
 No lifecycle implementation may invent a second conversational Session owner.
 
-## 11.9 Headless worker and shared attachment lifecycle (A-V2-30)
+## 11.19 Headless worker and shared attachment lifecycle (A-V2-30)
 
 The source of truth remains Rust `Run → Task → Attempt` and `WorkerExecution` leases; interactive/headless UI mode does not create a second Task state machine. A ready Task may move to resource-blocked/queued without launching a worker; resource pressure does not count as evidence of a task failure or authorize provider change. An admitted Attempt binds its worker identity, owner epoch, trust/sandbox profile, resource capacity, workspace generation and parent capability subset before launching effects.
 
