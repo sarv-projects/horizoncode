@@ -479,7 +479,7 @@ test("oversized sibling cannot dispatch or Guard-admit an otherwise valid write"
   expect(gate.context.outcomes.size).toBe(0)
   expect(() =>
     requireToolExecution({ context: gate.context, callID: "first_write", capability: writeDefinition.capability }),
-  ).toThrow("missing Rust Guard admission")
+  ).toThrow("missing validated ToolBatch admission")
 })
 
 test("read-only callback requires a completed, validated ToolBatch outcome", () => {
