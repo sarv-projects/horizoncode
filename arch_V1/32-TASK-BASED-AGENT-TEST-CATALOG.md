@@ -715,3 +715,15 @@ Docs can cause operational mistakes independently of code. Add these checks to t
 | DOC-010 | a Markdown reference points to a missing relative file/heading or duplicates a numbered active § heading | fail existing architecture static gate; historic non-operative documents are reported separately |
 
 Static assertions alone are not proof of runtime security, user experience or deployment health; implement each in the existing validator/tests with both negative and positive fixtures before claiming it is enforced. This section is a documented test requirement, not proof that DOC-001..010 are automated today.
+
+## 32.37 Reservation measurement reconciliation regression (A-V2-30)
+
+| Case | Fault/setup | Required assertion |
+|---|---|---|
+| JC-RES-012.C | Effective 1,000-unit memory cap, 100 safety reserve, 200 already-measured host, newly RESERVED worker 300 | Remaining = 400, no premature worker launch without an admitted reservation |
+| JC-RES-012.D | That worker starts and consumes a measured 250 units of its 300 reservation; measurement becomes 450 total | Unconsumed headroom is 50, remaining remains 400; do **not** subtract 300 again |
+| JC-RES-012.E | That worker grows to measured 350, total becomes 550; over its original reservation by 50 | Outstanding headroom is zero; remaining 350; enforce next new admission against measured total and flag over-reservation |
+| JC-RES-012.F | One process exits/PID reused, metric sample unavailable or shared-kernel process counted for two Sessions | Do not free the reservation on stale PID; mark quality UNKNOWN, avoid double-counted shared physical bytes, and reconcile owner lease/process start identity before release |
+| JC-RES-012.G | Memory limit/observed/reserved values larger than JavaScript 2^53 integer and subtraction approaches zero | Exact decimal-string integer calculation; reject negative/overflow, no floating point loss and no unsigned underflow |
+
+The calculator and reconciliation fixture must use the §18.18 formula. Aggregate shared kernel PSS once globally; inferred per-Session shares are ESTIMATED. Reservations release only with confirmed owner exit/settlement, not because a resource dashboard sample disappeared.
