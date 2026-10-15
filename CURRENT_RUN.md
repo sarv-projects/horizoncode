@@ -104,3 +104,8 @@ Confirmed private root package metadata declared MIT although no root HorizonCod
 ## 2026-10-15 — stale Features UI absence claim corrected
 
 The current branch contains actual Horizon feature-exposure module and first-pass TUI `/features` and GUI Features/Experimental tabs, but §16.15.1 still claimed no such panels existed. Verified the TUI command registration, GUI tab component composition and helper test source. Updated §16/§20 to distinguish pinned upstream absence from first-party CODE_PRESENT/PARTIAL UI; added DOC-016 source drift regression. Full effective state/preference precedence/API/Guard FEAT fixtures remain unexecuted.
+
+
+## 2026-10-15 — acceptance-case inventory parity
+
+Enumerated all first-column acceptance-case IDs in §32 (334 unique IDs before the added DOC-017 row), including FEAT-001..014, JC-RES-001..020 with resource subcases and ACP/VIS/DEP documentation cases. No duplicated IDs found. Added DOC-017 to existing convergence validator to assert unique table IDs, a nontruncated inventory and required contiguous base sequences. This is ID/traceability structure only; **none of the scenario rows receives TESTED/VERIFIED status without executable coverage.**

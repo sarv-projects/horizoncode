@@ -425,6 +425,16 @@ check('CODE_PRESENT/PARTIAL' in ux_text and 'horizon.settings.features' in ux_te
 check('Live overlay status correction' in integration and 'CODE_PRESENT/PARTIAL' in integration,
       'DOC-016 source-map feature status drift')
 
+# DOC-017: deterministic acceptance ID inventory, not a runtime test executor.
+case_ids=re.findall(r'^\\|\\s*([A-Z][A-Z0-9-]*\\d+(?:[.-][A-Z0-9]+)*)\\s*\\|',acceptance,re.M)
+check(len(case_ids)==len(set(case_ids)),
+      'DOC-017 duplicate acceptance case ID: '+','.join(sorted({i for i in case_ids if case_ids.count(i)>1})))
+check(len(case_ids)>=300,'DOC-017 acceptance catalog unexpectedly truncated')
+for required_prefix,count,pad in [('FEAT-',14,3),('JC-RES-',20,3),('DOC-',17,3)]:
+    for n in range(1,count+1):
+        check(f'{required_prefix}{n:0{pad}d}' in case_ids,
+              'DOC-017 required acceptance case missing: '+f'{required_prefix}{n:0{pad}d}')
+
 print('SCHEMA_FILES',len(schema_files))
 print('CATALOG_IDS',len(catalog_ids),'REGISTRY_IDS',len(records))
 print('CHECKS',checked,'FAILURES',len(failures))
