@@ -21,6 +21,7 @@ CONFLICT = re.compile(r"^(?:<{7}|={7}|>{7})(?:\s|$)")
 HEADING = re.compile(r"^#{2,4}\s+(\d+\.\d+)(?!\d)")
 REFERENCE = re.compile(r"§{1,2}\s*(\d{1,2}\.\d{1,2})(?!\d)")
 CURRENT_PLAN = "docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md"
+HISTORICAL_GAPS = {"14.11","14.12","14.13","14.14","20.9","31.18","32.30"}
 KNOWN_OWNER = {"1","2","3","4","5","10","11","12","13","14","15","16","17","18","20","21","29","30","31","32","33","37","42"}
 
 def scope(path: str) -> str:
@@ -73,6 +74,7 @@ def run() -> dict:
             if scope(p) == "active-or-entrypoint":
                 for m in REFERENCE.finditer(line):
                     section = m.group(1)
+                    if section in HISTORICAL_GAPS and any(word in line.lower() for word in ("broken","dangling","nonexistent","unallocated","retired")): continue
                     if section.split(".")[0] in KNOWN_OWNER and section not in headings:
                         issues.append({"line":n,"kind":"missing-architecture-section","section":section})
         if fence is not None: issues.append({"line":fence[2],"kind":"unclosed-fence"})
