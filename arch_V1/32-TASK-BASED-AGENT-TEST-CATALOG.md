@@ -725,8 +725,9 @@ Static assertions alone are not proof of runtime security, user experience or de
 | DOC-013 | PascalCase `managed-event.schema.json` projection is generated as though it were the Rust OwnerLog physical or `ManagedCommand` wire envelope | Fail parity gate; prototype must be marked non-runtime and docs identify real physical `seq/kind/data` with snake_case events; require explicit adapter, versioned migration and roundtrip tests before wiring |
 | DOC-014 | Contract test runner prepends `/home/sarvesh` or another single-developer path on every platform | Use current user's home and native path separator, retain existing PATH; fail static check if personal absolute binary path returns |
 | DOC-015 | Root `package.json` publishes a concrete SPDX license (for example MIT) even though there is no root legal grant and the release documents say unresolved | Fail; until a user-approved root license/notice exists, keep private root workspace `UNLICENSED` and preserve vendor licenses unchanged |
+| DOC-016 | Active architecture says Features/Experimental UI is absent, despite tracked config projection and wired TUI/app surfaces, or promotes existing panels to full backend parity | Require source-grounded CODE_PRESENT/PARTIAL, exact TUI/GUI registrations and FEAT-001..014 remaining unverified |
 
-DOC-012–015 are static policy/source-contract tests; the final Rust/TypeScript runtime acceptance, cross-version migration and negative IPC fixtures are **not** made executable by these checks.
+DOC-012–016 are static policy/source-contract tests; the final Rust/TypeScript runtime acceptance, cross-version migration and negative IPC fixtures are **not** made executable by these checks.
 
 ## 32.37 Reservation measurement reconciliation regression (A-V2-30)
 

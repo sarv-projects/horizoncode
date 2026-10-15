@@ -154,7 +154,9 @@ Current PR branch has first-party changed overlays in `packages/core/`, `package
 | `opencode/packages/tui/src/app.tsx`, `component/command-palette.tsx`, `component/dialog-status.tsx` | Existing TUI commands and status | Keyboard-reachable optional Settings; class/effective-state labels and disabled reasons from one projection |
 | `opencode/packages/tui/src/config/index.tsx`, `opencode/packages/core/src/flag/flag.ts` | TUI preferences and inherited env flags | Not independent runtime authorization or substitute for Settings |
 
-Implement first the actual config/flag inventory and read-only derived exposure; then safe persistence with revision/conflict semantics; finally actionable TUI/GUI controls and capability gating. Do not build a second feature registry or accept a GUI-local switch as approval of backend effects. Runtime acceptance is §32 FEAT-001..014, not mere schema validation.
+**Live overlay status correction (2026-10-15):** unlike the upstream rows above, Horizon overlays already contain a first-pass derived projection in `packages/core/src/v1/config/feature-exposure.ts`, a TUI `horizon.settings.features` action linked from `packages/tui/src/app.tsx`, and Features/Experimental tabs wired in `packages/app/src/components/settings-v2/dialog-settings-v2.tsx`. `packages/core/test/config/feature-exposure.test.ts` verifies limited pure helper behavior. This is **CODE_PRESENT/PARTIAL**, not a missing-panel design; SourceConfig supports a narrow compaction subset and the unfinished precedence/lock/pending/auth/API parity must not be inferred implemented.
+
+Complete the remaining config/flag inventory and safe persistence with revision/conflict semantics; then enforce the same authoritative effective state, source and capability/Guard gating across TUI/GUI/CLI/API. Do not build a second feature registry or accept a GUI-local switch as approval of backend effects. Runtime acceptance is §32 FEAT-001..014, not mere schema validation.
 
 ## 20.11 Source-level seams for JCode-informed optimization (A-V2-30)
 

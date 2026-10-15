@@ -99,3 +99,8 @@ Compared OwnerLogV2 source `PhysicalRecordV2`, `OwnerEventInput::physical_data` 
 ## 2026-10-15 — root license metadata inconsistency resolved conservatively
 
 Confirmed private root package metadata declared MIT although no root HorizonCode LICENSE existed and contributor/release docs stated unresolved. Set root `license` to `UNLICENSED` while keeping upstream OpenCode MIT license intact; updated §18.20, README, CONTRIBUTING and DOC-015 static regression. The project still requires an authorized distribution license and downstream license/NOTICE review for release. Did not grant rights or ship binaries.
+
+
+## 2026-10-15 — stale Features UI absence claim corrected
+
+The current branch contains actual Horizon feature-exposure module and first-pass TUI `/features` and GUI Features/Experimental tabs, but §16.15.1 still claimed no such panels existed. Verified the TUI command registration, GUI tab component composition and helper test source. Updated §16/§20 to distinguish pinned upstream absence from first-party CODE_PRESENT/PARTIAL UI; added DOC-016 source drift regression. Full effective state/preference precedence/API/Guard FEAT fixtures remain unexecuted.

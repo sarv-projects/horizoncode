@@ -405,6 +405,26 @@ check('Path.home()' in runner and 'os.pathsep' in runner,
 check('/home/sarvesh/' not in runner and '/Users/kit/' not in runner,
       'DOC-014 hardcoded developer HOME in contract test script')
 
+# DOC-016: architecture source-status parity for first-party feature exposure UI.
+feature_source=R/'packages/core/src/v1/config/feature-exposure.ts'
+tui_dialog=R/'packages/tui/src/component/dialog-features.tsx'
+tui_app=R/'packages/tui/src/app.tsx'
+app_features=R/'packages/app/src/components/settings-v2/features.tsx'
+app_settings=R/'packages/app/src/components/settings-v2/dialog-settings-v2.tsx'
+feature_test=R/'packages/core/test/config/feature-exposure.test.ts'
+for candidate in [feature_source,tui_dialog,tui_app,app_features,app_settings,feature_test]:
+    check(candidate.is_file(),'DOC-016 tracked feature exposure source missing: '+str(candidate))
+check('DialogFeatures' in tui_app.read_text() and 'horizon.settings.features' in tui_app.read_text(),
+      'DOC-016 TUI feature dialog is not bound to command')
+check('SettingsFeaturesV2' in app_settings.read_text() and 'value="experimental"' in app_settings.read_text(),
+      'DOC-016 GUI feature tabs are not actually mounted')
+ux_text=(A/'16-UX-SETTINGS-ECOSYSTEM.md').read_text()
+check('CODE_PRESENT/PARTIAL' in ux_text and 'horizon.settings.features' in ux_text
+      and 'not absence of panels' in ux_text,
+      'DOC-016 stale or overpromoted UX source status')
+check('Live overlay status correction' in integration and 'CODE_PRESENT/PARTIAL' in integration,
+      'DOC-016 source-map feature status drift')
+
 print('SCHEMA_FILES',len(schema_files))
 print('CATALOG_IDS',len(catalog_ids),'REGISTRY_IDS',len(records))
 print('CHECKS',checked,'FAILURES',len(failures))

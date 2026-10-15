@@ -120,3 +120,8 @@ Source comparison found the design-only `arch_V1/contracts-v2/managed-event.sche
 ## 2026-10-15 — root package licensing metadata corrected
 
 The root private `package.json` declared MIT while root LICENSE/NOTICE were absent and docs marked distribution permission unresolved. Set the **private workspace** SPDX metadata to `UNLICENSED` pending explicit Horizon-authored code license choice and audited notices; **did not modify `opencode/LICENSE` or any copied upstream license**. DOC-015 static test now blocks contradictory metadata. This is a conservative source-build disclosure, not a release-license decision or a claim that redistribution dependencies are cleared.
+
+
+## 2026-10-15 — Features/Experimental source-status correction
+
+§16.15.1 previously stated the TUI and app had no Features/Experimental surfaces; that was true of the pinned upstream-only snapshot, **false for current HorizonCode first-party overlays**. Verified `packages/core/src/v1/config/feature-exposure.ts`, `packages/tui/src/component/dialog-features.tsx` registered as `horizon.settings.features` in TUI app, `packages/app/src/components/settings-v2/features.tsx` mounted by settings dialog, and limited config helper tests. Updated §16 and §20 to **CODE_PRESENT/PARTIAL** and added DOC-016 static source-status guard. Not FEAT-001..014 full behavioral PASS: backend source/lock/pending/API and cross-surface integration remain open.
