@@ -94,3 +94,8 @@ Examined the 18 pinned upstream `opencode/**/AGENTS.md` sources that can be copi
 ## 2026-10-15 — managed event physical/logical parity correction
 
 Compared OwnerLogV2 source `PhysicalRecordV2`, `OwnerEventInput::physical_data` and `ManagedCommand::event/decode` with the design `managed-event.schema.json`. The machine prototype cannot encode current Rust persisted events (PascalCase vs snake_case; logical envelope vs seq/kind/data); marked it explicitly non-runtime and updated §4.2–4.3/§12.13. Added DOC-012–014 acceptance rows and static DOC-013/014 guards. Removed hardcoded developer-home paths from `run_contract_tests.py`. The physical on-disk Rust record format remains unchanged and is not yet covered by the new cross-language schema migration tests.
+
+
+## 2026-10-15 — root license metadata inconsistency resolved conservatively
+
+Confirmed private root package metadata declared MIT although no root HorizonCode LICENSE existed and contributor/release docs stated unresolved. Set root `license` to `UNLICENSED` while keeping upstream OpenCode MIT license intact; updated §18.20, README, CONTRIBUTING and DOC-015 static regression. The project still requires an authorized distribution license and downstream license/NOTICE review for release. Did not grant rights or ship binaries.

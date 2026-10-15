@@ -321,6 +321,13 @@ license_files=[R/'LICENSE',R/'LICENSE.md',R/'LICENSE.txt']
 root_license=any(p.is_file() for p in license_files)
 check((R/'opencode/LICENSE').is_file(),
       'DOC-006 pinned upstream MIT license/permission notice missing')
+# DOC-015: package metadata must not invent an outbound rights grant.
+if not root_license:
+    check(root_package.get('license') == 'UNLICENSED' and root_package.get('private') is True,
+          'DOC-015 root package declares a distribution license despite no root LICENSE')
+    check('UNLICENSED' in readme and 'UNLICENSED' in contributing,
+          'DOC-015 public metadata/docs disagree on pending license decision')
+
 if not root_license:
     check('NOT V1 RELEASED' in handoff
           and 'not yet released' in readme

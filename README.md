@@ -182,7 +182,7 @@ HorizonCode is a project for developers who care about how agents *actually* com
 
 HorizonCode is developed independently by [sarv-projects](https://github.com/sarv-projects). Its interactive coding foundation incorporates [OpenCode](https://github.com/anomalyco/opencode); preserved upstream source and copyright notices are in [`opencode/`](opencode/) and [`opencode/LICENSE`](opencode/LICENSE). HorizonCode is not affiliated with the OpenCode maintainers.
 
-Root-level license/third-party notices and final distribution packaging are being completed before release. Existing upstream attribution obligations remain in force.
+The private root workspace currently declares `UNLICENSED`, pending an explicit HorizonCode distribution license decision. Root-level license/third-party notices and final distribution packaging are being completed before release. Existing upstream attribution obligations remain in force.
 
 ---
 
