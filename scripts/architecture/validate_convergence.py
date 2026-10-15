@@ -351,6 +351,26 @@ check('scripts/architecture/audit_markdown_repo.py' in (R/'scripts/architecture/
       'DOC-010/DOC-011 tracked-Markdown reference gate not wired/documented')
 
 
+# DOC-012 inherited upstream AGENTS precedence (static source-policy regression).
+# Upstream AGENTS are left byte-identical; root Horizon rules must explicitly
+# prevent their hydration from silently changing Guard, branch or process policy.
+root_agent=(R/'AGENTS.md').read_text()
+check('## Inherited OpenCode package instructions and precedence' in root_agent,
+      'DOC-012 missing Horizon-first inherited AGENTS guidance')
+for marker in [
+    'opencode/AGENTS.md',
+    'opencode/packages/app/AGENTS.md',
+    'opencode/packages/effect-drizzle-sqlite/AGENTS.md',
+    'never rewrite the pinned upstream instruction snapshot',
+    'Rust Guard',
+]:
+    check(marker.lower() in root_agent.lower(),'DOC-012 upstream AGENTS conflict treatment missing: '+marker)
+check('## Inherited upstream instructions' in contributing,
+      'DOC-012 contributor guide does not explain hydrated upstream AGENTS precedence')
+check((R/'opencode/AGENTS.md').is_file()
+      and (R/'opencode/packages/app/AGENTS.md').is_file(),
+      'DOC-012 pinned upstream instructions missing')
+
 print('SCHEMA_FILES',len(schema_files))
 print('CATALOG_IDS',len(catalog_ids),'REGISTRY_IDS',len(records))
 print('CHECKS',checked,'FAILURES',len(failures))

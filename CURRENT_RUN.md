@@ -84,3 +84,8 @@ This earlier pass **incorrectly reported 904 Markdown files**, including 779 pin
 ## 2026-10-15 — DOC-001..011 static gate implementation and repository scan hardening
 
 GitHub PR #7 documentation-validation work (after the frozen 278-file baseline): added explicit static Horizon security/contributing identity, superseded-source precedence, ACP/visual/deployment owner trace, release-license/no-bypass disclaimers, reserved-capability status and plan linkage checks to the existing scripts/architecture/validate_convergence.py. These static guards are not equivalent to completing every DOC negative scenario. Enhanced scripts/architecture/audit_markdown_repo.py for HTML src/href, link-reference definitions, duplicate numbered headings and invalid UTF-8 across tracked Markdown; upstream/archive warnings retain non-authoritative scope. Preserve the immutable previous Git-blob manifest rather than overwriting it with a fresh-head claim. Tests and CI must be reported against the final branch SHA; no new runtime feature or RAM benchmark was performed by these source-validation changes.
+
+
+## 2026-10-15 — Hydrated OpenCode AGENTS precedence reconciliation
+
+Examined the 18 pinned upstream `opencode/**/AGENTS.md` sources that can be copied into corresponding root package paths by the source bootstrap. Found upstream-specific branch conventions (`dev`, no slash), unconditional app restart prohibition and a developer-private absolute source path that are not reliable HorizonCode operating policies. Added precedence/scope guidance to root AGENTS and contributor guide and DOC-012 static validation; preserved pinned upstream snapshots byte-for-byte. No package/runtime behavior was changed and no runtime capability was promoted.

@@ -105,3 +105,8 @@ The frozen per-file Git blob/size/scope/flag ledger is `docs/audits/2026-10-15-t
 ## 2026-10-15 documentation-regression hardening (audit tooling, not V1 runtime)
 
 The existing convergence validator now executes static DOC-001..010 regression guardrails for project security/contributor identity, archived-source precedence, ACP/visual/deploy traceability, reserved capability status, release/OS caveats and the operative plan. The tracked-Markdown validator DOC-011 additionally examines inline/reference-style/HTML relative paths, fences, numbered headings, UTF-8 and conflict markers at the current checkout. These checks must pass on the final head in CI. They do not prove all runtime fault scenarios, per-sentence semantic correctness of 278 files, native-platform release qualification, licensing, universal Guard, executing P2, or independent verifier acceptance. No status is promoted on the strength of this validation code alone.
+
+
+## 2026-10-15 pinned source AGENTS instruction conflict
+
+A fresh bootstrap can restore `opencode/**/AGENTS.md` into root package subdirectories. Those inherited source notes contain OpenCode-specific policies (upstream `dev` branch, blanket app restart ban, developer-private source path). Root `AGENTS.md` and `CONTRIBUTING.md` now explicitly distinguish package-local implementation advice from HorizonCode policy, and DOC-012 static validation checks those warnings. Preserve upstream SHA and verify inherited instructions against the current Horizon task/OS/capability before running a coding agent. This remediation is instruction/docs only, not Guard enforcement.

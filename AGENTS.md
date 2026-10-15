@@ -15,6 +15,14 @@
 
 Do NOT read the archived architecture or compatibility stubs as implementation authority.
 
+## Inherited OpenCode package instructions and precedence
+
+The tracked `opencode/` snapshot includes upstream `AGENTS.md` files which `scripts/architecture/bootstrap_source.py --apply` may hydrate as nested `packages/**/AGENTS.md`. **These are useful package-specific coding/test conventions, not HorizonCode policy or architecture authority.** For every HorizonCode agent task, start with this root `AGENTS.md`, `arch_V1/README.md`, current topic owner and `HANDOFF.md` before using inherited package hints. When a nested upstream guide conflicts with a HorizonCode policy, apply HorizonCode's owner/Guard/privacy/approval/cleanup/release contract and retain compatible local coding practices.
+
+Specific known upstream-only instructions that must not silently govern HorizonCode: `opencode/AGENTS.md` uses the upstream default branch `dev` and no-slash branch style (HorizonCode currently uses `main` and topic branches); `opencode/packages/app/AGENTS.md` contains an absolute prohibition on restarting an upstream app/server (HorizonCode may restart **only agent-owned** test/dev processes after checking ownership and user impact); `opencode/packages/effect-drizzle-sqlite/AGENTS.md` names a developer's `/Users/kit/code/open-source/effect-smol` path (verify actual dependency source instead). Never treat an upstream instruction permitting a host tool executor, plugin hook or local process action as an exemption from Rust Guard, effect leases, user approval, and receipt reconciliation. Respect source-local package code style and its test patterns wherever compatible.
+
+**Implementation rule:** update the *root HorizonCode* instructions or narrow first-party overlay when a conflict needs correction; never rewrite the pinned upstream instruction snapshot merely to make audits appear green. If a future code agent resolves nested `AGENTS.md` with higher precedence, explicitly supply this root policy and owning topic docs in the task context and document any remaining conflict before execution.
+
 ## Skills, MCPs, tools and external capabilities
 
 Use the strongest relevant capability already available instead of reimplementing it manually.

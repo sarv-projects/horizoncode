@@ -8,6 +8,10 @@ Read [AGENTS.md](AGENTS.md) for coding-agent rules, [HANDOFF.md](HANDOFF.md) for
 
 The root `packages/` directory contains HorizonCode overlays **and** files restored from the pinned `opencode/` snapshot by the repository bootstrap script. In a fresh checkout, do not interpret a file absent from root `packages/` as an unimplemented feature until the pinned source has been restored and inspected. Keep Horizon modifications in the sanctioned overlay; do not rewrite the upstream snapshot and overlay independently.
 
+## Inherited upstream instructions
+
+A source bootstrap may restore pinned OpenCode package-local `AGENTS.md` files into `packages/`. Their package implementation/test conventions can help, but OpenCode-specific branch rules, development-server restrictions, machine-local paths or tool-execution assumptions do not supersede HorizonCode's root `AGENTS.md`, Rust Guard/effect authorization policy, current `main` branch or topic-owned architecture. Check the actual file origin and the current workspace before running a command or following instructions. Do not modify the pinned `opencode/` originals to reconcile project policy.
+
 ## Development environment
 
 Linux, Git, Python 3, Bun 1.3.14 and a Rust toolchain are the documented developer-preview baseline. Native Windows/macOS execution, isolation and installer claims require separate platform evidence.
