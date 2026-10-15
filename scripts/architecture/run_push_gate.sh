@@ -11,6 +11,7 @@ python3 scripts/architecture/bootstrap_source.py --check --require-complete
 python3 scripts/architecture/audit_overlay_visibility.py
 python3 scripts/architecture/audit_workspace_packages.py
 python3 scripts/architecture/validate_convergence.py
+python3 scripts/architecture/audit_markdown_repo.py
 python3 scripts/architecture/validate_external_sources.py
 # Never silently skip positive Rust Guard tests due to an absent binary.
 cargo build --locked --manifest-path kernel/Cargo.toml --bin session_supervisor --quiet
