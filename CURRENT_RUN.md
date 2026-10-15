@@ -124,3 +124,8 @@ Updated HANDOFF active banner and legacy dated wording to distinguish initial do
 ## 2026-10-15 — resource-budget arithmetic in Rust
 
 Implemented pure `kernel/src/resource_budget.rs` (published via kernel lib) with `ReservationState`, `Reservation`, `Capacity::UnknownCapacity/Remaining` and conservative `remaining_capacity` using exact u128 intermediates. Unit fixtures cover §32 JC-RES-012.C–G, terminal states and unbounded/overflow denial. Wired into `run_push_gate.sh` focused cargo tests. No resource measurement, atomic reservation owner, OS isolation, worker runtime or performance comparison is claimed by this slice.
+
+
+## 2026-10-15 — resource lifecycle transition code and tests
+
+Implemented pure `ReservationState::validate_transition` and negative Rust unit cases in existing `kernel/src/resource_budget.rs` for §11.20 / JC-RES-012.H/J. Prohibits transition shortcuts including dispatched->EXPIRED, quarantine->RELEASED and RELEASED/EXPIRED reuse; requires caller-supplied proof flags for no-launch expiry, reconciled quarantine return and exit+effect settlement. This is not authenticated proof gathering, owner log CAS persistence, OS sampling or an executing worker scheduler. Await final-head CI and later integration acceptance.

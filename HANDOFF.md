@@ -140,3 +140,8 @@ Code was changed (not merely docs): `packages/core/src/tool/registry.ts` now fil
 ## 2026-10-15 — first Rust resource headroom calculator (pure CODE_PRESENT, not WIRED)
 
 Added `kernel/src/resource_budget.rs` with one conservative typed ReservationState enum and exact-integer headroom math implementing §18.18 for JC-RES-012.C–G. Rust unit fixtures cover measured+reserved double-debit, unknown/stale owner sample retains full reservation, terminal vs pre-launch reserve, >2^53 and overflow-safe subtraction and UnknownCapacity. The push gate invokes `cargo test --lib resource_budget`; this is a **pure calculation** with no OS process sampler, no authenticated worker/resource lease, no Run scheduler connection, no platform support or RAM benchmark. Resource control stays CODE_PRESENT/PARTIAL until integrated OS/authorization/negative tests.
+
+
+## 2026-10-15 — reservation transition negative tests (pure code only)
+
+Added fail-closed `ReservationState::validate_transition` to `kernel/src/resource_budget.rs` plus pure Rust tests for JC-RES-012.H/J: EXPIRY requires proven never-dispatched, launched uncertainty cannot expire, QUARANTINED requires reconciled return, RELEASE requires process exit and settled receipts, and RELEASED/EXPIRED cannot revive. No runtime Rust lease owner calls the helper yet. Proof flags must be derived from authenticated process identity, receipts and expected owner epoch and committed atomically; tests of supplied flags do not establish those facts. Do not promote resource management to WIRED on this basis. CI on final SHA is required.

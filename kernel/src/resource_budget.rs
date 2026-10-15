@@ -17,6 +17,48 @@ pub enum ReservationState {
     Expired,
 }
 
+/// Pure transition guard for §11.20. This checks proof flags only; the
+/// authenticated Rust owner must obtain the underlying process/receipt evidence
+/// and atomically persist the transition against the expected owner epoch.
+/// No caller may use this helper itself as proof that a process exited.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReservationProof {
+    pub no_launch_or_dispatch: bool,
+    pub owned_process_exited: bool,
+    pub effects_settled: bool,
+    pub reconciliation_complete: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReservationTransitionError {
+    ForbiddenTransition,
+    MissingProof,
+}
+
+impl ReservationState {
+    /// A closed transition relation. Staying in the same state is handled as
+    /// an idempotent replay by the owner log, not as a new state transition.
+    pub fn validate_transition(
+        self,
+        next: Self,
+        proof: ReservationProof,
+    ) -> Result<(), ReservationTransitionError> {
+        use ReservationState::{Claimed, Expired, Proposed, Quarantined, ReleasePending, Released, Reserved};
+        use ReservationTransitionError::{ForbiddenTransition, MissingProof};
+
+        let permitted = match (self, next) {
+            (Proposed, Reserved) | (Reserved, Claimed) => true,
+            (Reserved, Expired) => proof.no_launch_or_dispatch,
+            (Claimed, ReleasePending) => true,
+            (Claimed, Quarantined) | (ReleasePending, Quarantined) => true,
+            (Quarantined, ReleasePending) => proof.reconciliation_complete,
+            (ReleasePending, Released) => proof.owned_process_exited && proof.effects_settled,
+            _ => return Err(ForbiddenTransition),
+        };
+        if permitted { Ok(()) } else { Err(MissingProof) }
+    }
+}
+
 /// One owner reservation for one budget dimension and accounting epoch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Reservation {
@@ -135,6 +177,49 @@ mod tests {
         assert_eq!(remaining_capacity(Some(u64::MAX), 0, 0,
             &[reservation(ReservationState::Reserved, u64::MAX, None)]),
             Capacity::Remaining(0));
+    }
+
+    #[test]
+    fn reservation_transition_requires_proven_no_launch_before_expiry() {
+        use ReservationState::*;
+        let empty = ReservationProof::default();
+        assert_eq!(Reserved.validate_transition(Expired, empty), Err(ReservationTransitionError::MissingProof));
+        assert_eq!(Claimed.validate_transition(Expired, ReservationProof { no_launch_or_dispatch: true, ..empty }), Err(ReservationTransitionError::ForbiddenTransition));
+        assert_eq!(Reserved.validate_transition(Expired, ReservationProof { no_launch_or_dispatch: true, ..empty }), Ok(()));
+        assert_eq!(Expired.validate_transition(Claimed, empty), Err(ReservationTransitionError::ForbiddenTransition));
+    }
+
+    #[test]
+    fn quarantine_reconciliation_and_settlement_are_not_bypassed() {
+        use ReservationState::*;
+        let empty = ReservationProof::default();
+        assert_eq!(Proposed.validate_transition(Reserved, empty), Ok(()));
+        assert_eq!(Reserved.validate_transition(Claimed, empty), Ok(()));
+        assert_eq!(Claimed.validate_transition(Quarantined, empty), Ok(()));
+        assert_eq!(Quarantined.validate_transition(ReleasePending, empty), Err(ReservationTransitionError::MissingProof));
+        assert_eq!(Quarantined.validate_transition(ReleasePending, ReservationProof { reconciliation_complete: true, ..empty }), Ok(()));
+        assert_eq!(ReleasePending.validate_transition(Released, empty), Err(ReservationTransitionError::MissingProof));
+        assert_eq!(ReleasePending.validate_transition(Released, ReservationProof { owned_process_exited: true, ..empty }), Err(ReservationTransitionError::MissingProof));
+        assert_eq!(ReleasePending.validate_transition(Released, ReservationProof { owned_process_exited: true, effects_settled: true, ..empty }), Ok(()));
+        assert_eq!(Quarantined.validate_transition(Released, ReservationProof { owned_process_exited: true, effects_settled: true, reconciliation_complete: true, ..empty }), Err(ReservationTransitionError::ForbiddenTransition));
+        assert_eq!(Released.validate_transition(Claimed, empty), Err(ReservationTransitionError::ForbiddenTransition));
+        assert_eq!(Released.validate_transition(Released, empty), Err(ReservationTransitionError::ForbiddenTransition));
+    }
+
+    #[test]
+    fn every_terminal_state_is_one_way() {
+        use ReservationState::*;
+        let proof = ReservationProof {
+            no_launch_or_dispatch: true,
+            owned_process_exited: true,
+            effects_settled: true,
+            reconciliation_complete: true,
+        };
+        for terminal in [Expired, Released] {
+            for destination in [Proposed, Reserved, Claimed, ReleasePending, Quarantined, Released, Expired] {
+                assert_eq!(terminal.validate_transition(destination, proof), Err(ReservationTransitionError::ForbiddenTransition));
+            }
+        }
     }
 
     #[test]
