@@ -713,8 +713,9 @@ Docs can cause operational mistakes independently of code. Add these checks to t
 | DOC-008 | README claims native Windows, zero RAM overhead, full sandbox or universal Guard on docs-only evidence | fail claim-evidence gate; require platform/task and OS evidence |
 | DOC-009 | operative plan omits one accepted owner/test link or points to archived current-run as the authoritative checkpoint | fail; one current `HANDOFF.md`, one operative plan, source and code test refs |
 | DOC-010 | a Markdown reference points to a missing relative file/heading or duplicates a numbered active § heading | fail existing architecture static gate; historic non-operative documents are reported separately |
+| DOC-011 | tracked `.md` added anywhere, including vendored OpenCode, archived, root, hidden skill fixtures, nested docs; invalid fence/link/conflict marker | `scripts/architecture/audit_markdown_repo.py` discovers it from `git ls-files` without hard-coded inventory size, scans every tracked Markdown line, fails on current-project structural blockers and reports upstream/archived evidence as warnings; optional JSON gives exact per-file SHA256/lines; generated schema and runtime parity are separate tests |
 
-Static assertions alone are not proof of runtime security, user experience or deployment health; implement each in the existing validator/tests with both negative and positive fixtures before claiming it is enforced. This section is a documented test requirement, not proof that DOC-001..010 are automated today.
+Static assertions alone are not proof of runtime security, user experience or deployment health; implement each in the existing validator/tests with both negative and positive fixtures before claiming it is enforced. **DOC-011 now has a structural-only checker wired into the push/full CI chain**. DOC-001..010 remain independent acceptance requirements, not a claim that all their negative cases are automated or that 278 documents were semantically adjudicated.
 
 ## 32.37 Reservation measurement reconciliation regression (A-V2-30)
 
