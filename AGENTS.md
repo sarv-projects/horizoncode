@@ -117,7 +117,7 @@ Never replace local OpenCode packages with a clean upstream checkout.
 Statuses are distinct:
 DESIGNED -> CODE_PRESENT -> WIRED -> TESTED -> VERIFIED -> RELEASED.
 
-Schema/catalog/docs are not runtime proof.
+Schema/catalog/docs are not runtime proof. For any documentation or authority changes, run `python3 scripts/architecture/audit_markdown_repo.py` plus the existing architecture convergence validator before declaring structural completion. This enumerates all tracked Markdown files, including upstream/archive references; it fails active broken local links, numbered references, fences and conflict markers while reporting historical/upstream issues separately. Preserve non-normative history; use `--json-report` for per-file SHA256 evidence when an exhaustive audit is requested. **Structural coverage is not semantic correctness or executable feature verification.**
 
 Before reporting a slice complete, state:
 - changed files/functions;
