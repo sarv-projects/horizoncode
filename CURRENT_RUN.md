@@ -109,3 +109,8 @@ The current branch contains actual Horizon feature-exposure module and first-pas
 ## 2026-10-15 — acceptance-case inventory parity
 
 Enumerated all first-column acceptance-case IDs in §32 (334 unique IDs before the added DOC-017 row), including FEAT-001..014, JC-RES-001..020 with resource subcases and ACP/VIS/DEP documentation cases. No duplicated IDs found. Added DOC-017 to existing convergence validator to assert unique table IDs, a nontruncated inventory and required contiguous base sequences. This is ID/traceability structure only; **none of the scenario rows receives TESTED/VERIFIED status without executable coverage.**
+
+
+## 2026-10-15 — actual Core/P2 source corrections
+
+Implemented fail-closed Core registry effect admission and application-capability spoofing denial with Bun tests; patched Rust managed-control PAUSED+UNKNOWN transition to RECONCILING with test asserting replay and refusal to resume. Updated canonical `files.write` registry status from DESIGNED to CODE_PRESENT (not WIRED/VERIFIED) with CODE-001 cross-source static gate. Real run/test results pending final-head Actions; do not claim all effects or OS backend mediation. Build outputs/remote worktrees were not created by GitHub source edits.

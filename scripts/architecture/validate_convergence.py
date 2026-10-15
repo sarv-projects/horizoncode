@@ -435,6 +435,22 @@ for required_prefix,count,pad in [('FEAT-',14,3),('JC-RES-',20,3),('DOC-',17,3)]
         check(f'{required_prefix}{n:0{pad}d}' in case_ids,
               'DOC-017 required acceptance case missing: '+f'{required_prefix}{n:0{pad}d}')
 
+# CODE-001: catalog status must not conceal or overstate the narrow live guarded write.
+check(records.get('files.write',{}).get('status')=='code_present',
+      'CODE-001 files.write must be CODE_PRESENT (not DESIGN-only or VERIFIED)')
+core_registry=(R/'packages/core/src/tool/registry.ts').read_text()
+guard_source=(R/'kernel/src/guard.rs').read_text()
+effect_host=(R/'kernel/src/effect_host.rs').read_text()
+check('Rust Guard admission required' in core_registry
+      and 'localRegistration !== registration' in core_registry
+      and 'declared.id !== "files.write"' in core_registry,
+      'CODE-001 local/admission/spoof Guard gate missing from Core ToolRegistry')
+check('FILES_WRITE_ID: &str = "files.write"' in guard_source
+      and 'capability_id != "files.write"' in effect_host,
+      'CODE-001 actual Rust narrow-write owner changed')
+check('CODE_PRESENT/PARTIAL' in (A/'33-BUILTIN-CAPABILITIES-CATALOG.md').read_text(),
+      'CODE-001 guarded file write runtime status drift')
+
 print('SCHEMA_FILES',len(schema_files))
 print('CATALOG_IDS',len(catalog_ids),'REGISTRY_IDS',len(records))
 print('CHECKS',checked,'FAILURES',len(failures))

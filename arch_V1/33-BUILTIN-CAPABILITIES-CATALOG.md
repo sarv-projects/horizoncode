@@ -579,7 +579,8 @@ the safety boundary.
 
 ## 33.25 Capability implementation status anchors
 
-At the 2026-10-11 audit:
+At the 2026-10-11 audit (with 2026-10-15 source-status corrections):
+- `files.write` is **CODE_PRESENT/PARTIAL**, not merely design: Rust `kernel/src/{guard,effect_host}.rs` and the Core/legacy Session guards contain a bounded one-file write/approval/receipt path. The product registry records only `code_present`, **not** universal Guard, OS sandbox, verified cross-origin execution or final P1.3 acceptance. Additional Core registry checks now deny missing admission, unsupported effect classes and application/plugin registrations masquerading as the native write path; these are defense-in-depth, not isolation of arbitrary same-process code.
 - `indexd` is CODE_PRESENT only for a bounded in-memory lexical slice and overlay/cursor logic;
   persistent symbol/reference/LSP orchestration remains DESIGNED/unverified until source proves
   otherwise;
