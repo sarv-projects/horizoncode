@@ -11,16 +11,19 @@ python3 scripts/architecture/bootstrap_source.py --check --require-complete
 python3 scripts/architecture/audit_overlay_visibility.py
 python3 scripts/architecture/audit_workspace_packages.py
 python3 scripts/architecture/validate_convergence.py
+python3 scripts/architecture/audit_markdown_repo.py
 python3 scripts/architecture/validate_external_sources.py
 # Never silently skip positive Rust Guard tests due to an absent binary.
 cargo build --locked --manifest-path kernel/Cargo.toml --bin session_supervisor --quiet
 # P2 owner durability must execute its replay/fencing regressions in hosted CI.
 cargo test --locked --manifest-path kernel/Cargo.toml --test managed_control --quiet
+cargo test --locked --manifest-path kernel/Cargo.toml --lib resource_budget --quiet
 test -x kernel/target/debug/session_supervisor
 (
   cd packages/core
   bun run typecheck
   bun test --timeout 60000 test/session-runner-tool-registry.test.ts
+  bun test --timeout 60000 test/tool-write.test.ts
   bun test --timeout 80000 test/kernel-projection-live.test.ts -t 'Core Effect admits and settles a files.write'
 )
 (

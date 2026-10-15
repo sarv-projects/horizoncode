@@ -167,6 +167,8 @@ Unsupported model capability is not automatically agent failure if the harness d
 | LH-009 | max budget exhausted | bounded stop with partial evidence |
 | LH-010 | completed task evidence stale after merge | reverify final integrated revision |
 
+| LH-012 | active Attempt becomes UNKNOWN after Run was PAUSED, before replay | Run immediately transitions to RECONCILING, restart preserves UNKNOWN and unsafe resume remains denied |
+
 ## 32.10 Context management
 
 | ID | Task | Acceptance |
@@ -256,6 +258,8 @@ Unsupported model capability is not automatically agent failure if the harness d
 | PS-008 | permission revoked mid-execution | new effects fenced |
 | PS-009 | plugin invokes raw shell bypass | mediated or plugin unavailable |
 | PS-010 | external agent has opaque tools | strict mediation claim refused |
+| PS-011 | Application/plugin registers a tool named `write`, claims the built-in `files.write` ID and supplies a synthetic admission | Core registry does not advertise or execute this app-owned effect; actual Rust-bound write remains first-party Location-owned |
+| PS-012 | Unsupported effect tool is registered or first-party file write is invoked without a Rust challenge | No executor side effect; unsupported effect omitted from advertised definitions and missing admission denied before dispatch |
 
 ## 32.15 Browser, DOM and app creation
 
@@ -423,7 +427,7 @@ are mandatory where the corresponding capability ships.
 | PF-001 | long streamed Markdown response | renderer work tracks mutable tail rather than full response each flush |
 | PF-002 | forced Mermaid renderer abort/hang | isolated worker killed/reaped; chat/UI survives with source fallback |
 | PF-003 | cold start with background index enabled | composer/prompt usable before full index |
-| PF-004 | IPC/Guard/tool-dispatch microbench | §31.18 stage budgets recorded separately |
+| PF-004 | IPC/Guard/tool-dispatch microbench | §31.3 target budgets plus §32.21 separately measured stage timings; no nonexistent §31.18 dependency |
 | PF-005 | 16 active streams + terminal burst | foreground composer P95 remains within declared device budget |
 | SK-013 | skill slash command invoked | body loaded exactly once via skill path, not duplicated into user text and tool context |
 | RO-001 | Plan/read-only agent runs `sed -i`, package install or redirected shell write | rejected by resolved effect policy |
@@ -594,3 +598,164 @@ Public exposure of experimental features requires specific security/negative tes
 | FEAT-014 | Core V2, V1 compatibility, TUI, GUI and HTTP consumers observe a pending next-turn/session/restart state | Same requested/effective/release-class/source/pending interpretation; runtime uses effective state even before the UI refreshes |
 
 `scripts/architecture/validate_convergence.py` checks positive and negative `FeatureExposureV1` **static** schema fixtures. Those static checks do not pass FEAT-001..014. Full implementation requires actual config read/write, source precedence, guards, platform gating and TUI/GUI/HTTP integration tests.
+
+## 32.32 JCode-informed resource and multi-session regression suite (A-V2-30)
+
+Use the same pinned repository, identical task set and selected model/provider on a recorded machine. Each test writes raw samples, platform/build/commit, time window, method, error bars, cache settings, selected-model costs and failure diagnostics. Vendor README PSS figures are reference claims only. **No test below may pass on schema presence, a README example or unexecuted mock alone.**
+
+| ID | Scenario | Required evidence / rejection |
+|---|---|---|
+| JC-RES-001 | Linux baseline 1/5/10/20 direct idle Sessions | Total descendant PSS/RSS/CPU/FD/threads; warm/cold and no per-Session leak; compare current observer path |
+| JC-RES-002 | Five tool-call turns in 10/20 Sessions | Task correctness and process-tree PSS at each turn; no hidden full host per lightweight child |
+| JC-RES-003 | Local model unloaded/loaded, embeddings off/on | Separate inference RAM/VRAM from agent RAM; no secret paid-cloud fallback |
+| JC-RES-004 | Native Windows and macOS resource collection | Native process/private footprint metrics and OS support truth; never claim PSS cross-OS parity |
+| JC-RES-005 | Cache churn with 10k messages, 100MB output and 1000 stream deltas | Caps on bytes/entries, output FULL/SAMPLE fidelity, bounded growth, canonical evidence retained |
+| JC-RES-006 | 30m idle and sustained long-running session | Memory/FD/thread leak slope and redraw/CPU idle; cleanup restores near baseline after task ends |
+| JC-RES-007 | Single active Session and 20 concurrent read-only headless workers | Shared infrastructure deduplication, fairness, no unauthorized worktree or full renderer per worker |
+| JC-RES-008 | Shared-kernel session ID/policy/workspace substitution | Authenticated virtual scope denial, no cross-Session cursor, tool results, secrets or effects |
+| JC-RES-009 | Kill one untrusted worker, then kill entire kernel mid-uncertain effect | Other work isolation where applicable, new epoch fence, UNKNOWN reconciliation, no double mutation |
+| JC-RES-010 | CPU-heavy subscriber and unbounded output while input/cancel occurs | Fair queues, bounded mailboxes, stream/prompt p95 and high-priority cancellation |
+| JC-RES-011 | Two agents read/edit same file plus user patch, symlink/rename | Advisory file-touch warning and authoritative stale digest/lease denial, preserve user edits |
+| JC-RES-012 | Resource cap, low disk/FD/process pressure and overlapping builds | Visible queue/block, no foreign process kill, no silent model switch, owned cleanup only |
+| JC-RES-013 | Provider Doctor offline tier without credentials | No network/billing; deterministic config/catalog route/projection diagnostics |
+| JC-RES-014 | Provider Doctor catalog/full tiers on test account | Explicit cost consent, auth/catalog/model/tool/stream results, typed failures and bounded spend |
+| JC-RES-015 | Provider cold start, network loss and 429 | Correct retry/deadline/cancel state; no unapproved prewarm/provider fallback |
+| JC-RES-016 | Adaptive TUI on SSH/tmux, 10k transcript, resize, idle | Stable focus/scroll, full-frame redraw reason, bounded render cache and input latency |
+| JC-RES-017 | Compact tool-tail streaming plus reconnection | Live/committed marker stays correct, no duplicate canonical part, bounded line/byte budget |
+| JC-RES-018 | DAG fanout/cycle, critique, conflicting edits, parent restart | Total-member cap; no accepted cycle; typed artifact passing, revision-bound independent verifier |
+| JC-RES-019 | External source import/resume of supported adapters | Explicit ownership choice, provenance, no credential leakage or dual conversation writers |
+| JC-RES-020 | Optional local memory recall under hostile/stale input | Project scope, token caps, source label, failed recall safe, no secret remote injection |
+
+**Acceptance order:** test current source + numbers before optimization; introduce isolated shared-observer prototype; prove JC-RES-008/009/010 plus existing Guard suites before effect cutover; repeat full task/model/machine benchmark; promote only with correctness and security parity plus measured resource benefit. All platforms absent from the matrix are unverified, not green. Release claims include raw evidence paths, not an overall “fast” adjective.
+
+## 32.33 Source-level acceptance fixtures for A-V2-30 implementation-ready LLD
+
+Each case below must test **real code paths** (unit+cross-language contract+OS process integration+end-user task when relevant). Record test file, exact commit, selected platform/OS isolation backend, test invocation, result and raw artifact. Fixture names are recommended within current `kernel/tests/`, `packages/core/test/`, `packages/opencode/test/` and new `scripts/perf/`; a suggested path is not evidence that file exists today. Scenarios `JC-RES-001..020` remain the traceability IDs, with subcases to avoid large mock-only green suites.
+
+| Fixture/subcase | API/function target | Setup and fault injection | PASS evidence and invariant |
+|---|---|---|---|
+| JC-RES-001.A | `ResourceSampler.sample` | One Linux Session observer; get PID/start identity, idle 2m | process tree PSS+RSS, CPU/FD, zero unknown substituted; base includes Rust child |
+| JC-RES-001.B | `walkOwnedProcesses` | 5/10/20 Sessions, child exits during proc read | no PID double-count/crash; scope and partial UNKNOWN explicit |
+| JC-RES-002.A | `HeadlessBroker.enqueue/reserve` | five real model/tool rounds, 10/20 Sessions, recorded model config | verify task outcomes and total agent-tree memory; no new TUI process per read helper |
+| JC-RES-003.A | `ResourceSampler` local-model split | local LLM load/unload plus embeddings on/off | CPU RAM and VRAM separately and total inclusive, selected model unchanged |
+| JC-RES-004.A | `readCounters` Windows/macOS | native test runner, unsupported OS counter | correct platform method/private bytes; UNKNOWN rather than Linux PSS proxy |
+| JC-RES-005.A | `CacheLedger.insertIfCurrent/evictToBudget` | 10k parts, oversized render/images, cache pin while eviction | byte/entry bounded; pinned reader safe; canonical state still complete |
+| JC-RES-005.B | `UiToolTail` stream+artifact | 100MB stdout, partial UTF-8, many long lines | bounded presentation; streamed artifact FULL/SAMPLE and accurate truncated flags |
+| JC-RES-006.A | `PressureController` / renderer idle | 30min idle with daemon, 10+ tabs and render idle timers | no unbounded memory/FD/CPU/render growth, quantified slope and variability |
+| JC-RES-007.A | `HeadlessBroker` reuse | Read-only jobs with same workspace/model; incompatible principal in 21st job | safe compatible reuse, incompatible denied/new isolation, fair queue |
+| JC-RES-008.A | `VirtualSessionBroker.attach/subscribe` | authenticated A attempts cursor/Session ID/secret scope of B | no B events, no effect lease, typed denial; no cross-session cache |
+| JC-RES-008.B | `attach` replay | duplicate same idempotency key vs changed principal/revision | exact retry stable; changed binding CONFLICT |
+| JC-RES-009.A | `ExecutionHost.reconcile` / broker restart | kill one worker mid-write vs kill shared kernel post-dispatch pre-receipt | UNKNOWN persists; no duplicate file/remote effect; other scopes guarded |
+| JC-RES-009.B | `cancel_scope` generation | cancel old Attempt while new one enters queued state | old cancellation not inherited; one-use lease cannot replay |
+| JC-RES-010.A | `broker queue scheduler` | Session A 10k deltas + stuck reader; Session B cancel/approval | bounded queues, cancellation priority, exact ACK cursor recovery, no durable drop |
+| JC-RES-011.A | `FileTouchIndex` + Guard revision | two writers, one reader, user patch, symlink/rename/case path | advisory warns, hard digest/lease rejects stale write, readers don't block by touch alone |
+| JC-RES-012.A | `ResourceAdmission` | low memory/disk/FD, two builds, no process quota data | new workers queued/blocked; no foreign PID kill or source deletion |
+| JC-RES-012.B | `worktree release` | dirty, unknown owner, orphan processes, failed build | quarantined not deleted; only owned fully settled worktree released |
+| JC-RES-013.A | `ProviderDoctor.inspectOffline` | absent/invalid credentials, network deliberately disabled | no socket/credential read/billed inference; config diagnosis truthful |
+| JC-RES-014.A | `probeCatalog/probeFull` | mock and live test account with explicit capped consent | full chat/stream/tool payload, correct token/cost provenance and network count |
+| JC-RES-015.A | `ProviderDoctor` failures | 429, bad route, partial tool stream, stale catalog, cancellation after send | never silently route paid fallback; cost UNKNOWN when not reconcilable |
+| JC-RES-016.A | `UiRedrawScheduler` | ssh/tmux, resize, 10k transcript, input while background streaming | focus/scroll safe; p50/p95 and full-frame reason; no busy animation |
+| JC-RES-017.A | `LiveTailV1` reconnect | streaming → crash/reconnect → canonical result settle | no duplicate MessagePart; tail bounded, true final content |
+| JC-RES-018.A | `GraphAdmission` | cycle, cross-Run edge, change accepted SpecVersion, breadth limit | rejected before owner-log append; existing Run state unchanged |
+| JC-RES-018.B | `TaskVerifier/finalizer` | verifier checks rev N; user edits rev N+1 before terminal PASS | stale verdict cannot pass; final Run blocked until independent current-rev proof |
+| JC-RES-018.C | `child result collector` | orphan child after cancel, forged artifact/receipt, concurrent worker edit | reject wrong epoch/sha/lease, preserve previous evidence and unknown |
+| JC-RES-019.A | `SessionImportAdapter` | supported external transcript and hostile malformed input | user-selected snapshot/native owner only, source provenance, no credential import or dual writers |
+| JC-RES-020.A | `RecallCompiler` | two projects, poisoned retrieved text, revoked ACL and remote model unselected | no secret/cross-project or instruction injection, bounded tokens, opt-in only |
+| JC-RES-020.B | `cache invalidation` | editor overlay N+1 while asynchronous query for N is pending | N read reports generation; stale N edit denied, no unsafe cache upgrade |
+
+**Required integration pairings:** JC-RES-008/009/010 **plus the existing P1 Guard denial suite** before shared effect-host cutover; JC-RES-012/018 **plus P2 durable restart/UNKNOWN tests** before real managed work; JC-RES-001..006/016..017 **plus a same-machine correctness benchmark** before advertising RAM improvement. A test with a mock network does not qualify full Doctor billing behaviour; a Linux WSL test does not qualify native Windows.
+
+## 32.34 Documentation/contract static gate and implementation trace
+
+For every newly documented service/capability, enforce at PR time:
+- exactly one normative topic owner (§README), one canonical §33 ID, one permission/effect class and one runtime/provenance status; the name in §37 is not a duplicate registry;
+- no duplicate/out-of-order numbered headings within each architecture Markdown file; Markdown fences balanced, local cross-links resolved and table rows syntactically intact;
+- source reference resolves either as a tracked Horizon override or inside the pinned `opencode/` tree to be hydrated; no invented implemented root file; output status marks code/schema as DESIGNED until real module/adapter and tests exist;
+- immutable SourceDigest, owner epoch, source revision and Session ID have matching types across §11/§12/§13/§14/§37; no self-signed caller principal or unchecked effect origin;
+- new schema generated TS/Rust strict decoder and shared fixtures, with limits and unknown variants denied; no code silently bypasses the existing command/error registry;
+- every task in operative RC0–RC5 has a concrete function, location, test ID, success/negative/crash outcome and required platform/benchmark evidence before checkbox may be checked;
+- evidence in HANDOFF names actual commit+CI job/test, not a research report, vendor RAM number, checklist or mocked expected output.
+
+Static test suggestions: augment existing `scripts/architecture/validate_convergence.py` and `run_contract_tests.py` rather than writing a new competing validator; add fixtures that intentionally duplicate §2.9, invent unsupported error codes or point at an unhydrated nonexistent source. Current validation scripts catch heading collisions already; their checks are not proof of source-runtime correctness.
+
+## 32.35 ACP delegation, visual-source and deployment completion cases
+
+These close missing acceptance links for existing §§3.16–3.18. All are **required before the corresponding capability is WIRED/VERIFIED**, with real backend/OS and security negatives rather than mocks alone.
+
+| ID | Setup / failure injection | Required observable invariant |
+|---|---|---|
+| ACP-001 | Pinned source ACP server vs proposed client | Identify server-side implementation as existing; do not call an ACP *client* implemented until separate integration code exists |
+| ACP-002 | ACP client protocol version too old, no resume support | disabled/unavailable capability with reason; no fabricated Session |
+| ACP-003 | External agent tries filesystem/process tool outside delegated root | deny before dispatch in governed mode; independently native-trusted mode labeled weaker |
+| ACP-004 | Wrong Session ID/owner epoch in ACP stream event | reject, no cross-user part visibility or transcript write |
+| ACP-005 | Duplicate update, disconnect/reconnect, retention gap | cursor+generation replay bounded, no duplicate user turn or ToolPart |
+| ACP-006 | User cancellation after child may have already run tool | cancel fence, UNKNOWN reconciliation; never claim rollback or blind retry |
+| ACP-007 | Parent delegates model provider not permitted by current user/cost policy | explicit refusal; no silent account/model switch, no unexpected billing |
+| ACP-008 | ACP agent returns success but lacks canonical receipts/verifier evidence | Task remains unverified; parent does not mark PASS |
+| VIS-001 | User clicks DOM element with exact current source map | scoped candidate with build/source revision; patch uses expected file digest |
+| VIS-002 | Source map absent, stale or candidates ambiguous | no blind write, show ambiguity and user selection |
+| VIS-003 | DOM navigation or hot rebuild between click and edit | stale generation rejected/re-observed; no old source overwrite |
+| VIS-004 | Hostile DOM/AX payload includes instructions or external file path | treated as untrusted data, no arbitrary filesystem access |
+| DEP-001 | No supported deploy backend configured | UNAVAILABLE, no assumed generic shell credential routing |
+| DEP-002 | Wrong production account/secret/environment, consent missing | prevent upload/remote mutation, redact secrets and show exact requested scope |
+| DEP-003 | Upload times out after remote success | mark UNKNOWN, reconcile provider idempotency/state, never duplicate deploy |
+| DEP-004 | Upload succeeds but health/critical-path check fails | not VERIFIED/SUCCEEDED; evidence and repair/rollback option |
+| DEP-005 | User selects rollback with old revision or missing authority | deny/stale challenge, require fresh target and independent approval |
+| DEP-006 | Model attempt switches selected deploy provider/cost class | deny, no hidden paid route/credential use |
+| DEP-007 | Target URL proves wrong build version or source revision | stale verification, do not close accepted Run |
+| DEP-008 | Native Windows or macOS remote tool/sandbox guarantee missing | honest platform UNAVAILABLE; WSL not counted as native Windows |
+
+Add fixtures under the existing §32 test catalog and appropriate hydrated provider/ACP/Guard source test directories, record live fixture auth/OS limitations, and bind each PASS to a current source commit and proof artifact. User consent/Guard tests must run at real effect pre-dispatch and final revision layers. A proposal table does not count as an executable suite.
+
+## 32.36 Public-facing documentation and authority regression tests
+
+Docs can cause operational mistakes independently of code. Add these checks to the existing architecture validator instead of creating another documentation/ownership registry.
+
+| ID | Fault fixture | Required result |
+|---|---|---|
+| DOC-001 | root SECURITY.md references upstream OpenCode advisory/email as Horizon reporting path | fail validation; require HorizonCode-scoped contact instructions and no invented private channel |
+| DOC-002 | root CONTRIBUTING.md sends bug reports/PRs to OpenCode issues or uses OpenCode's policy as binding Horizon instructions | fail; preserve upstream guide only under `opencode/` |
+| DOC-003 | archived/source-input v2 doc asserts stronger current priority than `arch_V1/README.md` | explicit non-normative banner and current HLD owner win |
+| DOC-004 | an accepted §03 journey has no §33 capability or non-tool rationale, §37 source owner and §32 acceptance coverage | fail traceability; particularly ACP outbound, visual edit, deployment, rollback |
+| DOC-005 | an upstream agent-side ACP server is described as an implemented Horizon outbound ACP client | fail source-based status check |
+| DOC-006 | missing root license/notice for a claimed release with incorporated upstream MIT source | block release gate; preserve upstream copyright/permission notice |
+| DOC-007 | candidate tool/feature listed as registered and callable solely because it appears in Markdown, while no machine contract/backend exists | fail availability/status check; remain DESIGNED/UNAVAILABLE |
+| DOC-008 | README claims native Windows, zero RAM overhead, full sandbox or universal Guard on docs-only evidence | fail claim-evidence gate; require platform/task and OS evidence |
+| DOC-009 | operative plan omits one accepted owner/test link or points to archived current-run as the authoritative checkpoint | fail; one current `HANDOFF.md`, one operative plan, source and code test refs |
+| DOC-010 | a Markdown reference points to a missing relative file/heading or duplicates a numbered active § heading | fail existing architecture static gate; historic non-operative documents are reported separately |
+| DOC-011 | tracked `.md` added anywhere, including vendored OpenCode, archived, root, hidden skill fixtures, nested docs; invalid fence/link/conflict marker | `scripts/architecture/audit_markdown_repo.py` discovers it from `git ls-files` without hard-coded inventory size, scans every tracked Markdown line, fails on current-project structural blockers and reports upstream/archived evidence as warnings; optional JSON gives exact per-file SHA256/lines; generated schema and runtime parity are separate tests |
+
+Static assertions alone are not proof of runtime security, user experience or deployment health. The existing `validate_convergence.py` now includes **static DOC-001..010 authority, journey-trace and public-claim guardrails** (with small negative identity fixtures); these guardrails do **not** execute the full external-agent, deployment, OS, release, provider-spend or security negative scenarios. DOC-011 has a full tracked-Markdown structural scanner wired into the push/full gate, including code fences, relative inline/reference-style/HTML link paths, duplicate numbered headings, invalid UTF-8 and merge markers. Runtime negative fixtures remain required before any capability is promoted. Neither static gate proves that all 278 documents were independently semantically adjudicated.
+
+### 32.36.1 Additional documentation/source-contract parity cases
+
+| ID | Fault fixture | Required result |
+|---|---|---|
+| DOC-012 | Pinned `opencode/**/AGENTS.md` is hydrated into a Horizon package; inherited `dev` branch, global no-restart or machine-private source path would supersede root policy | Root Horizon `AGENTS.md` and contributor guide explicitly govern project/security policy; preserve upstream files; local package code/test conventions only when compatible |
+| DOC-013 | PascalCase `managed-event.schema.json` projection is generated as though it were the Rust OwnerLog physical or `ManagedCommand` wire envelope | Fail parity gate; prototype must be marked non-runtime and docs identify real physical `seq/kind/data` with snake_case events; require explicit adapter, versioned migration and roundtrip tests before wiring |
+| DOC-014 | Contract test runner prepends `/home/sarvesh` or another single-developer path on every platform | Use current user's home and native path separator, retain existing PATH; fail static check if personal absolute binary path returns |
+| DOC-015 | Root `package.json` publishes a concrete SPDX license (for example MIT) even though there is no root legal grant and the release documents say unresolved | Fail; until a user-approved root license/notice exists, keep private root workspace `UNLICENSED` and preserve vendor licenses unchanged |
+| DOC-016 | Active architecture says Features/Experimental UI is absent, despite tracked config projection and wired TUI/app surfaces, or promotes existing panels to full backend parity | Require source-grounded CODE_PRESENT/PARTIAL, exact TUI/GUI registrations and FEAT-001..014 remaining unverified |
+| DOC-017 | Acceptance-case ID duplicated, FEAT-001..014 or JC-RES-001..020 base case missing, or catalog appears unexpectedly emptied | Fail deterministic catalog inventory validation; enumerating an ID does not establish a runnable test or PASS |
+
+DOC-012–017 are static policy/source-contract tests; the final Rust/TypeScript runtime acceptance, cross-version migration and negative IPC fixtures are **not** made executable by these checks.
+
+## 32.37 Reservation measurement reconciliation regression (A-V2-30)
+
+| Case | Fault/setup | Required assertion |
+|---|---|---|
+| JC-RES-012.C | Effective 1,000-unit memory cap, 100 safety reserve, 200 already-measured host, newly RESERVED worker 300 | Remaining = 400, no premature worker launch without an admitted reservation |
+| JC-RES-012.D | That worker starts and consumes a measured 250 units of its 300 reservation; measurement becomes 450 total | Unconsumed headroom is 50, remaining remains 400; do **not** subtract 300 again |
+| JC-RES-012.E | That worker grows to measured 350, total becomes 550; over its original reservation by 50 | Outstanding headroom is zero; remaining 350; enforce next new admission against measured total and flag over-reservation |
+| JC-RES-012.F | One process exits/PID reused, metric sample unavailable or shared-kernel process counted for two Sessions | Do not free the reservation on stale PID; mark quality UNKNOWN, avoid double-counted shared physical bytes, and reconcile owner lease/process start identity before release |
+| JC-RES-012.G | Memory limit/observed/reserved values larger than JavaScript 2^53 integer and subtraction approaches zero | Exact decimal-string integer calculation; reject negative/overflow, no floating point loss and no unsigned underflow |
+| JC-RES-012.H | Reservation `RESERVED` expires before launch; contrast timeout *after* launch with process/effect state UNKNOWN | Only proven unlaunched reservation goes to terminal `EXPIRED`; launched uncertainty goes to `QUARANTINED` with capacity held until reconciliation, then `RELEASE_PENDING → RELEASED` after confirmed owner/process/effect settlement |
+| JC-RES-012.I | Wire sends obsolete `ACTIVE` reservation status or `UNKNOWN` as reservation state, and `SOFT`/`HARD` pressure aliases | Strict schema rejects unsupported statuses; canonical reservation enum is §11.20 and pressure enum is `NORMAL/SOFT_PRESSURE/HARD_PRESSURE/RECOVERING`; TS and Rust roundtrip identical |
+| JC-RES-012.J | Competing release and lease claim, reused lease after RELEASED, stale process start identity, and duplicate settlement delivery | Compare-and-swap owner epoch/revision and one-way terminal states; exactly one release, no early freed capacity or double-debit, conservative quarantine on stale process evidence |
+| JC-RES-012.K | Untrusted worker forges FileTouch Session/workspace/owner epoch or lists another workspace via reused cursor; untrusted worker calls HeadlessBroker with guessed ticket/owner epoch/lease | Authenticated ingress rejects forge/cross-principal operations before touching indexes or worker admission; passed token/reference alone grants no authority; no Task/Attempt or capacity allocated |
+| JC-RES-012.L | Provider Doctor catalog/full called with valid-looking network/spend reference from another owner or revoked grant | Authenticated caller and selected provider/account scope must match grant and current epoch; deny before network/inference, no charged fallback; offline remains no-network |
+
+The calculator and reconciliation fixture must use the §18.18 formula. H–L are REQUIRED cross-document enum, release, authenticated-service and negative-permission fixtures, not evidence of existing tests. The implementation must create executable Rust+TypeScript versions before any resource policy, worker/Doctor or shared-kernel feature is marked WIRED. Aggregate shared kernel PSS once globally; inferred per-Session shares are ESTIMATED. Reservations release only with confirmed owner exit/settlement, not because a resource dashboard sample disappeared.
+
+
+**2026-10-15 lifecycle implementation note (JC-RES-012.H/J):** `kernel/src/resource_budget.rs` now contains a pure fail-closed `ReservationState::validate_transition` function with proof-flag negative unit cases for unlaunched expiry, quarantine reconciliation, settlement before release and one-way terminal states. This checks logical transition eligibility **only**. It neither verifies process/receipt evidence nor atomically persists Rust owner transitions, so JC-RES-012.H/J remain unverified as end-to-end runtime integration/authorization cases.

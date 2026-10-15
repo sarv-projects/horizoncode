@@ -123,7 +123,7 @@
     "type": "git",
     "url": "https://github.com/sarv-projects/horizoncode.git"
   },
-  "license": "MIT",
+  "license": "UNLICENSED",
   "prettier": {
     "semi": false,
     "printWidth": 120

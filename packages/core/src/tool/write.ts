@@ -15,6 +15,7 @@ import { SessionSupervisor } from "../session/supervisor"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
+import { markBuiltinWrite } from "./write-provenance"
 
 export const name = "write"
 
@@ -52,73 +53,71 @@ const layer = Layer.effectDiscard(
     const permission = yield* PermissionV2.Service
     const supervisor = yield* SessionSupervisor.Service
 
-    yield* tools
-      .register({
-        [name]: Tool.withPermission(
-          Tool.make({
-            description:
-              "Write content to one file within the active Location. External absolute paths are not supported by the guarded effect host.",
-            capability: { id: "files.write", effectClass: "effect" },
-            input: Input,
-            output: Output,
-            toModelOutput: ({ output }) => [{ type: "text", text: toModelOutput(output) }],
-            execute: (input, context) =>
-              Effect.gen(function* () {
-                const admission = context.effect
-                if (!admission)
-                  return yield* Effect.fail(new ToolFailure({ message: "Write denied: missing Rust Guard lease" }))
-                const lease = admission
-                if (!lease.effectID || !lease.capabilityLeaseDigest)
-                  return yield* Effect.fail(new ToolFailure({ message: "Write denied: invalid Rust Guard lease" }))
-                const source = {
-                  type: "tool" as const,
-                  messageID: context.assistantMessageID,
-                  callID: context.toolCallID,
-                }
-                const target = yield* mutation.resolve({ path: input.path, kind: "file" })
-                if (target.externalDirectory)
-                  yield* permission.assert({
-                    ...LocationMutation.externalDirectoryPermission(target.externalDirectory),
-                    sessionID: context.sessionID,
-                    agent: context.agent,
-                    source,
-                  })
-                yield* permission.assert({
-                  action: "edit",
-                  resources: [target.resource],
-                  save: ["*"],
-                  sessionID: context.sessionID,
-                  agent: context.agent,
-                  source,
-                })
-                const receipt = yield* Effect.uninterruptible(
-                  supervisor.executeWrite({
-                    sessionID: context.sessionID,
-                    locationRef: Location.Ref.make({ directory: location.directory }),
-                    lease,
-                    content: input.content,
-                  }),
-                )
-                if (
-                  receipt.effectID !== lease.effectID ||
-                  receipt.target !== target.canonical ||
-                  receipt.resource !== target.resource
-                )
-                  return yield* Effect.fail(
-                    new ToolFailure({ message: "Write denied: Rust receipt does not match the prepared lease" }),
-                  )
-                return {
-                  operation: "write" as const,
-                  target: receipt.target,
-                  resource: receipt.resource,
-                  existed: receipt.existed,
-                }
-              }).pipe(Effect.mapError(() => new ToolFailure({ message: "Unable to write file" }))),
-          }),
-          "edit",
-        ),
-      })
-      .pipe(Effect.orDie)
+    const guardedWrite = Tool.withPermission(
+      Tool.make({
+        description:
+          "Write content to one file within the active Location. External absolute paths are not supported by the guarded effect host.",
+        capability: { id: "files.write", effectClass: "effect" },
+        input: Input,
+        output: Output,
+        toModelOutput: ({ output }) => [{ type: "text", text: toModelOutput(output) }],
+        execute: (input, context) =>
+          Effect.gen(function* () {
+            const admission = context.effect
+            if (!admission)
+              return yield* Effect.fail(new ToolFailure({ message: "Write denied: missing Rust Guard lease" }))
+            const lease = admission
+            if (!lease.effectID || !lease.capabilityLeaseDigest)
+              return yield* Effect.fail(new ToolFailure({ message: "Write denied: invalid Rust Guard lease" }))
+            const source = {
+              type: "tool" as const,
+              messageID: context.assistantMessageID,
+              callID: context.toolCallID,
+            }
+            const target = yield* mutation.resolve({ path: input.path, kind: "file" })
+            if (target.externalDirectory)
+              yield* permission.assert({
+                ...LocationMutation.externalDirectoryPermission(target.externalDirectory),
+                sessionID: context.sessionID,
+                agent: context.agent,
+                source,
+              })
+            yield* permission.assert({
+              action: "edit",
+              resources: [target.resource],
+              save: ["*"],
+              sessionID: context.sessionID,
+              agent: context.agent,
+              source,
+            })
+            const receipt = yield* Effect.uninterruptible(
+              supervisor.executeWrite({
+                sessionID: context.sessionID,
+                locationRef: Location.Ref.make({ directory: location.directory }),
+                lease,
+                content: input.content,
+              }),
+            )
+            if (
+              receipt.effectID !== lease.effectID ||
+              receipt.target !== target.canonical ||
+              receipt.resource !== target.resource
+            )
+              return yield* Effect.fail(
+                new ToolFailure({ message: "Write denied: Rust receipt does not match the prepared lease" }),
+              )
+            return {
+              operation: "write" as const,
+              target: receipt.target,
+              resource: receipt.resource,
+              existed: receipt.existed,
+            }
+          }).pipe(Effect.mapError(() => new ToolFailure({ message: "Unable to write file" }))),
+      }),
+      "edit",
+    )
+    markBuiltinWrite(guardedWrite)
+    yield* tools.register({ [name]: guardedWrite }).pipe(Effect.orDie)
   }),
 )
 

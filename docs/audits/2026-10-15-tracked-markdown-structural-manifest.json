@@ -1,0 +1,2250 @@
+{
+  "description": "Immutable Git-tree SHA ledger for repo-wide tracked Markdown structural scan. Not a semantic audit or implementation verification.",
+  "baseCommit": "dc61b6654f0b94547ccf2ea97cf13ae2c73ed1a2",
+  "treeTruncated": false,
+  "trackedMarkdown": 278,
+  "parsedLines": 52523,
+  "totalBytes": 3473581,
+  "initialScanRelativeLinkFlags": 62,
+  "activeBrokenPathsFound": 0,
+  "unclosedFencesFound": 0,
+  "mergeConflictMarkersFound": 0,
+  "scanMethods": [
+    "GitHub blob retrieval of each listed file",
+    "line-level fenced Markdown parsing",
+    "relative link path resolution against complete tracked tree",
+    "merge conflict marker detection"
+  ],
+  "caveats": [
+    "Archive/upstream flagged references may be intentionally absent artifacts",
+    "No human semantic validation of every statement",
+    "Files edited after base require re-run of audit_markdown_repo.py on final checkout",
+    "OS/runtime/CI results are separate"
+  ],
+  "files": [
+    {
+      "path": ".opencode/skills/horizon-docs/SKILL.md",
+      "gitBlobSha": "04bc44d399d8a3c5983bf3941e28c6ab2841036e",
+      "bytes": 685,
+      "scope": "project-support",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "AGENTS.md",
+      "gitBlobSha": "974b819bf41b8a758168d7b4f0d1630c061c760f",
+      "bytes": 11299,
+      "scope": "project-support",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/01-SYSTEM.md",
+      "gitBlobSha": "f180cb9b1ac372f8c2d732b6becabab32537b555",
+      "bytes": 9560,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/02-DOMAIN.md",
+      "gitBlobSha": "89b21d3f72ca21e9986ae83881e200e8df2497d9",
+      "bytes": 5075,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/03-FLOWS.md",
+      "gitBlobSha": "a56180ce9fb08a8934950ce20c78f3638f42a556",
+      "bytes": 9558,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/04-STATE-EVENTS.md",
+      "gitBlobSha": "8de6b8755f2ee9682cfb5da77d6f62020781527e",
+      "bytes": 5650,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/05-SECURITY.md",
+      "gitBlobSha": "183b21f75d455c3a4d530de47047b5d960dfeecf",
+      "bytes": 5488,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/06-CAPABILITIES.md",
+      "gitBlobSha": "e7741500661359c44dc942f11a7f573d8df74bfa",
+      "bytes": 706,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/07-UX-COMMANDS.md",
+      "gitBlobSha": "109037217d0ae15eefa079fec1a25bf2c05bd45b",
+      "bytes": 668,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/08-RECONCILIATION.md",
+      "gitBlobSha": "291b2b7cb43b3bac4c485c26f8ea9411b7fb2629",
+      "bytes": 612,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/09-SOURCE-MAP.md",
+      "gitBlobSha": "961e4939e83be9e745da80d8253d528c72ee883f",
+      "bytes": 686,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/10-DELIVERY.md",
+      "gitBlobSha": "31f814f8cd1892bb79b8b412d374d58e8ab0d37d",
+      "bytes": 15221,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/11-LIFECYCLE.md",
+      "gitBlobSha": "db8089b331a3c30debf5ec2127bd4f241f07897f",
+      "bytes": 15220,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/12-DOMAIN-SCHEMAS.md",
+      "gitBlobSha": "b763fe39ca3ec839ff9e9464721439c0a50f9079",
+      "bytes": 16537,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/13-COMPOSITION-IPC.md",
+      "gitBlobSha": "4ce1fe9f47fdd472ed0fa22cf471de5bb404a35b",
+      "bytes": 13798,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/14-EFFECTS-EXECUTION-SECURITY.md",
+      "gitBlobSha": "be08f3c5458426b5ccdfd4440087fc2c66ff3652",
+      "bytes": 47250,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/15-RUNTIME-EXECUTION.md",
+      "gitBlobSha": "781c93d46aff4220dce1fb3fab83de24e1822ea2",
+      "bytes": 16489,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/16-UX-SETTINGS-ECOSYSTEM.md",
+      "gitBlobSha": "43fd764692dce6b3976a8365db17d4636a24a79e",
+      "bytes": 20588,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/17-GOVERNANCE-DECISIONS.md",
+      "gitBlobSha": "d9964c993620bd91ecff097bb0ff558287eafa29",
+      "bytes": 17309,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/18-OPERATIONS-RELEASE.md",
+      "gitBlobSha": "012aa5e78168cfd6b84348bfb38ccbc247b1d12a",
+      "bytes": 23400,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/19-OPENCODE-UPSTREAM-REUSE.md",
+      "gitBlobSha": "a18dca0dadee0b86f792423be40a4238f4f69b4c",
+      "bytes": 716,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/20-OPENCODE-INTEGRATION-LLD.md",
+      "gitBlobSha": "c471fc69db2531bb2a98e6c64a9b61fe32925363",
+      "bytes": 20774,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/21-HEALING-PERMISSIONS-WORKTREE-POOL.md",
+      "gitBlobSha": "428e639049d3270e6245c217fbf48339df6d4470",
+      "bytes": 11248,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/22-UNIVERSAL-UI-COMMANDS-MEMORY.md",
+      "gitBlobSha": "52c9942038611ef1f7956e7f60a2fbcbb91539d8",
+      "bytes": 858,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/23-ADOPTION-GATES-TESTS.md",
+      "gitBlobSha": "da2ab42b87b837bdad0c439900b3930c12d342cf",
+      "bytes": 665,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/24-LOCAL-CODE-AUDIT-AND-MIGRATION.md",
+      "gitBlobSha": "1681efed52343d77f8ce8bbe3840db865a079672",
+      "bytes": 659,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/25-DATA-AND-CONTROL-PLANE-CROSSWALK.md",
+      "gitBlobSha": "ed86e70222b119c76cdff95a2d36de8ba952ebd2",
+      "bytes": 782,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/26-UX-ACCEPTANCE-AND-RELEASE.md",
+      "gitBlobSha": "351520e44ebbb86c00a2f3f0e8388a4b0f7756bf",
+      "bytes": 701,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/27-IMPLEMENTATION-READINESS-AUDIT.md",
+      "gitBlobSha": "96fb5ea834a51ee3221dd04f5a622120b8dcf950",
+      "bytes": 626,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/28-COMPETITIVE-GAP-AUDIT.md",
+      "gitBlobSha": "a7e8017d8355ff9fd23ddeebd715ee72e034478f",
+      "bytes": 728,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/29-AGENTS-SKILLS-HOOKS-MCP.md",
+      "gitBlobSha": "5dece703b8b0683237cfb1714c6cf3865229d5ef",
+      "bytes": 32207,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/30-CONTEXT-INDEXING-LOCAL-MODELS.md",
+      "gitBlobSha": "124d097cc5efdb9d787295ed98d71030ab3018db",
+      "bytes": 30487,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/31-UI-PERFORMANCE-ARTIFACTS-ANALYTICS.md",
+      "gitBlobSha": "576b5a78719d95e6dabc4dc75ac80eee29bb84fd",
+      "bytes": 12350,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/32-TASK-BASED-AGENT-TEST-CATALOG.md",
+      "gitBlobSha": "1bdb2faef2e60537aad1cb23e8b3a4b0ab8cde39",
+      "bytes": 59980,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/33-BUILTIN-CAPABILITIES-CATALOG.md",
+      "gitBlobSha": "42e2ebbcd0de0e0e5e371ea390d393b38e49fd27",
+      "bytes": 26339,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/34-DOCUMENT-LINE-AUDIT-LEDGER.md",
+      "gitBlobSha": "2c9c0245a2628e7a2d3cbc8916bff9f27d7525f1",
+      "bytes": 650,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/35-USER-REQUEST-COVERAGE-MATRIX.md",
+      "gitBlobSha": "a22d0bc69cbef9f9f44375ad15ca68beeb502600",
+      "bytes": 763,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/36-CONTRACT-CONVERGENCE-PLAN.md",
+      "gitBlobSha": "9b10d721b4dfe35f09667ba4440fee0d678581a7",
+      "bytes": 682,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/37-RUNTIME-SERVICE-LLD.md",
+      "gitBlobSha": "613e2cf5b9f350a1ed27b66eb15a261223ccecb2",
+      "bytes": 37129,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/38-OMP-SOURCE-COMPETITIVE-AUDIT.md",
+      "gitBlobSha": "b0b3b6bc164a3eae84d96550fda014a96eefbe27",
+      "bytes": 657,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/39-OMP-TUI-SLASH-MODEL-SETTINGS-AUDIT.md",
+      "gitBlobSha": "fb0051ee99b562275043d92906a80daaab8534d6",
+      "bytes": 808,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/40-HORIZONCODE-OMP-INSPIRED-UI-PROPOSAL.md",
+      "gitBlobSha": "3743d0640f36ff87c4f810be2897cdd932cac835",
+      "bytes": 876,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/41-OMP-STREAMING-VISUAL-ARTIFACTS-AUDIT.md",
+      "gitBlobSha": "73ca91e2c7f3d5d3ce83a85377abcf1b1cf0afdb",
+      "bytes": 824,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/42-EXTERNAL-SOURCE-PROVENANCE-REGISTER.md",
+      "gitBlobSha": "3e680e25ba516eaaccf75fb32589138dd1302408",
+      "bytes": 41811,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/43-IMPLEMENTATION-SOURCE-LLD-PLAYBOOK.md",
+      "gitBlobSha": "27a1320886efc541e6c2ba7979897e8d8423457d",
+      "bytes": 918,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/44-FINAL-REPO-AUDIT-LEDGER.md",
+      "gitBlobSha": "e180d177f0e66c0290206ee10a7ce03e0bec8e66",
+      "bytes": 601,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/GLOSSARY.md",
+      "gitBlobSha": "384cf35377fd6ee4d405c5ee573ed3d84b2abdd7",
+      "bytes": 7995,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "arch_V1/README.md",
+      "gitBlobSha": "b6a112e1e93764de7c088e11ca0e75e425856301",
+      "bytes": 7480,
+      "scope": "architecture",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "CONTEXT.md",
+      "gitBlobSha": "42aaa72f5cf33ba044734780e1c1c08553d84b58",
+      "bytes": 32747,
+      "scope": "project-support",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "gitBlobSha": "142fbb0d4c7ece26736559924b0a48d284b1ee72",
+      "bytes": 5023,
+      "scope": "project-support",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "CURRENT_RUN.md",
+      "gitBlobSha": "9875ca98061b4d48e11c9cabe66e4f0ded08c80c",
+      "bytes": 11488,
+      "scope": "project-support",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/AGENTS.md",
+      "gitBlobSha": "f00ffde1ab1a94bb6c400863e1262ffede7d3438",
+      "bytes": 16929,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/01-SYSTEM.md",
+      "gitBlobSha": "e3e23b8f78e7b829ff5ce0b62a2c96b7bb8ab803",
+      "bytes": 13391,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/02-DOMAIN.md",
+      "gitBlobSha": "48804d0fa75dcccf5d9a44ee8fe509f69613ccec",
+      "bytes": 22703,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/03-FLOWS.md",
+      "gitBlobSha": "dd0051e5cb08ce6b55546715153ca68be74ea059",
+      "bytes": 20285,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/04-STATE-EVENTS.md",
+      "gitBlobSha": "dd049ddd5762f5a83531ecbae0d669ac65dd413c",
+      "bytes": 31475,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/05-SECURITY.md",
+      "gitBlobSha": "ee180441f63bf9a649f4d4e60884505a9f44a856",
+      "bytes": 16224,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/06-CAPABILITIES.md",
+      "gitBlobSha": "5ef125073680d07eee7c162cbcec5bfdea06ae1a",
+      "bytes": 14154,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/07-UX-COMMANDS.md",
+      "gitBlobSha": "8d12dc629b3c61d80d5ba31e1f310c5920e020e8",
+      "bytes": 12760,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/08-RECONCILIATION.md",
+      "gitBlobSha": "b11d8888d8b5117d918be50e4d7982ea36364a04",
+      "bytes": 16498,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/09-SOURCE-MAP.md",
+      "gitBlobSha": "233944527d371ad9375faf14586d693c1cfc338e",
+      "bytes": 32715,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 2
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/10-DELIVERY.md",
+      "gitBlobSha": "560e9ca70979c508d10b377240fa85efcea7e19e",
+      "bytes": 38925,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/11-LIFECYCLE.md",
+      "gitBlobSha": "38eb467805517d48bb7ffe8692b5ee605e138ea5",
+      "bytes": 88034,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/12-DOMAIN-SCHEMAS.md",
+      "gitBlobSha": "bbe591cb5cb9cf5257a8f13208e04b753ce7558d",
+      "bytes": 94058,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/13-COMPOSITION-IPC.md",
+      "gitBlobSha": "334f53e6edf5fbdc38b0c2396cfae5c71f9c6206",
+      "bytes": 44883,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/14-EFFECTS-EXECUTION-SECURITY.md",
+      "gitBlobSha": "dc56f4fba6f5c6cc804dfee36515ec247c618485",
+      "bytes": 40147,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/15-RUNTIME-EXECUTION.md",
+      "gitBlobSha": "528ce8f1afacf6d640db5658cbb8093d8e60ed1f",
+      "bytes": 56149,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/16-UX-SETTINGS-ECOSYSTEM.md",
+      "gitBlobSha": "d47277086ef38d5a28137a5a3b64ec7be6941e4d",
+      "bytes": 36052,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/17-GOVERNANCE-DECISIONS.md",
+      "gitBlobSha": "ee94e1cae29d8b4d6631d31732d61e3b23ee7cf7",
+      "bytes": 27795,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/18-OPERATIONS-RELEASE.md",
+      "gitBlobSha": "8012bf2c91c2dfdd3f35468fb0bf9a93ba2761a0",
+      "bytes": 24700,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/19-OPENCODE-UPSTREAM-REUSE.md",
+      "gitBlobSha": "fcf1eb452ecd5b67a90858bd30fc4dfc756df7bf",
+      "bytes": 12939,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 1
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/20-OPENCODE-INTEGRATION-LLD.md",
+      "gitBlobSha": "c9d533345140f20f2b8949859a8b28031885484b",
+      "bytes": 24235,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/21-HEALING-PERMISSIONS-WORKTREE-POOL.md",
+      "gitBlobSha": "7c6dc35e6086801bc23d5225c7555d6bd4f06d5c",
+      "bytes": 17972,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/22-UNIVERSAL-UI-COMMANDS-MEMORY.md",
+      "gitBlobSha": "2b9a8702ac6aeb1ed7357539cc128979274dff8b",
+      "bytes": 20553,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/23-ADOPTION-GATES-TESTS.md",
+      "gitBlobSha": "990c92847ce2bed7671b51a051ad17b95ba01526",
+      "bytes": 20238,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/24-LOCAL-CODE-AUDIT-AND-MIGRATION.md",
+      "gitBlobSha": "bcdb299b4c79684d3124b3a9d988369782f4bbe4",
+      "bytes": 31499,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/25-DATA-AND-CONTROL-PLANE-CROSSWALK.md",
+      "gitBlobSha": "725ce469f86714ce841f57ccb5f9e48c03e3177e",
+      "bytes": 19474,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/26-UX-ACCEPTANCE-AND-RELEASE.md",
+      "gitBlobSha": "2f2e10c67d52ad9e209f1edcf4fc024eb8b518eb",
+      "bytes": 16232,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/27-IMPLEMENTATION-READINESS-AUDIT.md",
+      "gitBlobSha": "2d2c27f4d2706b8399fa729efe3ef080db151b9c",
+      "bytes": 28618,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/28-COMPETITIVE-GAP-AUDIT.md",
+      "gitBlobSha": "3d588491f05ff9fb6cb2c62904d9fccd0ddbfa1c",
+      "bytes": 25103,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/29-AGENTS-SKILLS-HOOKS-MCP.md",
+      "gitBlobSha": "de4920f2d163d83416b1be3583784594fe9ae0c9",
+      "bytes": 23197,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/30-CONTEXT-INDEXING-LOCAL-MODELS.md",
+      "gitBlobSha": "997843f72fae979ce0d70a117a2ab0f27806a877",
+      "bytes": 21787,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/31-UI-PERFORMANCE-ARTIFACTS-ANALYTICS.md",
+      "gitBlobSha": "8638e6249813b86fbe1a8477b8a8b743c896dbcd",
+      "bytes": 21616,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/32-TASK-BASED-AGENT-TEST-CATALOG.md",
+      "gitBlobSha": "ee9bb43730b73f3a8cfed148d3753d4332e7a3fd",
+      "bytes": 30962,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/33-BUILTIN-CAPABILITIES-CATALOG.md",
+      "gitBlobSha": "2363f5f49ff0424141bf357ccc8434a379cea00b",
+      "bytes": 18210,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/34-DOCUMENT-LINE-AUDIT-LEDGER.md",
+      "gitBlobSha": "314ada41682b300b38df1b740826581f2465c1db",
+      "bytes": 25536,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 1
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/35-USER-REQUEST-COVERAGE-MATRIX.md",
+      "gitBlobSha": "f6d64575e7cbb7ff29089de3dbcdf6feeb3a7d0b",
+      "bytes": 28798,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/36-CONTRACT-CONVERGENCE-PLAN.md",
+      "gitBlobSha": "7aef3c02f6e123384a8d9960f3c9d724f11559b3",
+      "bytes": 6018,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/37-RUNTIME-SERVICE-LLD.md",
+      "gitBlobSha": "b356ecc2fd503934b968bd161dba191c8a2fe206",
+      "bytes": 17980,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/38-OMP-SOURCE-COMPETITIVE-AUDIT.md",
+      "gitBlobSha": "04b78d1c8b72c1ae0839f0eb932d9c75e284fcdc",
+      "bytes": 29681,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 2
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/39-OMP-TUI-SLASH-MODEL-SETTINGS-AUDIT.md",
+      "gitBlobSha": "2c6ab28e9b9a262eefd46b971182d05504a7994a",
+      "bytes": 53889,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 2
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/40-HORIZONCODE-OMP-INSPIRED-UI-PROPOSAL.md",
+      "gitBlobSha": "c88aa177c663c3f989123182586fb94bb5efe7fe",
+      "bytes": 26696,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 2
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/41-OMP-STREAMING-VISUAL-ARTIFACTS-AUDIT.md",
+      "gitBlobSha": "9226a3f602e66333c03e3cddcc721cc1cd4a221a",
+      "bytes": 19209,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/42-EXTERNAL-SOURCE-PROVENANCE-REGISTER.md",
+      "gitBlobSha": "cad6c0da9639de509b79fbfdbdc3a29df4d888d9",
+      "bytes": 35366,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 3
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/43-IMPLEMENTATION-SOURCE-LLD-PLAYBOOK.md",
+      "gitBlobSha": "39b269718e2067ef30de78ea3d8c115af05612d1",
+      "bytes": 14478,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/44-FINAL-REPO-AUDIT-LEDGER.md",
+      "gitBlobSha": "0353b73068dc505457b9e6937e4185cd5ccd78ab",
+      "bytes": 11209,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 3
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/GLOSSARY.md",
+      "gitBlobSha": "d5586bd47e39a13d30bed1232946fc5fc37338f0",
+      "bytes": 10857,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "gitBlobSha": "de0255ecfa8739e19a9ff31de4c395efb3a12373",
+      "bytes": 15447,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 26
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/CURRENT_RUN.md",
+      "gitBlobSha": "ad9accf33f5852a85c89f23fde7f2c7388cf9881",
+      "bytes": 136404,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/docs/superpowers/plans/2026-10-09-horizon-p2-foundation.md",
+      "gitBlobSha": "beffe61c5b4f4d5967a81a6de70f8e1ac0f4b86e",
+      "bytes": 18768,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/docs/superpowers/plans/2026-10-10-horizon-p2-thread-cutover.md",
+      "gitBlobSha": "b3e692743dc6fccf3476c3653d61792960bdfa22",
+      "bytes": 33459,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/docs/superpowers/plans/2026-10-10-session-observer-supervisor.md",
+      "gitBlobSha": "b734cad47158195a470db6e008334baf796e7d06",
+      "bytes": 4452,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md",
+      "gitBlobSha": "85e3bb8eaef64353dbc38eef7b0f88833f4afc53",
+      "bytes": 14360,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/docs/superpowers/specs/2026-10-09-horizon-p2-kernel-foundation-design.md",
+      "gitBlobSha": "e5a8346207184eac6a542fa176bd0bfd26f486af",
+      "bytes": 21667,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/HANDOFF.md",
+      "gitBlobSha": "6b7278a05cef47e260fb68c3fa4d3407f27e71eb",
+      "bytes": 30109,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/IMPLEMENTER_PROMPT.md",
+      "gitBlobSha": "950fd110d8f8e3679e4adacd298f6fb5e8050f86",
+      "bytes": 7906,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/README.md",
+      "gitBlobSha": "c6b79cd6bdefd5ab095eeb1b5b542abe85e62b72",
+      "bytes": 588,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-12-pre-repo-audit-HANDOFF.md",
+      "gitBlobSha": "099f0e538b15f3e0f581fb37b601c18bda8dddde",
+      "bytes": 28657,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-12-superseded-thread-memory-schema-prototypes/README.md",
+      "gitBlobSha": "de95d716370b8fc4039992a7cb9db5e9976b7af2",
+      "bytes": 1007,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-15-handoff-pre-jcode-adoption.md",
+      "gitBlobSha": "ca989d2fe14213f1cb14108c7eb7bfddf5fd05a0",
+      "bytes": 25859,
+      "scope": "archive",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/architecture-input/2026-10-11-superseded-contract-excerpts.md",
+      "gitBlobSha": "1a062c68055e3bbb50c62951c284d169e8771b47",
+      "bytes": 43852,
+      "scope": "historical-input",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 12
+    },
+    {
+      "path": "docs/architecture-input/universal-software-agent-v2-source.md",
+      "gitBlobSha": "99ab15dda4acca7b4bcbe30468ac1323976ae568",
+      "bytes": 215321,
+      "scope": "historical-input",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/performance/README.md",
+      "gitBlobSha": "094a6e80a1ced8f10338178cd5732b2c5b44da20",
+      "bytes": 5308,
+      "scope": "project-support",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/README.md",
+      "gitBlobSha": "cae24e407dbb0814f8d6b4df6e59cc76f81d8172",
+      "bytes": 2681,
+      "scope": "project-support",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/superpowers/plans/2026-10-09-horizon-p2-foundation.md",
+      "gitBlobSha": "9acc5580ebc7b711788564234767a1a775f473c4",
+      "bytes": 720,
+      "scope": "project-support",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/superpowers/plans/2026-10-10-horizon-p2-thread-cutover.md",
+      "gitBlobSha": "f9cdf689dc4113cf2e93e54b268e5d6348ab8d23",
+      "bytes": 675,
+      "scope": "project-support",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/superpowers/plans/2026-10-10-session-observer-supervisor.md",
+      "gitBlobSha": "5a102b98b0f9acc944434427240fb0d6bde9adf2",
+      "bytes": 748,
+      "scope": "project-support",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md",
+      "gitBlobSha": "3e8e45a975efd1f0e688514e1a434f7f14c6cfbe",
+      "bytes": 47389,
+      "scope": "project-support",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-09-horizon-p2-kernel-foundation-design.md",
+      "gitBlobSha": "1f51cdd3e47d2d5191d0f14dda4ea50a4ba7780f",
+      "bytes": 749,
+      "scope": "project-support",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "HANDOFF.md",
+      "gitBlobSha": "c3aff3ad83504026564dcb62d036b2962bfb55be",
+      "bytes": 17218,
+      "scope": "project-support",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "IMPLEMENTER_PROMPT.md",
+      "gitBlobSha": "6807e4b04df1dee33801bcade0d9765f2b603830",
+      "bytes": 4881,
+      "scope": "project-support",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "indexd/src/README.md",
+      "gitBlobSha": "6d685c7b71fde0b0ddecf2e5bc0660fcc6d898f3",
+      "bytes": 4850,
+      "scope": "project-support",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.github/pull_request_template.md",
+      "gitBlobSha": "393bf90518e9c82e8ffccededc3b823b7a90500f",
+      "bytes": 846,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/agent/duplicate-pr.md",
+      "gitBlobSha": "c9c932ef790decab7113bdddb6508b454e5460e1",
+      "bytes": 924,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/agent/triage.md",
+      "gitBlobSha": "638f4d58183b865f512f47d5ec331ed4733050d6",
+      "bytes": 1411,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/command/ai-deps.md",
+      "gitBlobSha": "83783d5b9be066b429367e12246370ea7b68d67c",
+      "bytes": 1033,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/command/changelog.md",
+      "gitBlobSha": "d4c87f4cb320cb8d71d46ea6d15b88344e4c5b67",
+      "bytes": 3172,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/command/commit.md",
+      "gitBlobSha": "e88932a24485ea8e4ef5b22dbb3306039e48cefb",
+      "bytes": 628,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/command/issues.md",
+      "gitBlobSha": "75b59616743f5677a33cd519f6b51f5f898056d1",
+      "bytes": 520,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/command/learn.md",
+      "gitBlobSha": "fe4965a5887e0e1c175f0b3d5961f343353eb9e4",
+      "bytes": 1628,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/command/rmslop.md",
+      "gitBlobSha": "02c9fc0844a7010572352e6f29efa97a965c6ee0",
+      "bytes": 576,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/command/spellcheck.md",
+      "gitBlobSha": "0abf23c4fd090d5350a65b2ffe406b3e5e4b3a80",
+      "bytes": 204,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/command/translate.md",
+      "gitBlobSha": "793277c32bd2e4c21209cdde5bf7ca83364bf05e",
+      "bytes": 798,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/glossary/ar.md",
+      "gitBlobSha": "37355522a0a5dba08459b674ca6d643037381c0a",
+      "bytes": 1004,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/glossary/br.md",
+      "gitBlobSha": "fd3e7251cd907538c47246faf6156748b579a612",
+      "bytes": 1733,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/glossary/bs.md",
+      "gitBlobSha": "aa3bd96f6f94b7f03facc47a6fc3ec1b972619d7",
+      "bytes": 1437,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/glossary/da.md",
+      "gitBlobSha": "e63222170109dac5724af26db54b93bb1c4bbb70",
+      "bytes": 898,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/glossary/de.md",
+      "gitBlobSha": "0d2c49faceaec84ee19170044ef4c92f8f4f508f",
+      "bytes": 898,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/glossary/es.md",
+      "gitBlobSha": "dc9b977ecffa48dc0b043efbfffb25d16ba1fd55",
+      "bytes": 900,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/glossary/fr.md",
+      "gitBlobSha": "074c4de110a06ce48d36bf90cc7b05515b157090",
+      "bytes": 898,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/glossary/ja.md",
+      "gitBlobSha": "f0159ca96690b03f3a78825e0494505eabacc8c3",
+      "bytes": 1343,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/glossary/ko.md",
+      "gitBlobSha": "71385c8a10acc7edf88c1adbe33dbc3347058805",
+      "bytes": 898,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/glossary/no.md",
+      "gitBlobSha": "d7159dca4107dbb8033e937597d411eb36b32289",
+      "bytes": 1598,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/glossary/pl.md",
+      "gitBlobSha": "e9bad7a515672d383059154bf5860e2490fecefe",
+      "bytes": 898,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/glossary/README.md",
+      "gitBlobSha": "983900381ca9497af774e0683c255e511f02f213",
+      "bytes": 2148,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/glossary/ru.md",
+      "gitBlobSha": "6fee0f94c06f471e56464a22b4c098721c0ac41e",
+      "bytes": 900,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/glossary/th.md",
+      "gitBlobSha": "7b5a31d16bfca36f53fa4603121467fb28df8b78",
+      "bytes": 1642,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/glossary/tr.md",
+      "gitBlobSha": "72b1cdfb40b1de6583318f2f7d23967ec0e9376d",
+      "bytes": 2244,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/glossary/zh-cn.md",
+      "gitBlobSha": "054e94b7e83af8c337bb81d7894340c8f85344a6",
+      "bytes": 2128,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/glossary/zh-tw.md",
+      "gitBlobSha": "283660e121980dffd8619b2c2b56358ffaa99eed",
+      "bytes": 2137,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/skills/effect/SKILL.md",
+      "gitBlobSha": "3a44fa88dcdd59ff04a94634a1bfecee05a5cc18",
+      "bytes": 2794,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/.opencode/skills/rtl-aware-development/SKILL.md",
+      "gitBlobSha": "595c981ead81f0827d14a41ae0a86eb18bbc5819",
+      "bytes": 4097,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/AGENTS.md",
+      "gitBlobSha": "cd2327e888119bb084895b615f5abc8f81afcc3f",
+      "bytes": 8748,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/CONTEXT.md",
+      "gitBlobSha": "5e5955d344a151afcaa43361e45cf76fd370fc52",
+      "bytes": 32094,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/CONTRIBUTING.md",
+      "gitBlobSha": "a53e2dd0b28e011830d6142b6801a2d0a393e918",
+      "bytes": 10347,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 2
+    },
+    {
+      "path": "opencode/github/README.md",
+      "gitBlobSha": "17b24ffb1d6e5c0e26f9847f039ecd1a112240dd",
+      "bytes": 6017,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/app/AGENTS.md",
+      "gitBlobSha": "5638ea8e6d1a03a82003953a740ef4daefbb93e2",
+      "bytes": 4570,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/app/create-effect-simplification-spec.md",
+      "gitBlobSha": "cc101ab059203d46d7b1bf725ba09497ca4b392a",
+      "bytes": 18928,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/app/e2e/AGENTS.md",
+      "gitBlobSha": "e0c6c006021d3ce5d75b3c14c5b95a63e8c80ae2",
+      "bytes": 1745,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/app/e2e/performance/AGENTS.md",
+      "gitBlobSha": "e69c91a98fc168717cfc5663f0dfdf5a01723153",
+      "bytes": 813,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/app/e2e/performance/README.md",
+      "gitBlobSha": "ce868d573bb7008fb769c199643b5ee9eeab1391",
+      "bytes": 5283,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/app/e2e/performance/timeline-stability/README.md",
+      "gitBlobSha": "3e9def275730d000c2914765eb796f85ae54f5fb",
+      "bytes": 3241,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/app/README.md",
+      "gitBlobSha": "304e272cd0a9a6bb0374d48f5907bbe9f017487c",
+      "bytes": 1636,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/app/V1_API_MIGRATION.md",
+      "gitBlobSha": "2850f107400cbb511ab97a5e3035ebed6a6fb9ce",
+      "bytes": 10763,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/client/README.md",
+      "gitBlobSha": "8c53e47c7e681a43de56e307b355a8bc65d210a7",
+      "bytes": 1839,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/codemode/AGENTS.md",
+      "gitBlobSha": "df812c6d86f2d2e3054c54ecac4cf77fe1110046",
+      "bytes": 3145,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/codemode/codemode.md",
+      "gitBlobSha": "f56c405746f0697af916c8e2524ecbb092b83c73",
+      "bytes": 13243,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/codemode/README.md",
+      "gitBlobSha": "37bde2d86966cb3e8f42727cf2d4f4da4165138f",
+      "bytes": 27705,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/codemode/src/openapi/TODO.md",
+      "gitBlobSha": "cbcfe81a68c8df2fa7aae622ddf2997e3ab29433",
+      "bytes": 1213,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/console/app/.opencode/agent/css.md",
+      "gitBlobSha": "d5e68c7bf6a4258a4b7caa0242af6d74a89de69e",
+      "bytes": 4284,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/console/app/README.md",
+      "gitBlobSha": "9337430cfd31be33675b8e7336b9260906e98440",
+      "bytes": 965,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/containers/README.md",
+      "gitBlobSha": "a1cfe60db3ec314b6bba4fc9e8148794c463a913",
+      "bytes": 1115,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/core/src/github-copilot/README.md",
+      "gitBlobSha": "d1051a4da0411e6f4ae288144154e755320b84cd",
+      "bytes": 263,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/core/src/plugin/skill/customize-opencode.md",
+      "gitBlobSha": "c02ed72efb746d96c5e7c02994c0b3352b881e2c",
+      "bytes": 16072,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/core/src/tool/AGENTS.md",
+      "gitBlobSha": "5e8066e1df9cf186c3fda5bafa3329483e9cfd42",
+      "bytes": 3743,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/desktop/AGENTS.md",
+      "gitBlobSha": "5040a3d090c75ff05ab0aab956b7efbbe0c1f6df",
+      "bytes": 2801,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/desktop/icons/README.md",
+      "gitBlobSha": "cf2f8e24c50e7d2cc28ad367b5240f841790adc8",
+      "bytes": 781,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/desktop/README.md",
+      "gitBlobSha": "6dd9a202ada14cd00f4742bbf0971028654c9277",
+      "bytes": 319,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/docs/README.md",
+      "gitBlobSha": "17956df329692f7c69191f42799a81e33dca5a8b",
+      "bytes": 1359,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/effect-drizzle-sqlite/AGENTS.md",
+      "gitBlobSha": "39010a112738a8fcb3500534a08b6bedfdd42985",
+      "bytes": 1364,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/enterprise/README.md",
+      "gitBlobSha": "9337430cfd31be33675b8e7336b9260906e98440",
+      "bytes": 965,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/http-recorder/README.md",
+      "gitBlobSha": "f388e8e2539d0ccec9311a95708f11e2ff6174ca",
+      "bytes": 8276,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/httpapi-codegen/README.md",
+      "gitBlobSha": "0d31b129b72a4ff96af9c09a1646afd638b7d786",
+      "bytes": 3959,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/llm/AGENTS.md",
+      "gitBlobSha": "c4edaba2b49b736c5e2217e4fac8c411a7290a52",
+      "bytes": 24684,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/llm/DESIGN.md",
+      "gitBlobSha": "22e76969a4cbc7a2ff9c7dca91293cb34959f216",
+      "bytes": 33051,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/llm/example/call-sites.md",
+      "gitBlobSha": "093f74e51de5519d371a3b113e3ff103a7f0a393",
+      "bytes": 21702,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/llm/README.md",
+      "gitBlobSha": "020198dd64cd0785b4fdf32617e93851f1f1a5bd",
+      "bytes": 6806,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/AGENTS.md",
+      "gitBlobSha": "f07170c5851c7fa0b3f6f440e2abee7be5e11de7",
+      "bytes": 6453,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/README.md",
+      "gitBlobSha": "75890119cf4cb9aaeb32142cf72957783e096d3c",
+      "bytes": 217,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/error-boundaries-plan.md",
+      "gitBlobSha": "763bf5ea5e566f1d7e29433e37f0b7a182d589e3",
+      "bytes": 7283,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/errors.md",
+      "gitBlobSha": "fe526c2faa70fc91b9faace10b5fee8ea729d5ec",
+      "bytes": 8113,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/facades.md",
+      "gitBlobSha": "47187739f0ac663d93a561dedfdc79b3b1db6212",
+      "bytes": 9216,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/guide.md",
+      "gitBlobSha": "0506a1b78b569fc3980181b16d57754fcd7b2f5b",
+      "bytes": 8145,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/instance-context.md",
+      "gitBlobSha": "94564004c9cc57bb32929e75852d1fcf65c01f5a",
+      "bytes": 673,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/loose-ends.md",
+      "gitBlobSha": "7866031919c13c973164902736d0286a50d9475c",
+      "bytes": 1959,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/migration.md",
+      "gitBlobSha": "85ba5014f133d1d0b50ffb04f21e95e094e5f60d",
+      "bytes": 2164,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/routes.md",
+      "gitBlobSha": "7dcd80ce96b81ed9c73b151741ef1ebff3ad3a05",
+      "bytes": 2276,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/schema.md",
+      "gitBlobSha": "12ac267048dca39ca91c3802841d8f11fcea1977",
+      "bytes": 2634,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/server-package.md",
+      "gitBlobSha": "036472337e17a9c8cce5c1b7ebdcd9b229a43c50",
+      "bytes": 2189,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/todo.md",
+      "gitBlobSha": "57760ab28023e7c518c0790d7f7cfad38f21021e",
+      "bytes": 10841,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/tools.md",
+      "gitBlobSha": "61b8aa40ddeabf5e4b9131caa37d6125c58156a7",
+      "bytes": 3688,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/specs/openapi-translation-cleanup.md",
+      "gitBlobSha": "5be155d1b860f140440011fe6d4520af5fdee799",
+      "bytes": 11613,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/specs/tui-plugins.md",
+      "gitBlobSha": "06f7757d5137d92caca60c7a6eaafa4907ea8dd7",
+      "bytes": 26987,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/specs/v2/message-shape.md",
+      "gitBlobSha": "965498f190342f1961f27d338434fe6f687853c1",
+      "bytes": 3240,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/specs/v2/notifications.md",
+      "gitBlobSha": "96018f9944350f96315d6782203fd2a5258d52b9",
+      "bytes": 321,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/specs/v2/tui-command-shim.md",
+      "gitBlobSha": "5afade2a96697f5bc49cc85c0ed82ba69942fd5c",
+      "bytes": 1848,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/src/control-plane/dev/README.md",
+      "gitBlobSha": "74d68a75a85153c982680ced8fbabd63e93244fa",
+      "bytes": 1270,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/src/plugin/openai/README.md",
+      "gitBlobSha": "2286b3509d69e0ad7285d3d27ce816ce8c8d0790",
+      "bytes": 1233,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/src/server/routes/instance/httpapi/AGENTS.md",
+      "gitBlobSha": "c44db1edbbfb43fc000b18fe8afbddbe0a2933a6",
+      "bytes": 2716,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/src/session/llm/AGENTS.md",
+      "gitBlobSha": "cfb6a89cefc6ee75451c94b90f249d4586b76cc4",
+      "bytes": 7072,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/src/sync/README.md",
+      "gitBlobSha": "eec71d3001136d48a5a2f5d4f1cda67d2b54c741",
+      "bytes": 9181,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/test/AGENTS.md",
+      "gitBlobSha": "464b75cd82f050585ebe64974337fbcc1c891601",
+      "bytes": 7914,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/test/config/fixtures/empty-frontmatter.md",
+      "gitBlobSha": "95d5a80ed1c41a23da1c1a0d98203485e0ce95ac",
+      "bytes": 17,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/test/config/fixtures/frontmatter.md",
+      "gitBlobSha": "27822d6218f023f57e121bb39565ae976f8f2806",
+      "bytes": 802,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/test/config/fixtures/markdown-header.md",
+      "gitBlobSha": "d5af1f1c23b9c6a180bfaee32aafeccf797ddc35",
+      "bytes": 557,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/test/config/fixtures/no-frontmatter.md",
+      "gitBlobSha": "39c9f3681a231e1610032eaea2db727349e34f21",
+      "bytes": 8,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/test/config/fixtures/v2-compat/README.md",
+      "gitBlobSha": "7875647633707fbe792c9ec41bfb536419395b78",
+      "bytes": 2781,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/test/config/fixtures/weird-model-id.md",
+      "gitBlobSha": "bb02b0650f019cc818617027fffb2e96cc44c81e",
+      "bytes": 209,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/test/EFFECT_TEST_MIGRATION.md",
+      "gitBlobSha": "893aa922b76e864fdb01f000e16e27bcde89d02c",
+      "bytes": 6141,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/test/fixture/skills/agents-sdk/references/callable.md",
+      "gitBlobSha": "164150c986fee56499ff2589b3cd929b3eb19b64",
+      "bytes": 2283,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/test/fixture/skills/agents-sdk/SKILL.md",
+      "gitBlobSha": "d01d3013f74604a83764d3a24ca10c848433b515",
+      "bytes": 6337,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 6
+    },
+    {
+      "path": "opencode/packages/opencode/test/fixture/skills/cloudflare/SKILL.md",
+      "gitBlobSha": "3512838ec84ebba5f2f97f3bb83d0e35413931b7",
+      "bytes": 7799,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/opencode/test/server/AGENTS.md",
+      "gitBlobSha": "754977375b0e22713e977d22eedad9db799bcda6",
+      "bytes": 1701,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/plugin/src/v2/effect/PLAN.md",
+      "gitBlobSha": "71fa07bd7b04bd4320a806bb6e6be22e850d39a2",
+      "bytes": 15875,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/plugin/src/v2/effect/README.md",
+      "gitBlobSha": "3da1d7b566d41c28743a63fa0c07d0475da7e9bb",
+      "bytes": 2845,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/plugin/src/v2/promise/README.md",
+      "gitBlobSha": "e91b93fbdfc4959993d9145865b76f1d4d107711",
+      "bytes": 2478,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/schema/AGENTS.md",
+      "gitBlobSha": "1d5747d53991298f4b116bf075e6f6f986410eda",
+      "bytes": 6430,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/sdk-next/README.md",
+      "gitBlobSha": "6a9e3bef3dc4866add822247d47a9c24d28ec3ac",
+      "bytes": 1652,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/session-ui/AGENTS.md",
+      "gitBlobSha": "678ae1bf90d8466fc47859eb01678d9e31586133",
+      "bytes": 1404,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/slack/README.md",
+      "gitBlobSha": "a12978d8a6eac15427164f20f752ffd11950152d",
+      "bytes": 750,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/stats/AGENTS.md",
+      "gitBlobSha": "409271cf09a5098ec75a0dbd8f48ea620a6df030",
+      "bytes": 73,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/stats/README.md",
+      "gitBlobSha": "6c66684cc529a5e297ca5277be45f6fe07f76f5d",
+      "bytes": 722,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/ui/AGENTS.md",
+      "gitBlobSha": "73b12de4d7cea0029707d89edff72c14575498cc",
+      "bytes": 2160,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/packages/web/README.md",
+      "gitBlobSha": "f9f6d31c6e985a13b434a837b4884e90bd5a1a9c",
+      "bytes": 2634,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/perf/test-suite.md",
+      "gitBlobSha": "1d88d79090832bff3b2eea005be67395ba80c2fe",
+      "bytes": 20306,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.ar.md",
+      "gitBlobSha": "43618930fe8f881aa0eb053900baecba14d1779d",
+      "bytes": 6072,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.bn.md",
+      "gitBlobSha": "ce00a416eee55df62c69c7160ddc4639cece631e",
+      "bytes": 8083,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.br.md",
+      "gitBlobSha": "976738cfaed22e61786ac81357cb2528ac27bca9",
+      "bytes": 5626,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.bs.md",
+      "gitBlobSha": "0adf8ebfa0d4a04cd71e72f334a74224c2bcb281",
+      "bytes": 5461,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.da.md",
+      "gitBlobSha": "e8932e0ae1c6665cb9886cef60c26ed5c486be8e",
+      "bytes": 5395,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.de.md",
+      "gitBlobSha": "958386ccf367dd4015228c407c5acfce3f425611",
+      "bytes": 5592,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.es.md",
+      "gitBlobSha": "39540bc5a5bb70fab7b1aab0b0c1b65e8fef250e",
+      "bytes": 5635,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.fr.md",
+      "gitBlobSha": "d19c89d3f823c26c47577a1aff698e4c74395bb1",
+      "bytes": 5717,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.gr.md",
+      "gitBlobSha": "a8412b35bdac6d6d474c702aac7c7dcd38612f16",
+      "bytes": 7438,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.it.md",
+      "gitBlobSha": "2ed4aeb5ec0a2de9bc36bcdd1a59abf10a64fbe1",
+      "bytes": 5689,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.ja.md",
+      "gitBlobSha": "75a017fd91cba7c843c5490962f90da61f3830fe",
+      "bytes": 5954,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.ko.md",
+      "gitBlobSha": "aa21a736433ea61e0aa759590b23d277365cbd4e",
+      "bytes": 5670,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.md",
+      "gitBlobSha": "b5a4c8ddd9794e8c20bd287603bfa0c336522796",
+      "bytes": 5402,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.no.md",
+      "gitBlobSha": "246e1dbb32d47ec5e75cf2c1f45e033cb344e906",
+      "bytes": 5355,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.pl.md",
+      "gitBlobSha": "6b86de4ca3e0116f1255ff449674c4a907a4b256",
+      "bytes": 5571,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.ru.md",
+      "gitBlobSha": "c679ce6b472003e8f1a0d4ee92ceacb0826cb8d8",
+      "bytes": 6682,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.th.md",
+      "gitBlobSha": "a70144d99ff6eab4c97cefed6e528bcc88f29457",
+      "bytes": 7819,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.tr.md",
+      "gitBlobSha": "aaab8f0cf2ec138cc17b1be245e65dc6ea9013f2",
+      "bytes": 5828,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.uk.md",
+      "gitBlobSha": "7cd50afbb43ed28509a8b5b5cd6836071213100b",
+      "bytes": 7024,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.vi.md",
+      "gitBlobSha": "7d1a4f3ca81392ee6012e477852c75706d54a364",
+      "bytes": 6112,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.zh.md",
+      "gitBlobSha": "352e13ccaa1d64044ad84c21fb131a698d602b1c",
+      "bytes": 5293,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/README.zht.md",
+      "gitBlobSha": "f09358b1330b3999b2e434c071d12e4ddb59cc60",
+      "bytes": 5589,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/script/translate-app.md",
+      "gitBlobSha": "95097476e4f0286c98458ab8a1cb6efba526f114",
+      "bytes": 2498,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/sdks/vscode/README.md",
+      "gitBlobSha": "0114045429c3a0a087946d60f994a19a1690b9fe",
+      "bytes": 1764,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/SECURITY.md",
+      "gitBlobSha": "e7e59f4a27ac2bd2ed5005f8851dcb946c08f914",
+      "bytes": 2661,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/specs/project.md",
+      "gitBlobSha": "97bacbbcae3651562eed6777f5f0af190700849a",
+      "bytes": 1726,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/specs/storage/effect-sqlite-package.md",
+      "gitBlobSha": "7efaa34eafc770d05da70d6ac94bc922d1ae57b4",
+      "bytes": 7714,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/specs/storage/remove-opencode-db.md",
+      "gitBlobSha": "071e70c1841eef11efe1b1dda2792c77494530cb",
+      "bytes": 11835,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/specs/tui-package.md",
+      "gitBlobSha": "e7b55342c732642194a6ecd2237c0cdc22888b12",
+      "bytes": 25002,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/specs/v2/catalog-config-plugin-lifecycle.md",
+      "gitBlobSha": "785b6826b904f664fef1126483305076ef97f465",
+      "bytes": 10851,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/specs/v2/config.md",
+      "gitBlobSha": "96b0f3ac901f6cd67bb9f3250940ab1bff3ce102",
+      "bytes": 29396,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/specs/v2/instructions.md",
+      "gitBlobSha": "f3cdcdf5b3d991c9e56671f728702fbe93f280f3",
+      "bytes": 5651,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/specs/v2/provider-model.md",
+      "gitBlobSha": "775ef2c30d45382485579e286b7f998ee9da40ff",
+      "bytes": 11046,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/specs/v2/provider-policy.md",
+      "gitBlobSha": "6e3fc75ba1c53b834f216c23ecfbcfe77cf0fb9c",
+      "bytes": 8702,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/specs/v2/schema-changelog.md",
+      "gitBlobSha": "379c675d3dbb1d4642ef4016fabc1fecdbc61526",
+      "bytes": 40158,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/specs/v2/session.md",
+      "gitBlobSha": "f3c4211c6c6059e158e4209003270b4d125e8c71",
+      "bytes": 28965,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/specs/v2/todo.md",
+      "gitBlobSha": "b774c51c6bc9432549d8f610ef653d52c6c09db3",
+      "bytes": 7057,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/specs/v2/tools.md",
+      "gitBlobSha": "4dc7bfac225a2f2ecb6235a441f5b19420c1f64c",
+      "bytes": 9403,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "opencode/STATS.md",
+      "gitBlobSha": "44819a6eb8c24bd8def2f9dae94eff15de4a1a9c",
+      "bytes": 18293,
+      "scope": "upstream",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "packages/core/src/horizon/skills/horizon-docs/SKILL.md",
+      "gitBlobSha": "cee0a90d4ddb171ac2398b73ea322694dae7cb18",
+      "bytes": 3861,
+      "scope": "project-support",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "README.md",
+      "gitBlobSha": "d3695c95e7462dfceece821db7e02d8ee35477bc",
+      "bytes": 11356,
+      "scope": "project-support",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "SECURITY.md",
+      "gitBlobSha": "f885a74f807efea3996bf7c53d12aec37f972b3b",
+      "bytes": 3914,
+      "scope": "project-support",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    },
+    {
+      "path": "STATS.md",
+      "gitBlobSha": "ddae54f785ef55bf046db4b89444e7a7ac729fd1",
+      "bytes": 18662,
+      "scope": "project-support",
+      "structuralScan": "completed-on-baseline",
+      "flaggedRelativeReferences": 0
+    }
+  ]
+}

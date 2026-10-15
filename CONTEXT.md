@@ -1,6 +1,6 @@
 # OpenCode Session Runtime
 
-> **HorizonCode audit note — 2026-10-11:** This is retained OpenCode Session-runtime implementation/reference design, not HorizonCode architecture authority. Use `arch_V1/17`, `arch_V1/30`, and `arch_V1/34` for Horizon ownership, ContextLedger/model-visible context, and conflict resolution. Where this file describes beta/future OpenCode client/context behavior or unresolved questions, implementation must verify current source/tests before relying on it.
+> **HorizonCode audit note — 2026-10-11:** This is retained OpenCode Session-runtime implementation/reference design, not HorizonCode architecture authority. Use `arch_V1/17-GOVERNANCE-DECISIONS.md`, `arch_V1/30-CONTEXT-INDEXING-LOCAL-MODELS.md`, `arch_V1/11-LIFECYCLE.md`, and `arch_V1/37-RUNTIME-SERVICE-LLD.md` for Horizon ownership, ContextLedger/model-visible context, state/epoch and actual implementation-boundary authority. `arch_V1/34` is a non-normative compatibility stub. Where this file describes beta/future OpenCode client/context behavior or unresolved questions, implementation must verify current source/tests before relying on it.
 
 OpenCode sessions preserve durable conversational history while assembling the runtime context an agent needs to act correctly in its current environment.
 

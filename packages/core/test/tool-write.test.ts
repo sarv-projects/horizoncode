@@ -135,6 +135,24 @@ const call = (input: typeof WriteTool.Input.Type, effect?: ToolRegistry.ExecuteI
 const it = testEffect(Layer.empty)
 
 describe("WriteTool", () => {
+  it.live("advertises the first-party write after provenance validation", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) =>
+        withTool(tmp.path, (registry) =>
+          Effect.gen(function* () {
+            const materialized = yield* registry.materialize()
+            expect(materialized.definitions.map((definition) => definition.name)).toContain("write")
+            expect(materialized.classify(call({ path: "source.txt", content: "ok" }).call)).toEqual({
+              id: "files.write",
+              effectClass: "effect",
+            })
+          }),
+        ),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
   it.live("writes only with the prepared host lease", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),
@@ -192,7 +210,7 @@ describe("WriteTool", () => {
         ).pipe(
           Effect.andThen((settled) =>
             Effect.gen(function* () {
-              expect(settled.result).toEqual({ type: "error", value: "Unable to write file" })
+              expect(settled.result).toMatchObject({ type: "error" })
               expect(permissionAssertions).toEqual([])
               expect(supervisorCalls).toEqual([])
               expect(

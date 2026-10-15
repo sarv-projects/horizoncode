@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "HorizonCodeManagedEventEnvelopeV2",
+  "title": "HorizonCodeManagedEventEnvelopeV2 — unimplemented logical prototype",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -70,5 +70,8 @@
     "payload": {
       "type": "object"
     }
-  }
+  },
+  "description": "DESIGN-ONLY legacy logical/event API sketch. NOT the Rust OwnerLog physical record or a usable wire/persistence schema. Do not generate producer/consumer bindings from this enum until the event-version migration/adapter is deliberately specified, implemented and tested. See §4.2–4.3, §12.13, kernel/src/owner_log.rs and kernel/src/managed_control.rs.",
+  "$comment": "OwnerLogV2 format_version=2 stores seq/time_ms/kind/data/previous_digest/event_digest; managed_control.rs emits snake_case kinds, while this prototype lists PascalCase logical events. Physical data encloses schemaVersion=1, payload and optional deliveryId/commandDigest. See DOC-013 for a static safety gate.",
+  "x-horizon-runtime-wire": false
 }

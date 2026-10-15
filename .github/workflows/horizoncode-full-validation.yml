@@ -3,12 +3,18 @@ on:
   workflow_dispatch:
   pull_request:
     branches: [main]
+concurrency:
+  # One authoritative CI run per PR head; obsolete source/test results must not race.
+  group: horizoncode-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   typecheck-and-guard:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - name: Audit all tracked Markdown files
+        run: python3 scripts/architecture/audit_markdown_repo.py
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
@@ -17,5 +23,18 @@ jobs:
         run: python3 scripts/architecture/bootstrap_source.py --apply
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
+      - name: Fast contract and source parity preflight
+        # Fail before the heavy Turbo/Cargo build if the normative registry/docs
+        # contradict the tracked source. The full gate repeats this validation.
+        run: |
+          python3 scripts/architecture/validate_convergence.py
+          python3 scripts/architecture/validate_external_sources.py
+      - name: Focused real Guard, managed recovery and resource math tests
+        # Compile/test critical regressions before slow monorepo typechecking.
+        # The final full gate reruns these with all integration checks.
+        run: |
+          cargo test --locked --manifest-path kernel/Cargo.toml --lib resource_budget
+          cargo test --locked --manifest-path kernel/Cargo.toml --test managed_control
+          (cd packages/core && bun test test/session-runner-tool-registry.test.ts)
       - name: Full monorepo typecheck and Guard tests
         run: bash scripts/architecture/run_full_gate.sh

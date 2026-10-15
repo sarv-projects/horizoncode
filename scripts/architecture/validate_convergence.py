@@ -252,6 +252,224 @@ for rel in ['AGENTS.md','HANDOFF.md','IMPLEMENTER_PROMPT.md']:
     check('17-GOVERNANCE-DECISIONS.md' in text,rel+' lacks governance entrypoint')
     check('2026-10-11-horizoncode-converged-implementation.md' in text,rel+' lacks current implementation plan')
 
+
+# DOC-001..DOC-010: release/documentation authority and claim-evidence regressions.
+# These are deterministic static gates, not runtime acceptance of the proposed features.
+security=(R/'SECURITY.md').read_text()
+contributing=(R/'CONTRIBUTING.md').read_text()
+readme=(R/'README.md').read_text()
+handoff=(R/'HANDOFF.md').read_text()
+historical=(R/'docs/architecture-input/universal-software-agent-v2-source.md').read_text()
+integration=(A/'20-OPENCODE-INTEGRATION-LLD.md').read_text()
+agents=(A/'29-AGENTS-SKILLS-HOOKS-MCP.md').read_text()
+services=(A/'37-RUNTIME-SERVICE-LLD.md').read_text()
+security_owner=(A/'14-EFFECTS-EXECUTION-SECURITY.md').read_text()
+acceptance=(A/'32-TASK-BASED-AGENT-TEST-CATALOG.md').read_text()
+delivery=(A/'10-DELIVERY.md').read_text()
+operations=(A/'18-OPERATIONS-RELEASE.md').read_text()
+
+def h_security_reporting(body):
+    return (body.lstrip().startswith('# HorizonCode security policy')
+            and 'Report vulnerabilities to the **HorizonCode** maintainers' in body
+            and 'github.com/sarv-projects/horizoncode/security' in body
+            and not re.search(r'github\.com/(?:anomalyco|opencode-ai)/opencode/security/advisories',body,re.I))
+
+def h_contributor_identity(body):
+    return (body.lstrip().startswith('# Contributing to HorizonCode')
+            and 'github.com/sarv-projects/horizoncode/issues' in body
+            and 'opencode/CONTRIBUTING.md' in body
+            and 'arch_V1/README.md' in body)
+
+# Negative samples guarantee that the basic identity checks reject an upstream policy.
+check(h_security_reporting(security),'DOC-001 Horizon security reporting identity/path')
+check(not h_security_reporting('# Security policy\nReport to the OpenCode maintainers'),
+      'DOC-001 negative upstream-only security policy')
+check(h_contributor_identity(contributing),'DOC-002 Horizon contributor workflow identity')
+check(not h_contributor_identity('# Contributing to OpenCode\nOpen an OpenCode issue'),
+      'DOC-002 negative upstream-only contributor policy')
+
+check('NON-NORMATIVE FOR HORIZONCODE' in historical[:700]
+      and 'arch_V1/README.md' in historical[:900],
+      'DOC-003 inherited source input attempts to override current architecture')
+check('normative V1 architecture' in (A/'README.md').read_text()[:300],
+      'DOC-003 current architecture index missing normative authority')
+
+# Every accepted source-dependent journey has current safety, wire, capability,
+# source and test owners. Match exact identifiers, not approximate prose.
+for journey, flow, capability, interface in [
+    ('outbound ACP','3.16','agents.external.inspect','37.19'),
+    ('visual edit','3.17','visual.source_candidates','37.20'),
+    ('deployment/rollback','3.18','deployment.apply','37.20'),
+]:
+    check('## '+flow+' ' in flow_text,'DOC-004 accepted flow missing '+journey)
+    check(capability in catalog,'DOC-004 capability owner missing '+journey)
+    check('## '+interface+' ' in services,'DOC-004 service contract missing '+journey)
+    check(capability in (A/'33-BUILTIN-CAPABILITIES-CATALOG.md').read_text(),
+          'DOC-004 public capability trace missing '+journey)
+    check('## 32.35 ' in acceptance,'DOC-004 task/negative acceptance missing '+journey)
+check('## 14.18 ' in security_owner and '## 20.13 ' in integration
+      and '## 29.19 ' in agents,
+      'DOC-004 ACP/visual/deploy security, source, or adapter owner missing')
+
+check('no independently verified Horizon ACP client' in integration
+      and "NOT Horizon's ACP client" in agents,
+      'DOC-005 upstream ACP server falsely implies implemented outbound client')
+check('DESIGN-RESERVED' in catalog and '## 33.30 ' in catalog,
+      'DOC-005/DOC-007 reserved ACP/visual/deploy candidates promoted without proof')
+
+license_files=[R/'LICENSE',R/'LICENSE.md',R/'LICENSE.txt']
+root_license=any(p.is_file() for p in license_files)
+check((R/'opencode/LICENSE').is_file(),
+      'DOC-006 pinned upstream MIT license/permission notice missing')
+# DOC-015: package metadata must not invent an outbound rights grant.
+if not root_license:
+    check(root_package.get('license') == 'UNLICENSED' and root_package.get('private') is True,
+          'DOC-015 root package declares a distribution license despite no root LICENSE')
+    check('UNLICENSED' in readme and 'UNLICENSED' in contributing,
+          'DOC-015 public metadata/docs disagree on pending license decision')
+
+if not root_license:
+    check('NOT V1 RELEASED' in handoff
+          and 'not yet released' in readme
+          and '## 18.20 ' in operations
+          and 'license' in operations.lower(),
+          'DOC-006 root distribution license is absent but release blocker not explicit')
+check('## 33.29 ' in catalog and 'reserved DESIGN targets' in catalog
+      and 'do **not** imply registered runtime tools' in catalog,
+      'DOC-007 design-only capabilities represented as wired tools')
+for reserved in [
+    'diagnostics.resource.snapshot','providers.doctor','sessions.file_activity',
+    'workers.resources','deployment.apply','deployment.rollback','agents.external.inspect'
+]:
+    check(reserved not in records or records[reserved].get('status')=='designed',
+          'DOC-007 unimplemented reserved capability registered as live: '+reserved)
+check('not yet released' in readme
+      and 'not a fully sandboxed' in readme
+      and 'Universal mediation' in readme,
+      'DOC-008 public status dropped sandbox / universal-Guard caveat')
+check('NOT V1 RELEASED' in handoff and 'P1.3' in handoff and 'P2' in handoff,
+      'DOC-008 implementation status accidentally promoted to verified release')
+check(plan.name in readme and plan.name in handoff
+      and 'RC5' in plan.read_text() and 'Gate 10' in plan.read_text()
+      and '## 10.15 ' in delivery,
+      'DOC-009 single operative dependency/owner/test ledger missing')
+check('scripts/architecture/audit_markdown_repo.py' in (R/'scripts/architecture/run_push_gate.sh').read_text()
+      and 'DOC-010' in acceptance and 'DOC-011' in acceptance,
+      'DOC-010/DOC-011 tracked-Markdown reference gate not wired/documented')
+
+
+# DOC-012 inherited upstream AGENTS precedence (static source-policy regression).
+# Upstream AGENTS are left byte-identical; root Horizon rules must explicitly
+# prevent their hydration from silently changing Guard, branch or process policy.
+root_agent=(R/'AGENTS.md').read_text()
+check('## Inherited OpenCode package instructions and precedence' in root_agent,
+      'DOC-012 missing Horizon-first inherited AGENTS guidance')
+for marker in [
+    'opencode/AGENTS.md',
+    'opencode/packages/app/AGENTS.md',
+    'opencode/packages/effect-drizzle-sqlite/AGENTS.md',
+    'never rewrite the pinned upstream instruction snapshot',
+    'Rust Guard',
+]:
+    check(marker.lower() in root_agent.lower(),'DOC-012 upstream AGENTS conflict treatment missing: '+marker)
+check('## Inherited upstream instructions' in contributing,
+      'DOC-012 contributor guide does not explain hydrated upstream AGENTS precedence')
+check((R/'opencode/AGENTS.md').is_file()
+      and (R/'opencode/packages/app/AGENTS.md').is_file(),
+      'DOC-012 pinned upstream instructions missing')
+
+# DOC-013/014: active physical OwnerLog and logical machine contract must not be conflated.
+owner_source=(R/'kernel/src/owner_log.rs').read_text()
+managed_source=(R/'kernel/src/managed_control.rs').read_text()
+logical_event=load(D/'managed-event.schema.json')
+check(logical_event.get('x-horizon-runtime-wire') is False,
+      'DOC-013 incompatible logical managed-event prototype may be generated as real wire')
+check('DESIGN-ONLY' in logical_event.get('description','')
+      and 'owner_log.rs' in logical_event.get('description',''),
+      'DOC-013 incompatible event schema lacks physical-source caveat')
+for marker in ['pub struct PhysicalRecordV2','pub format_version: u16','pub seq: u64',
+               'pub kind: String','pub data: Value','pub previous_digest: Digest',
+               'pub event_digest: Digest','OWNER_LOG_FORMAT_VERSION_V2: u16 = 2']:
+    check(marker in owner_source,'DOC-013 physical source changed: '+marker)
+for marker in ['"goal_created"','"run_started"','"task_passed"']:
+    check(marker in managed_source,'DOC-013 managed decoder changed: '+marker)
+check('format_version: 2' in (A/'04-STATE-EVENTS.md').read_text()
+      and 'x-horizon-runtime-wire: false' in (A/'12-DOMAIN-SCHEMAS.md').read_text(),
+      'DOC-013 physical versus prototype documentation mismatch')
+check(logical_event['properties']['eventType']['enum'] !=
+      sorted(set(re.findall(r'\("([a-z_]+)",\s*json!\(',managed_source))),
+      'DOC-013 event wire status needs reevaluation after convergence')
+runner=(R/'scripts/architecture/run_contract_tests.py').read_text()
+check('Path.home()' in runner and 'os.pathsep' in runner,
+      'DOC-014 contract test PATH not portable')
+check('/home/sarvesh/' not in runner and '/Users/kit/' not in runner,
+      'DOC-014 hardcoded developer HOME in contract test script')
+
+# DOC-016: architecture source-status parity for first-party feature exposure UI.
+feature_source=R/'packages/core/src/v1/config/feature-exposure.ts'
+tui_dialog=R/'packages/tui/src/component/dialog-features.tsx'
+tui_app=R/'packages/tui/src/app.tsx'
+app_features=R/'packages/app/src/components/settings-v2/features.tsx'
+app_settings=R/'packages/app/src/components/settings-v2/dialog-settings-v2.tsx'
+feature_test=R/'packages/core/test/config/feature-exposure.test.ts'
+for candidate in [feature_source,tui_dialog,tui_app,app_features,app_settings,feature_test]:
+    check(candidate.is_file(),'DOC-016 tracked feature exposure source missing: '+str(candidate))
+check('DialogFeatures' in tui_app.read_text() and 'horizon.settings.features' in tui_app.read_text(),
+      'DOC-016 TUI feature dialog is not bound to command')
+check('SettingsFeaturesV2' in app_settings.read_text() and 'value="experimental"' in app_settings.read_text(),
+      'DOC-016 GUI feature tabs are not actually mounted')
+ux_text=(A/'16-UX-SETTINGS-ECOSYSTEM.md').read_text()
+check('CODE_PRESENT/PARTIAL' in ux_text and 'horizon.settings.features' in ux_text
+      and 'not absence of panels' in ux_text,
+      'DOC-016 stale or overpromoted UX source status')
+check('Live overlay status correction' in integration and 'CODE_PRESENT/PARTIAL' in integration,
+      'DOC-016 source-map feature status drift')
+
+# DOC-017: deterministic acceptance ID inventory, not a runtime test executor.
+case_ids=re.findall(r'^\|\s*([A-Z][A-Z0-9-]*\d+(?:[.-][A-Z0-9]+)*)\s*\|',acceptance,re.M)
+check(len(case_ids)==len(set(case_ids)),
+      'DOC-017 duplicate acceptance case ID: '+','.join(sorted({i for i in case_ids if case_ids.count(i)>1})))
+check(len(case_ids)>=300,'DOC-017 acceptance catalog unexpectedly truncated')
+for required_prefix,count,pad in [('FEAT-',14,3),('JC-RES-',20,3),('DOC-',17,3)]:
+    for n in range(1,count+1):
+        check(f'{required_prefix}{n:0{pad}d}' in case_ids,
+              'DOC-017 required acceptance case missing: '+f'{required_prefix}{n:0{pad}d}')
+
+# CODE-001: catalog status must not conceal or overstate the narrow live guarded write.
+check(records.get('files.write',{}).get('status')=='code_present',
+      'CODE-001 files.write must be CODE_PRESENT (not DESIGN-only or VERIFIED)')
+core_registry=(R/'packages/core/src/tool/registry.ts').read_text()
+guard_source=(R/'kernel/src/guard.rs').read_text()
+effect_host=(R/'kernel/src/effect_host.rs').read_text()
+check('Rust Guard admission required' in core_registry
+      and 'localRegistration !== registration' in core_registry
+      and 'declared.id !== "files.write"' in core_registry,
+      'CODE-001 local/admission/spoof Guard gate missing from Core ToolRegistry')
+check('FILES_WRITE_ID: &str = "files.write"' in guard_source
+      and 'capability_id != "files.write"' in effect_host,
+      'CODE-001 actual Rust narrow-write owner changed')
+check('CODE_PRESENT/PARTIAL' in (A/'33-BUILTIN-CAPABILITIES-CATALOG.md').read_text(),
+      'CODE-001 guarded file write runtime status drift')
+
+# CODE-002: runtime Guard negative acceptance cases must trace to real test code.
+core_tests=(R/'packages/core/test/session-runner-tool-registry.test.ts').read_text()
+managed_tests=(R/'kernel/tests/managed_control.rs').read_text()
+check(all(case in acceptance for case in ['PS-011','PS-012','LH-012']),
+      'CODE-002 missing Guard/P2 negative acceptance cases')
+check('process/application-declared files.write' in core_tests
+      and 'forged Location write' in core_tests
+      and 'fabricates a Rust challenge' in core_tests
+      and 'unsupported effectful plugin tools' in core_tests
+      and 'advertises the real first-party write leaf' in (R/'packages/core/test/tool-write.test.ts').read_text()
+      and 'isBuiltinWrite' in (R/'packages/core/src/tool/registry.ts').read_text()
+      and 'markBuiltinWrite' in (R/'packages/core/src/tool/write.ts').read_text(),
+      'CODE-002 Core Guard provenance and negative tests not present')
+check('unknown_attempt_during_pause_moves_run_to_reconciliation_and_blocks_resume' in managed_tests,
+      'CODE-002 PAUSED+UNKNOWN durable recovery regression missing')
+check('PAUSED+UNKNOWN' in (R/'HANDOFF.md').read_text()
+      and 'not only Markdown' in (R/'HANDOFF.md').read_text(),
+      'CODE-002 current implementation handoff falsely claims docs-only')
+
 print('SCHEMA_FILES',len(schema_files))
 print('CATALOG_IDS',len(catalog_ids),'REGISTRY_IDS',len(records))
 print('CHECKS',checked,'FAILURES',len(failures))

@@ -137,6 +137,35 @@ fn unknown_attempt_blocks_retries_and_remains_unknown_after_replay() {
 }
 
 #[test]
+fn unknown_attempt_during_pause_moves_run_to_reconciliation_and_blocks_resume() {
+    let root = PrivateRoot::new();
+    let mut store = ManagedControl::open(root.path(), "goal-paused-unknown").unwrap();
+    accepted_run(&mut store);
+    send(&mut store, "task", ManagedCommand::AddTask {
+        run_id: "run-v1".into(), task_id: "task-a".into(), dependencies: vec![],
+    });
+    send(&mut store, "ready", ManagedCommand::MarkTaskReady {
+        run_id: "run-v1".into(), task_id: "task-a".into(),
+    });
+    send(&mut store, "admit", ManagedCommand::AdmitAttempt {
+        run_id: "run-v1".into(), task_id: "task-a".into(), attempt_id: "attempt-one".into(),
+    });
+    send(&mut store, "pause", ManagedCommand::PauseRun { run_id: "run-v1".into() });
+    assert_eq!(store.snapshot().runs["run-v1"].phase, RunPhase::Paused);
+    send(&mut store, "unknown", ManagedCommand::MarkAttemptUnknown {
+        run_id: "run-v1".into(), task_id: "task-a".into(), attempt_id: "attempt-one".into(),
+    });
+    assert_eq!(store.snapshot().runs["run-v1"].phase, RunPhase::Reconciling);
+    assert!(store.apply(store.snapshot().revision, "resume-unsafe", ManagedCommand::ResumeRun {
+        run_id: "run-v1".into(),
+    }).is_err());
+    drop(store);
+    let restored = ManagedControl::open(root.path(), "goal-paused-unknown").unwrap();
+    assert_eq!(restored.snapshot().runs["run-v1"].phase, RunPhase::Reconciling);
+    assert!(restored.snapshot().runs["run-v1"].tasks["task-a"].unknown_effect);
+}
+
+#[test]
 fn dependencies_are_not_claimed_passed_from_worker_or_model_output() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-deps").unwrap();

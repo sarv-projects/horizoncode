@@ -838,7 +838,7 @@
       "id": "files.write",
       "kind": "tool",
       "effectClass": "guarded_effect",
-      "status": "designed",
+      "status": "code_present",
       "sealed": false
     },
     {

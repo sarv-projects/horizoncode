@@ -11,7 +11,7 @@
 
 1. Inspect git status, worktrees, active processes, and disk/build-output pressure. Preserve every user-owned change.
 2. Read arch_V1/README.md and arch_V1/17-GOVERNANCE-DECISIONS.md once.
-3. Read HANDOFF.md and docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md for the current gate.
+3. Read HANDOFF.md and docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md for the current gate; CURRENT_RUN.md is a non-authoritative dated work diary.
 4. For the specific slice, read only its topic owner from arch_V1/README.md, plus:
    - arch_V1/20-OPENCODE-INTEGRATION-LLD.md for local source placement;
    - arch_V1/37-RUNTIME-SERVICE-LLD.md for a runtime service boundary;
@@ -21,6 +21,14 @@
 5. Inspect exact local source, callers and tests before editing.
 
 Do NOT read the archived architecture or compatibility stubs as implementation authority.
+
+## Inherited OpenCode package instructions and precedence
+
+The tracked `opencode/` snapshot includes upstream `AGENTS.md` files which `scripts/architecture/bootstrap_source.py --apply` may hydrate as nested `packages/**/AGENTS.md`. **These are useful package-specific coding/test conventions, not HorizonCode policy or architecture authority.** For every HorizonCode agent task, start with this root `AGENTS.md`, `arch_V1/README.md`, current topic owner and `HANDOFF.md` before using inherited package hints. When a nested upstream guide conflicts with a HorizonCode policy, apply HorizonCode's owner/Guard/privacy/approval/cleanup/release contract and retain compatible local coding practices.
+
+Specific known upstream-only instructions that must not silently govern HorizonCode: `opencode/AGENTS.md` uses the upstream default branch `dev` and no-slash branch style (HorizonCode currently uses `main` and topic branches); `opencode/packages/app/AGENTS.md` contains an absolute prohibition on restarting an upstream app/server (HorizonCode may restart **only agent-owned** test/dev processes after checking ownership and user impact); `opencode/packages/effect-drizzle-sqlite/AGENTS.md` names a developer's `/Users/kit/code/open-source/effect-smol` path (verify actual dependency source instead). Never treat an upstream instruction permitting a host tool executor, plugin hook or local process action as an exemption from Rust Guard, effect leases, user approval, and receipt reconciliation. Respect source-local package code style and its test patterns wherever compatible.
+
+**Implementation rule:** update the *root HorizonCode* instructions or narrow first-party overlay when a conflict needs correction; never rewrite the pinned upstream instruction snapshot merely to make audits appear green. If a future code agent resolves nested `AGENTS.md` with higher precedence, explicitly supply this root policy and owning topic docs in the task context and document any remaining conflict before execution.
 
 ## Skills, MCPs, tools and external capabilities
 
@@ -116,6 +124,19 @@ Do not kill unrelated active builds/processes.
 
 Before spawning a child, decide whether it truly needs a separate worktree/build. Prefer read-only/shared-source subagents when possible. The parent is responsible for cleaning up every worktree/process/build artifact it caused the child to create, consistent with the worktree/disk rules above.
 
+## JCode-informed resource engineering protocol (A-V2-30)
+
+During P1/P2 implementation, read RC0–RC5 in the existing operative plan once; for a narrow slice use only relevant §18, §20, §21, §29–§33 and §37 owners. **No giant architecture reread per agent.** For current status trust HANDOFF plus exact source/CI; CURRENT_RUN is a dated work log. Do not cargo-cult JCode's allocator flags, daemon, permissions, or claimed RAM figures.
+
+- Before claiming a RAM or speed improvement, capture current process-tree PSS/RSS/private footprint (OS-specific), child process count/FDs, local inference memory, cold/warm UI/input and identical task success; use 1/5/10/20 Session workloads and repeat runs. Compare with the same hardware/model/build. Do not confuse Linux PSS with RSS or Windows working set, or vendor benchmarks with our measured results.
+- Share read-only clients, indexes, immutable caches and headless provider infrastructure only when isolation, secret scope, provider/model/config and epoch match. Untrusted effect processes remain OS-isolated. Per-session Rust observer → shared daemon is a **candidate**, not a completed migration. Guard, lease, cancellation, cursor/ACK, receipt/UNKNOWN, backpressure and cross-session negative tests must all pass before cutover.
+- Every persistent or ephemeral cache has a declared byte/entry bound and eviction owner. Favor cancel-safe artifact refs and bounded UI tool-tail over duplicate in-memory transcripts or stdout. Record steady state and long-run leak slope; only destroy product-owned disposable resources after checking no live worker/evidence/user work depends on them.
+- Worker admission is limited by actual RAM/CPU/FD/disk/worktree pressure and parent permission. A file-touch warning is advisory, never substitute for revision/hash/lease Guard. Provider Doctor full tier is spend-bearing and requires explicit user consent; no hidden prewarming, credential echo or paid fallback.
+- Use exactly the §11.20 / §18.18 reservation states (`PROPOSED/RESERVED/CLAIMED/RELEASE_PENDING/QUARANTINED/RELEASED/EXPIRED`) and §18.18 pressure states (`NORMAL/SOFT_PRESSURE/HARD_PRESSURE/RECOVERING`). `UNKNOWN` is a measurement/effect outcome, not a resource-reservation enum, and `ACTIVE` is not a valid alias. Bind provider Doctor, file-touch and headless-worker requests to authenticated owner/Session/Attempt scope; a queue ticket/owner epoch/lease ID alone never authorizes work. Run the §32.37 JC-RES-012.C–L transition, math and impersonation negatives before marking these contracts WIRED.
+- Update the exact §32.32 JC-RES test rows, observed platform/commit/test data and user-visible status. Add new feature exposure in existing config/capability owners only after WIRED; experimental is not synonymous with working. No performance change may weaken correctness, security or independent verification.
+
+For JCode-informed RAM/worker/protocol features: read §01.13 HLD and the exact §37.16–18 function interfaces, §20.12 hydrated source seams, §18.18 pressure/eviction algorithm, §21.11 worker leases, §29.18 task DAG, §32.33 tests, then RC0–RC5. **A designed type is not implemented until machine schema, source, negative tests and actual OS measurements exist.**
+
 ## Source reuse
 
 External repositories are research/source references only. Use exact immutable pins from arch_V1/42. Before copying/translating code:
@@ -137,7 +158,7 @@ Never replace local OpenCode packages with a clean upstream checkout.
 Statuses are distinct:
 DESIGNED -> CODE_PRESENT -> WIRED -> TESTED -> VERIFIED -> RELEASED.
 
-Schema/catalog/docs are not runtime proof.
+Schema/catalog/docs are not runtime proof. For any documentation or authority changes, run `python3 scripts/architecture/audit_markdown_repo.py` plus the existing architecture convergence validator before declaring structural completion. This enumerates all tracked Markdown files, including upstream/archive references; it fails active broken local links, numbered references, fences and conflict markers while reporting historical/upstream issues separately. Preserve non-normative history; use `--json-report` for per-file SHA256 evidence when an exhaustive audit is requested. **Structural coverage is not semantic correctness or executable feature verification.**
 
 Before reporting a slice complete, state:
 - changed files/functions;
@@ -157,4 +178,4 @@ Do not spend V1 implementation time on a broad branding/build rewrite. Once V1 e
 
 Do not run reset, clean, destructive rebase, force-push, user-content deletion, broad cache purge, credential export, or paid API use without explicit authorization. For commits/pushes, follow the task-scoped pre-cleanup rule above: its authorization covers only exact verified task-owned changes to the intended upstream, never unrelated or user-owned changes. If publication cannot be done safely, defer cleanup.
 
-Preserve the working tree as found; it may contain changes from another agent/session.
+Any local workspace may contain substantial uncommitted work; check status and preserve it. The GitHub branch state cannot establish a local worktree is clean.
