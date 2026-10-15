@@ -23,6 +23,7 @@ test -x kernel/target/debug/session_supervisor
   cd packages/core
   bun run typecheck
   bun test --timeout 60000 test/session-runner-tool-registry.test.ts
+  bun test --timeout 60000 test/tool-write.test.ts
   bun test --timeout 80000 test/kernel-projection-live.test.ts -t 'Core Effect admits and settles a files.write'
 )
 (
