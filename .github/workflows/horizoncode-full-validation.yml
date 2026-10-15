@@ -29,5 +29,12 @@ jobs:
         run: |
           python3 scripts/architecture/validate_convergence.py
           python3 scripts/architecture/validate_external_sources.py
+      - name: Focused real Guard, managed recovery and resource math tests
+        # Compile/test critical regressions before slow monorepo typechecking.
+        # The final full gate reruns these with all integration checks.
+        run: |
+          cargo test --locked --manifest-path kernel/Cargo.toml --lib resource_budget
+          cargo test --locked --manifest-path kernel/Cargo.toml --test managed_control
+          (cd packages/core && bun test test/session-runner-tool-registry.test.ts)
       - name: Full monorepo typecheck and Guard tests
         run: bash scripts/architecture/run_full_gate.sh
