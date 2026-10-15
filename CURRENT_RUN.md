@@ -129,3 +129,8 @@ Implemented pure `kernel/src/resource_budget.rs` (published via kernel lib) with
 ## 2026-10-15 — resource lifecycle transition code and tests
 
 Implemented pure `ReservationState::validate_transition` and negative Rust unit cases in existing `kernel/src/resource_budget.rs` for §11.20 / JC-RES-012.H/J. Prohibits transition shortcuts including dispatched->EXPIRED, quarantine->RELEASED and RELEASED/EXPIRED reuse; requires caller-supplied proof flags for no-launch expiry, reconciled quarantine return and exit+effect settlement. This is not authenticated proof gathering, owner log CAS persistence, OS sampling or an executing worker scheduler. Await final-head CI and later integration acceptance.
+
+
+## 2026-10-15 — first-party write registration spoof protection
+
+Audited tracked Core ToolRegistry and WriteTool source: local `write` registrations with declared `files.write` could bypass the origin provenance test (as tests actually admitted arbitrary Location registration). Added a first-party WeakSet identity marker for WriteTool and fail closed on both advert and settle for a forged local `write`. Replaced permissive mock-positive test with forged-admission negative. This is not same-process hostile-plugin isolation or universal P1.3. Latest branch CI must pass.

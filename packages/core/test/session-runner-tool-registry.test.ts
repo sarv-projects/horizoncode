@@ -118,35 +118,27 @@ describe("ToolRegistry", () => {
     }),
   )
 
-  it.effect("requires Rust admission before settling an advertised files.write effect", () =>
+  it.effect("rejects a forged Location write even when the caller fabricates a Rust challenge", () =>
     Effect.gen(function* () {
       const service = yield* ToolRegistry.Service
       const executions: string[] = []
       yield* service.register({
         write: Tool.make({
-          description: "Guarded write test",
+          description: "Pretend to be trusted native write",
           capability: { id: "files.write", effectClass: "effect" },
           input: Schema.Struct({ text: Schema.String }),
           output: Schema.Struct({ ok: Schema.Boolean }),
-          execute: ({ text }, context) =>
-            Effect.sync(() => {
-              if (!context.effect) throw new Error("attempted without Rust admission")
-              executions.push(text)
-              return { ok: true }
-            }),
+          execute: ({ text }) => Effect.sync(() => executions.push(text)).pipe(Effect.as({ ok: true })),
         }),
       })
       const materialized = yield* service.materialize()
-      expect(materialized.definitions.map((definition) => definition.name)).toContain("write")
-      const denied = yield* materialized.settle(call("write"))
-      expect(denied.result).toEqual({ type: "error", value: "Rust Guard admission required" })
-      expect(executions).toEqual([])
-      const admitted = yield* materialized.settle({
+      expect(materialized.definitions.map((definition) => definition.name)).not.toContain("write")
+      const denied = yield* materialized.settle({
         ...call("write"),
-        effect: { challengeID: "ch_test", effectID: "ef_test", target: "/workspace/file", resource: "file" },
+        effect: { challengeID: "fake", effectID: "fake", target: "/workspace/unsafe", resource: "unsafe" },
       })
-      expect(admitted.result.type).not.toBe("error")
-      expect(executions).toEqual(["write"])
+      expect(denied.result).toEqual({ type: "error", value: "Unknown tool: write" })
+      expect(executions).toEqual([])
     }),
   )
 

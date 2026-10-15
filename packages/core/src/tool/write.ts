@@ -43,6 +43,12 @@ export const toModelOutput = (output: Output) =>
 // Snapshot/undo waits for the verified restore/reconciliation design.
 // LSP notification/diagnostics wait for the LanguageServiceBroker mutation path.
 
+// Only this first-party leaf may mint a native write registration.
+// An arbitrary Location/plugin tool cannot gain file authority by claiming
+// capability ID "files.write" and the model-facing name "write".
+const trustedWrites = new WeakSet<Tool.AnyTool>()
+export const isTrustedWrite = (tool: Tool.AnyTool) => trustedWrites.has(tool)
+
 const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const tools = yield* Tools.Service
@@ -50,10 +56,8 @@ const layer = Layer.effectDiscard(
     const permission = yield* PermissionV2.Service
     const supervisor = yield* SessionSupervisor.Service
 
-    yield* tools
-      .register({
-        [name]: Tool.withPermission(
-          Tool.make({
+    const guardedWrite = Tool.withPermission(
+      Tool.make({
             description:
               "Write content to one file within the active Location. External absolute paths are not supported by the guarded effect host.",
             capability: { id: "files.write", effectClass: "effect" },
@@ -117,11 +121,11 @@ const layer = Layer.effectDiscard(
                   existed: receipt.existed,
                 }
               }).pipe(Effect.mapError(() => new ToolFailure({ message: `Unable to write ${input.path}` }))),
-          }),
-          "edit",
-        ),
-      })
-      .pipe(Effect.orDie)
+      }),
+      "edit",
+    )
+    trustedWrites.add(guardedWrite)
+    yield* tools.register({ [name]: guardedWrite }).pipe(Effect.orDie)
   }),
 )
 

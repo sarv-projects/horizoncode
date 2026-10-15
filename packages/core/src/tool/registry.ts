@@ -9,6 +9,7 @@ import { SessionSchema } from "../session/schema"
 import { ToolOutputStore } from "../tool-output-store"
 import { ApplicationTools } from "./application-tools"
 import { Tools } from "./tools"
+import { isTrustedWrite } from "./write"
 import { Wildcard } from "../util/wildcard"
 import { capability, definition, permission, settle, validate as validateInput, validateName, type AnyTool, type Capability, type EffectAdmission, type RegistrationError } from "./tool"
 import { makeLocationNode } from "../effect/app-node"
@@ -76,7 +77,7 @@ const registryLayer = Layer.effect(
       if (declared.effectClass === "effect") {
         // Application/plugin registrations do not get native effect authority
         // by self-declaring the ID of a first-party guarded tool.
-        if (declared.id !== "files.write" || input.call.name !== "write" || localRegistration !== registration)
+        if (declared.id !== "files.write" || input.call.name !== "write" || localRegistration !== registration || !isTrustedWrite(registration.tool))
           return { result: { type: "error" as const, value: `Rust Guard does not support: ${declared.id}` } }
         if (!input.effect)
           return { result: { type: "error" as const, value: "Rust Guard admission required" } }
@@ -137,7 +138,7 @@ const registryLayer = Layer.effect(
           if (
             declared.effectClass === "unknown" ||
             (declared.effectClass === "effect" &&
-              (declared.id !== "files.write" || name !== "write" || local.get(name)?.at(-1)?.registration !== registration)) ||
+              (declared.id !== "files.write" || name !== "write" || local.get(name)?.at(-1)?.registration !== registration || !isTrustedWrite(registration.tool))) ||
             whollyDisabled(permission(registration.tool, name), permissions)
           ) {
             registrations.delete(name)
