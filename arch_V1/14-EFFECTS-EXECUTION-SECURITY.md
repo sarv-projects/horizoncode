@@ -588,6 +588,8 @@ Unit tests and mock backends establish code paths only. They do not establish OS
 containment. Windows is the first-release acceptance target; Linux/macOS contracts
 remain separately reported and cannot inherit Windows evidence or vice versa.
 
+**2026-10-15 implemented narrow Guard hardening (not universal mediation):** The first-party Core `packages/core/src/tool/registry.ts` now withholds unclassified/unsupported effectful tools, refuses `files.write` settlement without a Rust challenge, and forbids `ApplicationTools` registrations from obtaining the built-in write authority merely by declaring `files.write`. The executable native write path is currently restricted to a Location-owned `write` registration; the canonical code-present Rust write leaf still redeems its challenge at the target. Tests in `packages/core/test/session-runner-tool-registry.test.ts` cover unsupported registration, unadmitted write and application spoof. A malicious same-process Location override can still execute JavaScript outside this model-facing registry, and read-only classification alone is not OS isolation. Do **not** claim arbitrary plugins, shell, MCP, hosted effects or all effect origins are universally mediated until P1.3 has end-to-end sandbox and no-bypass evidence.
+
 
 ## 14.15 2026-10-11 effect coverage for new capability families
 

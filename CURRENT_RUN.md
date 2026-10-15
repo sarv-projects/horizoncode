@@ -114,3 +114,8 @@ Enumerated all first-column acceptance-case IDs in §32 (334 unique IDs before t
 ## 2026-10-15 — actual Core/P2 source corrections
 
 Implemented fail-closed Core registry effect admission and application-capability spoofing denial with Bun tests; patched Rust managed-control PAUSED+UNKNOWN transition to RECONCILING with test asserting replay and refusal to resume. Updated canonical `files.write` registry status from DESIGNED to CODE_PRESENT (not WIRED/VERIFIED) with CODE-001 cross-source static gate. Real run/test results pending final-head Actions; do not claim all effects or OS backend mediation. Build outputs/remote worktrees were not created by GitHub source edits.
+
+
+## 2026-10-15 — user-requested source code + contract alignment pass
+
+Updated HANDOFF active banner and legacy dated wording to distinguish initial docs-only work from current PR #7 code changes; aligned P1.3/P2 status table with real Core registry/managed-control modifications, but no VERIFIED promotion. §14.10 now documents the precise scope and remaining plugin/sandbox limitations. §32 adds PS-011/012 (plugin capability spoof, missing/unsupported admission) and LH-012 (PAUSED Run + UNKNOWN Attempt). CODE-002 static source/test/case trace was added; verified negative test execution still depends on final branch-head CI.

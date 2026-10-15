@@ -23,5 +23,11 @@ jobs:
         run: python3 scripts/architecture/bootstrap_source.py --apply
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
+      - name: Fast contract and source parity preflight
+        # Fail before the heavy Turbo/Cargo build if the normative registry/docs
+        # contradict the tracked source. The full gate repeats this validation.
+        run: |
+          python3 scripts/architecture/validate_convergence.py
+          python3 scripts/architecture/validate_external_sources.py
       - name: Full monorepo typecheck and Guard tests
         run: bash scripts/architecture/run_full_gate.sh

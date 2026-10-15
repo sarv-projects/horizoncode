@@ -451,6 +451,21 @@ check('FILES_WRITE_ID: &str = "files.write"' in guard_source
 check('CODE_PRESENT/PARTIAL' in (A/'33-BUILTIN-CAPABILITIES-CATALOG.md').read_text(),
       'CODE-001 guarded file write runtime status drift')
 
+# CODE-002: runtime Guard negative acceptance cases must trace to real test code.
+core_tests=(R/'packages/core/test/session-runner-tool-registry.test.ts').read_text()
+managed_tests=(R/'kernel/tests/managed_control.rs').read_text()
+check(all(case in acceptance for case in ['PS-011','PS-012','LH-012']),
+      'CODE-002 missing Guard/P2 negative acceptance cases')
+check('process/application-declared files.write' in core_tests
+      and 'requires Rust admission' in core_tests
+      and 'unsupported effectful plugin tools' in core_tests,
+      'CODE-002 Core effect boundary negative tests not present')
+check('unknown_attempt_during_pause_moves_run_to_reconciliation_and_blocks_resume' in managed_tests,
+      'CODE-002 PAUSED+UNKNOWN durable recovery regression missing')
+check('PAUSED+UNKNOWN' in (R/'HANDOFF.md').read_text()
+      and 'not only Markdown' in (R/'HANDOFF.md').read_text(),
+      'CODE-002 current implementation handoff falsely claims docs-only')
+
 print('SCHEMA_FILES',len(schema_files))
 print('CATALOG_IDS',len(catalog_ids),'REGISTRY_IDS',len(records))
 print('CHECKS',checked,'FAILURES',len(failures))

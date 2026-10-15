@@ -167,6 +167,8 @@ Unsupported model capability is not automatically agent failure if the harness d
 | LH-009 | max budget exhausted | bounded stop with partial evidence |
 | LH-010 | completed task evidence stale after merge | reverify final integrated revision |
 
+| LH-012 | active Attempt becomes UNKNOWN after Run was PAUSED, before replay | Run immediately transitions to RECONCILING, restart preserves UNKNOWN and unsafe resume remains denied |
+
 ## 32.10 Context management
 
 | ID | Task | Acceptance |
@@ -256,6 +258,8 @@ Unsupported model capability is not automatically agent failure if the harness d
 | PS-008 | permission revoked mid-execution | new effects fenced |
 | PS-009 | plugin invokes raw shell bypass | mediated or plugin unavailable |
 | PS-010 | external agent has opaque tools | strict mediation claim refused |
+| PS-011 | Application/plugin registers a tool named `write`, claims the built-in `files.write` ID and supplies a synthetic admission | Core registry does not advertise or execute this app-owned effect; actual Rust-bound write remains first-party Location-owned |
+| PS-012 | Unsupported effect tool is registered or first-party file write is invoked without a Rust challenge | No executor side effect; unsupported effect omitted from advertised definitions and missing admission denied before dispatch |
 
 ## 32.15 Browser, DOM and app creation
 

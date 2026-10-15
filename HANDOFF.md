@@ -1,7 +1,7 @@
 # HorizonCode — Current implementation handoff
 
 **Verified remote source baseline:** `sarv-projects/horizoncode` `main@4e2086633d006f7d8b7709cb0df622f77a9b8d54` (14 October 2026).  
-**Documentation update:** 15 October 2026, branch `docs/jcode-resource-runtime-adoption-20261015` / PR #7.  
+**Active source/contract update:** 15 October 2026, branch `docs/jcode-resource-runtime-adoption-20261015` / PR #7; later commits include Core ToolRegistry/Rust managed-control code and regression tests, not only Markdown. Branch changes are unmerged; verify exact final-HEAD CI.  
 **Implementation completion:** **NOT V1 RELEASED**. Documentation changes are not proof of implemented features. Recheck latest Git SHA, workflow and local status before editing; the connected GitHub repository cannot verify the user's local dirty tree.
 
 This is the **current observed implementation-status entry point**, not a new design authority. The architecture is `arch_V1/README.md` → `arch_V1/17-GOVERNANCE-DECISIONS.md` → exact topic owner. The implementation dependency queue is `docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md` (Gate 0–10, RC0–RC5). Root `CURRENT_RUN.md` is a dated work/evidence diary. Full superseded status chronology was preserved unchanged in `docs/architecture-archive/2026-10-15-handoff-pre-jcode-adoption.md`; older audit snapshot remains preserved in the existing archive.
@@ -23,8 +23,8 @@ External source pins, license and copying review: `arch_V1/42-EXTERNAL-SOURCE-PR
 |---|---|---|
 | P0 source reuse | Pinned `opencode/` snapshot; overlay/bootstrap/audit scripts and source maps; earlier validation checkpoints | Release license/notice/package and clean-machine proof at P9 |
 | P1.2-B observer | `packages/core/src/session/supervisor.ts` + `kernel/src/bin/session_supervisor.rs` + projection/handshake; a **separate Linux Rust process per watched direct Session** | Complete supported-OS lifecycle, failure/restart, and resource benchmark evidence; shared daemon is only a candidate |
-| P1.3 Guard | `kernel/src/guard.rs`, `effect_host.rs`, V1/V2 ToolBatch gate, guarded write and bounded stream/cancel logic; actual focused tests from prior implementation work | Source-specific shell/process, Task/subagent, plugin/MCP/hook, hosted-provider, LSP/DAP/REPL, browser/desktop/network/automation no-bypass proofs; complete lease/receipt/UNKNOWN settlement |
-| P2 managed control | `kernel/src/owner_log.rs`, `managed_control.rs` and tests for durable internal accepted spec, Task/Attempt states and restart/UNKNOWN | **Non-executing internal admission state only**: authenticated full reviewed SpecVersion RPC, real Task DAG scheduler, worker/resource leases, effect reconciler, independent verifier/verified final revision and end-to-end real work |
+| P1.3 Guard | `kernel/src/guard.rs`, `effect_host.rs`, V1/V2 ToolBatch gate, guarded write, bounded stream/cancel; PR #7 now additionally gates Core registry effects on Rust admission, filters unsupported effects and rejects application/plugin `files.write` identity spoofing with focused Bun tests | Source-specific shell/process, Task/subagent, plugin/MCP/hook, hosted-provider, LSP/DAP/REPL, browser/desktop/network/automation no-bypass proofs; complete lease/receipt/UNKNOWN settlement |
+| P2 managed control | `kernel/src/owner_log.rs`, `managed_control.rs` and tests for accepted spec, Task/Attempt restart/UNKNOWN; PR #7 now also transitions PAUSED+UNKNOWN admitted Attempt to RECONCILING with durable replay and unsafe-resume regression | **Non-executing internal admission state only**: authenticated full reviewed SpecVersion RPC, real Task DAG scheduler, worker/resource leases, effect reconciler, independent verifier/verified final revision and end-to-end real work |
 | P3/RepoIntel | Existing OpenCode-derived coding path and `indexd/src/lib.rs` bounded lexical generation/overlay/cursor foundations | Revision-safe edit/search, symbol/reference/LSP service integration, latency/task verification |
 | P4/P5 capabilities | Existing source/tooling and design/service seams | Guarded LSP/DAP/REPL and browser/desktop/web-search runtime, exact OS/provider safety and real task tests |
 | P6 | Existing OpenCode-derived models/tools/extensions plus initial Features UI and feature-exposure code | Full effective/locked/source/pending optional-settings parity, extension/adapters and capability security/evidence |
@@ -70,7 +70,7 @@ The accepted 20 base regression cases are `JC-RES-001..020` in §32.32, with add
 
 ## Documentation-update validation status
 
-This PR edits Markdown only. The source/heading/Markdown-format checks were performed through GitHub reads; the full GitHub Actions validation was still running at the time this handoff entry was authored and must be checked on the **final PR head**. No native Windows/macOS tests, provider inference, JCode-vs-Horizon benchmark or new runtime features were run by this documentation-only task.
+**Historical initial pass:** this PR originally edited Markdown only. Later commits on this same branch added real Core ToolRegistry admission/registration checks, Rust PAUSED→UNKNOWN reconciliation handling, and Bun/Rust negative tests (see the newest entries below). The initial source/heading/Markdown-format pass did not exercise OS/backend tests. Final GitHub Actions validation must be checked on the **latest PR head**; no native Windows/macOS, provider inference or JCode-vs-Horizon benchmark is established by these source edits.
 
 ## Detailed HLD/LLD readiness reconciliation — 2026-10-15 (documentation-only)
 
