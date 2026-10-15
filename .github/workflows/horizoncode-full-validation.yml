@@ -3,6 +3,10 @@ on:
   workflow_dispatch:
   pull_request:
     branches: [main]
+concurrency:
+  # One authoritative CI run per PR head; obsolete source/test results must not race.
+  group: horizoncode-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   typecheck-and-guard:
     runs-on: ubuntu-latest
