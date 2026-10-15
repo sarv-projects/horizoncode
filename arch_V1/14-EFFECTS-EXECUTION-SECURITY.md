@@ -203,10 +203,7 @@ buffers local calls until the provider stream has a terminal `finish` and a comp
 invalid local-call schema produces zero local dispatches for that batch. Tests cover
 provider failure after a call, clean EOF without finish, finish without step settlement,
 schema rejection of one call withholding valid siblings, and concurrent dispatch after a
-valid complete batch. This closes the early-stream-dispatch gap only. The runner still
-executes through `ToolRegistry` in Bun; no Rust Guard/EffectService/ExecutionHost path or
-complete legacy/V2 effect coverage is implemented, so production governed tools remain
-unaccepted.
+valid complete batch. This is the **2026-10-10 historical implementation checkpoint**, not the current state. As of the 2026-10-14 reviewed commit, `packages/opencode/src/session/tool-batch.ts` does bounded complete-batch admission and `kernel/src/{guard,effect_host}.rs` provides a real Rust-backed `files.write` challenge, durable preparation and receipt path through `packages/core/src/session/supervisor.ts`. That narrow path does **not** mean universal effects are mediated: `terminal.run`, subprocess/subagent, plugins/MCP/hooks, hosted-provider tools and other mutation origins still require end-to-end pre-dispatch proof. See current HANDOFF.md; do not turn the historical note into a blanket runtime denial or release claim.
 
 ```rust
 trait ExecutionHost {
@@ -591,6 +588,8 @@ Unit tests and mock backends establish code paths only. They do not establish OS
 containment. Windows is the first-release acceptance target; Linux/macOS contracts
 remain separately reported and cannot inherit Windows evidence or vice versa.
 
+**2026-10-15 implemented narrow Guard hardening (not universal mediation):** The first-party Core `packages/core/src/tool/registry.ts` now withholds unclassified/unsupported effectful tools, refuses `files.write` settlement without a Rust challenge, and forbids `ApplicationTools` registrations from obtaining the built-in write authority merely by declaring `files.write`. The executable native write path is currently restricted to a Location-owned `write` registration; the canonical code-present Rust write leaf still redeems its challenge at the target. Tests in `packages/core/test/session-runner-tool-registry.test.ts` cover unsupported registration, unadmitted write and application spoof. A malicious same-process Location override can still execute JavaScript outside this model-facing registry, and read-only classification alone is not OS isolation. Do **not** claim arbitrary plugins, shell, MCP, hosted effects or all effect origins are universally mediated until P1.3 has end-to-end sandbox and no-bypass evidence.
+
 
 ## 14.15 2026-10-11 effect coverage for new capability families
 
@@ -707,3 +706,28 @@ Persistent REPL:
 - filesystem/network/process/tool callbacks are constrained by the REPL profile;
 - callback tool invocations resolve to canonical capabilities and cross Guard;
 - REPL state never carries raw kernel/SecretBroker authority across sessions.
+
+## 14.17 Shared kernel, headless pool and diagnostic effect classification (A-V2-30)
+
+A shared Rust daemon is **not** approval to run all tools in-process. Every effectful origin still undergoes request-pinned ToolBatch collection and Guard, durable PREPARE, single-use resource/policy-bound lease, sandboxed ExecutionHost dispatch, observed result and receipt/UNKNOWN reconciliation. This applies equally to a headless specialist, warm pooled worker, imported Session adapter, file rename/rebase, Provider Doctor's full inference tests, process prewarm with external side effect, and any memory write or remote recall.
+
+- Virtual Session attach/subscribe/resource snapshot/file-touch read: scoped queries requiring authenticated owner/workspace visibility and read budget, never actor authority. Provider Doctor `offline` must be strictly no-network/no-spend; `catalog` is bounded network/auth data access under policy; `full` incurs explicit provider/cost authorisation and records actual charges when known.
+- Worker pool: reuse only for compatible, revoked/cleared secret state with identical trust/OS sandbox/resource scope; each new Attempt obtains a new fence/lease. PIDs are not identities; OS process start/lease fingerprint binds a worker. An unsupported confinement guarantee disables the origin in governed mode.
+- File activity warnings are not enforcement. Before writes, resolve real destination (including symlink/reparse/race conditions), check exact expected digest, workspace lease, user edit and authorization generation. Do not advertise read overlap as a security deny.
+- Cancellation: provider-stream abort does not prove a process was killed or an external effect did not happen. Propagate through child process groups/Job Objects with timeout and receipt reconciliation; preserve UNKNOWN and do not replay uncertain non-idempotent mutations.
+- Daemon isolation tests: swap session/workspace/policy IDs, stale epoch, forged approval, oversized event, malicious MCP/tool stdout, crash during effect, cross-session observation, file reparse and secret exfiltration. Reject no-bypass claims until these tests and real-platform execution pass.
+
+§05 states the threat boundary, §13 the virtual wire topology, §18 measured pressure rules, §32.32 test scenarios. No JCode shell/destructive-action heuristic replaces these controls.
+
+## 14.18 External ACP agents, visual edits and deployment effects
+
+Existing §§3.16–3.18 describe accepted interactions; §37.19–20 now supplies missing logical service boundaries. The security classifications below are **required even if the feature remains disabled**.
+
+- **ACP outbound launch:** process/network EFFECT, not a harmless read. The worker executable/endpoint identity, current principal, initial cwd/repository root, credential scope, capability subset, model selection and budget are frozen before Guard. Even if ACP protocol reports a permission prompt, that is **not** Horizon's Rust Guard proof. An external remote agent whose side effects are opaque cannot be advertised as governed pre-dispatch under Horizon's lease system.
+- **Native separate OpenCode backend:** always a separate explicit provider/session owner with truthful upstream security guarantees. Native OpenCode tool runs are not magically rewritten as Rust effects. If the selected native backend lacks an enforceable equivalent safety boundary, disclose and disable strict governed capability rather than claiming equivalence.
+- **Visual selection:** read of DOM/AX/source-map may expose secret-bearing page data to a model or remote provider. Scope/redact before context, enforce browser generation and source digest; visual target and source mapping alone cannot authorize a filesystem write. Preview start/stop are process-control effects where applicable.
+- **Deployment:** reading public target metadata is a bounded scoped read; accessing credentials, launching build/CLI processes, uploading artifacts, setting secrets, changing DNS/environment or rolling back remote state are Guarded EFFECT origins with explicit recipient/account/environment/network/cost/secret declarations. Capturing a remote result does not mean settlement or acceptance; target-specific idempotency, UNKNOWN reconciliation and independent deployed-revision health checks are mandatory.
+- **Transport and audit:** secret tokens are passed only as scoped SecretBroker references to the approved host/worker. Never serialize raw credentials, production URLs containing tokens, environment values or third-party account identities into model tool arguments/artifacts. Redact errors and preserve evidence without accidental cross-project exposure.
+- **Stop and rollback:** cancellation or network timeout after launch does not undo externally executed ACP/deployment actions. Record UNKNOWN until real target evidence proves state; rollback is its own approved exact-scope effect with separate receipt and verification. Do not let an imported external transcript, quoted DOM text or model-provided self-report satisfy a Run acceptance criterion.
+
+Required acceptance evidence §32.35. Any missing OS sandbox, provider-side effect preauthorization, credential channel or robust target reconciler leaves the relevant operation UNAVAILABLE; the design table alone does not make it safe.

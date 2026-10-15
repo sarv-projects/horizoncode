@@ -254,3 +254,32 @@ For each state machine:
 - actor/scope denial.
 
 No lifecycle implementation may invent a second conversational Session owner.
+
+## 11.19 Headless worker and shared attachment lifecycle (A-V2-30)
+
+The source of truth remains Rust `Run → Task → Attempt` and `WorkerExecution` leases; interactive/headless UI mode does not create a second Task state machine. A ready Task may move to resource-blocked/queued without launching a worker; resource pressure does not count as evidence of a task failure or authorize provider change. An admitted Attempt binds its worker identity, owner epoch, trust/sandbox profile, resource capacity, workspace generation and parent capability subset before launching effects.
+
+A proposed shared virtual Session attachment transitions `ATTACHING → AUTHENTICATED → ACTIVE → DRAINING/DETACHED`; revocation or host/kernel restart increments the binding epoch and rejects stale subscriptions, ACKs and effect admissions. On crash/cancel, fence first, then settle or retain UNKNOWN according to actual observable execution; do not let a stale child mark PASS. Peer read/edit collision notifications are advisory and do not mutate Task phase. An independent verifier validates evidence against the final integrated revision before terminal Run success.
+
+## 11.20 Detailed resource/attachment/doctor/cache lifecycle and transitions
+
+These are **new target state machines**; implementing them requires atomic expected-revision/epoch checks and the §12.16 machine contracts. Reuse Rust-managed Task/Attempt/Effect states above, not duplicate those aggregates.
+
+| Aggregate or derived object | Accepted transitions | Forbidden transitions/side effects |
+|---|---|---|
+| VirtualSessionAttachment | ATTACHING → AUTHENTICATED → ACTIVE → DRAINING → DETACHED; ACTIVE → LOST on transport failure; LOST → new AUTHENTICATED generation after peer proof | DETACHED/LOST → ACTIVE with old token, foreign cursor/Session attach, effects while unsupported |
+| ResourceReservation (Rust lease fact) | PROPOSED → RESERVED → CLAIMED → RELEASE_PENDING → RELEASED; RESERVED → EXPIRED only after proving no worker launch; CLAIMED/RELEASE_PENDING → QUARANTINED when process or target settlement is uncertain; QUARANTINED → RELEASE_PENDING only after reconciliation and observed owned-process termination | RELEASED/EXPIRED → CLAIMED; claiming EXPIRED after a launch; treating UNKNOWN EffectIntent outcome as a reservation enum; freeing capacity while a descendant/effect remains unsettled |
+| ResourcePressure (derived control hint) | NORMAL → SOFT_PRESSURE → HARD_PRESSURE → RECOVERING → NORMAL; allow direct NORMAL → HARD_PRESSURE upon OS quota alarm; recover using hysteresis | memory pressure → model/provider change, canonically deleting user data/receipts or killing unowned processes |
+| ProviderDoctorRun | VALIDATED → OFFLINE_RESULT; VALIDATED → AUTHORIZED_NETWORK → CATALOG_RESULT; VALIDATED → AWAITING_SPEND_APPROVAL → AUTHORIZED_FULL → PROBING → COMPLETE/FAILED/UNKNOWN | OFFLINE_RESULT with network request, FULL without spend consent, “COMPLETE” after incomplete provider stream |
+| FileTouchRecord | OBSERVED → LIVE → STALE/EXPIRED → REMOVED, derived only | OBSERVED → write permit, return stale entry to another workspace |
+| CacheEntry | BUILDING → CURRENT → PINNED or EVICTABLE → EVICTED; CURRENT → STALE; pinned stale entry released only after consumer closes | evict canonical transcript, accepted criteria, receipt, live tool result before safe artifactization |
+| ToolTailView | EMPTY → STREAMING → COMMITTED/DROPPED or UNKNOWN, derived UI only | commit as second MessagePart, discard real receipt when tail drops |
+| Managed Task/Attempt/WorkerExecution | §11.4–11.5 **remain owner**, with resource queue/lease gates inserted before ADMITTED/STARTING | new “shadow Task” or per-Agent scheduler, speculative conflicting effect without lease |
+
+**Reservation state authority:** The states above are the sole §18.18/§12.16 `WorkerResourceReservationV1.status` vocabulary. `PROPOSED` is unadmitted and reserves nothing. `RESERVED` deducts capacity once from the Rust owner ledger before launch; `CLAIMED` means the authenticated worker startup lease was claimed, not that an external effect succeeded. `RELEASE_PENDING` and `QUARANTINED` continue to count measured usage plus conservative outstanding reserve. `EXPIRED` is terminal only for a reservation with proven absence of worker/process/effect dispatch; timeout after launch instead enters `QUARANTINED` until reconciliation. `RELEASED` requires confirmed owned process-tree termination, effect/receipt settlement, evidence retention and an idempotent log transition. `UNKNOWN` is an EffectIntent/measurement outcome, not a reservation state. Release may be retried after reconciliation but may never bypass quarantine. Resource-pressure values use the exact §18.18 names, without `SOFT`/`HARD` aliases on the wire.
+
+**Crash transition procedure:** persist owner epoch and cancellation/lease fence first; stop new dispatch; inspect actual OS process identity + target evidence; classify completed/failed/UNKNOWN; update Rust OwnerLog once with idempotent delivery; reconcile or block uncertain effect; release/quarantine owned resources; resume queue only after peer scope revalidation. If the daemon crashes before append acknowledgement but the record was committed, idempotent replay returns the same outcome. Wall clock alone never determines owner event order.
+
+**Causal ordering:** spec version acceptance precedes Run admission; predecessor trusted PASS precedes dependent READY; reserve workspace/resource and prepare effect precede child launch; Guard approval precedes single-use lease claim; process exit does not imply effect settlement; all effect receipts and final integrated revision evidence precede Run SUCCEEDED. GUI animation, resource graph and file-touch warning are non-durable derived projections and cannot satisfy causal prerequisites.
+
+**Concurrent races to test:** cancel vs lease claim, attachment logout vs ACK, duplicate resource request with different args, expiration vs process still running, source edit vs verification, cache eviction vs pinned active reader, Provider Doctor consent revocation vs upstream billing, worker unknown vs a new Attempt, two clients racing to attach same Session, kernel incarnation change while old worker returns. The expected result for uncertain external mutation is UNKNOWN, never silent retry/success.

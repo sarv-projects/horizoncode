@@ -307,3 +307,96 @@ P1 adversarial matrix: forged callback, stale call ID/capability, invalid stream
 Current PR #4 implements only an INTERNAL OwnerLogV2 backed control projection and guarded stream hardening. It now has internal Task verification and criterion/final-revision state transitions, but NO independently authenticated verifier adapter, managed RPC/API, worker scheduler, effect target reconciliation, lease engine, or native Windows qualification. Keep P1 and P2 open until all above tests prove real end-to-end execution.
 
 Do not create new agent loops, tool authorities, separate Rust conversation stores or competing feature registries. Use source paths above, existing Owners in 17, execution contract 14, lifecycle 11, schemas 12 and task fixtures 32.
+
+## Resource-efficiency and JCode adoption implementation gates — 2026-10-15 (A-V2-30)
+
+**Baseline:** Horizon `main@4e2086633d006f7d8b7709cb0df622f77a9b8d54`, JCode `1jehuang/jcode@1f612a7`. This section records **newly accepted work, not completed work**. The normative owners are §17.10, §18.17, §20.11, §21.10, §29.17, §30.20, §31.16, §32.32, §33.29 and §37.15; this plan is the sole task-order tracker. Never interpret a checked research item as working runtime.
+
+### RC0 — baseline and resource instrumentation (independent of mutation enablement)
+- [x] Pin external JCode source and distinguish implemented vs Proposed/Design/Draft/Being implemented in §42.9.
+- [x] Record current per-Session `SessionSupervisor.open` / `session_supervisor.rs` process topology and Rust managed admission truth.
+- [ ] Add first-party `scripts/perf/` harness with Linux process-tree PSS/RSS/FD/CPU/threads, macOS footprint/native Windows private bytes. Tests for missing/permission-denied metrics and PID reuse; no fabricated zero.
+- [ ] Add redacted, bounded process-tree ResourceSampler with host/kernel/Session/Run/Attempt/child/cache/local-model attribution and compatible sampling period.
+- [ ] Record reproducible current Horizon/JCode controlled 1/5/10/20-session baseline and real task outcomes in `docs/performance/evidence/`, with exact commits, machine, build, warm/cold, embeddings, model selection and method.
+- [ ] Decide per-platform release budgets/regression ratchets from evidence, then add CI test. **Do not claim JCode's PSS values for Horizon.**
+
+### RC1 — mandatory P1 security and current supervisor
+- [ ] Complete enabled tool-origin interception (direct shell/process, Task/subagent, hooks/MCP/plugins, provider-hosted, LSP/DAP/REPL, browser/desktop/network/automation) with pre-dispatch Guard/lease/receipt/UNKNOWN and no-bypass tests. Unsupported origins remain unavailable, not implicitly trusted.
+- [ ] Measure baseline per-Session supervisor process count, per-SQLite observer cost, startup, watchdog/cursor and isolated effect write.
+- [ ] Prototype **read-only** shared Rust SessionLink multiplexing behind `SessionSupervisor.Service` with peer-auth binding, per-Session queue/cursor/epoch/cancellation, bounded ACK and cross-session negative tests.
+- [ ] Fault-inject one client abuse, one worker crash, kernel crash, malformed packet, conflicting owner and stale epoch; prove no cross-session read or mutation authority and no lost receipt.
+- [ ] Only then consider shared effect-host cutover with full §14 P1 tests; preserve existing interface and rollback. Run JC-RES-001/002/008/009/010.
+
+### RC2 — P2 useful managed execution and headless workers
+- [ ] Wire reviewed full SpecVersion acceptance, authenticated kernel RPC and Rust Task DAG scheduling over existing managed state (no second Task database or transcript).
+- [ ] Add resource-aware WorkerExecution/Attempt pool: lightweight read-only headless attachment, strict isolated process for untrusted effects; leases, cancel/kill tree/UNKNOWN settlement and idle reuse keyed by trust/config/workspace.
+- [ ] Typed DAG edges carry artifact ref/source revision/criteria; cycle/depth/member caps, independent coverage review and final integrated-revision verification. Complete concurrent task/edit and crash recovery tests.
+- [ ] Add source-generation-safe file-touch **advisory** index plus authoritative digest/lease precondition and collision UI. Run JC-RES-007/011/012/018.
+
+### RC3 — P3/P6 practical daily coding and compatibility
+- [ ] Provider Doctor offline/catalog/full under existing transport, model catalog and secret ownership; explicit spend confirmation, bounded requests and typed stream/tool-call diagnostics. JC-RES-013/014/015.
+- [ ] Add transparent provider prewarm **only** for consented no-spend pools; distinguish selected local model warm/load from API warmup and record actual cache hits or unknown.
+- [ ] Add one-owner external Session import preview/commit/resume with original provenance, no token/credential copy, no dual live transcript owner; test supported backend formats. JC-RES-019.
+- [ ] Cap/attribute context, index, Markdown/Mermaid/image, provider projection and tool-tail bytes; opt-in scope-bound local recall, no mandatory embedding/remote account. JC-RES-003/005/020.
+
+### RC4 — P7/P8 UX, operations and release acceptance
+- [ ] Adaptive idle/deep-idle redraw with full-frame reason tracing and bounded in-place tool-tail; stable focus/scroll on 10k messages, 1000 streaming deltas and reconnect. JC-RES-006/016/017.
+- [ ] Expose measured/estimated/unknown resource graph, per-Session/Attempt worker/process costs, provider diagnostics and conflict warnings in TUI/CLI and derived GUI/API (feature exposure truthful; experimental opt-in when necessary).
+- [ ] 10/20 Session real-work task success + crash/unknown effect/pressure/lease and cross-OS qualification; CI perf ratchet and installer/licensing; preserve no automatic paid fallback. JC-RES-001..020 plus existing §32 security/recovery cases.
+- [ ] Record exact binaries/build flags, benchmark raw evidence, negative/positive tests, platform matrix and user-approval gates in HANDOFF; append actual work diary to CURRENT_RUN.
+
+### Engineering rule
+
+Work on RC0 **without** claiming P1/P2 completion; proceed with required real Guard and managed execution in the existing Gate 2 → Gate 3 order. RC3/RC4 adapters may be designed/tested in isolation but must not expose effectful bypasses. `README.md` is a product page and must not become a RAM benchmark claim. Automatic hot-swap/self-dev remains developer-option work with independent rollback/security gates, not a reason to defer the fundamental engine.
+
+### RC5 — remaining JCode adoption parity (not omitted)
+
+The original 24-candidate audit includes supporting features beyond core RAM. Track all of them explicitly; implementation can overlap where different code owners/tests permit.
+
+- [ ] **Active user steering and terminal input compatibility:** confirm existing durable steer/queue behaviour under concurrent streams; render queued/accepted/next-turn state, verify Shift+Enter/tmux/SSH, and never corrupt the selected provider request/cache prefix.
+- [ ] **Cross-client SDK/protocol:** thin documented, authenticated TUI/CLI/web/desktop SDK over one Core Session and Rust managed owner; API version negotiation, reconnect/replay and simultaneous multi-client session activity, without new conversation authority.
+- [ ] **Rich provider auth/catalog/compatibility:** evaluate JCode provider-source breadth alongside existing OpenCode/OMP candidates, reuse current transport/model picker and secret ownership, verify explicit user selection and cache/cost provenance with Doctor fixtures.
+- [ ] **Tool intent and large-output opt-in:** add concise user-visible intent/purpose only behind canonical ActionDescriptor/ToolBatch schema; bounded output remains an artifact/stream, not an escape from limits.
+- [ ] **Compile-time rebuild and release-resource hygiene:** profile Rust crate/Bun TypeScript invalidation, no duplicated heavyweight build trees, benchmark incremental compile and install size; only split modules after measured hot-path impact.
+- [ ] **Multi-session activity map:** derived UI over the same Session/Run state, focus/scroll isolation, pausing/resuming and clean external terminal/tmux integrations; JCode multisurface is Proposed, not shipping proof.
+- [ ] **Human-quality performance/demo trial:** repeat real user workflows and record authentic TUI video, input/stream p95, verification success, understandable errors and accessibility; never represent mock/demo placeholders as completed product.
+- [ ] **Opt-in self-development/hot swap and thin mobile client:** developer-only signed/reversible canary with fencing and rollback; secure remote authenticated SDK client/mobile surface with no separate Task/Session engine, no exposed secrets and correct disconnect behaviour. Respect A-V2-29 Experimental settings and human authorization.
+
+Source-to-feature coverage crosswalk: §42.10. These are accepted product capabilities with individually honest availability/evidence, **not an instruction to discard them on scope grounds**.
+
+## Implementation-ready RC0–RC5 function/test ledger — 2026-10-15
+
+**Authoritative design is in the topic owners; this ledger only orders code work.** All entries below are **NOT IMPLEMENTED by the documentation PR** unless separately identified in HANDOFF with source and real test evidence. Do not create a second Session, Task, tool registry, authorization engine or runtime in the name of JCode parity. The precise HLD is §01.13, API/IPC §13.12, state/durability §11.20, schema work §12.16, LLD §15.20/§18.18–19/§21.11/§29.18/§30.21/§31.17/§37.16–18 and tests §32.33–34.
+
+| Deliverable | Concrete code boundary | Core functions / adapters to implement | Test gate |
+|---|---|---|---|
+| RC0.1 process-tree measurement | host supervisor + Rust/OS ResourceSampler, script harness under `scripts/perf/` | `resolveOwner, walkOwnedProcesses, readCounters, deduplicateTree, attributeByLease, sampleWithBudget` | JC-RES-001/002/003/004 |
+| RC0.2 process/budget truth | Rust WorkerExecution/resource lease owner; §11.20 sole reservation/pressure state enum, §18.18 accounting | `reserveCapacity, chargeActiveUsage, evaluatePressure, releaseIfSettled, reconcileOrphan`; prevent `ACTIVE`/`UNKNOWN` shadow states, double debit and expiry-after-launch free | JC-RES-006/012.C–J |
+| RC0.3 cache/renderer | existing context/index/TUI owners | `cache.lookup, insertIfCurrent, pin/unpin, evictToBudget` | JC-RES-005/006/020 |
+| RC1.1 Guard closure | existing provider/callback/host paths + Rust `guard.rs/effect_host.rs` | complete atomic batch, classify origins, authorize, durable PREPARE, one-use lease, launch, receipt/UNKNOWN, cancel | existing P1 denial matrix + JC-RES-009 |
+| RC1.2 shared read-only observer | `SessionSupervisor.Service` and Rust supervised IPC | `attach, subscribe_page, ack_page, detach, cancel_scope, read source cursor` with peer/epoch/queue quotas | JC-RES-008/009/010 |
+| RC1.3 eventual shared effects | same Rust Guard and EffectService, feature-negotiated | migrate one effect class behind selected kernel owner, durable reconcile then release old supervisor | full §14 bypass/regression & benchmark |
+| RC2.1 managed scheduler | Rust `managed_control.rs`/OwnerLog, authenticated API | `acceptFullSpec, graphValidate, readyTasks, admitAttempt, reserveResourceLease, settleDelivery` | JC-RES-007/018 + P2 |
+| RC2.2 worker execution | Rust WorkerExecution + §14 ExecutionHost; authenticated ingress/Task/Attempt/owner epoch on every request | `enqueue, reserve, attachExistingCoreClient, startIsolatedWorker, settleWorker, revokeLease`; untrusted ticket/lease alone cannot launch | JC-RES-007/009/012.H–K |
+| RC2.3 reviewer | existing Rust Evidence/Verification owner with independently authenticated adapter | `verifyCriterion, bindRevision, finalizeRun`; no child self-approval | JC-RES-018 |
+| RC2.4 file-conflict safety | file watchers/handler + Rust guard revision preconditions | authenticated `recordObservedTouch, listForPath, invalidateGeneration`; internal-only `evictExpired`; bind Session/owner epoch/source generation; hard write lease/hash validation separate | JC-RES-011/012.K |
+| RC3.1 Provider Doctor | existing selected provider/auth/catalog source; §37.17 | `inspectOffline, probeCatalog, probeFull` with authenticated grant ownership/epoch, consent and actual token/billing evidence | JC-RES-013/014/015/012.L |
+| RC3.2 context+recall | ContextLedger/indexd and selected model provider | `compileContext, recallScoped, getTokenBudget, invalidateSourceEpoch` | JC-RES-003/005/020 |
+| RC3.3 session import | canonical host Session and explicit native backend adapter | `detectSources, previewImport, commitImport, detachExternalSession` | JC-RES-019 |
+| RC4 TUI | hydrated existing renderer + UiEventMux | `normalizePaintEvent, stablePrefixDiff, coalesceReplaceableDelta, chooseFrameDeadline, paintChangedCells` | JC-RES-016/017 |
+| RC4 surfaces | existing Settings FeatureExposure and API/TUI/app | `resolveEffectiveFeature, renderResourcePanel, renderProviderDoctor, showFileConflict` | FEAT-001..014 + resource suites |
+| RC5 clients | existing public Session/API and authenticated backend adapters | `attachClient, subscribe/ack/replay, sendUserInput, steer, cancel` | replay/auth/single-owner/turn-epoch tests |
+| RC5 dev canary/packaging | supervised build/test worker, release owner | `prepareCandidate, testAndAttest, requestUserApproval, activateCanary, rollback` | isolation/signature/rollback and disk/build cases |
+
+**Definition of executable specification before marking a checkbox:** every selected function above has an existing/new concrete file path *in a hydrated checkout*, typed parameters/return/limits, ownership of durable vs derived data, error-code mapping, explicit concurrent/cancel/crash behaviour and a complete test with fixture bytes and method. §37 pseudotypes are not compiled/generated contracts: RC0–5 may be marked CODE_PRESENT only after actual modules/schema appear, WIRED only after real ingress/egress, VERIFIED only after security/OS/performance tests. Benchmarks from JCode or README screenshots are not runtime proofs.
+
+**First coding commit recipe:** start with shell/process ToolBatch pre-dispatch denial and real guarded replacement (P1.3); in parallel add **read-only** ResourceSampler and process-tree baseline. Do not build the shared effect daemon first. After P1, a single authenticated managed goal-to-verifier integration slice establishes P2 before expanding workers. Keep native Windows unsupported paths explicitly unavailable until actual Windows source/OS CI passes. Follow `AGENTS.md` cleanup/worktree discipline.
+
+## Missing accepted journey implementation ledger — ACP / visual / deployment (2026-10-15)
+
+These flows were already accepted in §§3.16–3.18; prior implementation-specific resource hardening did not fully cover their host interfaces. They are **unchecked** until actual source/contract/system proof exists.
+
+- [ ] **ACP outbound adapter (P6):** hydrate upstream OpenCode ACP server for source reuse, then add distinct Horizon client adapter through existing AgentProfile/DelegationMailbox and Rust worker/Guard. Implement version/auth/capabilities/session link, tool mediation, typed result, cancel/reconnect and UNKNOWN with tests ACP-001..008. Native OpenCode mode remains a separately owned backend, not a second direct Horizon Session writer.
+- [ ] **Visual source selection (P5/P7):** browser/preview observation + build/source-map generation → bounded source candidates/ambiguity → approved guarded `files.patch` → re-observe/verification. Real VIS-001..004; do not turn a pixel or untrusted DOM into write authority.
+- [ ] **Deployment (P5/P9):** provider/environment/account discovery and deterministic artifact manifest; explicit spend/secret/effect consent; Guard PREPARED/lease; target-side idempotency+receipts; real URL/revision health and critical workflow check; bounded rollback/reconciliation. Real DEP-001..008; no speculative production deployment or success from an upload alone.
+- [ ] Add versioned generated machine contracts + canonical §33.30 candidate registrations and actual entry points before marking any new tool WIRED, and update HANDOFF with CI/OS/provenance. Source seam §20.13, safety §14.18, interfaces §37.19–20, tests §32.35. The existing P1 universal Guard is a prerequisite for effectful routes; do not invent a second execution engine.

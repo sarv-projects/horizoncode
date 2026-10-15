@@ -22,19 +22,15 @@ Derived UI/index/analytics queues are rebuildable and non-authoritative.
 
 ## 4.2 Durable event envelope
 
-Rust durable event includes:
-- event ID/type/version;
-- aggregate type/ID;
-- aggregate revision;
-- owner epoch;
-- idempotency/correlation;
-- payload;
-- source/reference digests;
-- observed timestamp.
+**Implemented OwnerLogV2 physical record** (source: `kernel/src/owner_log.rs`, `PhysicalRecordV2`): `format_version: 2`, `seq`, `time_ms`, `kind`, `data`, `previous_digest`, `event_digest`. The committed **owner head**, rather than each physical record, binds owner kind/ID, owner generation, durability profile and committed cursor/digest. The versioned `data` object contains `schemaVersion: 1`, `payload`, and paired optional `deliveryId` / `commandDigest`. Existing committed digests are BLAKE3-derived. Source/event binding, owner epoch, aggregate revision and correlation are **logical/integration requirements** and are not free-standing columns on `PhysicalRecordV2`. The physical schema must not be guessed from this list.
 
-Append validates expected revision and registered payload schema.
+**Not an implemented wire schema:** `arch_V1/contracts-v2/managed-event.schema.json` remains a **DESIGN-ONLY legacy logical-envelope prototype**. Its PascalCase `eventType` values and `schemaVersion: 2` cannot encode the real Rust snake_case `kind` + versioned `data` format. Neither this file nor `control-api.openapi.json` may be used for runtime code generation until the exact OwnerLog adapter/migration and cross-language fixtures are accepted. The existing code enforces record integrity, sequence/cursor and idempotent committed delivery at its own boundary; public managed APIs still need reviewed schemas/handlers.
+
+For future managed event APIs require event ID/type/version, aggregate type/ID/revision, owner epoch, idempotency/correlation, payload, source digests and observation time **as logical projections**, with verified mapping to persisted records. Only emit a public projection after source-bound authorization and version negotiation.
 
 ## 4.3 Managed event families
+
+**Design inventory below, not a statement that every event is implemented.** The current `ManagedCommand::event` / `decode` path in `kernel/src/managed_control.rs` implements a limited snake_case command/event subset. Full worker, effect, approval, automation and verifier events need their respective owner registration and tests; do not assume the event names below are accepted by the active Rust decoder.
 
 Goal/spec:
 goal_created, spec_proposed, spec_accepted, goal_paused/resumed/completed/cancelled.
@@ -149,3 +145,9 @@ Metrics record provenance: measured, estimated or unknown.
 - cancellation race.
 
 Any event family that would recreate a Rust canonical conversational Thread is invalid under 17.
+
+## 4.12 Resource observations and shared-kernel restart semantics (A-V2-30)
+
+Resource samples, render queue deltas, file-touch warnings and Provider Doctor progress are bounded projections/events; they may be coalesced/dropped under backpressure and must not be replayed as canonical write/evidence history. In contrast, policy revision, virtual Session attachment/owner epoch, WorkerExecution/Attempt lease, cancellation generation, effect PREPARED/UNKNOWN/SETTLED and independent Verification remain fenced/durable in their established owners. A task cannot become PASS from a paint/event-counters stream.
+
+A shared-kernel crash fences all old host/kernel attachment epochs and active leases before reconnect; each backend-owned Session observes from an authenticated source cursor and the Rust owner log replays managed/effect state. Any effect that may have reached its target before disconnect is UNKNOWN until reconciled; never issue a fresh idempotency key and repeat a non-idempotent operation merely because no response was received. Reader and worker faults should be isolated where their process boundary permits. Resource attribution is rebuilt from owner process generations and leases, not stale PIDs.

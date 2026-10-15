@@ -9,6 +9,7 @@ import { SessionSchema } from "../session/schema"
 import { ToolOutputStore } from "../tool-output-store"
 import { ApplicationTools } from "./application-tools"
 import { Tools } from "./tools"
+import { isBuiltinWrite } from "./write-provenance"
 import { Wildcard } from "../util/wildcard"
 import { capability, definition, permission, settle, validate as validateInput, validateName, type AnyTool, type Capability, type EffectAdmission, type RegistrationError } from "./tool"
 import { makeLocationNode } from "../effect/app-node"
@@ -64,6 +65,23 @@ const registryLayer = Layer.effect(
         }
       if (advertised && registration.identity !== advertised)
         return { result: { type: "error" as const, value: `Stale tool call: ${input.call.name}` } }
+      // The registry is also an execution boundary: a tool claiming EFFECT may
+      // not execute without an admitted Rust challenge. Until one shared Guard
+      // supports another effect class, do not dispatch it even if registered by
+      // an application, plugin, or Location override. The file-write leaf
+      // independently binds the challenge to the target and redeems it in Rust.
+      const declared = capability(registration.tool, input.call.name)
+      const localRegistration = local.get(input.call.name)?.at(-1)?.registration
+      if (declared.effectClass === "unknown")
+        return { result: { type: "error" as const, value: `Unclassified tool: ${input.call.name}` } }
+      if (declared.effectClass === "effect") {
+        // Application/plugin registrations do not get native effect authority
+        // by self-declaring the ID of a first-party guarded tool.
+        if (declared.id !== "files.write" || input.call.name !== "write" || localRegistration !== registration || !isBuiltinWrite(registration.tool))
+          return { result: { type: "error" as const, value: `Rust Guard does not support: ${declared.id}` } }
+        if (!input.effect)
+          return { result: { type: "error" as const, value: "Rust Guard admission required" } }
+      }
       const pending = yield* settle(registration.tool, input.call, {
         sessionID: input.sessionID,
         agent: input.agent,
@@ -116,8 +134,11 @@ const registryLayer = Layer.effect(
           if (registration) registrations.set(name, registration)
         }
         for (const [name, registration] of registrations) {
+          const declared = capability(registration.tool, name)
           if (
-            capability(registration.tool, name).effectClass === "unknown" ||
+            declared.effectClass === "unknown" ||
+            (declared.effectClass === "effect" &&
+              (declared.id !== "files.write" || name !== "write" || local.get(name)?.at(-1)?.registration !== registration || !isBuiltinWrite(registration.tool))) ||
             whollyDisabled(permission(registration.tool, name), permissions)
           ) {
             registrations.delete(name)

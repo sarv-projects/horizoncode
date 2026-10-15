@@ -512,3 +512,56 @@ Rotated/truncated artifacts expose a new generation and stale references fail ex
 ## 30.19 Cache adapter and schema traceability
 
 The provider/cache telemetry adapter contract is §37.9. Actual model endpoint and harness remain pinned; provider-reported cache buckets are measured only when reported, estimates labeled and unknown never coerced to zero. Static/context digest design does not claim a cache hit. LanguageServiceSnapshotV1 schema and §37.4 govern LSP broker identity, generation and stale-result errors; an editor-owned server must not be killed or duplicated by a query tool. Implement adapter/runtime fixtures before VERIFIED status.
+
+## 30.20 Memory-efficiency, recall and context-cache correctness (A-V2-30)
+
+Separate **process RAM** from **model-visible context**: smaller prompts do not necessarily reduce idle process PSS, and a shared daemon does not automatically reduce token use. Measure both, and expose the difference. OwnerScoped caches include an explicit namespace/revision, max count/bytes, TTL and evictability. Audit duplicated canonical transcript vs provider-request projection, compaction artifacts, old tool results, tokenizer buffers, index overlay generations, highlights/Markdown, images and remote/local embedding models. Discard rebuildable entries before allocating another worker; never evict unsettled effect receipts, accepted criteria or uncommitted user source.
+
+Recall is a replaceable, opt-in feature behind `ContextService`/ContextLedger, not a second transcript or an automatically trusted memory injection. Support local deterministic/project-scoped search first; remote relevance/reranking/embeddings only when separately selected, authenticated and cost/privacy disclosed. Bound retrieval count, per-result token/byte budget, total recall tokens, provenance/trust label and freshness; reject cross-project/secret data and prompt-injection attempts. A failed recall degrades to no injected memory without changing task policy or lying about remembered facts. Review/write of named memory blocks is explicit and recorded.
+
+For prompt caching and prewarming, record provider-reported token/cache buckets and retention constraints when known, not guessed savings. Reuse immutable compatible request prefixes without contaminating user/Session boundaries; do not send an unsolicited paid completion or risk a stale context epoch merely to keep a remote KV cache warm. For local small models record cold model load, resident RAM/VRAM, context size, throughput, output reserve and cancellation independently. Never downshift the selected model without explicit policy.
+
+Benchmark context/heap tradeoffs with 100k-token transcript, 100 MB sampled tool output, 10/20 Session attachments, cache churn, stale generation, optional model load and idle long-run growth. §18.17 owns RAM methodology, §31.16 UI cache controls and §32.32 the test cases.
+
+## 30.21 Cache ledger, context compiler and memory-recall execution LLD
+
+**Canonical truth stays canonical:** OpenCode-derived Session messages in its owning store; Rust OwnerLog for control/effects; indexd for rebuildable repository generations. ContextLedger is the only typed description of the *model-visible projection*, not a shadow conversation database. Process memory and token context are separate units and must never be summed.
+
+~~~ts
+type CacheKeyV1 = {
+  family: "repo_generation"|"editor_overlay"|"tokenization"|"provider_prefix"|
+    "tool_tail"|"syntax_highlight"|"markdown"|"mermaid"|"image"|"artifact_preview"|"memory_recall";
+  principalRef: string; workspaceBinding?: string; sourceRevision: string;
+  modelTokenizerDigest?: string; providerRouteDigest?: string;
+  promptPolicyDigest?: string; artifactDigest?: string; rendererGeneration?: string;
+};
+type CacheEntryV1 = {
+  key: CacheKeyV1; valueRef: string; measuredBytes: string; entryCount: number;
+  insertedAtMs: string; expiresAtMs: string; lastReadSequence: string;
+  pinnedBy: string[]; evictable: boolean; immutable: boolean;
+};
+type RecallRequestV1 = {
+  sessionId: string; workspaceBinding: string; contextEpoch: string;
+  queryDigest: string; allowedRoots: string[]; maxResults: number;
+  maxTotalTokens: number; deadlineMs: number; sourcePolicyDigest: string;
+};
+type RecallCandidateV1 = {
+  artifactRef: string; sourceRevision: string; sourceKind: string;
+  tokenEstimate: number; accessScope: string; relevanceScore?: number;
+  confidence: "MEASURED"|"ESTIMATED"|"UNKNOWN"; trust: "PROJECT"|"USER_REVIEWED"|"EXTERNAL_UNTRUSTED";
+};
+~~~
+
+**Cache API under the existing context/index/UI owners:** `lookup(key,generation)` returns HIT/MISS/STALE/UNAVAILABLE with provenance; `insertIfCurrent(key,bytes,budget,expectedGeneration)` atomically charges owner-family byte cap and refuses stale inserts; `pin/unpin(key,consumerGeneration)` blocks eviction during an active request; `evictToBudget(family,bytes)` uses size-aware LRU plus expiry, removes both primary and reverse keys, and records actual freed bytes (not hoped-for bytes). Never intern mutable per-Session prompt/message buffers across principals. Zero out ephemeral secret-bearing buffers when practical; encryption/OS memory protections remain platform-specific.
+
+**Context compile algorithm:** freeze selected provider/model/harness, source Session message revision and accepted task criteria; gather protected instructions + current user request + tool schemas; deduplicate repeat source refs by exact content digest while preserving ordering/provenance; retrieve bounded relevant files/snippets under workspace ACL; allocate token budget = provider effective context limit - fixed output reserve - selected-tool reserve - system/policy protection, with UNKNOWN tokenizer estimate applying conservative overhead. If over budget: trim low-value ephemeral tool tail first, reduce retrieved snippets, then create a provenance-linked compact summary with independent source refs. Do not strip safety/policy, accepted spec/criteria, last user request or unsettled effect references. Recompute digest and only cache an immutable prefix for the **same** provider/account/model/harness/tokenizer/policy/source epoch. Source mutation or permission change invalidates derived view.
+
+**Recall pipeline (opt-in):** `resolveScope → list local reviewed/project sources → ACL and exclusion filters → bounded lexical/symbol retrieval → optional selected local embedding/rerank → freshness/revision recheck → deterministic dedup → capped source-linked excerpts → prompt compiler`. Never implicitly contact a remote embedding API or attach a memory to another workspace. A retrieved document/tool output is lower trust than system/user instructions; escaping/quotation and explicit untrusted labels prevent instruction adoption. If recall exceeds latency/token budget or source is stale, report SKIPPED with no ungrounded injected memory. Writing memory is a separate explicit user-approved storage action with TTL/deletion/secret policy; automatic compaction is **not** durable memory authorization.
+
+**Indexd exact baseline:** `indexd/src/lib.rs` currently offers immutable `BaseGeneration`, `BufferOverlay`, generation pins, bounded lexical search and stable cursor; current hard implementation constants include `MAX_BASE_FILES = 4096`, `MAX_FILE_BYTES = 1 MiB`, `MAX_BASE_CONTENT_BYTES = 64 MiB` and `MAX_OVERLAY_CONTENT_BYTES = 8 MiB`. These are **per-index operational limits**, not total process RAM targets, and are not permission to load 20 full duplicate indexes. Share immutable generation only with exact compatible project/root/ACL/source revision; client overlays remain owner-bound. If index generation is stale or unsupported symbol/ref enrichment is missing, return partial lexical confidence rather than invent symbol accuracy.
+
+**Local inference:** provider selection and model file ownership stay in existing host/transport; memory sampler reports local model resident CPU RAM/GPU VRAM separately. Loading/evicting the selected local model requires explicit workload/resource policy and cannot silently offload a prompt to remote cloud. Cold model load may be long but remains bounded, cancellable, quota-aware and visible. Provider KV cache is not a general filesystem cache and may have undocumented retention: mark cache hit UNKNOWN unless authoritative usage reports it.
+
+**Concurrent invalidations:** editor overlay N+1 invalidates symbol/snippet/cache objects from N; async request holding a pinned immutable N can finish read with explicit N provenance but may not authorize a write against N when current revision differs. A user revoking a workspace/secret permission invalidates all dependent cached projections immediately; no stale cross-session result. On daemon restart, rebuild caches from source and carry only explicit immutable artifact hashes, not raw secret-bearing client buffers.
+
+**Tests:** same 100k-token transcript with remote/local models, 100 MB log artifact, two workspaces containing identical path names, 20 concurrent Session reads, ACL revocation between retrieval and prompt injection, stale overlay, secret document, hostile embedded instructions, cache under byte pressure, tokenizer change, no silent paid inference and context summary with source lineage. Source refs, measured/estimated tokens and full/sampled fidelity are required for acceptance.

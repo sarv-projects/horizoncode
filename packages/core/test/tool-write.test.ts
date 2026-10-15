@@ -95,6 +95,24 @@ const call = (input: typeof WriteTool.Input.Type, effect?: ToolRegistry.ExecuteI
 const it = testEffect(Layer.empty)
 
 describe("WriteTool", () => {
+  it.live("advertises the real first-party write leaf after provenance validation", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) =>
+        withTool(tmp.path, (registry) =>
+          Effect.gen(function* () {
+            const materialized = yield* registry.materialize()
+            expect(materialized.definitions.map((definition) => definition.name)).toContain("write")
+            expect(materialized.classify(call({ path: "source.txt", content: "ok" }).call)).toEqual({
+              id: "files.write",
+              effectClass: "effect",
+            })
+          }),
+        ),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
   it.live("rejects direct registry settlement without a Rust effect challenge", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),

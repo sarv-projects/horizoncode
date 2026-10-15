@@ -112,3 +112,53 @@ The direct coding path must not pay managed-work overhead unless needed. Indexin
 ## 1.11 Implementation map
 
 Exact existing package/service placement is 20 and runtime interfaces are 37. Capability names are 33. Current implementation status is HANDOFF.md.
+
+## 1.12 Multi-session resource topology and isolation
+
+**Observed versus target:** current `packages/core/src/session/supervisor.ts` spawns one Linux Rust `session_supervisor` process for each watched Session; `kernel/src/bin/session_supervisor.rs` is a one-connection observer/effect endpoint. The desired shared Rust kernel in §1.2 is architecture, **not evidence of an already deployed daemon**.
+
+A benchmark-gated shared process shall multiplex authenticated SessionLink observation, owner-epoch fenced Rust managed control and pre-authorized effects without owning Core transcripts or creating another scheduler. Each virtual Session scope holds its own principal, workspace binding, cursor, epoch, subscriptions, quotas, cancellation generation, permitted capability set and durable effect correlation. Shared object/index/provider-client caches are immutable, owner-scoped or safe to share; sensitive per-session contents and secret references must never cross scopes. Reconnect and restart restore from canonical owners, not UI state.
+
+Separate process isolation remains mandatory for untrusted execution (shell/build/test, plugin/MCP where required, browser/REPL/LSP/DAP/local inference), with OS-backed containment, process-tree accounting and bounded cleanup. Do not replace a security boundary with in-process checks only. One session's malformed frame, CPU-heavy subscription, infinite output, dead worker or failure must not monopolize the daemon or cause cross-session data leaks. Admission remains fail-closed if the kernel/Guard is unavailable.
+
+Architecture choice is decided by comparable task outcomes **and** PSS/private footprint, cold start, p95 input latency, fault containment, restart/cancel and authorization tests. Preserve the existing supervisor interface during migration and keep a rollback path. See §13.11, §18.17 and §32.32.
+
+## 1.13 Reference HLD — actual authority and target execution lanes
+
+The following is the **target composition** for post-RC1/R2, not a deployed architecture claim. The existing Linux implementation starts one Rust `session_supervisor` per watched Session and supports guarded `files.write` only (§20.12). Shared virtual attachments and generic process ExecutionHost must be implemented and verified before replacing it.
+
+~~~mermaid
+flowchart TD
+  UI["TUI / GUI / CLI / SDK<br/>Derived UI state + user intent"]
+  CORE["HorizonCode Core<br/>Canonical direct Session / Messages / Parts"]
+  PROV["Selected Provider Transport<br/>pinned account/model/harness"]
+  CTX["ContextService + indexd<br/>derived context, immutable index, scoped recall"]
+  GATE["Complete ToolBatch validation<br/>request-pinned registry"]
+  KERNEL["Authenticated Rust kernel<br/>Guard / EffectService / OwnerLog"]
+  MGR["Rust managed control<br/>Goal / SpecVersion / Run / Task / Attempt"]
+  WPOOL["Resource-aware WorkerExecution<br/>leases / workspace pool / DAG"]
+  EXEC["ExecutionHost + supervised OS workers<br/>process/container/job isolation"]
+  MET["ResourceSampler / paint metrics<br/>derived, bounded, redacted"]
+  STORE["SourceArtifact and receipt refs<br/>durable by owning store"]
+  UI --> CORE
+  CORE <--> PROV
+  CORE <--> CTX
+  PROV --> GATE
+  GATE --> KERNEL
+  MGR --> KERNEL
+  MGR --> WPOOL
+  WPOOL --> KERNEL
+  KERNEL --> EXEC
+  EXEC --> STORE
+  KERNEL --> STORE
+  CORE --> UI
+  MET -. observe .-> CORE
+  MET -. sample .-> EXEC
+  MET -. sample .-> KERNEL
+~~~
+
+**Owned durable lane:** Core canonical Session history and Rust OwnerLog control/effect/verification records are separate stores. Every effect is Guarded and has a single Rust owner; user/model/provider/worker process is an origin, not authority. **Derived lane:** index, context/recall projection, file touches, process metrics, UI tail and paint caches can be reconstructed or evicted. **OS trust lane:** untrusted subprocesses remain isolated even if a shared Rust kernel multiplexes authenticated SessionLink subscriptions. **Hot path:** ordinary direct read/edit does not create managed Run/Task; UI and sampling never block keystrokes or overwrite durable event ordering. **Native external backend:** optional explicit native OpenCode client owns its own upstream Sessions only, linked via a bounded adapter, never combined with the same Horizon direct Session writer.
+
+Lifecycle ordering: start trusted host → private kernel hello/peer authentication → negotiate supported capabilities/OS guarantees → rehydrate OwnerLog and reconcile uncertain effects → attach canonical Session source cursors → optionally run direct turn or accept managed SpecVersion → admit worker budget+Guard lease → execute/settle/verify → UI/cost metrics projection. Kernel unavailable means fail closed for effects; keep source-safe UI and read-only operations only if verified. UI disconnect does not prove managed work stopped.
+
+The enforceable contracts are §11.20 state transitions, §12.16 machine schema inventory, §13.12 IPC, §14 effect law, §18.18 pressure state, §21.11 worktree/worker algorithm, §29.18 dataflow, §30.21 context, §31.17 renderer and §37.16–18 proposed interfaces. §32.33–34 is verification. No separate HLD file may override these topic owners.

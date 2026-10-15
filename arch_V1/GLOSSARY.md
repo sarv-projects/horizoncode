@@ -58,3 +58,25 @@ Status: normative terminology only. Ownership is defined by 01/02/17.
 | DESIGNED/CODE_PRESENT/WIRED/TESTED/VERIFIED/RELEASED | Distinct implementation-status levels; never collapse them into one “implemented” label. |
 
 Do not reintroduce historical Rust conversation-owner terms into active architecture. Their provenance is in docs/architecture-archive.
+
+## A-V2-30 resource and execution terms (2026-10-15)
+
+| Term | Meaning |
+|---|---|
+| PSS (proportional set size) | Linux process memory usage charged proportionally for shared mapped pages; aggregate full confirmed process tree to compare multi-process architectures. Not equivalent to RSS/Windows working set. |
+| RSS | Resident pages visible to a process; summing RSS of processes may double-count shared pages. |
+| USS/private memory | Process-private pages or native-platform private bytes; method/platform must be attached to each measurement. |
+| Process-tree footprint | Resource sample over the host, supervised Rust kernel(s) and every confirmed owned child/worker; local inference included or excluded explicitly. |
+| VirtualSessionAttachment | Proposed revocable authenticated link between host-owned Session and shared Rust SessionLink projection with isolated scopes/cursor/epoch. Not a new transcript. |
+| ResourceSampler | Proposed OS/process-tree measurement adapter returning scope-bound, unit-labeled measured/estimated/unknown observations. Does not grant leases. |
+| ResourceReservation | Rust-owned bounded capacity/worker lease tied to existing Attempt/owner epoch. Not a detached second scheduler. |
+| ResourcePressure | Derived soft/hard operational state that controls *new* work/cache shedding; not authority to kill unowned processes or change model. |
+| FileTouch | Derived peer read/write observation keyed by workspace/revision; advisory only, never a substitute for exact digest and Guard lease. |
+| Provider Doctor | Proposed offline, network-catalog, consented full inference test over the existing selected provider and credential/transport owner. |
+| Headless worker | Lightweight agent worker/client without unnecessary TUI/full host; effectful actions still run through supervised OS-isolated ExecutionHost. |
+| Task DAG | Rust-owned directed acyclic Task dependency graph; dependent READY requires predecessor independent PASS on a compatible source revision. |
+| ToolTailView | Bounded replaceable presentation of active tool output; canonical result or artifact stores complete/sampled data separately. |
+| CacheLedger | Per-family measured byte/count/generation/TTL accounting over rebuildable caches, not a second conversation source. |
+| Session import | Explicit historical snapshot or selected native backend resume with provenance, no dual live transcript authority or credential copy. |
+| Steering | User-origin next-turn/queue/cancel-and-replace action with turn epoch and idempotency; cannot alter prepared effect arguments. |
+| Experimental | User-visible dev-testing stability class, independent of code readiness and feature availability; off unless eligible and opted in. |

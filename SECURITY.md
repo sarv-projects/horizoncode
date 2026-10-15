@@ -1,49 +1,24 @@
-# Security
+# HorizonCode security policy
 
-> **HorizonCode audit note — 2026-10-11:** The policy below is retained upstream OpenCode security/reporting guidance, not HorizonCode's runtime threat model. In particular, the upstream **No Sandbox** statement does not override HorizonCode's Guard, EffectIntent, capability-lease, ExecutionHost, sandbox and policy requirements in `arch_V1/05`, `arch_V1/14`, and `arch_V1/21`. HorizonCode security/release claims require those architecture gates and their tests.
+HorizonCode is currently a **source-build developer preview**, not a production-ready sandbox. The implementation status and supported-platform qualifications are described in [HANDOFF.md](HANDOFF.md). The design and intended protections are in [the threat model](arch_V1/05-SECURITY.md) and [effect/ExecutionHost contracts](arch_V1/14-EFFECTS-EXECUTION-SECURITY.md); **a design is not proof that a protection is enforced**.
 
-## IMPORTANT
+## Current risk and support status
 
-We do not accept AI generated security reports. We receive a large number of
-these and we absolutely do not have the resources to review them all. If you
-submit one that will be an automatic ban from the project.
+- The OpenCode-derived application can execute tools and interact with local files and external services. The existing Rust Guard covers a narrow approved `files.write` path; mediation of all shell, subprocess, plugin, MCP, subagent, hosted-provider and other effect origins remains an open implementation/release gate.
+- Do **not** treat permission prompts, a container label, an experimental toggle, a read-only-looking tool, or the presence of Rust code as comprehensive isolation. Do not run untrusted repositories, prompts, scripts, extensions, remote endpoints or MCP servers with access to sensitive accounts or files on the assumption that they are sandboxed.
+- Bind any local HTTP server to an appropriate trusted interface and configure authentication; do not expose a development server or private kernel socket publicly. The inherited OpenCode server's actual settings are determined by the running source/version—do not assume an unverified Horizon security default.
+- Provider requests, connected plugins, tool outputs, project files and logs can contain sensitive data. Read a selected provider's data-handling terms; never place API keys, tokens or private proof-of-concept payloads in public issues, logs, screenshots or benchmark artifacts.
+- Native Windows, macOS and specific Linux confinement backends require independent tested capability matrices. WSL is not native Windows qualification. If the requested isolation guarantee is unsupported, the execution route must be disabled rather than silently downgraded.
+- No general security warranty or formal supported-version window is offered for the unreleased preview. A future release policy must explicitly identify supported versions, platforms and boundaries.
 
-## Threat Model
+## Reporting a security vulnerability
 
-### Overview
+Report vulnerabilities to the **HorizonCode** maintainers, not to the separate OpenCode upstream team. Check [HorizonCode's GitHub Security tab](https://github.com/sarv-projects/horizoncode/security) for a private **Report a vulnerability** option, if enabled. If it is not available, open a [HorizonCode issue](https://github.com/sarv-projects/horizoncode/issues) requesting a private reporting contact **without including exploit steps, secrets or sensitive technical details in the public issue**. Do not send HorizonCode reports to OpenCode's advisory page or its email address.
 
-OpenCode is an AI-powered coding assistant that runs locally on your machine. It provides an agent system with access to powerful tools including shell execution, file operations, and web access.
+For a private report, provide the tested HorizonCode commit/version, OS and sandbox profile, affected path and capability, minimal safe reproduction, expected vs observed outcome, impact and whether a similar issue affects the pinned upstream source. Redact credentials and unrelated personal information. Avoid testing on accounts or resources without authorization.
 
-### No Sandbox
+## Scope and attribution
 
-OpenCode does **not** sandbox the agent. The permission system exists as a UX feature to help users stay aware of what actions the agent is taking - it prompts for confirmation before executing commands, writing files, etc. However, it is not designed to provide security isolation.
+The pinned upstream source has its **own** policies, notices and original [security documentation](opencode/SECURITY.md). Those do not automatically describe HorizonCode's implementation, protect HorizonCode's users or define where HorizonCode vulnerabilities are reported. If an issue demonstrably also affects upstream OpenCode, coordinate a separate private disclosure through its supported channel without disclosing someone else's confidential report.
 
-If you need true isolation, run OpenCode inside a Docker container or VM.
-
-### Server Mode
-
-Server mode is opt-in only. When enabled, set `OPENCODE_SERVER_PASSWORD` to require HTTP Basic Auth. Without this, the server runs unauthenticated (with a warning). It is the end user's responsibility to secure the server - any functionality it provides is not a vulnerability.
-
-### Out of Scope
-
-| Category                        | Rationale                                                               |
-| ------------------------------- | ----------------------------------------------------------------------- |
-| **Server access when opted-in** | If you enable server mode, API access is expected behavior              |
-| **Sandbox escapes**             | The permission system is not a sandbox (see above)                      |
-| **LLM provider data handling**  | Data sent to your configured LLM provider is governed by their policies |
-| **MCP server behavior**         | External MCP servers you configure are outside our trust boundary       |
-| **Malicious config files**      | Users control their own config; modifying it is not an attack vector    |
-
----
-
-# Reporting Security Issues
-
-We appreciate your efforts to responsibly disclose your findings, and will make every effort to acknowledge your contributions.
-
-To report a security issue, please use the GitHub Security Advisory ["Report a Vulnerability"](https://github.com/anomalyco/opencode/security/advisories/new) tab.
-
-The team will send a response indicating the next steps in handling your report. After the initial reply to your report, the security team will keep you informed of the progress towards a fix and full announcement, and may ask for additional information or guidance.
-
-## Escalation
-
-If you do not receive an acknowledgement of your report within 6 business days, you may send an email to security@anoma.ly
+Release claims require the §32 acceptance/security tests, the full platform-specific no-bypass matrix, approved packaging/attribution and actual evidence; this Markdown policy does not mark them completed.

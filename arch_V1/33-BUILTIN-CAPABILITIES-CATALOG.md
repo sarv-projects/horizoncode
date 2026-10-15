@@ -579,7 +579,8 @@ the safety boundary.
 
 ## 33.25 Capability implementation status anchors
 
-At the 2026-10-11 audit:
+At the 2026-10-11 audit (with 2026-10-15 source-status corrections):
+- `files.write` is **CODE_PRESENT/PARTIAL**, not merely design: Rust `kernel/src/{guard,effect_host}.rs` and the Core/legacy Session guards contain a bounded one-file write/approval/receipt path. The product registry records only `code_present`, **not** universal Guard, OS sandbox, verified cross-origin execution or final P1.3 acceptance. Additional Core registry checks now deny missing admission, unsupported effect classes and application/plugin registrations masquerading as the native write path; these are defense-in-depth, not isolation of arbitrary same-process code.
 - `indexd` is CODE_PRESENT only for a bounded in-memory lexical slice and overlay/cursor logic;
   persistent symbol/reference/LSP orchestration remains DESIGNED/unverified until source proves
   otherwise;
@@ -629,3 +630,38 @@ For every **user-optional** feature, the owner provides one discoverable setting
 Do not confuse release class with code readiness: `experimental` does not imply CODE_PRESENT or WIRED, and runtime cannot expose unimplemented tools. Every optional **experiment** defaults disabled until explicitly enabled in an eligible build/channel and passes its own Guard/platform/security gates. A blocked or absent feature is disabled with a reason; enabling its setting cannot authorize a denied tool, start an unapproved external effect or silently bill a provider. Source provenance, settings value/source/apply boundary, eligibility and effective status are surfaced per §16.15.
 
 Runtime validation must reject duplicate setting keys, nonexistent referenced capability IDs, missing Settings entries for exposed optional features, default-enabled experiments, developer-only experiments advertised as public, and inconsistencies between TUI/API/Settings effective state.
+
+## 33.29 Resource, provider and session interoperability candidate IDs (A-V2-30)
+
+The following **reserved DESIGN targets** extend the existing canonical catalog; they do **not** imply registered runtime tools, working CLI commands or an implementation in `capability-registry-v1.json`. Integrate IDs through the **existing** owner and schema registry only when a corresponding implementation and permission class are proven; do not create a second tool registry.
+
+| Candidate ID | Effect class / owner | Intended interface |
+|---|---|---|
+| `diagnostics.resource.snapshot` | scoped read / host + Rust resource owner | PSS/RSS/private/CPU/FD/cache/disk with units, method, provenance and owner |
+| `diagnostics.resource.history` | scoped read / derived redacted diagnostics | bounded owner/time-filtered resource samples |
+| `providers.doctor` | offline read; catalog network read; full authenticated paid effect requiring explicit grant / provider transport | tiered model route/auth/catalog/chat/stream/tool diagnostics |
+| `sessions.file_activity` | scoped read / derived workspace index | peer file touches and observed revision; advisory only |
+| `sessions.import.preview` | bounded read / external source adapter | provenance, supported fields and single-owner choice |
+| `sessions.import.commit` | guarded filesystem/session mutation / canonical Session owner | confirmed copy/handoff, immutable origin refs; not live dual ownership |
+| `workers.resources` | scoped read / Rust control plus OS measurement adapter | actual leases/worker capacity/pressure |
+| `tasks.graph.inspect` | scoped read / Rust managed control | ready/blocked graph, dependency edges and artifact refs |
+| `ui.tool_tail.inspect` | scoped read / UiEventMux presentation | bounded current live tool activity; never canonical result authority |
+
+All tool-visible schemas are bounded and discoverable progressively. Headless workers, file activity, process resource sampling and adaptive render need not be exposed to the model by default. For each candidate, update `ActionDescriptor`, capability machine registry, platform support matrix, permission/feature exposure and §32 tests **together** when promoted to WIRED. Read-only is not “permission-free”; network/cost and user privacy require authorization. This inventory is not an invitation for a plugin to supply its own authority.
+
+## 33.30 Visual edit, deploy and external agent candidate coverage
+
+These candidates close an implementation-contract gap for already-accepted §§3.16–3.18 and §29 adapter kinds. **DESIGN-RESERVED**, not machine-registered operational commands. Use the existing capability registry/tool projection and §14 effect boundary before enabling. Do not duplicate existing `preview.start/stop/status`, `files.patch`, `git.diff`, `test.run_related`, `browser.*`, `agent.*` or `terminal.*` IDs.
+
+| Candidate ID | Effect and owner | Minimum proof before WIRED |
+|---|---|---|
+| `visual.source_candidates` | workspace/browser scoped read; preview+RepoIntel adapter | bounded DOM/AX/build/source map generation, confidence and no guessed writable target |
+| `visual.selection.inspect` | scoped read; existing UI/browser projection | current page/source epoch and accessibility fallback, no effect without user request |
+| `deployment.targets.inspect` | scoped credential-safe read; provider adapter | available authenticated backend/environment, no secret bytes |
+| `deployment.plan` | scoped deterministic planning/control; deployment adapter | target/account/cost/secret/effect preview and immutable plan digest |
+| `deployment.apply` | remote effect; Rust Guard → authenticated deployment adapter | explicit account/environment/scope/cost consent, prepared lease, receipts |
+| `deployment.verify` | bounded scoped read/external observation; provider target | actual URL/revision/health/critical checks and criterion-bound evidence |
+| `deployment.rollback` | remote effect; independent Rust Guard approval | confirmed rollback target, target-state reconciliation and receipt |
+| `agents.external.inspect` | scoped read; AgentProfile + existing adapter health | ACP/CLI/remote protocol/permission/model support and disabled reason |
+
+Model tool exposure is optional and progressively filtered; an external ACP backend is an integration, not a permit for a model to bypass Guard. No auto-production deployment, hidden remote spend, duplicate cloud credential registry or direct Session migration may be inferred from these catalog rows. Definitions for wire data and errors live in §37.19–20, verification in §32.35. When implementing, update `contracts-v2/capability-registry-v1.json` and typed schema exactly once along with any user-facing Settings and action IDs.
