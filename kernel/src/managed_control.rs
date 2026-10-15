@@ -322,7 +322,7 @@ impl ManagedSnapshot {
                     return Err(ManagedError::Conflict("attempt ownership or state changed"));
                 }
                 attempt.phase = AttemptPhase::Unknown;
-                if run.phase == RunPhase::Running { run.phase = RunPhase::Reconciling; }
+                if matches!(run.phase, RunPhase::Running | RunPhase::Paused) { run.phase = RunPhase::Reconciling; }
             }
 
             ManagedCommand::VerifyTask { run_id, task_id, attempt_id, source_revision, evidence_digest } => {
