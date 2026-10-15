@@ -18,6 +18,9 @@ ROOT = Path(__file__).resolve().parents[2]
 FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
 LINK = re.compile(r"!?\[[^\]]*\]\(([^\n)]*)\)")
 CONFLICT = re.compile(r"^(?:<{7}|={7}|>{7})(?:\s|$)")
+HTML_LINK = re.compile(r'\b(?:src|href)\s*=\s*["\']([^"\']+)["\']', re.I)
+REF_DEF = re.compile(r'^\s{0,3}\[(?!\^)[^\]]+\]:\s*(?:<([^>]+)>|(\S+))')
+NUMBERED_HEADING = re.compile(r'^#{2,6}\s+(\d+\.\d+(?:\.\d+)*)(?:\s|$)')
 HEADING = re.compile(r"^#{2,4}\s+(\d+\.\d+)(?!\d)")
 REFERENCE = re.compile(r"§{1,2}\s*(\d{1,2}\.\d{1,2})(?!\d)")
 CURRENT_PLAN = "docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md"
@@ -51,7 +54,9 @@ def run() -> dict:
     for p in markdown:
         data = (ROOT/p).read_bytes()
         lines = data.decode("utf-8", "replace").splitlines()
-        issues, fence = [], None
+        issues, fence, numbered = [], None, set()
+        try: data.decode("utf-8")
+        except UnicodeDecodeError: issues.append({"line":1,"kind":"invalid-utf8"})
         for n,line in enumerate(lines,1):
             fm = FENCE.match(line)
             if fm:
@@ -60,9 +65,19 @@ def run() -> dict:
                 elif token[0] == fence[0] and len(token) >= fence[1]: fence = None
                 continue
             if fence is not None: continue
+            if scope(p) == "active-or-entrypoint":
+                heading = NUMBERED_HEADING.match(line)
+                if heading:
+                    sid = heading.group(1)
+                    if sid in numbered:
+                        issues.append({"line":n,"kind":"duplicate-numbered-heading","section":sid})
+                    numbered.add(sid)
             if CONFLICT.match(line): issues.append({"line":n,"kind":"conflict-marker"})
-            for m in LINK.finditer(line):
-                u = target(m.group(1))
+            destinations = ([m.group(1) for m in LINK.finditer(line)]
+                + [m.group(1) for m in HTML_LINK.finditer(line)]
+                + [m.group(1) or m.group(2) for m in REF_DEF.finditer(line)])
+            for destination in destinations:
+                u = target(destination)
                 if u is None: continue
                 resolved = ((ROOT/p).parent/u).resolve(strict=False)
                 try: rel = resolved.relative_to(ROOT).as_posix()
