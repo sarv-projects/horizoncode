@@ -14,6 +14,7 @@ import { SessionSupervisor } from "../session/supervisor"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
+import { markBuiltinWrite } from "./write-provenance"
 
 export const name = "write"
 
@@ -46,9 +47,6 @@ export const toModelOutput = (output: Output) =>
 // Only this first-party leaf may mint a native write registration.
 // An arbitrary Location/plugin tool cannot gain file authority by claiming
 // capability ID "files.write" and the model-facing name "write".
-const trustedWrites = new WeakSet<Tool.AnyTool>()
-export const isTrustedWrite = (tool: Tool.AnyTool) => trustedWrites.has(tool)
-
 const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const tools = yield* Tools.Service
@@ -124,7 +122,7 @@ const layer = Layer.effectDiscard(
       }),
       "edit",
     )
-    trustedWrites.add(guardedWrite)
+    markBuiltinWrite(guardedWrite)
     yield* tools.register({ [name]: guardedWrite }).pipe(Effect.orDie)
   }),
 )

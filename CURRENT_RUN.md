@@ -134,3 +134,8 @@ Implemented pure `ReservationState::validate_transition` and negative Rust unit 
 ## 2026-10-15 — first-party write registration spoof protection
 
 Audited tracked Core ToolRegistry and WriteTool source: local `write` registrations with declared `files.write` could bypass the origin provenance test (as tests actually admitted arbitrary Location registration). Added a first-party WeakSet identity marker for WriteTool and fail closed on both advert and settle for a forged local `write`. Replaced permissive mock-positive test with forged-admission negative. This is not same-process hostile-plugin isolation or universal P1.3. Latest branch CI must pass.
+
+
+## 2026-10-15 — registry/write import-cycle correction
+
+Refactored spoof mitigation to shared `tool/write-provenance.ts` to remove circular runtime imports. It provides weak provenance over first-party decorated write registration but is not secure against arbitrary code execution inside the trusted host. P1.3 still requires isolation and anti-bypass coverage; use final-head CI and security tests for scope.
