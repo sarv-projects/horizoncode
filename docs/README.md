@@ -9,6 +9,7 @@ This is **navigation only**. It is not another product architecture, runtime con
 | What to implement next | [The converged implementation plan](superpowers/plans/2026-10-11-horizoncode-converged-implementation.md), including P0–P9 and RC0–RC5 |
 | Agent and contributor instructions | [AGENTS.md](../AGENTS.md), [IMPLEMENTER_PROMPT.md](../IMPLEMENTER_PROMPT.md), [CONTRIBUTING.md](../CONTRIBUTING.md) |
 | Resource and RAM evidence | [Performance measurement runbook](performance/README.md), then actual recorded benchmark artifacts (none should be inferred from a blank template) |
+| Full tracked-Markdown structural audit | `python3 scripts/architecture/audit_markdown_repo.py` (from repository root), optional `--json-report` for per-file evidence; consult root [HANDOFF.md](../HANDOFF.md) for audited baseline and exclusions |
 | Risk, disclosure and OS sandbox qualification | [SECURITY.md](../SECURITY.md), [§05](../arch_V1/05-SECURITY.md), [§14](../arch_V1/14-EFFECTS-EXECUTION-SECURITY.md), [§18](../arch_V1/18-OPERATIONS-RELEASE.md) |
 | Original external source decisions/attribution | [§42 provenance register](../arch_V1/42-EXTERNAL-SOURCE-PROVENANCE-REGISTER.md) |
 | Chronological development notes | [CURRENT_RUN.md](../CURRENT_RUN.md); never an alternate live architecture |
@@ -19,5 +20,7 @@ This is **navigation only**. It is not another product architecture, runtime con
 ## How to read for implementation
 
 Start with the current topic owner's HLD and its §37 service LLD, then §20's **hydrated source map** and §32's acceptance cases. Before calling any capability WIRED or VERIFIED, ensure its wire schema has one generated owner, it is registered under an existing capability ID, the actual entry points and platform implementation exist, and both positive and negative/system tests have been run. A design, an old CI success or a proposed code snippet is not executable proof.
+
+Do not reuse the previous 904/779 Markdown counts: the complete Git-tree scan at PR #7 commit `dc61b665` identified 278 tracked Markdown files (including 152 under `opencode/`). The audit script checks every tracked file structurally and reports archived/upstream warnings separately; it cannot establish per-sentence semantic correctness, machine-schema generation or runtime feature completion.
 
 The root `SECURITY.md` and `CONTRIBUTING.md` describe HorizonCode; their source counterparts remain under `opencode/`. Release/legal and security guarantees are still explicit outstanding gates, not claims fulfilled by these documents.
