@@ -717,16 +717,16 @@ Docs can cause operational mistakes independently of code. Add these checks to t
 
 Static assertions alone are not proof of runtime security, user experience or deployment health. The existing `validate_convergence.py` now includes **static DOC-001..010 authority, journey-trace and public-claim guardrails** (with small negative identity fixtures); these guardrails do **not** execute the full external-agent, deployment, OS, release, provider-spend or security negative scenarios. DOC-011 has a full tracked-Markdown structural scanner wired into the push/full gate, including code fences, relative inline/reference-style/HTML link paths, duplicate numbered headings, invalid UTF-8 and merge markers. Runtime negative fixtures remain required before any capability is promoted. Neither static gate proves that all 278 documents were independently semantically adjudicated.
 
-## 32.36a Additional documentation/source-contract parity cases
+### 32.36.1 Additional documentation/source-contract parity cases
 
 | ID | Fault fixture | Required result |
 |---|---|---|
 | DOC-012 | Pinned `opencode/**/AGENTS.md` is hydrated into a Horizon package; inherited `dev` branch, global no-restart or machine-private source path would supersede root policy | Root Horizon `AGENTS.md` and contributor guide explicitly govern project/security policy; preserve upstream files; local package code/test conventions only when compatible |
 | DOC-013 | PascalCase `managed-event.schema.json` projection is generated as though it were the Rust OwnerLog physical or `ManagedCommand` wire envelope | Fail parity gate; prototype must be marked non-runtime and docs identify real physical `seq/kind/data` with snake_case events; require explicit adapter, versioned migration and roundtrip tests before wiring |
-| DOC-015 | Root `package.json` publishes a concrete SPDX license (for example MIT) even though there is no root legal grant and the release documents say unresolved | Fail; until a user-approved root license/notice exists, keep private root workspace `UNLICENSED` and preserve vendor licenses unchanged |
 | DOC-014 | Contract test runner prepends `/home/sarvesh` or another single-developer path on every platform | Use current user's home and native path separator, retain existing PATH; fail static check if personal absolute binary path returns |
+| DOC-015 | Root `package.json` publishes a concrete SPDX license (for example MIT) even though there is no root legal grant and the release documents say unresolved | Fail; until a user-approved root license/notice exists, keep private root workspace `UNLICENSED` and preserve vendor licenses unchanged |
 
-DOC-012–014 are static policy/source-contract tests; the final Rust/TypeScript runtime acceptance, cross-version migration and negative IPC fixtures are **not** made executable by these checks.
+DOC-012–015 are static policy/source-contract tests; the final Rust/TypeScript runtime acceptance, cross-version migration and negative IPC fixtures are **not** made executable by these checks.
 
 ## 32.37 Reservation measurement reconciliation regression (A-V2-30)
 
