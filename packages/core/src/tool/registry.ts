@@ -70,10 +70,13 @@ const registryLayer = Layer.effect(
       // an application, plugin, or Location override. The file-write leaf
       // independently binds the challenge to the target and redeems it in Rust.
       const declared = capability(registration.tool, input.call.name)
+      const localRegistration = local.get(input.call.name)?.at(-1)?.registration
       if (declared.effectClass === "unknown")
         return { result: { type: "error" as const, value: `Unclassified tool: ${input.call.name}` } }
       if (declared.effectClass === "effect") {
-        if (declared.id !== "files.write")
+        // Application/plugin registrations do not get native effect authority
+        // by self-declaring the ID of a first-party guarded tool.
+        if (declared.id !== "files.write" || input.call.name !== "write" || localRegistration !== registration)
           return { result: { type: "error" as const, value: `Rust Guard does not support: ${declared.id}` } }
         if (!input.effect)
           return { result: { type: "error" as const, value: "Rust Guard admission required" } }
@@ -133,7 +136,8 @@ const registryLayer = Layer.effect(
           const declared = capability(registration.tool, name)
           if (
             declared.effectClass === "unknown" ||
-            (declared.effectClass === "effect" && declared.id !== "files.write") ||
+            (declared.effectClass === "effect" &&
+              (declared.id !== "files.write" || name !== "write" || local.get(name)?.at(-1)?.registration !== registration)) ||
             whollyDisabled(permission(registration.tool, name), permissions)
           ) {
             registrations.delete(name)
