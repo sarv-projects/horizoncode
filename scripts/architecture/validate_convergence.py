@@ -426,7 +426,7 @@ check('Live overlay status correction' in integration and 'CODE_PRESENT/PARTIAL'
       'DOC-016 source-map feature status drift')
 
 # DOC-017: deterministic acceptance ID inventory, not a runtime test executor.
-case_ids=re.findall(r'^\\|\\s*([A-Z][A-Z0-9-]*\\d+(?:[.-][A-Z0-9]+)*)\\s*\\|',acceptance,re.M)
+case_ids=re.findall(r'^\|\s*([A-Z][A-Z0-9-]*\d+(?:[.-][A-Z0-9]+)*)\s*\|',acceptance,re.M)
 check(len(case_ids)==len(set(case_ids)),
       'DOC-017 duplicate acceptance case ID: '+','.join(sorted({i for i in case_ids if case_ids.count(i)>1})))
 check(len(case_ids)>=300,'DOC-017 acceptance catalog unexpectedly truncated')
