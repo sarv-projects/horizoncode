@@ -261,7 +261,7 @@ Current contracts-v2 includes:
 - language-service-snapshot-v1
 - subagent-delivery-v1
 - capability registry/aliases
-- managed event/control API/additive SQL prototypes.
+- managed event/control API/additive SQL prototypes (**not** generated runtime contracts; see physical OwnerLog mismatch below).
 
 Additional machine boundary schemas now present:
 - session-link-v1.schema.json;
@@ -273,6 +273,8 @@ Additional machine boundary schemas now present:
 - repl-session-action-v1.schema.json;
 - source-artifact-v1.schema.json;
 - figure-block-v1.schema.json.
+
+**Managed-event prototype incompatibility:** `contracts-v2/managed-event.schema.json` is deliberately flagged `x-horizon-runtime-wire: false` because its PascalCase `eventType` / schemaVersion 2 logical envelope is **not** the existing `kernel/src/owner_log.rs` physical format nor the current `kernel/src/managed_control.rs` snake_case event decoder. Do not feed it into a persistence writer, public SDK or generator. Future adoption requires a versioned physical/projection mapping, schema regeneration, strict negative/roundtrip fixtures, migration rules and a cross-language test against the real committed log. `control-api.openapi.json` remains a design skeleton as stated in §12.12.
 
 Schema presence means DESIGNED only. Generated TypeScript/Rust bindings, real adapters and integration tests are still required before WIRED/VERIFIED status.
 

@@ -89,3 +89,8 @@ GitHub PR #7 documentation-validation work (after the frozen 278-file baseline):
 ## 2026-10-15 — Hydrated OpenCode AGENTS precedence reconciliation
 
 Examined the 18 pinned upstream `opencode/**/AGENTS.md` sources that can be copied into corresponding root package paths by the source bootstrap. Found upstream-specific branch conventions (`dev`, no slash), unconditional app restart prohibition and a developer-private absolute source path that are not reliable HorizonCode operating policies. Added precedence/scope guidance to root AGENTS and contributor guide and DOC-012 static validation; preserved pinned upstream snapshots byte-for-byte. No package/runtime behavior was changed and no runtime capability was promoted.
+
+
+## 2026-10-15 — managed event physical/logical parity correction
+
+Compared OwnerLogV2 source `PhysicalRecordV2`, `OwnerEventInput::physical_data` and `ManagedCommand::event/decode` with the design `managed-event.schema.json`. The machine prototype cannot encode current Rust persisted events (PascalCase vs snake_case; logical envelope vs seq/kind/data); marked it explicitly non-runtime and updated §4.2–4.3/§12.13. Added DOC-012–014 acceptance rows and static DOC-013/014 guards. Removed hardcoded developer-home paths from `run_contract_tests.py`. The physical on-disk Rust record format remains unchanged and is not yet covered by the new cross-language schema migration tests.

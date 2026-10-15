@@ -5,10 +5,10 @@ This validates existing Session/IPC code alongside DESIGN-only JSON schemas.
 It does not claim that the new Browser/LSP/Automation/UiEventMux interfaces exist.
 """
 from pathlib import Path
-import os,subprocess,sys,time
+import os,subprocess,sys
 R=Path(__file__).resolve().parents[2]
 env=dict(os.environ)
-env['PATH']='/home/sarvesh/.cargo/bin:/home/sarvesh/.bun/bin:'+env.get('PATH','')
+env['PATH']=os.pathsep.join([str(Path.home()/'.cargo'/'bin'),str(Path.home()/'.bun'/'bin'),env.get('PATH','')])
 tests=[
  ('SOURCE_OVERLAY_VISIBILITY',['python3','scripts/architecture/audit_overlay_visibility.py'],R,45),
  ('WORKSPACE_PACKAGE_MANIFESTS',['python3','scripts/architecture/audit_workspace_packages.py'],R,45),

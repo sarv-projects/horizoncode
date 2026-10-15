@@ -371,6 +371,33 @@ check((R/'opencode/AGENTS.md').is_file()
       and (R/'opencode/packages/app/AGENTS.md').is_file(),
       'DOC-012 pinned upstream instructions missing')
 
+# DOC-013/014: active physical OwnerLog and logical machine contract must not be conflated.
+owner_source=(R/'kernel/src/owner_log.rs').read_text()
+managed_source=(R/'kernel/src/managed_control.rs').read_text()
+logical_event=load(D/'managed-event.schema.json')
+check(logical_event.get('x-horizon-runtime-wire') is False,
+      'DOC-013 incompatible logical managed-event prototype may be generated as real wire')
+check('DESIGN-ONLY' in logical_event.get('description','')
+      and 'owner_log.rs' in logical_event.get('description',''),
+      'DOC-013 incompatible event schema lacks physical-source caveat')
+for marker in ['pub struct PhysicalRecordV2','pub format_version: u16','pub seq: u64',
+               'pub kind: String','pub data: Value','pub previous_digest: Digest',
+               'pub event_digest: Digest','OWNER_LOG_FORMAT_VERSION_V2: u16 = 2']:
+    check(marker in owner_source,'DOC-013 physical source changed: '+marker)
+for marker in ['"goal_created"','"run_started"','"task_passed"']:
+    check(marker in managed_source,'DOC-013 managed decoder changed: '+marker)
+check('format_version: 2' in (A/'04-STATE-EVENTS.md').read_text()
+      and 'x-horizon-runtime-wire: false' in (A/'12-DOMAIN-SCHEMAS.md').read_text(),
+      'DOC-013 physical versus prototype documentation mismatch')
+check(logical_event['properties']['eventType']['enum'] !=
+      sorted(set(re.findall(r'\("([a-z_]+)",\s*json!\(',managed_source))),
+      'DOC-013 event wire status needs reevaluation after convergence')
+runner=(R/'scripts/architecture/run_contract_tests.py').read_text()
+check('Path.home()' in runner and 'os.pathsep' in runner,
+      'DOC-014 contract test PATH not portable')
+check('/home/sarvesh/' not in runner and '/Users/kit/' not in runner,
+      'DOC-014 hardcoded developer HOME in contract test script')
+
 print('SCHEMA_FILES',len(schema_files))
 print('CATALOG_IDS',len(catalog_ids),'REGISTRY_IDS',len(records))
 print('CHECKS',checked,'FAILURES',len(failures))

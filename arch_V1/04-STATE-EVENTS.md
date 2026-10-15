@@ -22,19 +22,15 @@ Derived UI/index/analytics queues are rebuildable and non-authoritative.
 
 ## 4.2 Durable event envelope
 
-Rust durable event includes:
-- event ID/type/version;
-- aggregate type/ID;
-- aggregate revision;
-- owner epoch;
-- idempotency/correlation;
-- payload;
-- source/reference digests;
-- observed timestamp.
+**Implemented OwnerLogV2 physical record** (source: `kernel/src/owner_log.rs`, `PhysicalRecordV2`): `format_version: 2`, `seq`, `time_ms`, `kind`, `data`, `previous_digest`, `event_digest`. The committed **owner head**, rather than each physical record, binds owner kind/ID, owner generation, durability profile and committed cursor/digest. The versioned `data` object contains `schemaVersion: 1`, `payload`, and paired optional `deliveryId` / `commandDigest`. Existing committed digests are BLAKE3-derived. Source/event binding, owner epoch, aggregate revision and correlation are **logical/integration requirements** and are not free-standing columns on `PhysicalRecordV2`. The physical schema must not be guessed from this list.
 
-Append validates expected revision and registered payload schema.
+**Not an implemented wire schema:** `arch_V1/contracts-v2/managed-event.schema.json` remains a **DESIGN-ONLY legacy logical-envelope prototype**. Its PascalCase `eventType` values and `schemaVersion: 2` cannot encode the real Rust snake_case `kind` + versioned `data` format. Neither this file nor `control-api.openapi.json` may be used for runtime code generation until the exact OwnerLog adapter/migration and cross-language fixtures are accepted. The existing code enforces record integrity, sequence/cursor and idempotent committed delivery at its own boundary; public managed APIs still need reviewed schemas/handlers.
+
+For future managed event APIs require event ID/type/version, aggregate type/ID/revision, owner epoch, idempotency/correlation, payload, source digests and observation time **as logical projections**, with verified mapping to persisted records. Only emit a public projection after source-bound authorization and version negotiation.
 
 ## 4.3 Managed event families
+
+**Design inventory below, not a statement that every event is implemented.** The current `ManagedCommand::event` / `decode` path in `kernel/src/managed_control.rs` implements a limited snake_case command/event subset. Full worker, effect, approval, automation and verifier events need their respective owner registration and tests; do not assume the event names below are accepted by the active Rust decoder.
 
 Goal/spec:
 goal_created, spec_proposed, spec_accepted, goal_paused/resumed/completed/cancelled.
