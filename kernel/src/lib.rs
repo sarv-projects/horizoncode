@@ -26,6 +26,7 @@ pub mod managed_control;
 pub(crate) mod owner_log_index;
 pub mod protocol;
 pub mod request_cancellation;
+pub mod resource_budget;
 pub mod startup;
 pub mod subscription;
 #[cfg(target_os = "linux")]

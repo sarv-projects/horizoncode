@@ -119,3 +119,8 @@ Implemented fail-closed Core registry effect admission and application-capabilit
 ## 2026-10-15 — user-requested source code + contract alignment pass
 
 Updated HANDOFF active banner and legacy dated wording to distinguish initial docs-only work from current PR #7 code changes; aligned P1.3/P2 status table with real Core registry/managed-control modifications, but no VERIFIED promotion. §14.10 now documents the precise scope and remaining plugin/sandbox limitations. §32 adds PS-011/012 (plugin capability spoof, missing/unsupported admission) and LH-012 (PAUSED Run + UNKNOWN Attempt). CODE-002 static source/test/case trace was added; verified negative test execution still depends on final branch-head CI.
+
+
+## 2026-10-15 — resource-budget arithmetic in Rust
+
+Implemented pure `kernel/src/resource_budget.rs` (published via kernel lib) with `ReservationState`, `Reservation`, `Capacity::UnknownCapacity/Remaining` and conservative `remaining_capacity` using exact u128 intermediates. Unit fixtures cover §32 JC-RES-012.C–G, terminal states and unbounded/overflow denial. Wired into `run_push_gate.sh` focused cargo tests. No resource measurement, atomic reservation owner, OS isolation, worker runtime or performance comparison is claimed by this slice.
