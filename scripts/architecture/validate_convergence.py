@@ -252,6 +252,105 @@ for rel in ['AGENTS.md','HANDOFF.md','IMPLEMENTER_PROMPT.md']:
     check('17-GOVERNANCE-DECISIONS.md' in text,rel+' lacks governance entrypoint')
     check('2026-10-11-horizoncode-converged-implementation.md' in text,rel+' lacks current implementation plan')
 
+
+# DOC-001..DOC-010: release/documentation authority and claim-evidence regressions.
+# These are deterministic static gates, not runtime acceptance of the proposed features.
+security=(R/'SECURITY.md').read_text()
+contributing=(R/'CONTRIBUTING.md').read_text()
+readme=(R/'README.md').read_text()
+handoff=(R/'HANDOFF.md').read_text()
+historical=(R/'docs/architecture-input/universal-software-agent-v2-source.md').read_text()
+integration=(A/'20-OPENCODE-INTEGRATION-LLD.md').read_text()
+agents=(A/'29-AGENTS-SKILLS-HOOKS-MCP.md').read_text()
+services=(A/'37-RUNTIME-SERVICE-LLD.md').read_text()
+security_owner=(A/'14-EFFECTS-EXECUTION-SECURITY.md').read_text()
+acceptance=(A/'32-TASK-BASED-AGENT-TEST-CATALOG.md').read_text()
+delivery=(A/'10-DELIVERY.md').read_text()
+operations=(A/'18-OPERATIONS-RELEASE.md').read_text()
+
+def h_security_reporting(body):
+    return (body.lstrip().startswith('# HorizonCode security policy')
+            and 'Report vulnerabilities to the **HorizonCode** maintainers' in body
+            and 'github.com/sarv-projects/horizoncode/security' in body
+            and not re.search(r'github\.com/(?:anomalyco|opencode-ai)/opencode/security/advisories',body,re.I))
+
+def h_contributor_identity(body):
+    return (body.lstrip().startswith('# Contributing to HorizonCode')
+            and 'github.com/sarv-projects/horizoncode/issues' in body
+            and 'opencode/CONTRIBUTING.md' in body
+            and 'arch_V1/README.md' in body)
+
+# Negative samples guarantee that the basic identity checks reject an upstream policy.
+check(h_security_reporting(security),'DOC-001 Horizon security reporting identity/path')
+check(not h_security_reporting('# Security policy\nReport to the OpenCode maintainers'),
+      'DOC-001 negative upstream-only security policy')
+check(h_contributor_identity(contributing),'DOC-002 Horizon contributor workflow identity')
+check(not h_contributor_identity('# Contributing to OpenCode\nOpen an OpenCode issue'),
+      'DOC-002 negative upstream-only contributor policy')
+
+check('NON-NORMATIVE FOR HORIZONCODE' in historical[:700]
+      and 'arch_V1/README.md' in historical[:900],
+      'DOC-003 inherited source input attempts to override current architecture')
+check('normative V1 architecture' in (A/'README.md').read_text()[:300],
+      'DOC-003 current architecture index missing normative authority')
+
+# Every accepted source-dependent journey has current safety, wire, capability,
+# source and test owners. Match exact identifiers, not approximate prose.
+for journey, flow, capability, interface in [
+    ('outbound ACP','3.16','agents.external.inspect','37.19'),
+    ('visual edit','3.17','visual.source_candidates','37.20'),
+    ('deployment/rollback','3.18','deployment.apply','37.20'),
+]:
+    check('## '+flow+' ' in flow_text,'DOC-004 accepted flow missing '+journey)
+    check(capability in catalog,'DOC-004 capability owner missing '+journey)
+    check('## '+interface+' ' in services,'DOC-004 service contract missing '+journey)
+    check(capability in (A/'33-BUILTIN-CAPABILITIES-CATALOG.md').read_text(),
+          'DOC-004 public capability trace missing '+journey)
+    check('## 32.35 ' in acceptance,'DOC-004 task/negative acceptance missing '+journey)
+check('## 14.18 ' in security_owner and '## 20.13 ' in integration
+      and '## 29.19 ' in agents,
+      'DOC-004 ACP/visual/deploy security, source, or adapter owner missing')
+
+check('no independently verified Horizon ACP client' in integration
+      and "NOT Horizon's ACP client" in agents,
+      'DOC-005 upstream ACP server falsely implies implemented outbound client')
+check('DESIGN-RESERVED' in catalog and '## 33.30 ' in catalog,
+      'DOC-005/DOC-007 reserved ACP/visual/deploy candidates promoted without proof')
+
+license_files=[R/'LICENSE',R/'LICENSE.md',R/'LICENSE.txt']
+root_license=any(p.is_file() for p in license_files)
+check((R/'opencode/LICENSE').is_file(),
+      'DOC-006 pinned upstream MIT license/permission notice missing')
+if not root_license:
+    check('NOT V1 RELEASED' in handoff
+          and 'not yet released' in readme
+          and '## 18.20 ' in operations
+          and 'license' in operations.lower(),
+          'DOC-006 root distribution license is absent but release blocker not explicit')
+check('## 33.29 ' in catalog and 'reserved DESIGN targets' in catalog
+      and 'do **not** imply registered runtime tools' in catalog,
+      'DOC-007 design-only capabilities represented as wired tools')
+for reserved in [
+    'diagnostics.resource.snapshot','providers.doctor','sessions.file_activity',
+    'workers.resources','deployment.apply','deployment.rollback','agents.external.inspect'
+]:
+    check(reserved not in records or records[reserved].get('status')=='designed',
+          'DOC-007 unimplemented reserved capability registered as live: '+reserved)
+check('not yet released' in readme
+      and 'not a fully sandboxed' in readme
+      and 'Universal mediation' in readme,
+      'DOC-008 public status dropped sandbox / universal-Guard caveat')
+check('NOT V1 RELEASED' in handoff and 'P1.3' in handoff and 'P2' in handoff,
+      'DOC-008 implementation status accidentally promoted to verified release')
+check(plan.name in readme and plan.name in handoff
+      and 'RC5' in plan.read_text() and 'Gate 10' in plan.read_text()
+      and '## 10.15 ' in delivery,
+      'DOC-009 single operative dependency/owner/test ledger missing')
+check('scripts/architecture/audit_markdown_repo.py' in (R/'scripts/architecture/run_push_gate.sh').read_text()
+      and 'DOC-010' in acceptance and 'DOC-011' in acceptance,
+      'DOC-010/DOC-011 tracked-Markdown reference gate not wired/documented')
+
+
 print('SCHEMA_FILES',len(schema_files))
 print('CATALOG_IDS',len(catalog_ids),'REGISTRY_IDS',len(records))
 print('CHECKS',checked,'FAILURES',len(failures))
