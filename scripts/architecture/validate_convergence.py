@@ -457,9 +457,13 @@ managed_tests=(R/'kernel/tests/managed_control.rs').read_text()
 check(all(case in acceptance for case in ['PS-011','PS-012','LH-012']),
       'CODE-002 missing Guard/P2 negative acceptance cases')
 check('process/application-declared files.write' in core_tests
-      and 'requires Rust admission' in core_tests
-      and 'unsupported effectful plugin tools' in core_tests,
-      'CODE-002 Core effect boundary negative tests not present')
+      and 'forged Location write' in core_tests
+      and 'fabricates a Rust challenge' in core_tests
+      and 'unsupported effectful plugin tools' in core_tests
+      and 'advertises the real first-party write leaf' in (R/'packages/core/test/tool-write.test.ts').read_text()
+      and 'isBuiltinWrite' in (R/'packages/core/src/tool/registry.ts').read_text()
+      and 'markBuiltinWrite' in (R/'packages/core/src/tool/write.ts').read_text(),
+      'CODE-002 Core Guard provenance and negative tests not present')
 check('unknown_attempt_during_pause_moves_run_to_reconciliation_and_blocks_resume' in managed_tests,
       'CODE-002 PAUSED+UNKNOWN durable recovery regression missing')
 check('PAUSED+UNKNOWN' in (R/'HANDOFF.md').read_text()
