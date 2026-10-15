@@ -13,7 +13,7 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use crate::protocol::{MAX_IDENTIFIER_BYTES, RpcControlV1};
+use crate::protocol::{FrameFence, MAX_IDENTIFIER_BYTES, RpcControlV1};
 
 struct RegistryState {
     active: HashMap<String, Arc<AtomicBool>>,
@@ -77,6 +77,9 @@ pub enum RequestCancellationError {
     DuplicateRequestId,
     CapacityReached,
     RegistryPoisoned,
+    /// The control's owner epoch/process incarnation differs from the negotiated
+    /// session fence; cancellation is never routed for a foreign fence.
+    FrameFenceMismatch,
 }
 
 /// Outcome when a decoded control is offered to the cancellation router.
@@ -104,6 +107,9 @@ impl fmt::Display for RequestCancellationError {
             }
             Self::RegistryPoisoned => {
                 formatter.write_str("request cancellation registry is unavailable")
+            }
+            Self::FrameFenceMismatch => {
+                formatter.write_str("control owner epoch or process incarnation does not match the negotiated session fence")
             }
         }
     }
@@ -171,10 +177,19 @@ impl RequestCancellationRegistry {
     pub fn route_control(
         &self,
         control: &RpcControlV1,
+        fence: &FrameFence,
     ) -> Result<CancellationControlResult, RequestCancellationError> {
-        let RpcControlV1::CancelRequest { request_id } = control else {
+        let RpcControlV1::CancelRequest {
+            owner_epoch,
+            process_incarnation,
+            request_id,
+        } = control
+        else {
             return Ok(CancellationControlResult::NotCancellation);
         };
+        fence
+            .validate_frame(*owner_epoch, process_incarnation)
+            .map_err(|_| RequestCancellationError::FrameFenceMismatch)?;
         match self.cancel_request(request_id)? {
             true => Ok(CancellationControlResult::CancellationRequested),
             false => Ok(CancellationControlResult::RequestNotActive),
@@ -209,6 +224,10 @@ mod tests {
         RequestCancellationRegistry::new(NonZeroUsize::new(capacity).unwrap())
     }
 
+    fn fence() -> FrameFence {
+        FrameFence::new(7, "inc-1").unwrap()
+    }
+
     #[test]
     fn cancellation_is_advisory_idempotent_and_scoped_to_active_registration() {
         let registry = registry(2);
@@ -240,9 +259,14 @@ mod tests {
         assert!(second_request.cancellation().is_cancelled());
         assert!(!first_request.cancellation().is_cancelled());
         assert_eq!(
-            first_connection.route_control(&RpcControlV1::CancelRequest {
-                request_id: "shared_id".to_owned(),
-            }),
+            first_connection.route_control(
+                &RpcControlV1::CancelRequest {
+                    owner_epoch: 7,
+                    process_incarnation: "inc-1".to_owned(),
+                    request_id: "shared_id".to_owned(),
+                },
+                &fence()
+            ),
             Ok(CancellationControlResult::CancellationRequested)
         );
         assert!(first_request.cancellation().is_cancelled());
@@ -256,29 +280,76 @@ mod tests {
 
         assert_eq!(
             registry
-                .route_control(&RpcControlV1::CancelRequest {
-                    request_id: "req_1".to_owned(),
-                })
+                .route_control(
+                    &RpcControlV1::CancelRequest {
+                        owner_epoch: 7,
+                        process_incarnation: "inc-1".to_owned(),
+                        request_id: "req_1".to_owned(),
+                    },
+                    &fence()
+                )
                 .unwrap(),
             CancellationControlResult::CancellationRequested
         );
         assert!(signal.is_cancelled());
         assert_eq!(
             registry
-                .route_control(&RpcControlV1::CancelRequest {
-                    request_id: "not_active".to_owned(),
-                })
+                .route_control(
+                    &RpcControlV1::CancelRequest {
+                        owner_epoch: 7,
+                        process_incarnation: "inc-1".to_owned(),
+                        request_id: "not_active".to_owned(),
+                    },
+                    &fence()
+                )
                 .unwrap(),
             CancellationControlResult::RequestNotActive
         );
         assert_eq!(
             registry
-                .route_control(&RpcControlV1::Ping {
-                    nonce: "ping".to_owned(),
-                })
+                .route_control(
+                    &RpcControlV1::Ping {
+                        owner_epoch: 7,
+                        process_incarnation: "inc-1".to_owned(),
+                        nonce: "ping".to_owned(),
+                    },
+                    &fence()
+                )
                 .unwrap(),
             CancellationControlResult::NotCancellation
         );
+    }
+
+    #[test]
+    fn cancel_control_with_a_foreign_fence_is_rejected_before_routing() {
+        let registry = registry(1);
+        let request = registry.register("req_1").unwrap();
+        let signal = request.cancellation();
+
+        assert_eq!(
+            registry.route_control(
+                &RpcControlV1::CancelRequest {
+                    owner_epoch: 6,
+                    process_incarnation: "inc-1".to_owned(),
+                    request_id: "req_1".to_owned(),
+                },
+                &fence()
+            ),
+            Err(RequestCancellationError::FrameFenceMismatch)
+        );
+        assert_eq!(
+            registry.route_control(
+                &RpcControlV1::CancelRequest {
+                    owner_epoch: 7,
+                    process_incarnation: "other-incarnation".to_owned(),
+                    request_id: "req_1".to_owned(),
+                },
+                &fence()
+            ),
+            Err(RequestCancellationError::FrameFenceMismatch)
+        );
+        assert!(!signal.is_cancelled());
+        drop(request);
     }
 
     #[test]

@@ -2,6 +2,9 @@ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Agent } from "@/agent/agent"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Pty } from "@opencode-ai/core/pty"
+import { LocationServiceMap } from "@opencode-ai/core/location-services"
+import { Location } from "@opencode-ai/core/location"
+import { AbsolutePath } from "@opencode-ai/core/schema"
 import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -40,7 +43,7 @@ import {
   SummarizePayload,
   UpdatePayload,
 } from "../groups/session"
-import { ConflictError, PermissionNotFoundError, ServiceUnavailableError } from "../errors"
+import { ConflictError, ForbiddenError, PermissionNotFoundError, ServiceUnavailableError } from "../errors"
 import * as SessionError from "./session-errors"
 
 const SHELL_UNAVAILABLE_MESSAGE =
@@ -66,7 +69,17 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const todoSvc = yield* Todo.Service
     const summary = yield* SessionSummary.Service
     const events = yield* EventV2Bridge.Service
-    const pty = yield* Pty.Service
+    const locations = yield* LocationServiceMap.Service
+    // Pty is location-scoped, so it is resolved per call instead of bound in this graph.
+    const withLocationPty = Effect.fnUntraced(function* <A, E, R>(effect: Effect.Effect<A, E, R>) {
+      return yield* effect.pipe(
+        Effect.provide(
+          locations.get(
+            Location.Ref.make({ directory: AbsolutePath.make((yield* InstanceState.context).directory) }),
+          ),
+        ),
+      )
+    })
     const scope = yield* Scope.Scope
     const list = Effect.fn("SessionHttpApi.list")(function* (ctx: { query: typeof ListQuery.Type }) {
       const directory = ctx.query.directory ? yield* InstanceState.directory : undefined
@@ -442,10 +455,14 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof GuardApprovalPayload.Type
     }) {
       const principal = yield* Effect.serviceOption(TrustedPrincipalContext)
-      if (Option.isNone(principal)) return yield* new HttpApiError.NotFound({})
-      yield* pty
-        .replyGuardApproval({ approvalID: ctx.params.approvalID, decision: ctx.payload.decision })
-        .pipe(
+      if (Option.isNone(principal))
+        return yield* new ForbiddenError({ message: "Guard approval requires a trusted principal" })
+      yield* withLocationPty(
+        Pty.Service.use((service) =>
+          service.replyGuardApproval({ approvalID: ctx.params.approvalID, decision: ctx.payload.decision }),
+        ),
+      ).pipe(
+          Effect.provideService(TrustedPrincipalContext, principal.value),
           Effect.catchTag("SessionSupervisorError", (error) => {
             switch (error.stage) {
               case "approval-not-found":

@@ -165,6 +165,8 @@ fn authenticated_rpc_sends_redacted_projection_page_and_waits_for_exact_ack() {
     write_message(
         &mut host,
         &RpcMessageV1::Control(Box::new(RpcControlV1::Subscribe {
+            owner_epoch: 7,
+            process_incarnation: "incarnation-test".into(),
             subscription_id: "sub_rpc".into(),
             owner_kind: "session".into(),
             owner_id: "ses_rpc".into(),
@@ -182,6 +184,8 @@ fn authenticated_rpc_sends_redacted_projection_page_and_waits_for_exact_ack() {
     write_message(
         &mut host,
         &RpcMessageV1::Control(Box::new(RpcControlV1::Ack {
+            owner_epoch: 7,
+            process_incarnation: "incarnation-test".into(),
             subscription_id: "sub_rpc".into(),
             through: event.cursor.clone(),
         })),
@@ -239,6 +243,8 @@ fn authenticated_rpc_rejects_ack_for_another_subscription() {
     write_message(
         &mut host,
         &RpcMessageV1::Control(Box::new(RpcControlV1::Subscribe {
+            owner_epoch: 7,
+            process_incarnation: "incarnation-test".into(),
             subscription_id: "sub_rpc".into(),
             owner_kind: "session".into(),
             owner_id: "ses_rpc".into(),
@@ -252,6 +258,8 @@ fn authenticated_rpc_rejects_ack_for_another_subscription() {
     write_message(
         &mut host,
         &RpcMessageV1::Control(Box::new(RpcControlV1::Ack {
+            owner_epoch: 7,
+            process_incarnation: "incarnation-test".into(),
             subscription_id: "sub_other".into(),
             through: event.cursor,
         })),

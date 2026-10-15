@@ -77,8 +77,8 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, GetNamedPipeServerProcessId,
-    SetNamedPipeHandleState, PIPE_NOWAIT, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
-    PIPE_TYPE_BYTE, PIPE_WAIT,
+    PIPE_NOWAIT, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
+    SetNamedPipeHandleState,
 };
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetProcessId, GetProcessTimes, OpenProcess, OpenProcessToken,
@@ -399,16 +399,32 @@ impl PrivatePipeListener {
         cancelled: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<AuthenticatedNamedPipe, WindowsPeerError> {
         use std::sync::atomic::Ordering;
-        let Self { file, expected_client, .. } = self;
+        let Self {
+            file,
+            expected_client,
+            ..
+        } = self;
         let Some(expected_client) = expected_client else {
-            return Err(WindowsPeerError { kind: WindowsPeerErrorKind::MissingExpectedPeer, operation: "accept without a supervisor-bound client process", os_code: None });
+            return Err(WindowsPeerError {
+                kind: WindowsPeerErrorKind::MissingExpectedPeer,
+                operation: "accept without a supervisor-bound client process",
+                os_code: None,
+            });
         };
         loop {
             if cancelled.is_some_and(|value| value.load(Ordering::Acquire)) {
-                return Err(WindowsPeerError { kind: WindowsPeerErrorKind::Cancelled, operation: "accept named pipe", os_code: None });
+                return Err(WindowsPeerError {
+                    kind: WindowsPeerErrorKind::Cancelled,
+                    operation: "accept named pipe",
+                    os_code: None,
+                });
             }
             if deadline.is_some_and(|value| std::time::Instant::now() >= value) {
-                return Err(WindowsPeerError { kind: WindowsPeerErrorKind::TimedOut, operation: "accept named pipe", os_code: None });
+                return Err(WindowsPeerError {
+                    kind: WindowsPeerErrorKind::TimedOut,
+                    operation: "accept named pipe",
+                    os_code: None,
+                });
             }
             let connected = unsafe { ConnectNamedPipe(file.as_raw_handle() as _, ptr::null_mut()) };
             if connected != 0 {
@@ -419,15 +435,28 @@ impl PrivatePipeListener {
                 break;
             }
             if code != 536 {
-                return Err(WindowsPeerError { kind: WindowsPeerErrorKind::OsCallFailed, operation: "ConnectNamedPipe", os_code: Some(code) });
+                return Err(WindowsPeerError {
+                    kind: WindowsPeerErrorKind::OsCallFailed,
+                    operation: "ConnectNamedPipe",
+                    os_code: Some(code),
+                });
             }
             let sleep = deadline.map_or(std::time::Duration::from_millis(25), |value| {
-                std::time::Duration::from_millis(25).min(value.saturating_duration_since(std::time::Instant::now()))
+                std::time::Duration::from_millis(25)
+                    .min(value.saturating_duration_since(std::time::Instant::now()))
             });
             std::thread::sleep(sleep);
         }
         let mut mode = PIPE_READMODE_BYTE | PIPE_WAIT;
-        if unsafe { SetNamedPipeHandleState(file.as_raw_handle() as _, &mut mode, ptr::null_mut(), ptr::null_mut()) } == 0 {
+        if unsafe {
+            SetNamedPipeHandleState(
+                file.as_raw_handle() as _,
+                &mut mode,
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        } == 0
+        {
             return Err(failed("SetNamedPipeHandleState"));
         }
         authenticate_pipe(file, &expected_client, true)
@@ -469,15 +498,26 @@ pub fn connect_private_pipe_until(
     use std::sync::atomic::Ordering;
     loop {
         if cancelled.load(Ordering::Acquire) {
-            return Err(WindowsPeerError { kind: WindowsPeerErrorKind::Cancelled, operation: "connect named pipe", os_code: None });
+            return Err(WindowsPeerError {
+                kind: WindowsPeerErrorKind::Cancelled,
+                operation: "connect named pipe",
+                os_code: None,
+            });
         }
         if std::time::Instant::now() >= deadline {
-            return Err(WindowsPeerError { kind: WindowsPeerErrorKind::TimedOut, operation: "connect named pipe", os_code: None });
+            return Err(WindowsPeerError {
+                kind: WindowsPeerErrorKind::TimedOut,
+                operation: "connect named pipe",
+                os_code: None,
+            });
         }
         match connect_private_pipe(name, expected_server) {
             Ok(pipe) => return Ok(pipe),
             Err(error) if matches!(error.os_code, Some(2 | 121 | 231)) => {
-                std::thread::sleep(std::time::Duration::from_millis(25).min(deadline.saturating_duration_since(std::time::Instant::now())));
+                std::thread::sleep(
+                    std::time::Duration::from_millis(25)
+                        .min(deadline.saturating_duration_since(std::time::Instant::now())),
+                );
             }
             Err(error) => return Err(error),
         }

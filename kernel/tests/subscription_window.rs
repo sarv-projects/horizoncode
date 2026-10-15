@@ -1,10 +1,14 @@
 use horizoncode_kernel::messagepack::Value;
-use horizoncode_kernel::protocol::{CursorV1, RpcEventV1};
+use horizoncode_kernel::protocol::{CursorV1, FrameFence, RpcEventV1};
 use horizoncode_kernel::subscription::{
     AckResult, BoundedSubscription, OfferResult, SubscriptionError,
 };
 
 const DIGEST: &str = "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+fn fence() -> FrameFence {
+    FrameFence::new(7, "incarnation-test").unwrap()
+}
 
 fn cursor(seq: u64, digest: &str) -> CursorV1 {
     CursorV1 {
@@ -17,6 +21,8 @@ fn cursor(seq: u64, digest: &str) -> CursorV1 {
 
 fn event(seq: u64, digest: &str) -> RpcEventV1 {
     RpcEventV1 {
+        owner_epoch: 7,
+        process_incarnation: "incarnation-test".into(),
         subscription_id: "sub_1".into(),
         cursor: cursor(seq, digest),
         event_type: "session.next.prompted.1".into(),
@@ -25,7 +31,15 @@ fn event(seq: u64, digest: &str) -> RpcEventV1 {
 }
 
 fn subscription(capacity: usize) -> BoundedSubscription {
-    BoundedSubscription::new("sub_1", "session", "ses_1", cursor(0, DIGEST), capacity).unwrap()
+    BoundedSubscription::new(
+        "sub_1",
+        "session",
+        "ses_1",
+        cursor(0, DIGEST),
+        capacity,
+        fence(),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -128,11 +142,11 @@ fn acknowledgments_must_name_sent_events_and_are_idempotent() {
 #[test]
 fn refuses_zero_or_unbounded_windows() {
     assert!(matches!(
-        BoundedSubscription::new("sub_1", "session", "ses_1", cursor(0, DIGEST), 0),
+        BoundedSubscription::new("sub_1", "session", "ses_1", cursor(0, DIGEST), 0, fence()),
         Err(SubscriptionError::InvalidCapacity)
     ));
     assert!(matches!(
-        BoundedSubscription::new("sub_1", "session", "ses_1", cursor(0, DIGEST), 257),
+        BoundedSubscription::new("sub_1", "session", "ses_1", cursor(0, DIGEST), 257, fence()),
         Err(SubscriptionError::InvalidCapacity)
     ));
 }

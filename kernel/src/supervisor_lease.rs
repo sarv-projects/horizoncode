@@ -78,12 +78,15 @@ impl SupervisorLease {
         lock_exclusive(&lock)?;
 
         let previous = read_epoch(directory)?;
-        let epoch = previous.checked_add(1).filter(|value| *value <= MAX_OWNER_EPOCH).ok_or_else(|| {
-            SupervisorLeaseError::new(
-                SupervisorLeaseErrorKind::EpochOverflow,
-                "persisted owner epoch cannot be incremented within the JavaScript-safe range",
-            )
-        })?;
+        let epoch = previous
+            .checked_add(1)
+            .filter(|value| *value <= MAX_OWNER_EPOCH)
+            .ok_or_else(|| {
+                SupervisorLeaseError::new(
+                    SupervisorLeaseErrorKind::EpochOverflow,
+                    "persisted owner epoch cannot be incremented within the JavaScript-safe range",
+                )
+            })?;
         publish_epoch(directory, epoch)?;
         Ok(Self { _lock: lock, epoch })
     }
@@ -111,7 +114,9 @@ fn lock_exclusive(lock: &File) -> Result<(), SupervisorLeaseError> {
 
 #[cfg(windows)]
 fn lock_exclusive(lock: &File) -> Result<(), SupervisorLeaseError> {
-    use windows_sys::Win32::Storage::FileSystem::{LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY};
+    use windows_sys::Win32::Storage::FileSystem::{
+        LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
+    };
     use windows_sys::Win32::System::IO::OVERLAPPED;
     let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
     // SAFETY: the file handle and OVERLAPPED structure remain valid for the synchronous
@@ -248,10 +253,10 @@ fn read_epoch(directory: &Path) -> Result<u64, SupervisorLeaseError> {
         .take(21)
         .read_to_end(&mut bytes)
         .map_err(io_error)?;
-    if bytes.is_empty() || bytes.len() > 16 || !bytes.iter().all(u8::is_ascii_digit) {
+    if bytes.is_empty() || bytes.len() > 20 || !bytes.iter().all(u8::is_ascii_digit) {
         return Err(SupervisorLeaseError::new(
             SupervisorLeaseErrorKind::CorruptEpoch,
-            "epoch must be a canonical positive JavaScript-safe decimal integer",
+            "epoch must be a canonical positive decimal integer",
         ));
     }
     let text = std::str::from_utf8(&bytes).map_err(|error| {
@@ -260,10 +265,12 @@ fn read_epoch(directory: &Path) -> Result<u64, SupervisorLeaseError> {
     let epoch = text.parse::<u64>().map_err(|error| {
         SupervisorLeaseError::new(SupervisorLeaseErrorKind::CorruptEpoch, error.to_string())
     })?;
-    if epoch == 0 || epoch > MAX_OWNER_EPOCH || epoch.to_string().as_bytes() != bytes.as_slice() {
+    // Out-of-range values are well formed, not corrupt: `acquire` reports them as
+    // `EpochOverflow` without rewriting the persisted file.
+    if epoch == 0 || epoch.to_string().as_bytes() != bytes.as_slice() {
         return Err(SupervisorLeaseError::new(
             SupervisorLeaseErrorKind::CorruptEpoch,
-            "epoch must be canonical, nonzero, and JavaScript-safe",
+            "epoch must be canonical and nonzero",
         ));
     }
     Ok(epoch)
@@ -321,10 +328,19 @@ fn validate_directory(directory: &Path) -> Result<(), SupervisorLeaseError> {
 }
 
 #[cfg(windows)]
-fn open_private_file(directory: &Path, name: &str, create: bool) -> Result<File, SupervisorLeaseError> {
+fn open_private_file(
+    directory: &Path,
+    name: &str,
+    create: bool,
+) -> Result<File, SupervisorLeaseError> {
     use std::os::windows::fs::MetadataExt;
     let path = directory.join(name);
-    let file = OpenOptions::new().read(true).write(true).create(create).open(&path).map_err(io_error)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(create)
+        .open(&path)
+        .map_err(io_error)?;
     let metadata = file.metadata().map_err(io_error)?;
     if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 {
         return Err(SupervisorLeaseError::new(
@@ -345,14 +361,27 @@ fn read_epoch(directory: &Path) -> Result<u64, SupervisorLeaseError> {
     }
     let mut file = open_private_file(directory, "supervisor.epoch", false)?;
     let mut bytes = Vec::with_capacity(16);
-    (&mut file).take(17).read_to_end(&mut bytes).map_err(io_error)?;
+    (&mut file)
+        .take(17)
+        .read_to_end(&mut bytes)
+        .map_err(io_error)?;
     if bytes.is_empty() || bytes.len() > 16 || !bytes.iter().all(u8::is_ascii_digit) {
-        return Err(SupervisorLeaseError::new(SupervisorLeaseErrorKind::CorruptEpoch, "invalid owner epoch"));
+        return Err(SupervisorLeaseError::new(
+            SupervisorLeaseErrorKind::CorruptEpoch,
+            "invalid owner epoch",
+        ));
     }
-    let text = std::str::from_utf8(&bytes).map_err(|e| SupervisorLeaseError::new(SupervisorLeaseErrorKind::CorruptEpoch, e.to_string()))?;
-    let epoch = text.parse::<u64>().map_err(|e| SupervisorLeaseError::new(SupervisorLeaseErrorKind::CorruptEpoch, e.to_string()))?;
+    let text = std::str::from_utf8(&bytes).map_err(|e| {
+        SupervisorLeaseError::new(SupervisorLeaseErrorKind::CorruptEpoch, e.to_string())
+    })?;
+    let epoch = text.parse::<u64>().map_err(|e| {
+        SupervisorLeaseError::new(SupervisorLeaseErrorKind::CorruptEpoch, e.to_string())
+    })?;
     if epoch == 0 || epoch > MAX_OWNER_EPOCH || epoch.to_string().as_bytes() != bytes {
-        return Err(SupervisorLeaseError::new(SupervisorLeaseErrorKind::CorruptEpoch, "owner epoch must be canonical, positive, and JavaScript-safe"));
+        return Err(SupervisorLeaseError::new(
+            SupervisorLeaseErrorKind::CorruptEpoch,
+            "owner epoch must be canonical, positive, and JavaScript-safe",
+        ));
     }
     Ok(epoch)
 }
@@ -360,14 +389,37 @@ fn read_epoch(directory: &Path) -> Result<u64, SupervisorLeaseError> {
 #[cfg(windows)]
 fn publish_epoch(directory: &Path, epoch: u64) -> Result<(), SupervisorLeaseError> {
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH};
-    let temp_path = directory.join(format!(".supervisor.epoch.{}.{}", std::process::id(), NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)));
-    let mut file = OpenOptions::new().write(true).create_new(true).open(&temp_path).map_err(io_error)?;
-    file.write_all(epoch.to_string().as_bytes()).map_err(io_error)?;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+    let temp_path = directory.join(format!(
+        ".supervisor.epoch.{}.{}",
+        std::process::id(),
+        NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
+        .map_err(io_error)?;
+    file.write_all(epoch.to_string().as_bytes())
+        .map_err(io_error)?;
     file.sync_all().map_err(io_error)?;
     let from: Vec<u16> = temp_path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let to: Vec<u16> = directory.join("supervisor.epoch").as_os_str().encode_wide().chain(Some(0)).collect();
-    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) } == 0 {
+    let to: Vec<u16> = directory
+        .join("supervisor.epoch")
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    if unsafe {
+        MoveFileExW(
+            from.as_ptr(),
+            to.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
         let error = io_error(io::Error::last_os_error());
         let _ = fs::remove_file(temp_path);
         return Err(error);

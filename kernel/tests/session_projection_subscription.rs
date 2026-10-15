@@ -1,7 +1,12 @@
 use horizoncode_kernel::messagepack::Value;
+use horizoncode_kernel::protocol::FrameFence;
 use horizoncode_kernel::session_projection::{SessionProjection, SubscriptionPageError};
 use horizoncode_kernel::subscription::{BoundedSubscription, OfferResult};
 use rusqlite::{Connection, params};
+
+fn fence() -> FrameFence {
+    FrameFence::new(7, "incarnation-test").unwrap()
+}
 
 fn source() -> Connection {
     let db = Connection::open_in_memory().unwrap();
@@ -45,19 +50,21 @@ fn projected_session_page_feeds_bounded_delivery_without_prompt_content() {
         r#"{"messageID":"msg_input","prompt":[{"text":"private prompt"}]}"#,
     );
     projection.sync(&source, "ses_stream", 8).unwrap();
-    let page = projection.subscription_page("sub_1", &snapshot, 1).unwrap();
+    let page = projection
+        .subscription_page("sub_1", &snapshot, 1, &fence())
+        .unwrap();
     assert!(page.has_more);
     assert_eq!(page.events.len(), 1);
     assert_eq!(page.events[0].cursor.seq, "1");
     assert_eq!(page.events[0].event_type, "session.next.prompt.admitted.1");
     let continuation = projection
-        .subscription_page("sub_1", &page.events[0].cursor, 1)
+        .subscription_page("sub_1", &page.events[0].cursor, 1, &fence())
         .unwrap();
     assert!(!continuation.has_more);
     assert_eq!(continuation.events[0].cursor.seq, "2");
 
     let mut window =
-        BoundedSubscription::new("sub_1", "session", "ses_stream", snapshot, 1).unwrap();
+        BoundedSubscription::new("sub_1", "session", "ses_stream", snapshot, 1, fence()).unwrap();
     let first = page.events.into_iter().next().unwrap();
     let second = continuation.events.into_iter().next().unwrap();
     let first_cursor = first.cursor.clone();
@@ -96,7 +103,7 @@ fn rejects_unknown_or_drifted_projection_cursors() {
     cursor.event_digest =
         "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into();
     assert!(matches!(
-        projection.subscription_page("sub_1", &cursor, 8),
+        projection.subscription_page("sub_1", &cursor, 8, &fence()),
         Err(SubscriptionPageError::CursorConflict)
     ));
 }

@@ -89,6 +89,8 @@ pub fn serve_authenticated_unix_hello(
             };
             let response =
                 RpcMessageV1::HelloRejected(Box::new(crate::protocol::KernelHelloRejectedV1 {
+                    supervisor_nonce: hello.supervisor_nonce.clone(),
+                    process_incarnation: hello.process_incarnation.clone(),
                     error: rejection.clone(),
                 }));
             (HelloOutcome::Rejected(rejection), response)

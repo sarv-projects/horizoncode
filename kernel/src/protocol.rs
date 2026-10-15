@@ -222,7 +222,6 @@ pub enum RpcControlV1 {
     },
 }
 
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RpcMessageV1 {
     Hello(Box<KernelHelloV1>),
@@ -303,12 +302,19 @@ impl From<FrameError> for ProtocolError {
 fn invalid(field: &'static str, reason: &'static str) -> ProtocolError {
     ProtocolError(ProtocolErrorKind::InvalidField { field, reason })
 }
-fn validate_frame_metadata(owner_epoch: u64, process_incarnation: &str) -> Result<(), ProtocolError> {
+fn validate_frame_metadata(
+    owner_epoch: u64,
+    process_incarnation: &str,
+) -> Result<(), ProtocolError> {
     if owner_epoch == 0 {
         return Err(invalid("ownerEpoch", "must be a positive owner epoch"));
     }
     validate_safe_integer("ownerEpoch", owner_epoch)?;
-    text("processIncarnation", process_incarnation, MAX_IDENTIFIER_BYTES)
+    text(
+        "processIncarnation",
+        process_incarnation,
+        MAX_IDENTIFIER_BYTES,
+    )
 }
 
 fn missing(field: &'static str) -> ProtocolError {
@@ -357,22 +363,143 @@ pub fn write_message<W: Write>(
 
 fn control_metadata(control: &RpcControlV1) -> (u64, &str) {
     match control {
-        RpcControlV1::Subscribe { owner_epoch, process_incarnation, .. }
-        | RpcControlV1::Unsubscribe { owner_epoch, process_incarnation, .. }
-        | RpcControlV1::Ack { owner_epoch, process_incarnation, .. }
-        | RpcControlV1::PageEnd { owner_epoch, process_incarnation, .. }
-        | RpcControlV1::ResnapshotRequired { owner_epoch, process_incarnation, .. }
-        | RpcControlV1::CancelRequest { owner_epoch, process_incarnation, .. }
-        | RpcControlV1::Ping { owner_epoch, process_incarnation, .. } => (*owner_epoch, process_incarnation),
+        RpcControlV1::Subscribe {
+            owner_epoch,
+            process_incarnation,
+            ..
+        }
+        | RpcControlV1::Unsubscribe {
+            owner_epoch,
+            process_incarnation,
+            ..
+        }
+        | RpcControlV1::Ack {
+            owner_epoch,
+            process_incarnation,
+            ..
+        }
+        | RpcControlV1::PageEnd {
+            owner_epoch,
+            process_incarnation,
+            ..
+        }
+        | RpcControlV1::ResnapshotRequired {
+            owner_epoch,
+            process_incarnation,
+            ..
+        }
+        | RpcControlV1::CancelRequest {
+            owner_epoch,
+            process_incarnation,
+            ..
+        }
+        | RpcControlV1::Ping {
+            owner_epoch,
+            process_incarnation,
+            ..
+        } => (*owner_epoch, process_incarnation),
     }
 }
+
+fn frame_fence_metadata(message: &RpcMessageV1) -> Option<(u64, &str)> {
+    match message {
+        RpcMessageV1::Request(request) => Some((request.owner_epoch, &request.process_incarnation)),
+        RpcMessageV1::Response(response) => {
+            Some((response.owner_epoch, &response.process_incarnation))
+        }
+        RpcMessageV1::Event(event) => Some((event.owner_epoch, &event.process_incarnation)),
+        RpcMessageV1::Control(control) => Some(control_metadata(control)),
+        RpcMessageV1::Hello(_)
+        | RpcMessageV1::HelloResult(_)
+        | RpcMessageV1::HelloRejected(_)
+        | RpcMessageV1::StartupStatus(_) => None,
+    }
+}
+
+/// The negotiated frame-fencing pair for one authenticated kernel session.
+///
+/// `owner_epoch` is the positive durable epoch from `HandshakePolicy.owner_epoch`;
+/// `process_incarnation` is the authenticated hello binding echoed by the negotiated
+/// `KernelHelloResultV1`. Application frames carrying any other pair fail closed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrameFence {
+    owner_epoch: u64,
+    process_incarnation: String,
+}
+
+impl FrameFence {
+    /// Fails closed unless the pair is a positive safe epoch and a bounded identifier.
+    pub fn new(
+        owner_epoch: u64,
+        process_incarnation: impl Into<String>,
+    ) -> Result<Self, ProtocolError> {
+        let process_incarnation = process_incarnation.into();
+        validate_frame_metadata(owner_epoch, &process_incarnation)?;
+        Ok(Self {
+            owner_epoch,
+            process_incarnation,
+        })
+    }
+
+    pub fn owner_epoch(&self) -> u64 {
+        self.owner_epoch
+    }
+
+    pub fn process_incarnation(&self) -> &str {
+        &self.process_incarnation
+    }
+
+    /// Validates one frame-metadata pair, failing closed on any difference from the
+    /// negotiated fence.
+    pub fn validate_frame(
+        &self,
+        owner_epoch: u64,
+        process_incarnation: &str,
+    ) -> Result<(), ProtocolError> {
+        validate_frame_metadata(owner_epoch, process_incarnation)?;
+        if owner_epoch != self.owner_epoch {
+            return Err(invalid(
+                "ownerEpoch",
+                "does not match the negotiated session fence",
+            ));
+        }
+        if process_incarnation != self.process_incarnation {
+            return Err(invalid(
+                "processIncarnation",
+                "does not match the negotiated session fence",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Validates a whole message: full wire-shape validation followed by exact fence
+    /// matching for every application frame that carries fencing metadata.
+    pub fn validate_message(&self, message: &RpcMessageV1) -> Result<(), ProtocolError> {
+        validate_message(message)?;
+        match frame_fence_metadata(message) {
+            Some((owner_epoch, process_incarnation)) => {
+                self.validate_frame(owner_epoch, process_incarnation)
+            }
+            None => Ok(()),
+        }
+    }
+}
+
 pub(crate) fn validate_message(message: &RpcMessageV1) -> Result<(), ProtocolError> {
     match message {
         RpcMessageV1::Hello(hello) => validate_hello(hello),
         RpcMessageV1::HelloResult(result) => validate_hello_result(result),
         RpcMessageV1::HelloRejected(rejected) => {
-            text("supervisorNonce", &rejected.supervisor_nonce, MAX_IDENTIFIER_BYTES)?;
-            text("processIncarnation", &rejected.process_incarnation, MAX_IDENTIFIER_BYTES)?;
+            text(
+                "supervisorNonce",
+                &rejected.supervisor_nonce,
+                MAX_IDENTIFIER_BYTES,
+            )?;
+            text(
+                "processIncarnation",
+                &rejected.process_incarnation,
+                MAX_IDENTIFIER_BYTES,
+            )?;
             validate_typed_error(&rejected.error)
         }
         RpcMessageV1::StartupStatus(status) => match status.as_ref() {
@@ -452,69 +579,69 @@ pub(crate) fn validate_message(message: &RpcMessageV1) -> Result<(), ProtocolErr
             let (owner_epoch, process_incarnation) = control_metadata(control);
             validate_frame_metadata(owner_epoch, process_incarnation)?;
             match control.as_ref() {
-            RpcControlV1::Subscribe {
-                subscription_id,
-                owner_kind,
-                owner_id,
-                after,
-                ..
-            } => {
-                text("subscriptionId", subscription_id, MAX_IDENTIFIER_BYTES)?;
-                text("ownerKind", owner_kind, MAX_IDENTIFIER_BYTES)?;
-                text("ownerId", owner_id, MAX_IDENTIFIER_BYTES)?;
-                if let Some(cursor) = after {
-                    validate_cursor(cursor)?;
-                    if cursor.owner_kind != *owner_kind || cursor.owner_id != *owner_id {
+                RpcControlV1::Subscribe {
+                    subscription_id,
+                    owner_kind,
+                    owner_id,
+                    after,
+                    ..
+                } => {
+                    text("subscriptionId", subscription_id, MAX_IDENTIFIER_BYTES)?;
+                    text("ownerKind", owner_kind, MAX_IDENTIFIER_BYTES)?;
+                    text("ownerId", owner_id, MAX_IDENTIFIER_BYTES)?;
+                    if let Some(cursor) = after {
+                        validate_cursor(cursor)?;
+                        if cursor.owner_kind != *owner_kind || cursor.owner_id != *owner_id {
+                            return Err(invalid(
+                                "after",
+                                "subscription cursor must belong to the requested owner",
+                            ));
+                        }
+                    }
+                    Ok(())
+                }
+                RpcControlV1::Unsubscribe {
+                    subscription_id, ..
+                } => text("subscriptionId", subscription_id, MAX_IDENTIFIER_BYTES),
+                RpcControlV1::Ack {
+                    subscription_id,
+                    through,
+                    ..
+                } => {
+                    text("subscriptionId", subscription_id, MAX_IDENTIFIER_BYTES)?;
+                    validate_cursor(through)
+                }
+                RpcControlV1::PageEnd {
+                    subscription_id,
+                    through,
+                    ..
+                } => {
+                    text("subscriptionId", subscription_id, MAX_IDENTIFIER_BYTES)?;
+                    validate_cursor(through)
+                }
+                RpcControlV1::ResnapshotRequired {
+                    subscription_id,
+                    requested,
+                    latest,
+                    ..
+                } => {
+                    text("subscriptionId", subscription_id, MAX_IDENTIFIER_BYTES)?;
+                    validate_cursor(requested)?;
+                    validate_cursor(latest)?;
+                    if requested.owner_kind != latest.owner_kind
+                        || requested.owner_id != latest.owner_id
+                    {
                         return Err(invalid(
-                            "after",
-                            "subscription cursor must belong to the requested owner",
+                            "latest",
+                            "resnapshot cursors must belong to the same owner",
                         ));
                     }
+                    Ok(())
                 }
-                Ok(())
-            }
-            RpcControlV1::Unsubscribe { subscription_id, .. } => {
-                text("subscriptionId", subscription_id, MAX_IDENTIFIER_BYTES)
-            }
-            RpcControlV1::Ack {
-                subscription_id,
-                through,
-                ..
-            } => {
-                text("subscriptionId", subscription_id, MAX_IDENTIFIER_BYTES)?;
-                validate_cursor(through)
-            }
-            RpcControlV1::PageEnd {
-                subscription_id,
-                through,
-                ..
-            } => {
-                text("subscriptionId", subscription_id, MAX_IDENTIFIER_BYTES)?;
-                validate_cursor(through)
-            }
-            RpcControlV1::ResnapshotRequired {
-                subscription_id,
-                requested,
-                latest,
-                ..
-            } => {
-                text("subscriptionId", subscription_id, MAX_IDENTIFIER_BYTES)?;
-                validate_cursor(requested)?;
-                validate_cursor(latest)?;
-                if requested.owner_kind != latest.owner_kind
-                    || requested.owner_id != latest.owner_id
-                {
-                    return Err(invalid(
-                        "latest",
-                        "resnapshot cursors must belong to the same owner",
-                    ));
+                RpcControlV1::CancelRequest { request_id, .. } => {
+                    text("requestId", request_id, MAX_IDENTIFIER_BYTES)
                 }
-                Ok(())
-            }
-            RpcControlV1::CancelRequest { request_id, .. } => {
-                text("requestId", request_id, MAX_IDENTIFIER_BYTES)
-            }
-            RpcControlV1::Ping { nonce, .. } => text("nonce", nonce, MAX_IDENTIFIER_BYTES),
+                RpcControlV1::Ping { nonce, .. } => text("nonce", nonce, MAX_IDENTIFIER_BYTES),
             }
         }
     }
@@ -986,6 +1113,16 @@ fn message_to_value(message: &RpcMessageV1) -> Value {
         }
         RpcMessageV1::HelloRejected(rejected) => {
             put(&mut map, "kind", string("hello_rejected"));
+            put(
+                &mut map,
+                "supervisorNonce",
+                string(&rejected.supervisor_nonce),
+            );
+            put(
+                &mut map,
+                "processIncarnation",
+                string(&rejected.process_incarnation),
+            );
             put(&mut map, "error", typed_error_to_value(&rejected.error));
         }
         RpcMessageV1::StartupStatus(status) => {
@@ -1007,6 +1144,12 @@ fn message_to_value(message: &RpcMessageV1) -> Value {
         RpcMessageV1::Request(request) => {
             put(&mut map, "kind", string("request"));
             put(&mut map, "protocol", number(PROTOCOL_V1 as u64));
+            put(&mut map, "ownerEpoch", number(request.owner_epoch));
+            put(
+                &mut map,
+                "processIncarnation",
+                string(&request.process_incarnation),
+            );
             put(&mut map, "requestId", string(&request.request_id));
             put(&mut map, "serviceId", string(&request.service_id));
             put(&mut map, "operation", string(&request.operation));
@@ -1027,6 +1170,12 @@ fn message_to_value(message: &RpcMessageV1) -> Value {
         RpcMessageV1::Response(response) => {
             put(&mut map, "kind", string("response"));
             put(&mut map, "protocol", number(PROTOCOL_V1 as u64));
+            put(&mut map, "ownerEpoch", number(response.owner_epoch));
+            put(
+                &mut map,
+                "processIncarnation",
+                string(&response.process_incarnation),
+            );
             put(&mut map, "requestId", string(&response.request_id));
             put(
                 &mut map,
@@ -1056,6 +1205,12 @@ fn message_to_value(message: &RpcMessageV1) -> Value {
         RpcMessageV1::Event(event) => {
             put(&mut map, "kind", string("event"));
             put(&mut map, "protocol", number(PROTOCOL_V1 as u64));
+            put(&mut map, "ownerEpoch", number(event.owner_epoch));
+            put(
+                &mut map,
+                "processIncarnation",
+                string(&event.process_incarnation),
+            );
             put(&mut map, "subscriptionId", string(&event.subscription_id));
             put(&mut map, "cursor", cursor_to_value(&event.cursor));
             put(&mut map, "eventType", string(&event.event_type));
@@ -1063,6 +1218,8 @@ fn message_to_value(message: &RpcMessageV1) -> Value {
         }
         RpcMessageV1::Control(control) => match control.as_ref() {
             RpcControlV1::Subscribe {
+                owner_epoch,
+                process_incarnation,
                 subscription_id,
                 owner_kind,
                 owner_id,
@@ -1070,50 +1227,87 @@ fn message_to_value(message: &RpcMessageV1) -> Value {
                 ..
             } => {
                 put(&mut map, "kind", string("subscribe"));
+                put(&mut map, "ownerEpoch", number(*owner_epoch));
+                put(&mut map, "processIncarnation", string(process_incarnation));
                 put(&mut map, "subscriptionId", string(subscription_id));
                 put(&mut map, "ownerKind", string(owner_kind));
                 put(&mut map, "ownerId", string(owner_id));
                 put_optional(&mut map, "after", after.as_ref().map(cursor_to_value));
             }
-            RpcControlV1::Unsubscribe { subscription_id, .. } => {
+            RpcControlV1::Unsubscribe {
+                owner_epoch,
+                process_incarnation,
+                subscription_id,
+                ..
+            } => {
                 put(&mut map, "kind", string("unsubscribe"));
+                put(&mut map, "ownerEpoch", number(*owner_epoch));
+                put(&mut map, "processIncarnation", string(process_incarnation));
                 put(&mut map, "subscriptionId", string(subscription_id));
             }
             RpcControlV1::Ack {
+                owner_epoch,
+                process_incarnation,
                 subscription_id,
                 through,
                 ..
             } => {
                 put(&mut map, "kind", string("ack"));
+                put(&mut map, "ownerEpoch", number(*owner_epoch));
+                put(&mut map, "processIncarnation", string(process_incarnation));
                 put(&mut map, "subscriptionId", string(subscription_id));
                 put(&mut map, "through", cursor_to_value(through));
             }
             RpcControlV1::PageEnd {
+                owner_epoch,
+                process_incarnation,
                 subscription_id,
                 through,
                 has_more,
+                ..
             } => {
                 put(&mut map, "kind", string("page_end"));
+                put(&mut map, "ownerEpoch", number(*owner_epoch));
+                put(&mut map, "processIncarnation", string(process_incarnation));
                 put(&mut map, "subscriptionId", string(subscription_id));
                 put(&mut map, "through", cursor_to_value(through));
                 put(&mut map, "hasMore", Value::Bool(*has_more));
             }
             RpcControlV1::ResnapshotRequired {
+                owner_epoch,
+                process_incarnation,
                 subscription_id,
                 requested,
                 latest,
+                ..
             } => {
                 put(&mut map, "kind", string("resnapshot_required"));
+                put(&mut map, "ownerEpoch", number(*owner_epoch));
+                put(&mut map, "processIncarnation", string(process_incarnation));
                 put(&mut map, "subscriptionId", string(subscription_id));
                 put(&mut map, "requested", cursor_to_value(requested));
                 put(&mut map, "latest", cursor_to_value(latest));
             }
-            RpcControlV1::CancelRequest { request_id, .. } => {
+            RpcControlV1::CancelRequest {
+                owner_epoch,
+                process_incarnation,
+                request_id,
+                ..
+            } => {
                 put(&mut map, "kind", string("cancel_request"));
+                put(&mut map, "ownerEpoch", number(*owner_epoch));
+                put(&mut map, "processIncarnation", string(process_incarnation));
                 put(&mut map, "requestId", string(request_id));
             }
-            RpcControlV1::Ping { nonce } => {
+            RpcControlV1::Ping {
+                owner_epoch,
+                process_incarnation,
+                nonce,
+                ..
+            } => {
                 put(&mut map, "kind", string("ping"));
+                put(&mut map, "ownerEpoch", number(*owner_epoch));
+                put(&mut map, "processIncarnation", string(process_incarnation));
                 put(&mut map, "nonce", string(nonce));
             }
         },
@@ -1161,6 +1355,12 @@ fn value_to_message(value: Value) -> Result<RpcMessageV1, ProtocolError> {
         }
         "hello_rejected" => Ok(RpcMessageV1::HelloRejected(Box::new(
             KernelHelloRejectedV1 {
+                supervisor_nonce: take_string(&mut map, "supervisorNonce", MAX_IDENTIFIER_BYTES)?,
+                process_incarnation: take_string(
+                    &mut map,
+                    "processIncarnation",
+                    MAX_IDENTIFIER_BYTES,
+                )?,
                 error: value_to_typed_error(take_required(&mut map, "error")?)?,
             },
         ))),
@@ -1186,7 +1386,13 @@ fn value_to_message(value: Value) -> Result<RpcMessageV1, ProtocolError> {
         }
         "request" => {
             take_protocol(&mut map)?;
+            let owner_epoch = take_u64(&mut map, "ownerEpoch")?;
+            let process_incarnation =
+                take_string(&mut map, "processIncarnation", MAX_IDENTIFIER_BYTES)?;
+            validate_frame_metadata(owner_epoch, &process_incarnation)?;
             Ok(RpcMessageV1::Request(Box::new(RpcRequestV1 {
+                owner_epoch,
+                process_incarnation,
                 request_id: take_string(&mut map, "requestId", MAX_IDENTIFIER_BYTES)?,
                 service_id: take_string(&mut map, "serviceId", MAX_IDENTIFIER_BYTES)?,
                 operation: take_string(&mut map, "operation", MAX_IDENTIFIER_BYTES)?,
@@ -1201,6 +1407,10 @@ fn value_to_message(value: Value) -> Result<RpcMessageV1, ProtocolError> {
         }
         "response" => {
             take_protocol(&mut map)?;
+            let owner_epoch = take_u64(&mut map, "ownerEpoch")?;
+            let process_incarnation =
+                take_string(&mut map, "processIncarnation", MAX_IDENTIFIER_BYTES)?;
+            validate_frame_metadata(owner_epoch, &process_incarnation)?;
             let request_id = take_string(&mut map, "requestId", MAX_IDENTIFIER_BYTES)?;
             let outcome = match take_string(&mut map, "outcome", 16)?.as_str() {
                 "ok" => RpcOutcomeV1::Ok,
@@ -1208,6 +1418,8 @@ fn value_to_message(value: Value) -> Result<RpcMessageV1, ProtocolError> {
                 _ => return Err(invalid("outcome", "must be `ok` or `error`")),
             };
             Ok(RpcMessageV1::Response(Box::new(RpcResponseV1 {
+                owner_epoch,
+                process_incarnation,
                 request_id,
                 outcome,
                 owner_cursor: take_optional(&mut map, "ownerCursor")?
@@ -1226,48 +1438,89 @@ fn value_to_message(value: Value) -> Result<RpcMessageV1, ProtocolError> {
         }
         "event" => {
             take_protocol(&mut map)?;
+            let owner_epoch = take_u64(&mut map, "ownerEpoch")?;
+            let process_incarnation =
+                take_string(&mut map, "processIncarnation", MAX_IDENTIFIER_BYTES)?;
+            validate_frame_metadata(owner_epoch, &process_incarnation)?;
             Ok(RpcMessageV1::Event(Box::new(RpcEventV1 {
+                owner_epoch,
+                process_incarnation,
                 subscription_id: take_string(&mut map, "subscriptionId", MAX_IDENTIFIER_BYTES)?,
                 cursor: value_to_cursor(take_required(&mut map, "cursor")?)?,
                 event_type: take_string(&mut map, "eventType", MAX_IDENTIFIER_BYTES)?,
                 payload: take_required(&mut map, "payload")?,
             })))
         }
-        "subscribe" => Ok(RpcMessageV1::Control(Box::new(RpcControlV1::Subscribe {
-            subscription_id: take_string(&mut map, "subscriptionId", MAX_IDENTIFIER_BYTES)?,
-            owner_kind: take_string(&mut map, "ownerKind", MAX_IDENTIFIER_BYTES)?,
-            owner_id: take_string(&mut map, "ownerId", MAX_IDENTIFIER_BYTES)?,
-            after: take_optional(&mut map, "after")?
-                .map(value_to_cursor)
-                .transpose()?,
-        }))),
-        "unsubscribe" => Ok(RpcMessageV1::Control(Box::new(RpcControlV1::Unsubscribe {
-            subscription_id: take_string(&mut map, "subscriptionId", MAX_IDENTIFIER_BYTES)?,
-        }))),
-        "ack" => Ok(RpcMessageV1::Control(Box::new(RpcControlV1::Ack {
-            subscription_id: take_string(&mut map, "subscriptionId", MAX_IDENTIFIER_BYTES)?,
-            through: value_to_cursor(take_required(&mut map, "through")?)?,
-        }))),
-        "page_end" => Ok(RpcMessageV1::Control(Box::new(RpcControlV1::PageEnd {
-            subscription_id: take_string(&mut map, "subscriptionId", MAX_IDENTIFIER_BYTES)?,
-            through: value_to_cursor(take_required(&mut map, "through")?)?,
-            has_more: take_bool(&mut map, "hasMore")?,
-        }))),
-        "resnapshot_required" => Ok(RpcMessageV1::Control(Box::new(
-            RpcControlV1::ResnapshotRequired {
+        "subscribe" => {
+            let (owner_epoch, process_incarnation) = take_frame_fence(&mut map)?;
+            Ok(RpcMessageV1::Control(Box::new(RpcControlV1::Subscribe {
+                owner_epoch,
+                process_incarnation,
                 subscription_id: take_string(&mut map, "subscriptionId", MAX_IDENTIFIER_BYTES)?,
-                requested: value_to_cursor(take_required(&mut map, "requested")?)?,
-                latest: value_to_cursor(take_required(&mut map, "latest")?)?,
-            },
-        ))),
-        "cancel_request" => Ok(RpcMessageV1::Control(Box::new(
-            RpcControlV1::CancelRequest {
-                request_id: take_string(&mut map, "requestId", MAX_IDENTIFIER_BYTES)?,
-            },
-        ))),
-        "ping" => Ok(RpcMessageV1::Control(Box::new(RpcControlV1::Ping {
-            nonce: take_string(&mut map, "nonce", MAX_IDENTIFIER_BYTES)?,
-        }))),
+                owner_kind: take_string(&mut map, "ownerKind", MAX_IDENTIFIER_BYTES)?,
+                owner_id: take_string(&mut map, "ownerId", MAX_IDENTIFIER_BYTES)?,
+                after: take_optional(&mut map, "after")?
+                    .map(value_to_cursor)
+                    .transpose()?,
+            })))
+        }
+        "unsubscribe" => {
+            let (owner_epoch, process_incarnation) = take_frame_fence(&mut map)?;
+            Ok(RpcMessageV1::Control(Box::new(RpcControlV1::Unsubscribe {
+                owner_epoch,
+                process_incarnation,
+                subscription_id: take_string(&mut map, "subscriptionId", MAX_IDENTIFIER_BYTES)?,
+            })))
+        }
+        "ack" => {
+            let (owner_epoch, process_incarnation) = take_frame_fence(&mut map)?;
+            Ok(RpcMessageV1::Control(Box::new(RpcControlV1::Ack {
+                owner_epoch,
+                process_incarnation,
+                subscription_id: take_string(&mut map, "subscriptionId", MAX_IDENTIFIER_BYTES)?,
+                through: value_to_cursor(take_required(&mut map, "through")?)?,
+            })))
+        }
+        "page_end" => {
+            let (owner_epoch, process_incarnation) = take_frame_fence(&mut map)?;
+            Ok(RpcMessageV1::Control(Box::new(RpcControlV1::PageEnd {
+                owner_epoch,
+                process_incarnation,
+                subscription_id: take_string(&mut map, "subscriptionId", MAX_IDENTIFIER_BYTES)?,
+                through: value_to_cursor(take_required(&mut map, "through")?)?,
+                has_more: take_bool(&mut map, "hasMore")?,
+            })))
+        }
+        "resnapshot_required" => {
+            let (owner_epoch, process_incarnation) = take_frame_fence(&mut map)?;
+            Ok(RpcMessageV1::Control(Box::new(
+                RpcControlV1::ResnapshotRequired {
+                    owner_epoch,
+                    process_incarnation,
+                    subscription_id: take_string(&mut map, "subscriptionId", MAX_IDENTIFIER_BYTES)?,
+                    requested: value_to_cursor(take_required(&mut map, "requested")?)?,
+                    latest: value_to_cursor(take_required(&mut map, "latest")?)?,
+                },
+            )))
+        }
+        "cancel_request" => {
+            let (owner_epoch, process_incarnation) = take_frame_fence(&mut map)?;
+            Ok(RpcMessageV1::Control(Box::new(
+                RpcControlV1::CancelRequest {
+                    owner_epoch,
+                    process_incarnation,
+                    request_id: take_string(&mut map, "requestId", MAX_IDENTIFIER_BYTES)?,
+                },
+            )))
+        }
+        "ping" => {
+            let (owner_epoch, process_incarnation) = take_frame_fence(&mut map)?;
+            Ok(RpcMessageV1::Control(Box::new(RpcControlV1::Ping {
+                owner_epoch,
+                process_incarnation,
+                nonce: take_string(&mut map, "nonce", MAX_IDENTIFIER_BYTES)?,
+            })))
+        }
         _ => Err(ProtocolError(ProtocolErrorKind::UnsupportedKind)),
     }
 }
@@ -1505,6 +1758,13 @@ fn take_u64(map: &mut BTreeMap<String, Value>, field: &'static str) -> Result<u6
         .map_err(|_| invalid(field, "must be an unsigned integer"))
 }
 
+fn take_frame_fence(map: &mut BTreeMap<String, Value>) -> Result<(u64, String), ProtocolError> {
+    let owner_epoch = take_u64(map, "ownerEpoch")?;
+    let process_incarnation = take_string(map, "processIncarnation", MAX_IDENTIFIER_BYTES)?;
+    validate_frame_metadata(owner_epoch, &process_incarnation)?;
+    Ok((owner_epoch, process_incarnation))
+}
+
 fn take_bool(
     map: &mut BTreeMap<String, Value>,
     field: &'static str,
@@ -1647,6 +1907,8 @@ mod tests {
     fn accepts_typed_hello_rejection_wire_message() {
         let wire = wire_message(BTreeMap::from([
             ("kind".to_owned(), string("hello_rejected")),
+            ("supervisorNonce".to_owned(), string("nonce-1")),
+            ("processIncarnation".to_owned(), string("inc-1")),
             ("error".to_owned(), typed_error_to_value(&protocol_error())),
         ]));
 
@@ -1682,9 +1944,11 @@ mod tests {
             ),
             (
                 RpcMessageV1::HelloRejected(Box::new(KernelHelloRejectedV1 {
+                    supervisor_nonce: "nonce-1".to_owned(),
+                    process_incarnation: "inc-1".to_owned(),
                     error: error.clone(),
                 })),
-                "82a56572726f7285a863617465676f7279aa6361706162696c697479a4636f6465b65452414e53504f52545f494e434f4d50415449424c45a76d657373616765d92872657175697265642070726f746f636f6c206665617475726520697320756e617661696c61626c65aa7265747279436c617373a54e45564552aa7375626a65637449647390a46b696e64ae68656c6c6f5f72656a6563746564",
+                "84a56572726f7285a863617465676f7279aa6361706162696c697479a4636f6465b65452414e53504f52545f494e434f4d50415449424c45a76d657373616765d92872657175697265642070726f746f636f6c206665617475726520697320756e617661696c61626c65aa7265747279436c617373a54e45564552aa7375626a65637449647390a46b696e64ae68656c6c6f5f72656a6563746564b270726f63657373496e6361726e6174696f6ea5696e632d31af73757065727669736f724e6f6e6365a76e6f6e63652d31",
             ),
             (
                 RpcMessageV1::StartupStatus(Box::new(KernelStartupStatusV1::Starting)),
@@ -1723,6 +1987,8 @@ mod tests {
 
     fn request(body: Value) -> RpcMessageV1 {
         RpcMessageV1::Request(Box::new(RpcRequestV1 {
+            owner_epoch: 7,
+            process_incarnation: "inc-1".to_owned(),
             request_id: "req_1".to_owned(),
             service_id: "thread".to_owned(),
             operation: "query".to_owned(),
@@ -1741,6 +2007,8 @@ mod tests {
             RpcMessageV1::Hello(Box::new(hello(&["threads.v1"], &["memory.v1"]))),
             RpcMessageV1::HelloResult(Box::new(hello_result())),
             RpcMessageV1::HelloRejected(Box::new(KernelHelloRejectedV1 {
+                supervisor_nonce: "nonce-1".to_owned(),
+                process_incarnation: "inc-1".to_owned(),
                 error: failure.clone(),
             })),
             RpcMessageV1::StartupStatus(Box::new(KernelStartupStatusV1::Starting)),
@@ -1751,6 +2019,8 @@ mod tests {
                 Value::String("hello".to_owned()),
             )]))),
             RpcMessageV1::Response(Box::new(RpcResponseV1 {
+                owner_epoch: 7,
+                process_incarnation: "inc-1".to_owned(),
                 request_id: "req_1".to_owned(),
                 outcome: RpcOutcomeV1::Ok,
                 owner_cursor: Some(cursor()),
@@ -1759,6 +2029,8 @@ mod tests {
                 error: None,
             })),
             RpcMessageV1::Response(Box::new(RpcResponseV1 {
+                owner_epoch: 7,
+                process_incarnation: "inc-1".to_owned(),
                 request_id: "req_error".to_owned(),
                 outcome: RpcOutcomeV1::Error,
                 owner_cursor: None,
@@ -1776,12 +2048,16 @@ mod tests {
                 }),
             })),
             RpcMessageV1::Event(Box::new(RpcEventV1 {
+                owner_epoch: 7,
+                process_incarnation: "inc-1".to_owned(),
                 subscription_id: "sub_1".to_owned(),
                 cursor: cursor(),
                 event_type: "thread/message_committed".to_owned(),
                 payload: Value::Array(vec![Value::Unsigned(1)]),
             })),
             RpcMessageV1::Control(Box::new(RpcControlV1::CancelRequest {
+                owner_epoch: 7,
+                process_incarnation: "inc-1".to_owned(),
                 request_id: "req_1".to_owned(),
             })),
         ];
@@ -1912,44 +2188,103 @@ mod tests {
     }
 
     #[test]
+    fn frame_fence_rejects_foreign_epoch_or_incarnation() {
+        let fence = FrameFence::new(7, "inc-1").unwrap();
+        assert!(fence.validate_frame(7, "inc-1").is_ok());
+        assert!(fence.validate_frame(0, "inc-1").is_err());
+        assert!(fence.validate_frame(8, "inc-1").is_err());
+        assert!(fence.validate_frame(7, "inc-2").is_err());
+        assert!(fence.validate_frame(MAX_SAFE_INTEGER + 1, "inc-1").is_err());
+        // Construction fails closed on malformed pairs instead of defaulting them.
+        assert!(FrameFence::new(0, "inc-1").is_err());
+        assert!(FrameFence::new(7, "").is_err());
+    }
+
+    #[test]
+    fn decode_rejects_missing_or_invalid_frame_fencing() {
+        let Value::Map(valid) = message_to_value(&request(Value::Nil)) else {
+            panic!("request must encode as a map");
+        };
+        for (field, replacement) in [
+            ("ownerEpoch", Value::Unsigned(0)),
+            ("ownerEpoch", Value::Unsigned(MAX_SAFE_INTEGER + 1)),
+            ("processIncarnation", Value::String(String::new())),
+        ] {
+            let mut invalid = valid.clone();
+            invalid.insert(field.to_owned(), replacement);
+            assert!(decode_message(&wire_message(invalid)).is_err(), "{field}");
+        }
+        let mut missing = valid;
+        missing.remove("ownerEpoch");
+        assert!(decode_message(&wire_message(missing)).is_err());
+
+        // Hello rejections must carry the nonce/incarnation binding of the rejected hello.
+        let Value::Map(rejection) = message_to_value(&RpcMessageV1::HelloRejected(Box::new(
+            KernelHelloRejectedV1 {
+                supervisor_nonce: "nonce-1".to_owned(),
+                process_incarnation: "inc-1".to_owned(),
+                error: protocol_error(),
+            },
+        ))) else {
+            panic!("hello rejection must encode as a map");
+        };
+        let mut missing_nonce = rejection.clone();
+        missing_nonce.remove("supervisorNonce");
+        assert!(decode_message(&wire_message(missing_nonce)).is_err());
+        let mut missing_incarnation = rejection;
+        missing_incarnation.remove("processIncarnation");
+        assert!(decode_message(&wire_message(missing_incarnation)).is_err());
+    }
+
+    #[test]
     fn control_messages_match_fixed_v1_wire_vectors() {
         let control_messages = [
             (
                 RpcMessageV1::Control(Box::new(RpcControlV1::Subscribe {
+                    owner_epoch: 7,
+                    process_incarnation: "inc-1".to_owned(),
                     subscription_id: "sub_1".to_owned(),
                     owner_kind: "thread".to_owned(),
                     owner_id: "thr_1".to_owned(),
                     after: None,
                 })),
-                "84a46b696e64a9737562736372696265a76f776e65724964a57468725f31a96f776e65724b696e64a6746872656164ae737562736372697074696f6e4964a57375625f31",
+                "86a46b696e64a9737562736372696265aa6f776e657245706f636807a76f776e65724964a57468725f31a96f776e65724b696e64a6746872656164b270726f63657373496e6361726e6174696f6ea5696e632d31ae737562736372697074696f6e4964a57375625f31",
             ),
             (
                 RpcMessageV1::Control(Box::new(RpcControlV1::Subscribe {
+                    owner_epoch: 7,
+                    process_incarnation: "inc-1".to_owned(),
                     subscription_id: "sub_1".to_owned(),
                     owner_kind: "thread".to_owned(),
                     owner_id: "thr_1".to_owned(),
                     after: Some(cursor()),
                 })),
-                "85a5616674657284ab6576656e74446967657374d947626c616b65333a30313233343536373839616263646566303132333435363738396162636465663031323334353637383961626364656630313233343536373839616263646566a76f776e65724964a57468725f31a96f776e65724b696e64a6746872656164a3736571a23432a46b696e64a9737562736372696265a76f776e65724964a57468725f31a96f776e65724b696e64a6746872656164ae737562736372697074696f6e4964a57375625f31",
+                "87a5616674657284ab6576656e74446967657374d947626c616b65333a30313233343536373839616263646566303132333435363738396162636465663031323334353637383961626364656630313233343536373839616263646566a76f776e65724964a57468725f31a96f776e65724b696e64a6746872656164a3736571a23432a46b696e64a9737562736372696265aa6f776e657245706f636807a76f776e65724964a57468725f31a96f776e65724b696e64a6746872656164b270726f63657373496e6361726e6174696f6ea5696e632d31ae737562736372697074696f6e4964a57375625f31",
             ),
             (
                 RpcMessageV1::Control(Box::new(RpcControlV1::Unsubscribe {
+                    owner_epoch: 7,
+                    process_incarnation: "inc-1".to_owned(),
                     subscription_id: "sub_1".to_owned(),
                 })),
-                "82a46b696e64ab756e737562736372696265ae737562736372697074696f6e4964a57375625f31",
+                "84a46b696e64ab756e737562736372696265aa6f776e657245706f636807b270726f63657373496e6361726e6174696f6ea5696e632d31ae737562736372697074696f6e4964a57375625f31",
             ),
             (
                 RpcMessageV1::Control(Box::new(RpcControlV1::Ack {
+                    owner_epoch: 7,
+                    process_incarnation: "inc-1".to_owned(),
                     subscription_id: "sub_1".to_owned(),
                     through: cursor(),
                 })),
-                "83a46b696e64a361636bae737562736372697074696f6e4964a57375625f31a77468726f75676884ab6576656e74446967657374d947626c616b65333a30313233343536373839616263646566303132333435363738396162636465663031323334353637383961626364656630313233343536373839616263646566a76f776e65724964a57468725f31a96f776e65724b696e64a6746872656164a3736571a23432",
+                "85a46b696e64a361636baa6f776e657245706f636807b270726f63657373496e6361726e6174696f6ea5696e632d31ae737562736372697074696f6e4964a57375625f31a77468726f75676884ab6576656e74446967657374d947626c616b65333a30313233343536373839616263646566303132333435363738396162636465663031323334353637383961626364656630313233343536373839616263646566a76f776e65724964a57468725f31a96f776e65724b696e64a6746872656164a3736571a23432",
             ),
             (
                 RpcMessageV1::Control(Box::new(RpcControlV1::Ping {
+                    owner_epoch: 7,
+                    process_incarnation: "inc-1".to_owned(),
                     nonce: "nonce_1".to_owned(),
                 })),
-                "82a46b696e64a470696e67a56e6f6e6365a76e6f6e63655f31",
+                "84a46b696e64a470696e67a56e6f6e6365a76e6f6e63655f31aa6f776e657245706f636807b270726f63657373496e6361726e6174696f6ea5696e632d31",
             ),
         ];
 
@@ -1963,6 +2298,8 @@ mod tests {
     #[test]
     fn page_control_messages_roundtrip_and_resnapshot_is_owner_scoped() {
         let page_end = RpcMessageV1::Control(Box::new(RpcControlV1::PageEnd {
+            owner_epoch: 7,
+            process_incarnation: "inc-1".to_owned(),
             subscription_id: "sub_1".to_owned(),
             through: cursor(),
             has_more: true,
@@ -1973,6 +2310,8 @@ mod tests {
         );
 
         let resnapshot = RpcMessageV1::Control(Box::new(RpcControlV1::ResnapshotRequired {
+            owner_epoch: 7,
+            process_incarnation: "inc-1".to_owned(),
             subscription_id: "sub_1".to_owned(),
             requested: cursor(),
             latest: cursor(),
@@ -1987,6 +2326,8 @@ mod tests {
         assert!(
             validate_message(&RpcMessageV1::Control(Box::new(
                 RpcControlV1::ResnapshotRequired {
+                    owner_epoch: 7,
+                    process_incarnation: "inc-1".to_owned(),
                     subscription_id: "sub_1".to_owned(),
                     requested: cursor(),
                     latest: wrong_owner,
@@ -2000,6 +2341,8 @@ mod tests {
     fn subscription_start_cursor_must_match_requested_owner() {
         let subscription_for = |cursor| {
             RpcMessageV1::Control(Box::new(RpcControlV1::Subscribe {
+                owner_epoch: 7,
+                process_incarnation: "inc-1".to_owned(),
                 subscription_id: "sub_1".to_owned(),
                 owner_kind: "thread".to_owned(),
                 owner_id: "thr_1".to_owned(),
@@ -2029,6 +2372,8 @@ mod tests {
         assert!(validate_hello(&invalid_digest).is_err());
 
         let mismatched_receipt = RpcMessageV1::Response(Box::new(RpcResponseV1 {
+            owner_epoch: 7,
+            process_incarnation: "inc-1".to_owned(),
             request_id: "req_1".to_owned(),
             outcome: RpcOutcomeV1::Ok,
             owner_cursor: Some(cursor()),
@@ -2125,6 +2470,8 @@ mod tests {
 
         let response_for_body = |body| {
             RpcMessageV1::Response(Box::new(RpcResponseV1 {
+                owner_epoch: 7,
+                process_incarnation: "inc-1".to_owned(),
                 request_id: "req_body".to_owned(),
                 outcome: RpcOutcomeV1::Ok,
                 owner_cursor: None,
@@ -2149,6 +2496,8 @@ mod tests {
 
         let event_for_payload = |payload| {
             RpcMessageV1::Event(Box::new(RpcEventV1 {
+                owner_epoch: 7,
+                process_incarnation: "inc-1".to_owned(),
                 subscription_id: "sub_1".to_owned(),
                 cursor: cursor(),
                 event_type: "test".to_owned(),
@@ -2233,6 +2582,8 @@ mod tests {
         assert!(validate_message(&RpcMessageV1::Request(Box::new(request))).is_err());
 
         let response = RpcMessageV1::Response(Box::new(RpcResponseV1 {
+            owner_epoch: 7,
+            process_incarnation: "inc-1".to_owned(),
             request_id: "req_error".to_owned(),
             outcome: RpcOutcomeV1::Error,
             owner_cursor: None,
@@ -2272,6 +2623,8 @@ mod tests {
         };
         let response_for_message = |message: String| {
             RpcMessageV1::Response(Box::new(RpcResponseV1 {
+                owner_epoch: 7,
+                process_incarnation: "inc-1".to_owned(),
                 request_id: "req_error".to_owned(),
                 outcome: RpcOutcomeV1::Error,
                 owner_cursor: None,

@@ -8,8 +8,8 @@
 //!                         --session=ID --nonce=VALUE --incarnation=VALUE --owner-epoch=N
 
 use horizoncode_kernel::protocol::{
-    ErrorCategoryV1, FEATURE_SESSION_PAGE_CONTROL_V1, HandshakePolicy, RpcControlV1,
-    RpcMessageV1, RpcOutcomeV1, RpcRequestV1, RpcResponseV1, RetryClassV1, TypedErrorV1,
+    ErrorCategoryV1, FEATURE_SESSION_PAGE_CONTROL_V1, HandshakePolicy, RetryClassV1, RpcControlV1,
+    RpcMessageV1, RpcOutcomeV1, RpcRequestV1, RpcResponseV1, TypedErrorV1,
 };
 use horizoncode_kernel::session_projection::{SessionProjection, SubscriptionPageError};
 use horizoncode_kernel::supervisor_session::{AuthenticatedKernelSession, SupervisorSessionError};
@@ -72,8 +72,14 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
             .ok_or_else(|| "arguments must start with --".to_owned())?;
         if !matches!(
             key,
-            "source" | "state-dir" | "socket" | "host-exe" | "session" | "nonce"
-                | "incarnation" | "owner-epoch"
+            "source"
+                | "state-dir"
+                | "socket"
+                | "host-exe"
+                | "session"
+                | "nonce"
+                | "incarnation"
+                | "owner-epoch"
         ) || value.is_empty()
             || fields.insert(key.to_owned(), value.to_owned()).is_some()
         {
@@ -197,6 +203,10 @@ fn sync_session(
 
 fn unsupported_request(request: RpcRequestV1) -> RpcResponseV1 {
     RpcResponseV1 {
+        // The request crossed the authenticated session boundary, so its fence was
+        // validated as exactly matching the negotiated session fence.
+        owner_epoch: request.owner_epoch,
+        process_incarnation: request.process_incarnation,
         request_id: request.request_id,
         outcome: RpcOutcomeV1::Error,
         owner_cursor: None,
@@ -205,7 +215,8 @@ fn unsupported_request(request: RpcRequestV1) -> RpcResponseV1 {
         error: Some(TypedErrorV1 {
             code: "unsupported_interleaved_request".to_owned(),
             category: ErrorCategoryV1::Capability,
-            message: "requests are routed to the host kernel, not the Session projection worker".to_owned(),
+            message: "requests are routed to the host kernel, not the Session projection worker"
+                .to_owned(),
             retry_class: RetryClassV1::Never,
             retry_after_ms: None,
             owner_cursor: None,
@@ -245,6 +256,11 @@ fn run(options: Options) -> Result<(), String> {
         .map_err(|error| format!("open Session projection: {error}"))?;
     // Validate and recover this Session before exposing a listener or READY status.
     sync_session(&mut projection, &source, &options.session_id)?;
+
+    // Claim the host-wide single-supervisor lease before serving; its durable epoch
+    // rotates once per supervisor process and is held for the connection's lifetime.
+    let _lease = horizoncode_kernel::supervisor_lease::SupervisorLease::acquire(&state_dir)
+        .map_err(|error| format!("acquire supervisor lease: {error}"))?;
 
     let host_exe =
         fs::canonicalize(&options.host_exe).map_err(|error| format!("host executable: {error}"))?;
@@ -304,15 +320,15 @@ fn run(options: Options) -> Result<(), String> {
         };
         match message {
             RpcMessageV1::Request(request) => {
-                let response = unsupported_request(request);
+                let response = unsupported_request(*request);
                 session
                     .write_application_message(&RpcMessageV1::Response(Box::new(response)))
                     .map_err(|error| error.to_string())?;
             }
             RpcMessageV1::Control(control) => match *control {
-                RpcControlV1::Unsubscribe { subscription_id }
-                    if active_subscription.as_deref() == Some(&subscription_id) =>
-                {
+                RpcControlV1::Unsubscribe {
+                    subscription_id, ..
+                } if active_subscription.as_deref() == Some(&subscription_id) => {
                     return Ok(());
                 }
                 RpcControlV1::Subscribe {
@@ -320,6 +336,7 @@ fn run(options: Options) -> Result<(), String> {
                     owner_kind,
                     owner_id,
                     after: Some(after),
+                    ..
                 } => {
                     if owner_kind != "session" || owner_id != options.session_id {
                         return Err(
@@ -395,5 +412,77 @@ fn main() -> ExitCode {
             eprintln!("session supervisor failed: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The exact argument set emitted by the Core-side caller.
+    fn core_cli_args() -> Vec<String> {
+        [
+            "--source=/tmp/hc-cli/opencode.db",
+            "--state-dir=/tmp/hc-cli",
+            "--socket=/tmp/hc-cli/session.sock",
+            "--host-exe=/tmp/hc-cli/host",
+            "--session=ses_1",
+            "--nonce=nonce-test",
+            "--incarnation=incarnation-test",
+            "--owner-epoch=7",
+        ]
+        .iter()
+        .map(|argument| (*argument).to_owned())
+        .collect()
+    }
+
+    #[test]
+    fn core_cli_arguments_parse_into_expected_options() {
+        let options = parse(core_cli_args()).unwrap();
+        assert_eq!(options.source, PathBuf::from("/tmp/hc-cli/opencode.db"));
+        assert_eq!(options.state_dir, PathBuf::from("/tmp/hc-cli"));
+        assert_eq!(options.socket, PathBuf::from("/tmp/hc-cli/session.sock"));
+        assert_eq!(options.host_exe, PathBuf::from("/tmp/hc-cli/host"));
+        assert_eq!(options.session_id, "ses_1");
+        assert_eq!(options.nonce, "nonce-test");
+        assert_eq!(options.incarnation, "incarnation-test");
+        assert_eq!(options.owner_epoch, 7);
+    }
+
+    #[test]
+    fn missing_owner_epoch_is_rejected() {
+        let arguments: Vec<String> = core_cli_args()
+            .into_iter()
+            .filter(|argument| !argument.starts_with("--owner-epoch"))
+            .collect();
+        let error = parse(arguments).unwrap_err();
+        assert!(error.contains("owner-epoch"), "{error}");
+    }
+
+    #[test]
+    fn zero_and_non_numeric_owner_epochs_are_rejected() {
+        let mut zero = core_cli_args();
+        zero[7] = "--owner-epoch=0".to_owned();
+        assert!(parse(zero).unwrap_err().contains("positive integer"));
+
+        let mut non_numeric = core_cli_args();
+        non_numeric[7] = "--owner-epoch=first".to_owned();
+        assert!(parse(non_numeric).unwrap_err().contains("positive integer"));
+    }
+
+    #[test]
+    fn workspace_root_is_rejected_as_an_unknown_argument() {
+        let mut arguments = core_cli_args();
+        arguments.push("--workspace-root=/tmp/hc-cli".to_owned());
+        let error = parse(arguments).unwrap_err();
+        assert!(error.contains("unknown"), "{error}");
+    }
+
+    #[test]
+    fn unknown_extra_arguments_are_rejected() {
+        let mut arguments = core_cli_args();
+        arguments.push("--detach=1".to_owned());
+        let error = parse(arguments).unwrap_err();
+        assert!(error.contains("unknown"), "{error}");
     }
 }

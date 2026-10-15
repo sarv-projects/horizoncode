@@ -1,8 +1,36 @@
 #!/usr/bin/env python3
 """Offline architecture/schema/registry/authority regression checks. No source mutation."""
 from pathlib import Path
-import json,re,sys
+import json,re,subprocess,sys,stat
 from jsonschema import Draft202012Validator
+
+def has_first_party_root_notice(root, tracked_paths):
+    """Return true only for a tracked regular root notice distinct from vendor license."""
+    root=Path(root)
+    vendor=root/'opencode'/'LICENSE'
+    if not vendor.is_file():
+        return False
+    vendor_bytes=vendor.read_bytes()
+    tracked=set(tracked_paths)
+    for name in ('LICENSE','LICENSE.md','LICENSE.txt','NOTICE','NOTICE.md','NOTICE.txt'):
+        candidate=root/name
+        try:
+            mode=candidate.lstat().st_mode
+            if name in tracked and stat.S_ISREG(mode) and candidate.read_bytes()!=vendor_bytes:
+                return True
+        except OSError:
+            continue
+    return False
+
+def tracked_root_paths(root):
+    try:
+        result=subprocess.run(
+            ['git','ls-files','--','LICENSE','LICENSE.md','LICENSE.txt','NOTICE','NOTICE.md','NOTICE.txt'],
+            cwd=root,check=True,capture_output=True,text=True,
+        )
+    except (OSError,subprocess.CalledProcessError):
+        return set()
+    return set(result.stdout.splitlines())
 
 R=Path(__file__).resolve().parents[2]
 A=R/'arch_V1'
@@ -171,7 +199,8 @@ feature_off={
  'supportedScopes':['user','project'],'applyBoundary':'next_session','capabilityIds':['text.search'],
  'state':{
   'implementationStatus':'designed','requestedEnabled':None,'effectiveEnabled':False,
-  'effectiveState':'unavailable','valueSource':'default','blockedReason':'Not implemented'
+  'effectiveState':'unavailable','valueSource':'default','policyLock':'unknown',
+  'blockedReason':'Not implemented'
  }
 }
 check(not list(feature_validator.iter_errors(feature_off)),'feature exposure experimental unavailable fixture')
@@ -181,14 +210,14 @@ feature_on={
  'releaseClass':'stable','audience':'public','defaultEnabled':True,'capabilityIds':[],
  'state':{
   'implementationStatus':'verified','requestedEnabled':True,'effectiveEnabled':True,
-  'effectiveState':'on','valueSource':'user'
+  'effectiveState':'on','valueSource':'user','policyLock':'unknown'
  }
 }
 check(not list(feature_validator.iter_errors(feature_on)),'feature exposure stable-enabled fixture')
 feature_pending={
  **feature_on,'state':{
   'implementationStatus':'verified','requestedEnabled':False,'effectiveEnabled':True,
-  'effectiveState':'pending_apply','valueSource':'user','pendingApplyAt':'restart'
+  'effectiveState':'pending_apply','valueSource':'user','policyLock':'unknown','pendingApplyAt':'restart'
  }
 }
 check(not list(feature_validator.iter_errors(feature_pending)),'feature exposure pending-disable fixture')
@@ -317,14 +346,13 @@ check('no independently verified Horizon ACP client' in integration
 check('DESIGN-RESERVED' in catalog and '## 33.30 ' in catalog,
       'DOC-005/DOC-007 reserved ACP/visual/deploy candidates promoted without proof')
 
-license_files=[R/'LICENSE',R/'LICENSE.md',R/'LICENSE.txt']
-root_license=any(p.is_file() for p in license_files)
+root_license=has_first_party_root_notice(R,tracked_root_paths(R))
 check((R/'opencode/LICENSE').is_file(),
       'DOC-006 pinned upstream MIT license/permission notice missing')
 # DOC-015: package metadata must not invent an outbound rights grant.
 if not root_license:
     check(root_package.get('license') == 'UNLICENSED' and root_package.get('private') is True,
-          'DOC-015 root package declares a distribution license despite no root LICENSE')
+          'DOC-015 root package declares a distribution license despite no tracked first-party root notice')
     check('UNLICENSED' in readme and 'UNLICENSED' in contributing,
           'DOC-015 public metadata/docs disagree on pending license decision')
 
@@ -439,33 +467,54 @@ for required_prefix,count,pad in [('FEAT-',14,3),('JC-RES-',20,3),('DOC-',17,3)]
 check(records.get('files.write',{}).get('status')=='code_present',
       'CODE-001 files.write must be CODE_PRESENT (not DESIGN-only or VERIFIED)')
 core_registry=(R/'packages/core/src/tool/registry.ts').read_text()
+write_source=(R/'packages/core/src/tool/write.ts').read_text()
+write_provenance=(R/'packages/core/src/tool/write-provenance.ts').read_text()
 guard_source=(R/'kernel/src/guard.rs').read_text()
 effect_host=(R/'kernel/src/effect_host.rs').read_text()
-check('Rust Guard admission required' in core_registry
+write_tests=(R/'packages/core/test/tool-write.test.ts').read_text()
+registry_tests=(R/'packages/core/test/session-runner-tool-registry.test.ts').read_text()
+check('isBuiltinWrite(registration.tool)' in core_registry
       and 'localRegistration !== registration' in core_registry
-      and 'declared.id !== "files.write"' in core_registry,
-      'CODE-001 local/admission/spoof Guard gate missing from Core ToolRegistry')
+      and 'Rust Guard admission required' in core_registry
+      and 'markBuiltinWrite' in write_source
+      and 'isBuiltinWrite' in write_provenance,
+      'CODE-001 current Core provenance/admission source changed')
 check('FILES_WRITE_ID: &str = "files.write"' in guard_source
-      and 'capability_id != "files.write"' in effect_host,
-      'CODE-001 actual Rust narrow-write owner changed')
+      and 'capability_id != guard::FILES_WRITE_ID' in effect_host
+      and 'decision.decision != guard::DecisionKind::Ask' in effect_host,
+      'CODE-001 actual Rust Guard write admission owner changed')
+check('writes only with the prepared host lease' in write_tests
+      and 'expect(admission.status).toBe("prepared")' in write_tests
+      and 'expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("allowed")' in write_tests
+      and 'expect(supervisorCalls).toEqual(["prepare", "execute"])' in write_tests
+      and 'rejects settlement without a Rust Guard lease' in write_tests
+      and 'expect(supervisorCalls).toEqual([])' in write_tests
+      and ').toBe(false)' in write_tests,
+      'CODE-001 successful guarded write or missing-Guard no-mutation test changed')
 check('CODE_PRESENT/PARTIAL' in (A/'33-BUILTIN-CAPABILITIES-CATALOG.md').read_text(),
-      'CODE-001 guarded file write runtime status drift')
+      'CODE-001 guarded file write status must remain CODE_PRESENT/PARTIAL, not VERIFIED')
 
-# CODE-002: runtime Guard negative acceptance cases must trace to real test code.
-core_tests=(R/'packages/core/test/session-runner-tool-registry.test.ts').read_text()
+# CODE-002: negative and recovery cases must be owned by current executable tests.
 managed_tests=(R/'kernel/tests/managed_control.rs').read_text()
+write_tests=(R/'packages/core/test/tool-write.test.ts').read_text()
 check(all(case in acceptance for case in ['PS-011','PS-012','LH-012']),
       'CODE-002 missing Guard/P2 negative acceptance cases')
-check('process/application-declared files.write' in core_tests
-      and 'forged Location write' in core_tests
-      and 'fabricates a Rust challenge' in core_tests
-      and 'unsupported effectful plugin tools' in core_tests
-      and 'advertises the real first-party write leaf' in (R/'packages/core/test/tool-write.test.ts').read_text()
-      and 'isBuiltinWrite' in (R/'packages/core/src/tool/registry.ts').read_text()
-      and 'markBuiltinWrite' in (R/'packages/core/src/tool/write.ts').read_text(),
-      'CODE-002 Core Guard provenance and negative tests not present')
-check('unknown_attempt_during_pause_moves_run_to_reconciliation_and_blocks_resume' in managed_tests,
-      'CODE-002 PAUSED+UNKNOWN durable recovery regression missing')
+check('does not advertise unsupported effectful plugin tools' in registry_tests
+      and 'expect(materialized.definitions.map((definition) => definition.name)).not.toContain("mutate")' in registry_tests
+      and 'expect(executions).toEqual([])' in registry_tests
+      and 'rejects a forged Location write even when the caller supplies a fake lease' in registry_tests
+      and 'does not treat process/application-declared files.write as an authorized native write' in registry_tests
+      and 'expect(called).toBe(false)' in registry_tests
+      and 'rejects a forged lease and does not mutate' in write_tests
+      and 'fs.stat(target)' in write_tests
+      and ').toBe(false)' in write_tests,
+      'CODE-002 current Core spoof/unsupported-effect negative tests not present')
+check('unknown_attempt_during_pause_moves_run_to_reconciliation_and_blocks_resume' in managed_tests
+      and 'RunPhase::Paused' in managed_tests
+      and 'RunPhase::Reconciling' in managed_tests
+      and 'ManagedCommand::ResumeRun' in managed_tests
+      and 'unknown_effect' in managed_tests,
+      'CODE-002 PAUSED+UNKNOWN durable recovery behavior regression missing')
 check('PAUSED+UNKNOWN' in (R/'HANDOFF.md').read_text()
       and 'not only Markdown' in (R/'HANDOFF.md').read_text(),
       'CODE-002 current implementation handoff falsely claims docs-only')

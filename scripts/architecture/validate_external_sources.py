@@ -16,7 +16,7 @@ def load(path):return json.loads(path.read_text())
 source=load(A/'external-source-register.json')
 repos=source['repos'];patterns=source['extraction_patterns']
 check(len(repos)==12,'expected 12 registered repositories')
-check(len(patterns)==23,'expected 23 bounded extraction patterns')
+check(len(patterns)==24,'expected 24 bounded extraction patterns')
 lookup={}
 for repo in repos:
     key=repo.get('key');sha=repo.get('pinned_commit','');url=repo.get('canonical_url','')

@@ -131,6 +131,9 @@ fn authenticated_socket_returns_bounded_rejection_for_wrong_nonce() {
         panic!("expected typed hello rejection, got {response:?}");
     };
     assert_eq!(rejected.error, expected_rejection());
+    // The rejection is bound to the exact nonce/incarnation of the hello it rejects.
+    assert_eq!(rejected.supervisor_nonce, "attacker-controlled-nonce");
+    assert_eq!(rejected.process_incarnation, "incarnation-test");
     assert_eq!(
         service.join().unwrap(),
         HelloOutcome::Rejected(rejected.error)
@@ -175,6 +178,8 @@ fn application_message_cannot_replace_the_initial_hello() {
     write_message(
         &mut host,
         &RpcMessageV1::Control(Box::new(horizoncode_kernel::protocol::RpcControlV1::Ping {
+            owner_epoch: 7,
+            process_incarnation: "incarnation-test".into(),
             nonce: "pre-hello".into(),
         })),
     )

@@ -23,7 +23,9 @@ import {
 } from "node:fs"
 import { createConnection, type Socket } from "node:net"
 import { dirname, join } from "node:path"
+import { pack, unpack } from "msgpackr"
 import { Event as EventSchema, Location as LocationSchema } from "@opencode-ai/schema"
+import { AbsolutePath } from "../schema"
 import { EventV2 } from "../event"
 import { Context, Deferred, Effect, Fiber, Layer, Queue, Ref, Schema, Stream } from "effect"
 import type * as Scope from "effect/Scope"
@@ -37,13 +39,18 @@ import { TrustedPrincipalContext, type TrustedPrincipal } from "../trusted-princ
 import { AppProcess } from "../process"
 
 declare const OPENCODE_SESSION_OBSERVER_ASSET: string
+declare const OPENCODE_SESSION_OBSERVER_MANIFEST: string
 declare const OPENCODE_HOST_KERNEL_ASSET: string
 declare const OPENCODE_HOST_KERNEL_MANIFEST: string
 
 const PROTOCOL = 1
 const MAX_FRAME_BYTES = 8 * 1024 * 1024
+// Mirrors `MAX_IDENTIFIER_BYTES` in kernel/src/protocol.rs.
+const MAX_IDENTIFIER_BYTES = 256
 const MAX_PENDING_BYTES = MAX_FRAME_BYTES * 2 + 8
 const MAX_PENDING_MESSAGES = 128
+// Replay loss recovers in one retry; a host refusal must not spin forever.
+const RESNAPSHOT_ATTEMPT_LIMIT = 4
 const PAGE_CONTROL_FEATURE = "session.events.page-control.v1"
 export const GuardApprovalRequested = EventSchema.define({
   type: "guard.approval.requested",
@@ -68,7 +75,7 @@ export const GuardApprovalResolved = EventSchema.define({
   },
 })
 const REQUIRED_FEATURES = ["session.events.v1", PAGE_CONTROL_FEATURE] as const
-const REQUIRED_HOST_FEATURES = ["effects.v2", "terminal.v1"] as const
+const REQUIRED_HOST_FEATURES = ["effects.v2"] as const
 const BASE_DIGEST = `blake3:${"0".repeat(64)}`
 
 export type Cursor = {
@@ -109,7 +116,7 @@ export type GuardedToolCall = {
 export type EffectTarget = {
   readonly target: string
   readonly resource: string
-  readonly operation: "write" | "delete"
+  readonly operation: "write" | "delete" | "run"
   readonly existed: boolean
   readonly executable?: boolean
 }
@@ -193,9 +200,17 @@ export type HostKernelEvent = {
   readonly payload: unknown
   readonly cursor: Cursor
   readonly eventType: string
+  readonly subscriptionId: string
 }
-export type ServerMessage = SessionEvent | PageEnd | ResnapshotRequired
+export type HostKernelResnapshot = {
+  readonly kind: "resnapshot_required"
+  readonly subscriptionId: string
+  readonly requested: Cursor
+  readonly latest: Cursor
+}
+export type HostKernelStreamMessage = HostKernelEvent | HostKernelResnapshot
 
+export type ServerMessage = SessionEvent | PageEnd | ResnapshotRequired
 export type OpenOptions = {
   /** Absolute path to the pinned `session_supervisor` binary. */
   readonly binary: string
@@ -345,7 +360,7 @@ export interface Interface {
     readonly generation: number
     readonly after: Cursor
     readonly capacity?: number
-  }) => Stream.Stream<HostKernelEvent, SessionSupervisorError>
+  }) => Stream.Stream<HostKernelStreamMessage, SessionSupervisorError>
   /** Keep one observer alive for the active provider turn and recover transport restarts. */
   readonly watchSession: (
     sessionID: string,
@@ -616,6 +631,17 @@ function stringField(value: Record<string, unknown>, key: string, maxBytes = 256
   return field
 }
 
+// Rust encodes unsigned integers with the smallest MessagePack form, so a deadline far in the
+// future arrives as `uint64` and msgpackr decodes that as BigInt. A safe-integer-only reader
+// would reject every real host challenge; Core's own writer already sends the same wire type
+// as BigInt (`deadlineUnixMs`).
+export function wireUnixMs(value: unknown): number | undefined {
+  if (typeof value === "bigint") {
+    return value >= 0n && value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : undefined
+  }
+  return typeof value === "number" && Number.isSafeInteger(value) ? value : undefined
+}
+
 function parseCapabilityLease(value: Record<string, unknown>): EffectLease {
   const effectID = stringField(value, "effectID")
   const capabilityLeaseDigest = stringField(value, "capabilityLeaseDigest")
@@ -647,8 +673,9 @@ function parseEffectTargets(value: unknown, requireExecutableMode = false): Effe
     if (
       (requireExecutableMode && parsed.operation === "write" && typeof parsed.executable !== "boolean") ||
       paths.has(parsed.target) ||
-      (parsed.operation !== "write" && parsed.operation !== "delete") ||
-      typeof parsed.existed !== "boolean"
+      (parsed.operation !== "write" && parsed.operation !== "delete" && parsed.operation !== "run") ||
+      typeof parsed.existed !== "boolean" ||
+      (parsed.operation === "run" && parsed.executable !== undefined)
     ) {
       throw fail("protocol", "invalid effect target")
     }
@@ -842,18 +869,123 @@ function decodeServerMessage(input: unknown): ServerMessage {
   if (kind === "resnapshot_required") {
     const requested = cursor(message.requested)
     const latest = cursor(message.latest)
-    if (requested.ownerKind !== latest.ownerKind || requested.ownerId !== latest.ownerId) {
-      throw fail("protocol", "resnapshot cursors do not share an owner")
+    const subscriptionId = stringField(message, "subscriptionId")
+    if (
+      requested.ownerKind !== "terminal" ||
+      latest.ownerKind !== "terminal" ||
+      requested.ownerId !== latest.ownerId ||
+      !/^(0|[1-9]\d*)$/.test(requested.seq) ||
+      !/^(0|[1-9]\d*)$/.test(latest.seq) ||
+      !Number.isSafeInteger(Number(requested.seq)) ||
+      !Number.isSafeInteger(Number(latest.seq)) ||
+      Number(latest.seq) < Number(requested.seq)
+    ) {
+      throw fail("protocol", "resnapshot cursors are invalid")
     }
-    return {
-      kind,
-      subscriptionId: stringField(message, "subscriptionId"),
-      requested,
-      latest,
-    }
+    return { kind, subscriptionId, requested, latest }
   }
   throw fail("protocol", "unexpected server message")
 }
+
+type ApplicationFrameFence = {
+  readonly ownerEpoch: number
+  readonly processIncarnation: string
+}
+
+const APPLICATION_FRAME_KINDS: Record<string, true> = {
+  request: true,
+  response: true,
+  event: true,
+  subscribe: true,
+  unsubscribe: true,
+  ack: true,
+  page_end: true,
+  resnapshot_required: true,
+  cancel_request: true,
+  ping: true,
+}
+
+function validateApplicationFrameFence(fence: ApplicationFrameFence) {
+  if (
+    !Number.isSafeInteger(fence.ownerEpoch) ||
+    fence.ownerEpoch < 1 ||
+    typeof fence.processIncarnation !== "string" ||
+    fence.processIncarnation.includes("\0")
+  ) {
+    throw fail("protocol", "negotiated application frame fence is invalid")
+  }
+  const incarnationBytes = Buffer.byteLength(fence.processIncarnation, "utf8")
+  if (incarnationBytes === 0 || incarnationBytes > MAX_IDENTIFIER_BYTES) {
+    throw fail("protocol", "negotiated application frame fence is invalid")
+  }
+}
+
+export function withApplicationFrameFence(
+  message: Readonly<Record<string, unknown>>,
+  fence: ApplicationFrameFence,
+): Record<string, unknown> {
+  validateApplicationFrameFence(fence)
+  if (typeof message.kind !== "string" || !Object.hasOwn(APPLICATION_FRAME_KINDS, message.kind)) {
+    throw fail("protocol", "cannot fence a non-application frame")
+  }
+  if (
+    (Object.hasOwn(message, "ownerEpoch") && message.ownerEpoch !== fence.ownerEpoch) ||
+    (Object.hasOwn(message, "processIncarnation") &&
+      message.processIncarnation !== fence.processIncarnation)
+  ) {
+    throw fail("protocol", "caller-supplied application frame fence does not match negotiation")
+  }
+  return {
+    ...message,
+    ownerEpoch: fence.ownerEpoch,
+    processIncarnation: fence.processIncarnation,
+  }
+}
+
+export function assertApplicationFrameFence(
+  message: Readonly<Record<string, unknown>>,
+  fence: ApplicationFrameFence,
+): void {
+  validateApplicationFrameFence(fence)
+  if (
+    typeof message.kind !== "string" ||
+    !Object.hasOwn(APPLICATION_FRAME_KINDS, message.kind) ||
+    !Object.hasOwn(message, "ownerEpoch") ||
+    !Object.hasOwn(message, "processIncarnation") ||
+    message.ownerEpoch !== fence.ownerEpoch ||
+    message.processIncarnation !== fence.processIncarnation
+  ) {
+    throw fail("protocol", "application frame does not match the negotiated fence")
+  }
+}
+
+function isHandshakeOrStartupFrame(message: Record<string, unknown>) {
+  return (
+    message.kind === "hello_result" ||
+    message.kind === "hello_rejected" ||
+    message.kind === "startup_status"
+  )
+}
+
+function isPreFenceHelloFrame(message: Record<string, unknown>) {
+  return message.kind === "hello_result" || message.kind === "hello_rejected"
+}
+
+function validateInboundApplicationFrame(
+  value: unknown,
+  fence: ApplicationFrameFence | undefined,
+) {
+  const message = record(value)
+  if (isHandshakeOrStartupFrame(message)) {
+    if (fence && isPreFenceHelloFrame(message)) {
+      throw fail("protocol", "handshake frame arrived after fence negotiation")
+    }
+    return
+  }
+  if (!fence) throw fail("protocol", "application frame arrived before fence negotiation")
+  assertApplicationFrameFence(message, fence)
+}
+
 
 class MessageChannel {
   #socket: Socket
@@ -862,6 +994,7 @@ class MessageChannel {
   #messageBytes = 0
   #waiters: Array<{ resolve: (value: unknown) => void; reject: (error: Error) => void }> = []
   #closed: Error | undefined
+  #frameFence: ApplicationFrameFence | undefined
 
   constructor(socket: Socket) {
     this.#socket = socket
@@ -871,9 +1004,23 @@ class MessageChannel {
     socket.on("close", () => this.#close(fail("transport", "channel closed")))
   }
 
+  setFrameFence(ownerEpoch: number, processIncarnation: string) {
+    if (this.#frameFence) throw fail("protocol", "application frame fence was already negotiated")
+    const fence = { ownerEpoch, processIncarnation }
+    validateApplicationFrameFence(fence)
+    this.#frameFence = fence
+  }
+
   async send(value: Record<string, unknown>) {
     if (this.#closed) throw this.#closed
-    const payload = Buffer.from(pack(value))
+    let framed: Record<string, unknown>
+    if (value.kind === "hello" && !this.#frameFence) {
+      framed = value
+    } else {
+      if (!this.#frameFence) throw fail("protocol", "application frame requires a negotiated fence")
+      framed = withApplicationFrameFence(value, this.#frameFence)
+    }
+    const payload = Buffer.from(pack(framed))
     if (payload.length === 0 || payload.length > MAX_FRAME_BYTES) {
       throw fail("transport", "outgoing frame exceeds the protocol limit")
     }
@@ -933,6 +1080,17 @@ class MessageChannel {
         this.#socket.destroy()
         return
       }
+      try {
+        validateInboundApplicationFrame(value, this.#frameFence)
+      } catch (error) {
+        this.#close(
+          error instanceof SessionSupervisorError
+            ? error
+            : fail("protocol", "incoming application frame has invalid fencing"),
+        )
+        this.#socket.destroy()
+        return
+      }
       const waiter = this.#waiters.shift()
       if (waiter) waiter.resolve(value)
       else {
@@ -980,6 +1138,44 @@ function validateStateDirectory(path: string) {
 function validateSocketPath(path: string) {
   if (Buffer.byteLength(path, "utf8") >= 108) throw fail("configuration", "Unix socket path is too long")
   if (existsSync(path)) throw fail("configuration", "refusing to replace an existing socket path")
+}
+
+/**
+ * Builds the exact `session_supervisor` argv. The Rust child requires a positive
+ * host-kernel owner epoch (`--owner-epoch`) and rejects any other argument, including the
+ * retired host-wide `--workspace-root` (see arch_V1/14 and arch_V1/37: this process stays
+ * projection/ACK-only and Locations are registered through `effects.v2/register_location`).
+ */
+export function sessionSupervisorArgs(input: {
+  readonly source: string
+  readonly stateDirectory: string
+  readonly socketPath: string
+  readonly hostExecutable: string
+  readonly sessionID: string
+  readonly nonce: string
+  readonly incarnation: string
+  readonly ownerEpoch: number
+}): string[] {
+  if (!Number.isSafeInteger(input.ownerEpoch) || input.ownerEpoch < 1)
+    throw fail("owner-epoch", "host kernel owner epoch must be a positive safe integer")
+  for (const [name, path] of [
+    ["source", input.source],
+    ["state directory", input.stateDirectory],
+    ["socket", input.socketPath],
+    ["host executable", input.hostExecutable],
+  ] as const) {
+    if (!path.startsWith("/")) throw fail("configuration", `${name} must be absolute`)
+  }
+  return [
+    `--source=${input.source}`,
+    `--state-dir=${input.stateDirectory}`,
+    `--socket=${input.socketPath}`,
+    `--host-exe=${input.hostExecutable}`,
+    `--session=${input.sessionID}`,
+    `--nonce=${input.nonce}`,
+    `--incarnation=${input.incarnation}`,
+    `--owner-epoch=${input.ownerEpoch}`,
+  ]
 }
 
 function waitForSocket(path: string, child: ChildProcessHandle, signal: AbortSignal, timeoutMs: number) {
@@ -1154,7 +1350,8 @@ async function establishChannel(
   })
   const reply = record(await channel.receive())
   if (reply.kind === "hello_rejected") throw fail("handshake", "kernel rejected protocol or required features")
-  validateHelloResult(reply, nonce, incarnation, REQUIRED_FEATURES)
+  const ownerEpoch = validateHelloResult(reply, nonce, incarnation, REQUIRED_FEATURES)
+  channel.setFrameFence(ownerEpoch, incarnation)
   for (let count = 0; count < 16; count++) {
     const status = startupStatus(await channel.receive())
     if (status === "ready") break
@@ -1199,6 +1396,7 @@ async function establishHostChannel(
   const reply = record(await channel.receive())
   if (reply.kind === "hello_rejected") throw fail("handshake", "host kernel rejected protocol or required features")
   const ownerEpoch = validateHelloResult(reply, nonce, incarnation, REQUIRED_HOST_FEATURES)
+  channel.setFrameFence(ownerEpoch, incarnation)
   const epochPath = join(stateDirectory, "owner-epoch")
   const previousEpoch = readOwnerEpoch(epochPath)
   if (ownerEpoch <= previousEpoch) throw fail("owner-epoch", "host kernel owner epoch did not advance")
@@ -1418,7 +1616,7 @@ class HostKernelClientImpl {
   #child: ChildProcessHandle
   #pendingRequests = new Map<string, PendingRpc>()
   #expiredRequestIDs: string[] = []
-  #subscriptions = new Map<string, (event: SessionEvent) => Promise<void>>()
+  #subscriptions = new Map<string, (message: SessionEvent | ResnapshotRequired) => Promise<void>>()
   #closed = false
   #pump: Promise<void>
   #stopPromise: Promise<void> | undefined
@@ -1475,7 +1673,7 @@ class HostKernelClientImpl {
     terminalID: string,
     generation: number,
     after: Cursor,
-    onEvent: (event: SessionEvent) => Promise<void>,
+    onEvent: (event: SessionEvent | ResnapshotRequired) => Promise<void>,
   ): Promise<HostEventSubscription> {
     if (this.#closed) throw fail("transport", "host kernel channel is closed")
     if (
@@ -1536,11 +1734,18 @@ class HostKernelClientImpl {
           else pending.resolve(response.body)
           continue
         }
-        const event = decodeServerMessage(raw)
-        if (event.kind !== "event") throw fail("protocol", "unexpected host kernel control message")
-        const subscriber = this.#subscriptions.get(event.subscriptionId)
-        if (!subscriber) throw fail("protocol", "host event belongs to an unknown subscription")
-        await subscriber(event)
+        const message = decodeServerMessage(raw)
+        if (message.kind !== "event" && message.kind !== "resnapshot_required") {
+          throw fail("protocol", "unexpected host kernel control message")
+        }
+        const subscriber = this.#subscriptions.get(message.subscriptionId)
+        if (!subscriber) throw fail("protocol", "host control belongs to an unknown subscription")
+        if (message.kind === "resnapshot_required") {
+          this.#subscriptions.delete(message.subscriptionId)
+          void subscriber(message).catch(() => undefined)
+          continue
+        }
+        await subscriber(message)
       }
     } catch (error) {
       this.#closed = true
@@ -1744,14 +1949,13 @@ const layer = Layer.effect(
         return yield* Effect.fail(fail("configuration", "cannot create supervisor state directory"))
       }
       let binary: string
-      let workspaceRoot: string | undefined
       try {
         binary = realpathSync(options.binary)
         realpathSync(options.source)
         if (options.workspaceRoot !== undefined) {
           if (!options.workspaceRoot.startsWith("/"))
             return yield* Effect.fail(fail("configuration", "workspace root must be absolute"))
-          workspaceRoot = realpathSync(options.workspaceRoot)
+          const workspaceRoot = realpathSync(options.workspaceRoot)
           const rootStat = lstatSync(workspaceRoot)
           if (!rootStat.isDirectory() || rootStat.isSymbolicLink())
             return yield* Effect.fail(fail("configuration", "workspace root is not a canonical directory"))
@@ -1776,16 +1980,24 @@ const layer = Layer.effect(
           error instanceof SessionSupervisorError ? error : fail("configuration", "socket path is unsafe"),
         )
       }
-      const args = [
-        `--source=${realpathSync(options.source)}`,
-        `--state-dir=${stateDirectory}`,
-        `--socket=${socketPath}`,
-        `--host-exe=${realpathSync(globalThis.process.execPath)}`,
-        `--session=${options.sessionID}`,
-        `--nonce=${nonce}`,
-        `--incarnation=${incarnation}`,
-      ]
-      if (workspaceRoot) args.push(`--workspace-root=${workspaceRoot}`)
+      if (!hostKernelClient) {
+        return yield* Effect.fail(
+          fail(
+            "owner-epoch",
+            "host kernel owner epoch is unavailable; session_supervisor cannot start without it",
+          ),
+        )
+      }
+      const args = sessionSupervisorArgs({
+        source: realpathSync(options.source),
+        stateDirectory,
+        socketPath,
+        hostExecutable: realpathSync(globalThis.process.execPath),
+        sessionID: options.sessionID,
+        nonce,
+        incarnation,
+        ownerEpoch: hostKernelClient.ownerEpoch,
+      })
       const child = yield* appProcess
         .spawn(
           ChildProcess.make(binary, args, {
@@ -1880,79 +2092,120 @@ const layer = Layer.effect(
       readonly generation: number
       readonly after: Cursor
       readonly capacity?: number
-    }): Stream.Stream<HostKernelEvent, SessionSupervisorError> =>
-      Stream.unwrapScoped(
+    }): Stream.Stream<HostKernelStreamMessage, SessionSupervisorError> =>
+      Stream.unwrap(
         Effect.gen(function* () {
           if (!hostKernelClient) return yield* Effect.fail(fail("host-kernel", "host kernel is unavailable"))
           const capacity = input.capacity ?? 64
           if (!Number.isInteger(capacity) || capacity < 1 || capacity > 128) {
             return yield* Effect.fail(fail("backpressure", "terminal event capacity must be between 1 and 128"))
           }
-          const queue = yield* Queue.dropping<HostKernelEvent, SessionSupervisorError>(capacity)
-          const subscription = yield* Effect.tryPromise({
-            try: () =>
-              hostKernelClient!.subscribe(input.terminalID, input.generation, input.after, async (event) => {
-                try {
-                  const payload = record(event.payload)
-                  const parsed = {
-                    terminalID: stringField(payload, "terminalID"),
-                    generation: payload.generation,
-                    sequence: payload.sequence,
-                    byteCursor: payload.byteCursor,
-                    kind: stringField(payload, "kind"),
-                    payload: payload.payload,
-                    cursor: event.cursor,
-                    eventType: event.eventType,
-                  }
+          const queue = yield* Queue.dropping<HostKernelStreamMessage, SessionSupervisorError>(capacity)
+          // A resnapshot retires the old subscription and installs a new one, so an event must be
+          // acknowledged through the exact subscription that delivered it; a single "current"
+          // subscription would misroute ACKs for events already in the queue.
+          const subscriptions = new Map<string, HostEventSubscription>()
+          const failQueue = (error: unknown) =>
+            Effect.runPromise(
+              Queue.fail(
+                queue,
+                error instanceof SessionSupervisorError ? error : fail("protocol", "invalid terminal stream message"),
+              ),
+            ).catch(() => undefined)
+          // A host refusal (unknown terminal, exhausted subscription capacity, unusable cursor)
+          // shares the resnapshot wire shape with replay loss, so retries are bounded: each
+          // recovered event clears the budget, while a refusal loop ends in a typed failure.
+          let resnapshotAttempts = 0
+          const subscribeFrom = async (after: Cursor): Promise<HostEventSubscription> => {
+            const next = await hostKernelClient!.subscribe(input.terminalID, input.generation, after, async (message) => {
+              try {
+                if (message.kind === "resnapshot_required") {
                   if (
-                    parsed.terminalID !== input.terminalID ||
-                    parsed.generation !== input.generation ||
-                    !Number.isSafeInteger(parsed.sequence) ||
-                    (parsed.sequence as number) < 1 ||
-                    !Number.isSafeInteger(parsed.byteCursor) ||
-                    (parsed.byteCursor as number) < 0 ||
-                    event.cursor.ownerKind !== "terminal" ||
-                    event.cursor.ownerId !== input.terminalID ||
-                    event.cursor.seq !== String(parsed.sequence) ||
-                    !/^blake3:[0-9a-f]{64}$/.test(event.cursor.eventDigest)
-                  ) {
-                    throw fail("protocol", "host returned an invalid terminal event")
+                    message.requested.ownerKind !== "terminal" ||
+                    message.requested.ownerId !== input.terminalID ||
+                    message.latest.ownerKind !== "terminal" ||
+                    message.latest.ownerId !== input.terminalID
+                  ) throw fail("protocol", "resnapshot control belongs to another terminal")
+                  if (!(await Effect.runPromise(Queue.offer(queue, message)))) {
+                    await failQueue(fail("backpressure", "terminal event stream exceeded its bounded capacity"))
+                    return
                   }
-                  const accepted = await Effect.runPromise(Queue.offer(queue, parsed as HostKernelEvent))
-                  if (!accepted) {
-                    await Effect.runPromise(
-                      Queue.fail(queue, fail("backpressure", "terminal event stream exceeded its bounded capacity")),
+                  resnapshotAttempts += 1
+                  if (resnapshotAttempts > RESNAPSHOT_ATTEMPT_LIMIT) {
+                    await failQueue(
+                      fail("resnapshot", "host refused the terminal subscription without a recoverable replay"),
                     )
+                    return
                   }
-                } catch (error) {
-                  await Effect.runPromise(
-                    Queue.fail(
-                      queue,
-                      error instanceof SessionSupervisorError ? error : fail("protocol", "invalid terminal event"),
-                    ),
-                  ).catch(() => undefined)
+                  void subscribeFrom(message.latest).catch(failQueue)
+                  return
                 }
-              }),
+                const payload = record(message.payload)
+                const parsed = {
+                  terminalID: stringField(payload, "terminalID"),
+                  generation: payload.generation,
+                  sequence: payload.sequence,
+                  byteCursor: payload.byteCursor,
+                  kind: stringField(payload, "kind"),
+                  payload: payload.payload,
+                  cursor: message.cursor,
+                  eventType: message.eventType,
+                  subscriptionId: message.subscriptionId,
+                }
+                if (
+                  parsed.terminalID !== input.terminalID ||
+                  parsed.generation !== input.generation ||
+                  !Number.isSafeInteger(parsed.sequence) ||
+                  (parsed.sequence as number) < 1 ||
+                  !Number.isSafeInteger(parsed.byteCursor) ||
+                  (parsed.byteCursor as number) < 0 ||
+                  message.cursor.ownerKind !== "terminal" ||
+                  message.cursor.ownerId !== input.terminalID ||
+                  message.cursor.seq !== String(parsed.sequence) ||
+                  !/^blake3:[0-9a-f]{64}$/.test(message.cursor.eventDigest)
+                ) throw fail("protocol", "host returned an invalid terminal event")
+                if (!(await Effect.runPromise(Queue.offer(queue, parsed as HostKernelEvent)))) {
+                  await failQueue(fail("backpressure", "terminal event stream exceeded its bounded capacity"))
+                  return
+                }
+                resnapshotAttempts = 0
+              } catch (error) {
+                await failQueue(error)
+              }
+            })
+            subscriptions.set(next.subscriptionID, next)
+            return next
+          }
+          yield* Effect.tryPromise({
+            try: () => subscribeFrom(input.after),
             catch: (error) =>
               error instanceof SessionSupervisorError ? error : fail("subscription", "cannot subscribe to terminal events"),
           })
           yield* Effect.addFinalizer(() =>
-            Effect.tryPromise({
-              try: () => subscription.unsubscribe(),
-              catch: () => fail("subscription", "could not unsubscribe from terminal events"),
-            }).pipe(
+            Effect.forEach(subscriptions.values(), (current) =>
+              Effect.tryPromise({
+                try: () => current.unsubscribe(),
+                catch: () => fail("subscription", "could not unsubscribe from terminal events"),
+              }).pipe(Effect.ignore),
+            ).pipe(
               Effect.andThen(Queue.shutdown(queue)),
               Effect.asVoid,
+              Effect.orDie,
             ),
           )
           return Stream.fromQueue(queue).pipe(
-            Stream.tap((event) =>
-              Effect.tryPromise({
-                try: () => subscription.ack(event.cursor),
+            Stream.tap((message) => {
+              if (message.kind !== "event") return Effect.void
+              const delivering = subscriptions.get(message.subscriptionId)
+              if (!delivering) {
+                return Effect.fail(fail("ack", "terminal event arrived without a live subscription"))
+              }
+              return Effect.tryPromise({
+                try: () => delivering.ack(message.cursor),
                 catch: (error) =>
                   error instanceof SessionSupervisorError ? error : fail("ack", "could not acknowledge terminal event"),
-              }),
-            ),
+              })
+            }),
           )
         }),
       )
@@ -2008,19 +2261,17 @@ const layer = Layer.effect(
       locationRef: typeof LocationSchema.Ref.Type,
     ) {
       if (!hostKernelClient) return yield* Effect.fail(fail("host-kernel", "host kernel is unavailable"))
-      if (
-        typeof locationRef.directory !== "string" ||
-        locationRef.directory.length === 0 ||
-        Buffer.byteLength(locationRef.directory, "utf8") > 4096
-      ) {
+      const root = locationRef?.directory
+      const workspaceID = locationRef?.workspaceID
+      if (typeof root !== "string" || root.length === 0 || Buffer.byteLength(root, "utf8") > 4096) {
         return yield* Effect.fail(fail("location", "Location root is invalid"))
       }
-      const key = `${locationRef.directory}\0${locationRef.workspaceID ?? ""}`
+      const key = `${root}\0${workspaceID ?? ""}`
       const registered = registeredLocations.get(key)
       if (registered) return registered
       const response = yield* requestHostKernel("effects.v2", "register_location", {
-        canonicalRoot: locationRef.directory,
-        ...(locationRef.workspaceID === undefined ? {} : { workspaceID: locationRef.workspaceID }),
+        canonicalRoot: root,
+        ...(workspaceID === undefined ? {} : { workspaceID }),
       })
       if (
         response.status !== "registered" ||
@@ -2107,16 +2358,16 @@ const layer = Layer.effect(
           const capabilityID = stringField(response, "capabilityID")
           const responseLocationID = stringField(response, "locationID")
           const inputDigest = stringField(response, "inputDigest")
-          const expiresAtUnixMs = response.expiresAtUnixMs
+          const expiresAtUnixMs = wireUnixMs(response.expiresAtUnixMs)
           const normalizedTargets = response.normalizedTargets
           const policySummary = stringField(response, "policySummary", 1024)
           if (
             capabilityID !== input.capabilityID ||
             responseLocationID !== locationID ||
             !/^blake3:[0-9a-f]{64}$/.test(inputDigest) ||
-            !Number.isSafeInteger(expiresAtUnixMs) ||
-            (expiresAtUnixMs as number) <= Date.now() ||
-            (expiresAtUnixMs as number) > Date.now() + 5 * 60 * 1000 ||
+            expiresAtUnixMs === undefined ||
+            expiresAtUnixMs <= Date.now() ||
+            expiresAtUnixMs > Date.now() + 5 * 60 * 1000 ||
             !Array.isArray(normalizedTargets) ||
             normalizedTargets.length === 0 ||
             normalizedTargets.length > 64
@@ -2132,7 +2383,7 @@ const layer = Layer.effect(
             ...(input.sessionID === undefined ? {} : { sessionID: input.sessionID }),
             inputDigest,
             normalizedTargets,
-            expiresAtUnixMs: expiresAtUnixMs as number,
+            expiresAtUnixMs,
             policySummary,
           }
         },
@@ -2148,7 +2399,11 @@ const layer = Layer.effect(
       if (resolved.status !== "approved") {
         return yield* Effect.fail(fail("authorization", "host rejected Guard approval"))
       }
-      const lease = yield* parseCapabilityLease(resolved)
+      const lease = yield* Effect.try({
+        try: () => parseCapabilityLease(resolved),
+        catch: (error) =>
+          error instanceof SessionSupervisorError ? error : fail("protocol", "host returned an invalid capability lease"),
+      })
       if (lease.effectID !== challenge.effectID) {
         return yield* Effect.fail(fail("protocol", "approval lease does not match its challenge"))
       }
@@ -2236,7 +2491,7 @@ const layer = Layer.effect(
           const capabilityID = stringField(response, "capabilityID")
           const challengeLocationID = stringField(response, "locationID")
           const inputDigest = stringField(response, "inputDigest")
-          const expiresAtUnixMs = response.expiresAtUnixMs
+          const expiresAtUnixMs = wireUnixMs(response.expiresAtUnixMs)
           const normalizedTargets = response.normalizedTargets
           const policySummary = stringField(response, "policySummary", 1024)
           if (
@@ -2244,9 +2499,9 @@ const layer = Layer.effect(
             challengeLocationID !== locationID ||
             !input.calls.some((call) => call.capabilityID === capabilityID) ||
             !/^blake3:[0-9a-f]{64}$/.test(inputDigest) ||
-            !Number.isSafeInteger(expiresAtUnixMs) ||
-            (expiresAtUnixMs as number) <= Date.now() ||
-            (expiresAtUnixMs as number) > Date.now() + 5 * 60 * 1000 ||
+            expiresAtUnixMs === undefined ||
+            expiresAtUnixMs <= Date.now() ||
+            expiresAtUnixMs > Date.now() + 5 * 60 * 1000 ||
             !Array.isArray(normalizedTargets) ||
             normalizedTargets.length === 0 ||
             normalizedTargets.length > 64
@@ -2265,7 +2520,7 @@ const layer = Layer.effect(
               locationID,
               inputDigest,
               normalizedTargets,
-              expiresAtUnixMs: expiresAtUnixMs as number,
+              expiresAtUnixMs,
               policySummary,
             },
           }
@@ -2299,7 +2554,11 @@ const layer = Layer.effect(
       if (resolved.status !== "approved") {
         return yield* Effect.fail(fail("authorization", "host rejected Guard approval"))
       }
-      const lease = yield* parseCapabilityLease(resolved)
+      const lease = yield* Effect.try({
+        try: () => parseCapabilityLease(resolved),
+        catch: (error) =>
+          error instanceof SessionSupervisorError ? error : fail("protocol", "host returned an invalid capability lease"),
+      })
       if (lease.effectID !== challenge.effectID) {
         return yield* Effect.fail(fail("protocol", "approval lease does not match its challenge"))
       }
@@ -2400,7 +2659,7 @@ const layer = Layer.effect(
       if (!input.workspaceRoot || !input.turnContextDigest) {
         return yield* Effect.fail(fail("configuration", "files.patch requires trusted Location and turn context"))
       }
-      const locationRef = { directory: input.workspaceRoot }
+      const locationRef = { directory: AbsolutePath.make(input.workspaceRoot) }
       const admission = yield* prepareToolBatch({
         sessionID: input.sessionID,
         locationRef,
@@ -2591,7 +2850,7 @@ export const runtimeConfigNode = LayerNode.make({
 export const node = LayerNode.make({
   service: Service,
   layer,
-  deps: [AppProcess.node, runtimeConfigNode],
+  deps: [AppProcess.node, runtimeConfigNode, EventV2.node],
 })
 
 export const SessionSupervisor = { Service, RuntimeConfig, runtimeConfigNode, node, acquireExecutionOwner }

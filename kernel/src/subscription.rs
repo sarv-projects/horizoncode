@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use std::fmt;
 
 use crate::protocol::{
-    CursorV1, ProtocolError, RpcControlV1, RpcEventV1, RpcMessageV1, validate_message,
+    CursorV1, FrameFence, ProtocolError, RpcControlV1, RpcEventV1, RpcMessageV1,
 };
 
 pub const MAX_SUBSCRIPTION_WINDOW: usize = 256;
@@ -76,6 +76,7 @@ impl From<ProtocolError> for SubscriptionError {
 
 /// Holds no more than `capacity` queued plus unacknowledged events for one owner.
 pub struct BoundedSubscription {
+    fence: FrameFence,
     subscription_id: String,
     owner_kind: String,
     owner_id: String,
@@ -94,6 +95,7 @@ impl BoundedSubscription {
         owner_id: impl Into<String>,
         after: CursorV1,
         capacity: usize,
+        fence: FrameFence,
     ) -> Result<Self, SubscriptionError> {
         if !(1..=MAX_SUBSCRIPTION_WINDOW).contains(&capacity) {
             return Err(SubscriptionError::InvalidCapacity);
@@ -101,7 +103,9 @@ impl BoundedSubscription {
         let subscription_id = subscription_id.into();
         let owner_kind = owner_kind.into();
         let owner_id = owner_id.into();
-        validate_message(&RpcMessageV1::Control(Box::new(RpcControlV1::Subscribe {
+        fence.validate_message(&RpcMessageV1::Control(Box::new(RpcControlV1::Subscribe {
+            owner_epoch: fence.owner_epoch(),
+            process_incarnation: fence.process_incarnation().to_owned(),
             subscription_id: subscription_id.clone(),
             owner_kind: owner_kind.clone(),
             owner_id: owner_id.clone(),
@@ -111,6 +115,7 @@ impl BoundedSubscription {
             return Err(SubscriptionError::OwnerMismatch);
         }
         Ok(Self {
+            fence,
             subscription_id,
             owner_kind,
             owner_id,
@@ -125,7 +130,8 @@ impl BoundedSubscription {
 
     /// Queue exactly the next owner event, or report backpressure without advancing.
     pub fn offer(&mut self, event: RpcEventV1) -> Result<OfferResult, SubscriptionError> {
-        validate_message(&RpcMessageV1::Event(Box::new(event.clone())))?;
+        self.fence
+            .validate_message(&RpcMessageV1::Event(Box::new(event.clone())))?;
         if event.subscription_id != self.subscription_id
             || event.cursor.owner_kind != self.owner_kind
             || event.cursor.owner_id != self.owner_id
@@ -165,10 +171,13 @@ impl BoundedSubscription {
 
     /// Release a contiguous prefix of sent events. Repeating the latest ACK is safe.
     pub fn ack(&mut self, through: &CursorV1) -> Result<AckResult, SubscriptionError> {
-        validate_message(&RpcMessageV1::Control(Box::new(RpcControlV1::Ack {
-            subscription_id: self.subscription_id.clone(),
-            through: through.clone(),
-        })))?;
+        self.fence
+            .validate_message(&RpcMessageV1::Control(Box::new(RpcControlV1::Ack {
+                owner_epoch: self.fence.owner_epoch(),
+                process_incarnation: self.fence.process_incarnation().to_owned(),
+                subscription_id: self.subscription_id.clone(),
+                through: through.clone(),
+            })))?;
         if through.owner_kind != self.owner_kind || through.owner_id != self.owner_id {
             return Err(SubscriptionError::OwnerMismatch);
         }

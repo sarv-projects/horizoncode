@@ -20,7 +20,7 @@ import {
   WorkspaceRoutingQuery,
   WorkspaceRoutingQueryFields,
 } from "../middleware/workspace-routing"
-import { ApiNotFoundError, ConflictError, PermissionNotFoundError, ServiceUnavailableError, SessionBusyError } from "../errors"
+import { ApiNotFoundError, ConflictError, ForbiddenError, PermissionNotFoundError, ServiceUnavailableError, SessionBusyError } from "../errors"
 import { described } from "./metadata"
 import { QueryBoolean } from "./query"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -375,7 +375,7 @@ export const SessionApi = HttpApi.make("session")
           query: WorkspaceRoutingQuery,
           payload: GuardApprovalPayload,
           success: Schema.Boolean,
-          error: [HttpApiError.BadRequest, HttpApiError.NotFound, ConflictError, ServiceUnavailableError],
+          error: [HttpApiError.BadRequest, HttpApiError.NotFound, ConflictError, ForbiddenError, ServiceUnavailableError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "guard.approval.reply",

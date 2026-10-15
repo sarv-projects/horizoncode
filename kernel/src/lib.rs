@@ -6,8 +6,10 @@
 //! generation-scoped terminal replay/grant/sequence state. On Linux, private Unix peer
 //! authentication, first-message negotiation, READY-gated application RPC, and redacted
 //! per-Session projection pages with bounded ACK delivery are connected. The projection
-//! worker is not the EffectHost owner; guarded effect hosting and terminal process execution
-//! are not yet integrated into a host-scoped `hz-kernel`.
+//! worker is not the EffectHost owner; Linux guarded file effects are integrated through
+//! the host-scoped `hz-kernel`, which also executes the single-shot `terminal.run` effect.
+//! Session-style terminal operations (`start`, `cancel`, `status`, tickets) remain
+//! unavailable.
 //!
 //! Artifact storage is not wired to a production owner. The Windows named-pipe
 //! peer-authentication adapter is partial and is not integrated into the Session RPC
@@ -20,13 +22,17 @@ pub(crate) mod artifact_store;
 #[cfg(target_os = "linux")]
 pub mod effect_host;
 pub mod guard;
+#[cfg(target_os = "linux")]
+pub mod host_kernel;
+pub mod managed_control;
 pub mod messagepack;
 pub mod owner_log;
-pub mod managed_control;
 pub(crate) mod owner_log_index;
 pub mod protocol;
 pub mod request_cancellation;
 pub mod resource_budget;
+/// Bounded, ownership-scoped process-tree sampling with explicit unknown states.
+pub mod resource_sampler;
 pub mod startup;
 pub mod subscription;
 #[cfg(target_os = "linux")]
@@ -35,6 +41,8 @@ pub mod supervisor_lease;
 pub mod supervisor_session;
 /// Bounded generation-scoped terminal grants, input sequencing, and replay state.
 pub mod terminal;
+/// Bounded terminal process execution using the platform-specific process backend.
+pub mod terminal_process;
 /// Host-controlled, deterministic configured shell profiles; request bodies carry IDs only.
 pub mod terminal_profile;
 pub mod transport;

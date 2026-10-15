@@ -182,6 +182,16 @@ impl AuthenticatedUnixStream {
         &self.peer
     }
 
+    /// Clone the authenticated socket endpoint for a dedicated blocking reader.
+    /// The clone retains the same OS-authenticated peer binding; callers should keep
+    /// exactly one reader and one writer for the shared connection.
+    pub fn try_clone(&self) -> io::Result<Self> {
+        Ok(Self {
+            stream: self.stream.try_clone()?,
+            peer: self.peer.clone(),
+        })
+    }
+
     pub fn shutdown(&self) -> io::Result<()> {
         self.stream.shutdown(std::net::Shutdown::Both)
     }

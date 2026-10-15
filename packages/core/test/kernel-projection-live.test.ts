@@ -17,7 +17,7 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Stream } from "effect"
+import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Stream } from "effect"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Database } from "@opencode-ai/core/database/database"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
@@ -36,7 +36,13 @@ import { SessionID } from "@opencode-ai/schema/session-id"
 import { SessionMessage } from "@opencode-ai/schema/session-message"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { Prompt } from "@opencode-ai/core/session/prompt"
-import { SessionSupervisor, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
+import {
+  GuardApprovalRequested,
+  SessionSupervisor,
+  SessionSupervisorError,
+  type GuardApprovalRequest,
+} from "@opencode-ai/core/session/supervisor"
+import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { Config } from "@opencode-ai/core/config"
@@ -57,8 +63,38 @@ import { LLMClient, LLMEvent, Model, type LLMClientShape } from "@opencode-ai/ll
 import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
 const rust = resolve(import.meta.dir, "../../../kernel/target/debug/session_sync_probe")
 const supervisorRust = resolve(import.meta.dir, "../../../kernel/target/debug/session_supervisor")
+const hostKernelRust = resolve(import.meta.dir, "../../../kernel/target/debug/hz-kernel")
 const sessionID = SessionID.make("ses_kernel_live_producer")
 const messageID = SessionMessage.ID.make("msg_kernel_live_producer")
+
+// The host-scoped kernel owns the durable owner epoch; Core refuses to start the
+// projection-only Session supervisor without it, so every live interop case must
+// package the real `hz-kernel` binary exactly like `packages/opencode/script/build.ts` does.
+function hostKernelRuntime(stateDirectory: string) {
+  expect(existsSync(hostKernelRust)).toBe(true)
+  return {
+    hostKernelAssetPath: hostKernelRust,
+    hostKernelManifestJSON: JSON.stringify({
+      schemaVersion: 1,
+      status: "available",
+      binaryName: "hz-kernel",
+      target: `linux-${process.arch}-gnu`,
+      sha256: createHash("sha256").update(readFileSync(hostKernelRust)).digest("hex"),
+    }),
+    hostKernelInstallRoot: join(stateDirectory, "host-kernel-install"),
+    hostKernelStateRoot: join(stateDirectory, "host-kernel-state"),
+  }
+}
+
+// hz-kernel owns effect state: one private directory per registered Location
+// (`register_location` in kernel/src/host_kernel.rs), never the Session observer's
+// `s-<hash>` state directory, which only holds projection metadata.
+function hostEffectsDatabase(stateDirectory: string) {
+  const locationsRoot = join(stateDirectory, "host-kernel-state", "effect-locations")
+  const entries = readdirSync(locationsRoot)
+  expect(entries.length).toBe(1)
+  return join(locationsRoot, entries[0]!, "effects.sqlite")
+}
 
 async function publish(source: string, text: string) {
   const replacement = makeGlobalNode({
@@ -143,7 +179,19 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
     const state = join(dir, "supervisor")
     try {
       await admitAndPromote(source)
-      const layer = AppNodeBuilder.build(LayerNode.group([SessionSupervisor.node]))
+      const layer = AppNodeBuilder.build(LayerNode.group([SessionSupervisor.node]), [
+        [
+          SessionSupervisor.runtimeConfigNode,
+          Layer.succeed(
+            SessionSupervisor.RuntimeConfig,
+            SessionSupervisor.RuntimeConfig.of({
+              installRoot: join(dir, "install"),
+              stateRoot: state,
+              ...hostKernelRuntime(dir),
+            }),
+          ),
+        ],
+      ])
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
@@ -293,25 +341,44 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
           }),
           installRoot,
           stateRoot,
+          ...hostKernelRuntime(dir),
         }),
       )
-      const layer = AppNodeBuilder.build(LayerNode.group([SessionSupervisor.node]), [
+      const layer = AppNodeBuilder.build(LayerNode.group([SessionSupervisor.node, EventV2.node]), [
         [SessionSupervisor.runtimeConfigNode, runtime],
-      ])
+      ]).pipe(Layer.merge(Layer.succeed(TrustedPrincipalContext, { principal: { kind: "host_os" } })))
       const content = "TypeScript-to-Rust guarded workspace write"
       const target = join(workspace, "approved.txt")
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
             const supervisor = yield* SessionSupervisor.Service
+            const events = yield* EventV2.Service
             const turnComplete = yield* Ref.make(false)
             const ready = yield* Deferred.make<void, SessionSupervisorError>()
             const watcher = yield* Effect.forkScoped(
               supervisor.watchSession(sessionID, source, workspace, turnComplete, ready),
             )
             yield* Deferred.await(ready)
+            // `prepareToolBatch` blocks on a `guard.approval.requested` decision that only a
+            // concurrent approval surface can supply; the preparing fiber can never reply to
+            // its own request (arch_V1/14-EFFECTS-EXECUTION-SECURITY.md).
+            const approvals = yield* Queue.unbounded<GuardApprovalRequest>()
+            yield* events.listen((event) => {
+              if (event.type === GuardApprovalRequested.type) {
+                Queue.offerUnsafe(approvals, event.data as GuardApprovalRequest)
+              }
+              return Effect.void
+            })
+            const responder = yield* Effect.forkScoped(
+              Effect.gen(function* () {
+                const request = yield* Queue.take(approvals)
+                yield* supervisor.replyGuardApproval({ approvalID: request.approvalID, decision: "allow_once" })
+              }),
+            )
             const admission = yield* supervisor.prepareToolBatch({
               sessionID,
+              locationRef: { directory: AbsolutePath.make(workspace) },
               batchID: "batch_typescript_interop",
               turnContextDigest: `sha256:${"c".repeat(64)}`,
               calls: [
@@ -322,27 +389,26 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
                 },
               ],
             })
-            expect(admission.status).toBe("admitted")
-            if (admission.status !== "admitted") return
-            expect(admission.challenge.target).toBe(target)
-            expect(admission.challenge.resource).toBe("approved.txt")
-            yield* supervisor.approveEffect({
-              sessionID,
-              challengeID: admission.challenge.challengeID,
-            })
+            expect(admission.status).toBe("prepared")
+            if (admission.status !== "prepared") return
+            const locationRef = { directory: AbsolutePath.make(workspace) }
             const receipt = yield* supervisor.executeWrite({
               sessionID,
-              challengeID: admission.challenge.challengeID,
+              locationRef,
+              lease: admission.lease,
               content,
             })
-            expect(receipt.effectID).toBe(admission.challenge.effectID)
+            expect(receipt.effectID).toBe(admission.lease.effectID)
             expect(receipt.target).toBe(target)
             expect(receipt.resource).toBe("approved.txt")
             expect(receipt.receiptDigest).toMatch(/^blake3:[0-9a-f]{64}$/)
+            // The one-use capability lease was consumed by the first execution, so the same
+            // lease must never settle the effect a second time.
             const replay = yield* Effect.exit(
               supervisor.executeWrite({
                 sessionID,
-                challengeID: admission.challenge.challengeID,
+                locationRef,
+                lease: admission.lease,
                 content,
               }),
             )
@@ -353,11 +419,7 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
         ),
       )
       expect(readFileSync(target, "utf8")).toBe(content)
-      const sessionState = join(
-        stateRoot,
-        `s-${createHash("sha256").update(sessionID).digest("hex").slice(0, 20)}`,
-      )
-      expect(readFileSync(join(sessionState, "effects.sqlite")).includes(Buffer.from(content))).toBe(false)
+      expect(readFileSync(hostEffectsDatabase(dir)).includes(Buffer.from(content))).toBe(false)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -394,6 +456,7 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
           }),
           installRoot,
           stateRoot,
+          ...hostKernelRuntime(dir),
         }),
       )
       const databaseNode = makeGlobalNode({
@@ -481,7 +544,7 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
           [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
           [SessionSupervisor.runtimeConfigNode, runtime],
         ],
-      )
+      ).pipe(Layer.merge(Layer.succeed(TrustedPrincipalContext, { principal: { kind: "host_os" } })))
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
@@ -513,6 +576,27 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
                 reason: "another Rust observer already owns this Session",
               })
             }
+            // The approval surface answers `guard.approval.requested` concurrently with the
+            // preparing fiber; single-write batches are allowed, multi-write batches denied.
+            const events = yield* EventV2.Service
+            const approvals = yield* Queue.unbounded<GuardApprovalRequest>()
+            yield* events.listen((event) => {
+              if (event.type === GuardApprovalRequested.type) {
+                Queue.offerUnsafe(approvals, event.data as GuardApprovalRequest)
+              }
+              return Effect.void
+            })
+            const responder = yield* Effect.forkScoped(
+              Effect.gen(function* () {
+                for (;;) {
+                  const request = yield* Queue.take(approvals)
+                  const decision = request.normalizedTargets.length > 1 ? ("deny" as const) : ("allow_once" as const)
+                  yield* supervisor
+                    .replyGuardApproval({ approvalID: request.approvalID, decision })
+                    .pipe(Effect.catch(() => Effect.void))
+                }
+              }),
+            )
             yield* runner.run({ sessionID, force: true })
             yield* Ref.set(turnComplete, true)
             yield* Fiber.join(watcher)
@@ -534,27 +618,23 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
               expect(existsSync(join(workspace, call.path))).toBe(false)
             }
 
-            const sessionState = join(
-              stateRoot,
-              `s-${createHash("sha256").update(sessionID).digest("hex").slice(0, 20)}`,
-            )
-            const effectsDatabasePath = join(sessionState, "effects.sqlite")
+            const effectsDatabasePath = hostEffectsDatabase(dir)
             expect(readFileSync(effectsDatabasePath).includes(Buffer.from(content))).toBe(false)
             for (const call of deniedBatch) {
               expect(readFileSync(effectsDatabasePath).includes(Buffer.from(call.content))).toBe(false)
             }
             const effectsDatabase = new SQLite(effectsDatabasePath, { readonly: true, strict: true })
-            let challengeID: string
+            let effectID: string
             try {
               const row = effectsDatabase
-                .query("SELECT challenge_id, turn_context_digest, status FROM effect_challenges")
-                .get() as { challenge_id: string; turn_context_digest: string; status: string } | null
+                .query("SELECT effect_id, turn_context_digest, status FROM effect_challenges WHERE status = 'SETTLED'")
+                .get() as { effect_id: string; turn_context_digest: string; status: string } | null
               expect(row).toBeDefined()
               if (!row) return yield* Effect.die("Expected a settled Rust effect challenge")
               expect(row.status).toBe("SETTLED")
               expect(row.turn_context_digest).toMatch(/^sha256:[0-9a-f]{64}$/)
               expect(row.turn_context_digest).not.toBe(`sha256:${"c".repeat(64)}`)
-              challengeID = row.challenge_id
+              effectID = row.effect_id
             } finally {
               effectsDatabase.close()
             }
@@ -565,7 +645,16 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
               supervisor.watchSession(sessionID, database.path, workspace, replayTurnComplete, replayReady),
             )
             yield* Deferred.await(replayReady)
-            const replay = yield* Effect.exit(supervisor.executeWrite({ sessionID, challengeID, content }))
+            // The settled effect's capability lease was consumed on execution, so replaying
+            // the same effect identity must never settle a second write.
+            const replay = yield* Effect.exit(
+              supervisor.executeWrite({
+                sessionID,
+                locationRef: { directory: AbsolutePath.make(workspace) },
+                lease: { effectID, capabilityLeaseDigest: `blake3:${"0".repeat(64)}` },
+                content,
+              }),
+            )
             expect(Exit.isFailure(replay)).toBe(true)
             yield* Ref.set(replayTurnComplete, true)
             yield* Fiber.join(replayWatcher)
@@ -584,7 +673,19 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
     const state = join(dir, "supervisor")
     try {
       await admitAndPromote(source)
-      const layer = AppNodeBuilder.build(LayerNode.group([SessionSupervisor.node]))
+      const layer = AppNodeBuilder.build(LayerNode.group([SessionSupervisor.node]), [
+        [
+          SessionSupervisor.runtimeConfigNode,
+          Layer.succeed(
+            SessionSupervisor.RuntimeConfig,
+            SessionSupervisor.RuntimeConfig.of({
+              installRoot: join(dir, "install"),
+              stateRoot: state,
+              ...hostKernelRuntime(dir),
+            }),
+          ),
+        ],
+      ])
       const started = await Effect.runPromise(Deferred.make<void>())
       const fiber = Effect.runFork(
         Effect.scoped(
@@ -784,6 +885,7 @@ test("bundled Session observer installs the pinned artifact and resumes its ACK 
         }),
         installRoot: join(directory, "install"),
         stateRoot: join(directory, "state"),
+        ...hostKernelRuntime(directory),
       }),
     )
     const layer = AppNodeBuilder.build(LayerNode.group([SessionSupervisor.node]), [
@@ -856,6 +958,7 @@ test("bundled Session observer refuses a sidecar that differs from its manifest"
         }),
         installRoot: join(directory, "install"),
         stateRoot: join(directory, "state"),
+        ...hostKernelRuntime(directory),
       }),
     )
     const layer = AppNodeBuilder.build(LayerNode.group([SessionSupervisor.node]), [

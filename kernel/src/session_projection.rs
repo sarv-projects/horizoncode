@@ -11,7 +11,7 @@ use std::fmt;
 
 use crate::messagepack::Value as RpcValue;
 use crate::protocol::{
-    CursorV1, ProtocolError, RpcControlV1, RpcEventV1, RpcMessageV1, validate_message,
+    CursorV1, FrameFence, ProtocolError, RpcControlV1, RpcEventV1, RpcMessageV1,
 };
 
 const MAX_BATCH: usize = 4096;
@@ -303,11 +303,14 @@ impl SessionProjection {
         subscription_id: &str,
         after: &CursorV1,
         limit: usize,
+        fence: &FrameFence,
     ) -> std::result::Result<SessionSubscriptionPage, SubscriptionPageError> {
         if !(1..=MAX_SUBSCRIPTION_PAGE).contains(&limit) {
             return Err(SubscriptionPageError::Invalid("page size"));
         }
-        validate_message(&RpcMessageV1::Control(Box::new(RpcControlV1::Subscribe {
+        fence.validate_message(&RpcMessageV1::Control(Box::new(RpcControlV1::Subscribe {
+            owner_epoch: fence.owner_epoch(),
+            process_incarnation: fence.process_incarnation().to_owned(),
             subscription_id: subscription_id.to_owned(),
             owner_kind: "session".to_owned(),
             owner_id: after.owner_id.clone(),
@@ -408,6 +411,8 @@ impl SessionProjection {
                 "subscription cursor overflow",
             ))?;
             let event = RpcEventV1 {
+                owner_epoch: fence.owner_epoch(),
+                process_incarnation: fence.process_incarnation().to_owned(),
                 subscription_id: subscription_id.to_owned(),
                 cursor: CursorV1 {
                     owner_kind: "session".to_owned(),
@@ -418,7 +423,7 @@ impl SessionProjection {
                 event_type: kind,
                 payload: RpcValue::Map(payload),
             };
-            validate_message(&RpcMessageV1::Event(Box::new(event.clone())))?;
+            fence.validate_message(&RpcMessageV1::Event(Box::new(event.clone())))?;
             events.push(event);
             expected = expected
                 .checked_add(1)

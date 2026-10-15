@@ -8,7 +8,7 @@ use horizoncode_kernel::protocol::{
 use horizoncode_kernel::rpc_handshake::HelloOutcome;
 use horizoncode_kernel::startup::StartupPhase;
 use horizoncode_kernel::supervisor_lease::SupervisorLease;
-use horizoncode_kernel::supervisor_session::AuthenticatedKernelSession;
+use horizoncode_kernel::supervisor_session::{AuthenticatedKernelSession, SupervisorSessionError};
 use horizoncode_kernel::unix_peer::{UnixPeerListener, UnixPeerPolicy, connect_authenticated};
 use std::collections::BTreeSet;
 use std::fs;
@@ -102,6 +102,8 @@ fn startup_statuses_follow_negotiation_and_gate_requests_until_ready() {
         );
         session
             .write_application_message(&RpcMessageV1::Response(Box::new(RpcResponseV1 {
+                owner_epoch: 7,
+                process_incarnation: "incarnation-test".into(),
                 request_id: "req_1".into(),
                 outcome: RpcOutcomeV1::Ok,
                 owner_cursor: None,
@@ -134,6 +136,8 @@ fn startup_statuses_follow_negotiation_and_gate_requests_until_ready() {
     write_message(
         &mut host,
         &RpcMessageV1::Request(Box::new(RpcRequestV1 {
+            owner_epoch: 7,
+            process_incarnation: "incarnation-test".into(),
             request_id: "req_1".into(),
             service_id: "health".into(),
             operation: "get".into(),
@@ -149,6 +153,90 @@ fn startup_statuses_follow_negotiation_and_gate_requests_until_ready() {
         read_message(&mut host).unwrap(),
         Some(RpcMessageV1::Response(_))
     ));
+    server.join().unwrap();
+}
+
+#[test]
+fn application_frames_fail_closed_on_wrong_owner_epoch_or_incarnation() {
+    let directory = TestDir::new();
+    let path = directory.0.join("kernel.sock");
+    let state_path = directory.0.clone();
+    let listener = UnixPeerListener::bind(&path, peer_policy()).unwrap();
+    let server = std::thread::spawn(move || {
+        let lease = SupervisorLease::acquire(&state_path).unwrap();
+        let (channel, _) = listener.accept_authenticated().unwrap();
+        let mut session = AuthenticatedKernelSession::new(channel);
+        assert!(matches!(
+            session.negotiate(&policy()).unwrap(),
+            HelloOutcome::Negotiated(_)
+        ));
+        session.canonical_state_validated().unwrap();
+        session.owner_epoch_acquired(lease.epoch()).unwrap();
+        session.recovery_reconciled().unwrap();
+        session.required_services_ready().unwrap();
+
+        // Wrong owner epoch fails closed even though everything else is valid.
+        assert!(matches!(
+            session.next_application_request(),
+            Err(SupervisorSessionError::FrameFenceMismatch)
+        ));
+        // Wrong process incarnation fails closed too.
+        assert!(matches!(
+            session.next_application_request(),
+            Err(SupervisorSessionError::FrameFenceMismatch)
+        ));
+        // A correctly fenced request is accepted afterwards: the channel survives.
+        assert_eq!(
+            session.next_application_request().unwrap().request_id,
+            "req_good"
+        );
+        // Outbound frames must carry the negotiated fence as well.
+        assert!(matches!(
+            session.write_application_message(&RpcMessageV1::Response(Box::new(RpcResponseV1 {
+                owner_epoch: 6,
+                process_incarnation: "incarnation-test".into(),
+                request_id: "req_good".into(),
+                outcome: RpcOutcomeV1::Ok,
+                owner_cursor: None,
+                receipt_digest: None,
+                body: None,
+                error: None,
+            }))),
+            Err(SupervisorSessionError::FrameFenceMismatch)
+        ));
+    });
+
+    let mut host = connect_authenticated(&path, peer_policy()).unwrap();
+    write_message(&mut host, &RpcMessageV1::Hello(Box::new(hello()))).unwrap();
+    assert!(matches!(
+        read_message(&mut host).unwrap(),
+        Some(RpcMessageV1::HelloResult(_))
+    ));
+    for _ in 0..5 {
+        read_message(&mut host).unwrap().unwrap();
+    }
+
+    let request_for = |request_id: &str, owner_epoch: u64, process_incarnation: &str| {
+        RpcMessageV1::Request(Box::new(RpcRequestV1 {
+            owner_epoch,
+            process_incarnation: process_incarnation.into(),
+            request_id: request_id.into(),
+            service_id: "health".into(),
+            operation: "get".into(),
+            delivery_id: None,
+            expected_cursor: None,
+            deadline_unix_ms: 1_800_000_000_000,
+            trace_id: "trace_1".into(),
+            body: Value::Map(Default::default()),
+        }))
+    };
+    write_message(&mut host, &request_for("req_epoch", 6, "incarnation-test")).unwrap();
+    write_message(
+        &mut host,
+        &request_for("req_incarnation", 7, "incarnation-other"),
+    )
+    .unwrap();
+    write_message(&mut host, &request_for("req_good", 7, "incarnation-test")).unwrap();
     server.join().unwrap();
 }
 
