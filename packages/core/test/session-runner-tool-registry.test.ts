@@ -93,6 +93,63 @@ describe("ToolRegistry", () => {
     }),
   )
 
+
+  it.effect("does not advertise unsupported effectful plugin tools or execute them through stale direct settlement", () =>
+    Effect.gen(function* () {
+      const service = yield* ToolRegistry.Service
+      const executions: string[] = []
+      const unsupported = Tool.make({
+        description: "Unsupported plugin effect",
+        capability: { id: "mcp.mutate", effectClass: "effect" },
+        input: Schema.Struct({ text: Schema.String }),
+        output: Schema.Struct({ ok: Schema.Boolean }),
+        execute: ({ text }) => Effect.sync(() => executions.push(text)).pipe(Effect.as({ ok: true })),
+      })
+      yield* service.register({ mutate: unsupported })
+      const materialized = yield* service.materialize()
+      expect(materialized.definitions.map((definition) => definition.name)).not.toContain("mutate")
+      expect(yield* materialized.validate(call("mutate").call)).toBe("Unknown tool: mutate")
+      const direct = yield* materialized.settle({
+        ...call("mutate"),
+        effect: { challengeID: "injected", effectID: "injected", target: "/tmp/unsafe", resource: "unsafe" },
+      })
+      expect(direct.result).toEqual({ type: "error", value: "Unknown tool: mutate" })
+      expect(executions).toEqual([])
+    }),
+  )
+
+  it.effect("requires Rust admission before settling an advertised files.write effect", () =>
+    Effect.gen(function* () {
+      const service = yield* ToolRegistry.Service
+      const executions: string[] = []
+      yield* service.register({
+        guarded_write: Tool.make({
+          description: "Guarded write test",
+          capability: { id: "files.write", effectClass: "effect" },
+          input: Schema.Struct({ text: Schema.String }),
+          output: Schema.Struct({ ok: Schema.Boolean }),
+          execute: ({ text }, context) =>
+            Effect.sync(() => {
+              if (!context.effect) throw new Error("attempted without Rust admission")
+              executions.push(text)
+              return { ok: true }
+            }),
+        }),
+      })
+      const materialized = yield* service.materialize()
+      expect(materialized.definitions.map((definition) => definition.name)).toContain("guarded_write")
+      const denied = yield* materialized.settle(call("guarded_write"))
+      expect(denied.result).toEqual({ type: "error", value: "Rust Guard admission required" })
+      expect(executions).toEqual([])
+      const admitted = yield* materialized.settle({
+        ...call("guarded_write"),
+        effect: { challengeID: "ch_test", effectID: "ef_test", target: "/workspace/file", resource: "file" },
+      })
+      expect(admitted.result.type).not.toBe("error")
+      expect(executions).toEqual(["guarded_write"])
+    }),
+  )
+
   it.effect("filters disabled tools with edit aliases and ordered wildcard precedence", () =>
     Effect.gen(function* () {
       const service = yield* ToolRegistry.Service

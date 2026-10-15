@@ -64,6 +64,20 @@ const registryLayer = Layer.effect(
         }
       if (advertised && registration.identity !== advertised)
         return { result: { type: "error" as const, value: `Stale tool call: ${input.call.name}` } }
+      // The registry is also an execution boundary: a tool claiming EFFECT may
+      // not execute without an admitted Rust challenge. Until one shared Guard
+      // supports another effect class, do not dispatch it even if registered by
+      // an application, plugin, or Location override. The file-write leaf
+      // independently binds the challenge to the target and redeems it in Rust.
+      const declared = capability(registration.tool, input.call.name)
+      if (declared.effectClass === "unknown")
+        return { result: { type: "error" as const, value: `Unclassified tool: ${input.call.name}` } }
+      if (declared.effectClass === "effect") {
+        if (declared.id !== "files.write")
+          return { result: { type: "error" as const, value: `Rust Guard does not support: ${declared.id}` } }
+        if (!input.effect)
+          return { result: { type: "error" as const, value: "Rust Guard admission required" } }
+      }
       const pending = yield* settle(registration.tool, input.call, {
         sessionID: input.sessionID,
         agent: input.agent,
@@ -116,8 +130,10 @@ const registryLayer = Layer.effect(
           if (registration) registrations.set(name, registration)
         }
         for (const [name, registration] of registrations) {
+          const declared = capability(registration.tool, name)
           if (
-            capability(registration.tool, name).effectClass === "unknown" ||
+            declared.effectClass === "unknown" ||
+            (declared.effectClass === "effect" && declared.id !== "files.write") ||
             whollyDisabled(permission(registration.tool, name), permissions)
           ) {
             registrations.delete(name)
