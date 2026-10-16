@@ -69,10 +69,16 @@ def main() -> int:
             names[name] = rel
         packages.append((package_dir, package))
 
+    # E2E fixture sandboxes are hidden beneath packages/ but are not workspace members.
+    # Exclude only this owned sandbox namespace; other hidden package manifests remain
+    # visible to the undeclared-package check.
+    e2e_sandbox = ".horizoncode-e2e-"
     all_package_dirs = {
         path.parent.resolve()
         for path in (ROOT / "packages").rglob("package.json")
-        if "node_modules" not in path.parts and "dist" not in path.parts
+        if "node_modules" not in path.parts
+        and "dist" not in path.parts
+        and not any(part.startswith(e2e_sandbox) for part in path.relative_to(ROOT / "packages").parts)
     }
     undeclared = sorted(path.relative_to(ROOT).as_posix() for path in all_package_dirs if path not in resolved)
     for rel in undeclared:

@@ -255,7 +255,7 @@ No commit/push/destructive cleanup without explicit authorization.
 | OMP artifact references and Agent Hub | Reuse existing artifact, Session and managed Task/Attempt identities for derived inspection, steering and bounded result refs | No second transcript or effect authority; permission and resume tests |
 | Codex sandbox/checkpoint patterns | Implement accepted per-OS confinement and producer/route-compatible compaction metadata | Negative sandbox cases; newest invalid checkpoint must not silently fall back to older authority |
 | OpenCode compaction, TUI, skills, hooks, ACP/MCP | Reuse pinned inherited implementation where tests prove support | V1/V2 parity, versioned toolset, no privilege bypass or redundant runtime |
-| Snapcompact, default best-of-N, always-on classifier, full native shell, competing marketplace | DEFER as default; research only if later benchmark/product decision supports them | Explicit cost/privacy/accuracy tests and source license review |
+| Snapcompact (transient imaging and persistent archive are distinct) | DEFERRED/UNAVAILABLE in V1; no runtime code, toggle or capability; reconsider only after P1.3 and context baselines | Same-model fidelity, capability and image-token/count/byte limits; privacy, cost/cache, recovery/rollback; exact source license/dependency review |
 
 ### Security-critical native read/grep/gix acceptance
 
@@ -272,6 +272,17 @@ Short Hashline display anchors (including 2-byte line hashes) never authorize ed
 - [ ] **Context/edit:** Preserve original direct history; rebuild compact control footer from canonical Rust task/effect state; pin checkpoint producer/model/harness/source cursor; reject malformed newest checkpoint rather than trusting older grant. Benchmark trim/compact retention, re-fetch, latency and outcome.
 - [ ] **Speed:** Benchmark existing ripgrep/Git/index and patch paths first. Enable guarded native search/gix, Hashline, connection warming or CoW only behind rollback flags once both correctness/security and net benefit are proven.
 - [ ] **V1 remaining gates:** Continue LSP, DAP, persistent REPL, browser, desktop, web-search, skills/hooks/plugin distribution, ACP/MCP integration, artifacts, rendering, UX and automation within their already approved owners, independently tested and accurately labeled.
+
+#### Selected next four major slices (2026-10-15)
+
+1. **P1.3 host-kernel runtime and package closure.** Follow the normative host-scoped `hz-kernel` contract in §§14/37; implement the Rust host process and inject its target manifest/asset through `packages/opencode/script/build.ts`, then wire Core's existing authenticated client. Acceptance: real host handshake/READY and durable owner epoch; actual effects RPC; Guard denial before mutation; explicit approval, one-use lease, receipt/UNKNOWN recovery; the per-Session projection worker remains separate. Verify the built artifact through Core↔Rust IPC. Linux/WSL evidence does not qualify native Windows.
+2. **P1.3 first direct shell/process origin.** Close the actual `packages/opencode/src/session/prompt.ts` `shellImpl -> spawner.spawn` route before touching broader origin classes. Require complete bounded ToolBatch admission before spawn; malformed/mixed/ASK/DENY/timeout cases launch zero processes; an allowed call consumes one lease and records outcome; cancellation, restart and UNKNOWN are reconciled. Use the existing PTY-001–006 contract and preserve the selected provider/model/harness.
+3. **RC0 resource sampler and reproducible baseline (parallel).** Add OS-owned process-tree sampling and attribution to the existing resource owner, not a dashboard. Record Linux PSS/RSS/CPU and native Windows private bytes separately; reproduce 1/5/10/20-session workloads with hardware, cache, task, provider/model/harness and local-inference conditions bound to raw artifacts. Never kill unrelated processes or claim WSL as Windows evidence.
+4. **P2 single managed vertical.** Only after P1.3 admission is proven: accepted SpecVersion → one Task/Attempt → one bounded action through the same Guard → durable receipt/evidence → independent verification of the final integrated revision. Prove pause/cancel/restart/UNKNOWN and human-edit conflict before worker fan-out.
+
+Snapcompact is not one of these slices. Its future experiment remains blocked on the existing context/accuracy/cost/privacy gates; no new session owner or shortcut is introduced.
+
+**Implementation checkpoint (2026-10-15):** Core `MessageChannel` now fences outbound application frames with the authenticated `ownerEpoch`/`processIncarnation`, rejects missing or mismatched inbound fencing, and uses the declared `msgpackr` codec; regression tests cover all ten Rust application-frame kinds and malformed fence values at the Rust 256-byte UTF-8 boundary. Core frame tests: 7 pass / 35 assertions; Rust `frame_fence_rejects_foreign_epoch_or_incarnation`: 1 pass. `packages/opencode/script/build.ts` now has native Linux GNU host-artifact/manifest logic but emits `unavailable` while `kernel/Cargo.toml` has no `hz-kernel` binary; Windows host packaging and Core named-pipe/runtime support remain unavailable. A direct `terminal.run` deny-before-dispatch smoke could not load the hydrated ignored `packages/core/src/pty.ts`: module evaluation throws `ReferenceError: input is not defined` at line 995; that overlay also has 40 typecheck diagnostics and was left untouched. This closes only wire-fence interop and a fail-closed packaging path. No effects/terminal end-to-end path has been established; do not mark slice 1 complete. Core typecheck remains non-green at 92 diagnostics across 23 files; none were reported in the new frame-fence helpers or their regression test.
 
 ### Six benchmark lanes, not another dashboard
 
@@ -291,7 +302,7 @@ Integrate with the existing §16 Settings/config owner and §33 canonical capabi
 - [ ] Enabling a setting cannot override Guard/policy, change selected model/harness, launch paid inference, or perform an unauthorized effect. Apply boundary and next-turn/next-session/restart state are explicit.
 - [ ] Run FEAT-001..010 in §32 with schema/registry validation before declaring a feature TESTED or VERIFIED; preserve safe disable/migration when class changes.
 
-Examples that remain experimental/disabled until their runtime and benchmarks actually qualify: alternate native grep/gix backend, Hashline edit dialect, provider transport prewarm and CoW worktree backend. Deferred features (such as snapcompact) must not be mislabeled as operational merely by appearing under an Experimental heading.
+The 2026-10-15 source review in §§16.15.2/30.4/42 SRC-024 finds future ContextService projection architecturally plausible but not integration-ready: Core V2 lacks the owner, exact-model image metadata, image-aware budget and local renderer. Snapcompact is outside the next four V1 slices; no executable setting or runtime claim is appropriate.
 
 ### Feature-source audit and smallest implementation route (2026-10-14)
 
@@ -341,7 +352,7 @@ Do not create new agent loops, tool authorities, separate Rust conversation stor
 
 ## Resource-efficiency and JCode adoption implementation gates — 2026-10-15 (A-V2-30)
 
-**Baseline:** Horizon `main@4e2086633d006f7d8b7709cb0df622f77a9b8d54`, JCode `1jehuang/jcode@1f612a7`. This section records **newly accepted work, not completed work**. The normative owners are §17.10, §18.17, §20.11, §21.10, §29.17, §30.20, §31.16, §32.32, §33.29 and §37.15; this plan is the sole task-order tracker. Never interpret a checked research item as working runtime.
+**Baseline:** Horizon `main@4e2086633d006f7d8b7709cb0df622f77a9b8d54`, JCode `1jehuang/jcode@1f612a7`. This section records **newly accepted work, not completed work**. The normative owners are §17.10, §18.17, §20.11, §21.10, §29.17, §30.20, §31.16, §32.32, §33.29 and §37.16; this plan is the sole task-order tracker. Never interpret a checked research item as working runtime.
 
 ### RC0 — baseline and resource instrumentation (independent of mutation enablement)
 - [x] Pin external JCode source and distinguish implemented vs Proposed/Design/Draft/Being implemented in §42.9.
@@ -397,7 +408,7 @@ Source-to-feature coverage crosswalk: §42.10. These are accepted product capabi
 
 ## Implementation-ready RC0–RC5 function/test ledger — 2026-10-15
 
-**Authoritative design is in the topic owners; this ledger only orders code work.** All entries below are **NOT IMPLEMENTED by the documentation PR** unless separately identified in HANDOFF with source and real test evidence. Do not create a second Session, Task, tool registry, authorization engine or runtime in the name of JCode parity. The precise HLD is §01.13, API/IPC §13.12, state/durability §11.20, schema work §12.16, LLD §15.20/§18.18–19/§21.11/§29.18/§30.21/§31.17/§37.16–18 and tests §32.33–34.
+**Authoritative design is in the topic owners; this ledger only orders code work.** All entries below are **NOT IMPLEMENTED by the documentation PR** unless separately identified in HANDOFF with source and real test evidence. Do not create a second Session, Task, tool registry, authorization engine or runtime in the name of JCode parity. The precise HLD is §01.13, API/IPC §13.12, state/durability §11.20, schema work §12.16, LLD §15.20/§18.18–19/§21.11/§29.18/§30.21/§31.17/§37.17–19 and tests §32.33–34.
 
 | Deliverable | Concrete code boundary | Core functions / adapters to implement | Test gate |
 |---|---|---|---|
@@ -411,7 +422,7 @@ Source-to-feature coverage crosswalk: §42.10. These are accepted product capabi
 | RC2.2 worker execution | Rust WorkerExecution + §14 ExecutionHost; authenticated ingress/Task/Attempt/owner epoch on every request | `enqueue, reserve, attachExistingCoreClient, startIsolatedWorker, settleWorker, revokeLease`; untrusted ticket/lease alone cannot launch | JC-RES-007/009/012.H–K |
 | RC2.3 reviewer | existing Rust Evidence/Verification owner with independently authenticated adapter | `verifyCriterion, bindRevision, finalizeRun`; no child self-approval | JC-RES-018 |
 | RC2.4 file-conflict safety | file watchers/handler + Rust guard revision preconditions | authenticated `recordObservedTouch, listForPath, invalidateGeneration`; internal-only `evictExpired`; bind Session/owner epoch/source generation; hard write lease/hash validation separate | JC-RES-011/012.K |
-| RC3.1 Provider Doctor | existing selected provider/auth/catalog source; §37.17 | `inspectOffline, probeCatalog, probeFull` with authenticated grant ownership/epoch, consent and actual token/billing evidence | JC-RES-013/014/015/012.L |
+| RC3.1 Provider Doctor | existing selected provider/auth/catalog source; §37.18 | `inspectOffline, probeCatalog, probeFull` with authenticated grant ownership/epoch, consent and actual token/billing evidence | JC-RES-013/014/015/012.L |
 | RC3.2 context+recall | ContextLedger/indexd and selected model provider | `compileContext, recallScoped, getTokenBudget, invalidateSourceEpoch` | JC-RES-003/005/020 |
 | RC3.3 session import | canonical host Session and explicit native backend adapter | `detectSources, previewImport, commitImport, detachExternalSession` | JC-RES-019 |
 | RC4 TUI | hydrated existing renderer + UiEventMux | `normalizePaintEvent, stablePrefixDiff, coalesceReplaceableDelta, chooseFrameDeadline, paintChangedCells` | JC-RES-016/017 |
@@ -421,7 +432,7 @@ Source-to-feature coverage crosswalk: §42.10. These are accepted product capabi
 
 **Definition of executable specification before marking a checkbox:** every selected function above has an existing/new concrete file path *in a hydrated checkout*, typed parameters/return/limits, ownership of durable vs derived data, error-code mapping, explicit concurrent/cancel/crash behaviour and a complete test with fixture bytes and method. §37 pseudotypes are not compiled/generated contracts: RC0–5 may be marked CODE_PRESENT only after actual modules/schema appear, WIRED only after real ingress/egress, VERIFIED only after security/OS/performance tests. Benchmarks from JCode or README screenshots are not runtime proofs.
 
-**First coding commit recipe:** start with shell/process ToolBatch pre-dispatch denial and real guarded replacement (P1.3); in parallel add **read-only** ResourceSampler and process-tree baseline. Do not build the shared effect daemon first. After P1, a single authenticated managed goal-to-verifier integration slice establishes P2 before expanding workers. Keep native Windows unsupported paths explicitly unavailable until actual Windows source/OS CI passes. Follow `AGENTS.md` cleanup/worktree discipline.
+**First coding sequence:** P1.3 requires the host-scoped `hz-kernel` prerequisite in §§14/37; then close the first shell/process origin with complete-batch Guard admission and a real guarded replacement. RC0's read-only ResourceSampler may proceed in parallel only for stable Rust-owned process/lease identities. “Do not build the shared effect daemon first” means do not prebuild the proposed multi-Session observer/virtual-session broker; it does not defer or replace the normative host-scoped effects owner, and it does not permit routing effects through `session_supervisor`. Keep native Windows unsupported paths unavailable until native Windows source/OS tests pass. Follow `AGENTS.md` worktree/cleanup discipline.
 
 ## Missing accepted journey implementation ledger — ACP / visual / deployment (2026-10-15)
 
@@ -430,4 +441,14 @@ These flows were already accepted in §§3.16–3.18; prior implementation-speci
 - [ ] **ACP outbound adapter (P6):** hydrate upstream OpenCode ACP server for source reuse, then add distinct Horizon client adapter through existing AgentProfile/DelegationMailbox and Rust worker/Guard. Implement version/auth/capabilities/session link, tool mediation, typed result, cancel/reconnect and UNKNOWN with tests ACP-001..008. Native OpenCode mode remains a separately owned backend, not a second direct Horizon Session writer.
 - [ ] **Visual source selection (P5/P7):** browser/preview observation + build/source-map generation → bounded source candidates/ambiguity → approved guarded `files.patch` → re-observe/verification. Real VIS-001..004; do not turn a pixel or untrusted DOM into write authority.
 - [ ] **Deployment (P5/P9):** provider/environment/account discovery and deterministic artifact manifest; explicit spend/secret/effect consent; Guard PREPARED/lease; target-side idempotency+receipts; real URL/revision health and critical workflow check; bounded rollback/reconciliation. Real DEP-001..008; no speculative production deployment or success from an upload alone.
-- [ ] Add versioned generated machine contracts + canonical §33.30 candidate registrations and actual entry points before marking any new tool WIRED, and update HANDOFF with CI/OS/provenance. Source seam §20.13, safety §14.18, interfaces §37.19–20, tests §32.35. The existing P1 universal Guard is a prerequisite for effectful routes; do not invent a second execution engine.
+- [ ] Add versioned generated machine contracts + canonical §33.30 candidate registrations and actual entry points before marking any new tool WIRED, and update HANDOFF with CI/OS/provenance. Source seam §20.13, safety §14.18, interfaces §§37.20–21, tests §32.35. The existing P1 universal Guard is a prerequisite for effectful routes; do not invent a second execution engine.
+
+## 2026-10-16 — user-directed next-agent execution wave
+
+This records the requested delegation method; it does not change P0–P9 dependencies, mark a gate complete, or authorize effectful work ahead of P1.3.
+
+- Main agent owns architecture/source research and integration. Read the active owner docs and inspect the local pinned OpenCode tree plus the exact OMP/OpenCode revisions in §42 before coding. Prefer compatible source reuse or bounded algorithm adaptation over a fresh parallel implementation; inspect callees, tests, per-file licenses, exceptions and dependency closure, then record any port in §42.
+- Use separate bounded agents for P0, P1.2, P3, P4 and P5; one agent owns P1.3 followed by P2, sequentially. P2 starts only after the P1.2/P1.3 entry gates pass. Keep writable file sets non-overlapping and preserve all pre-existing dirty/untracked files.
+- P3/P4/P5 may research or implement compatible non-effectful paths in parallel, but every effectful origin remains unavailable until the canonical Guard/ExecutionHost boundary and its negative/recovery tests pass.
+- The user explicitly authorized native Windows testing under `/mnt/c/users/sonali/desktop/` in a newly created temporary directory with a child `hzcode` folder. PowerShell 5.1.26100.9711 is available and the Desktop path exists. No such test directory was created in this continuation; keep Windows results separate from WSL/Linux evidence.
+- Current implementation status and exact verification remain in `HANDOFF.md`; chronological changes and next steps remain in root `CURRENT_RUN.md`.

@@ -3,9 +3,6 @@ import { Context, Config as EffectConfig, ConfigProvider, Effect, Layer, Queue, 
 import { NodeHttpServer, NodeServices } from "@effect/platform-node"
 import { HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/unstable/http"
 import * as Socket from "effect/unstable/socket/Socket"
-import path from "path"
-import { pathToFileURL } from "url"
-import { mkdir } from "fs/promises"
 import { Location } from "@opencode-ai/core/location"
 import { Pty } from "@opencode-ai/core/pty"
 import { PtyTicket } from "@opencode-ai/core/pty/ticket"
@@ -15,14 +12,15 @@ import { disposeAllInstances, tmpdir, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
 const context = Context.empty() as Context.Context<unknown>
-const testPty = process.platform === "win32" ? test.skip : test
+const testPty = process.platform === "win32" ? test : test.skip
+const testLinuxRefusal = process.platform === "win32" ? test.skip : test
 
 function request(route: string, directory: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers)
   if (!headers.has("authorization")) headers.set("authorization", `Basic ${btoa("opencode:pty-test-secret")}`)
   if (!headers.has("origin")) headers.set("origin", "oc://renderer")
   headers.set("x-opencode-directory", directory)
-  return HttpApiApp.webHandler().handler(
+  return testWebHandler(
     new Request(`http://localhost${route}`, {
       ...init,
       headers,
@@ -38,12 +36,14 @@ const testStateLayer = Layer.effectDiscard(
   }),
 )
 
+const testRoutes = HttpApiApp.createRoutes().pipe(
+  Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_SERVER_PASSWORD: "pty-test-secret" }))),
+)
 const servedRoutes: Layer.Layer<never, EffectConfig.ConfigError, HttpServer.HttpServer> = HttpRouter.serve(
-  HttpApiApp.createRoutes().pipe(
-    Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_SERVER_PASSWORD: "pty-test-secret" }))),
-  ),
+  testRoutes,
   { disableListenLog: true, disableLogger: true },
 )
+const testWebHandler = HttpRouter.toWebHandler(testRoutes, { disableLogger: true }).handler
 
 const effectIt = testEffect(
   Layer.mergeAll(
@@ -82,7 +82,7 @@ describe("v2 pty HttpApi", () => {
     const created = await request("/api/pty", tmp.path, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ command: "/usr/bin/env", args: ["sh", "-c", "exit 4"], title: "v2" }),
+      body: JSON.stringify({ command: "cmd", args: ["/D", "/C", "exit /b 4"], title: "v2" }),
     })
     expect(created.status).toBe(200)
     const body = Schema.decodeUnknownSync(Location.response(Pty.Info))(await created.json())
@@ -114,7 +114,7 @@ describe("v2 pty HttpApi", () => {
     const created = await request("/api/pty", tmp.path, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ command: "/usr/bin/env", args: ["sh", "-c", "sleep 5"] }),
+      body: JSON.stringify({ command: "cmd", args: ["/D", "/C", "ping -n 6 127.0.0.1 >NUL"] }),
     })
     expect(created.status).toBe(200)
     const info = Schema.decodeUnknownSync(Location.response(Pty.Info))(await created.json()).data
@@ -138,14 +138,37 @@ describe("v2 pty HttpApi", () => {
       await request(`/api/pty/${info.id}`, tmp.path, { method: "DELETE" })
     }
   })
-  ;(process.platform === "win32" ? effectIt.live.skip : effectIt.live)(
+  testLinuxRefusal("authenticates PTY creation and fails closed before creating a session on Linux", async () => {
+    await using tmp = await tmpdir({ config: { formatter: false, lsp: false } })
+    const body = JSON.stringify({ command: "bash", args: ["-lc", "exit 0"] })
+    const unauthenticated = await request("/api/pty", tmp.path, {
+      method: "POST",
+      headers: { authorization: `Basic ${btoa("opencode:wrong-password")}`, "content-type": "application/json" },
+      body,
+    })
+    expect(unauthenticated.status).toBe(401)
+
+    const refused = await request("/api/pty", tmp.path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    })
+    expect(refused.status).toBe(503)
+    expect(await refused.json()).toMatchObject({ _tag: "ServiceUnavailableError", service: "host-kernel" })
+
+    const empty = await request("/api/pty", tmp.path)
+    expect(empty.status).toBe(200)
+    expect(Schema.decodeUnknownSync(Location.response(Schema.Array(Pty.Info)))(await empty.json()).data).toEqual([])
+  })
+
+  ;(process.platform === "win32" ? effectIt.live : effectIt.live.skip)(
     "serves PTY websocket output and input through the canonical route",
     () =>
       Effect.gen(function* () {
         const dir = yield* tmpdirScoped({ git: true, config: { formatter: false, lsp: false } })
         const created = yield* HttpClientRequest.post("/api/pty").pipe(
           directoryHeader(dir),
-          HttpClientRequest.bodyJson({ command: "/bin/cat", title: "v2-websocket" }),
+          HttpClientRequest.bodyJson({ command: "cmd", args: ["/D", "/Q"], title: "v2-websocket" }),
           Effect.flatMap(HttpClient.execute),
         )
         expect(created.status).toBe(200)
@@ -183,44 +206,17 @@ describe("v2 pty HttpApi", () => {
         expect(removed.status).toBe(204)
       }),
   )
-  ;(process.platform === "win32" ? effectIt.live.skip : effectIt.live)(
-    "applies plugin shell environment before forced PTY values",
+  ;(process.platform === "win32" ? effectIt.live : effectIt.live.skip)(
+    "preserves caller environment while forcing PTY values",
     () =>
       Effect.gen(function* () {
-        const dir = yield* tmpdirScoped({ git: true, config: { formatter: false, lsp: false } })
-        const plugin = path.join(dir, "plugin.ts")
-        const cwd = path.join(dir, "child")
-        yield* Effect.promise(() => mkdir(cwd))
-        yield* Effect.promise(() =>
-          Bun.write(
-            plugin,
-            [
-              "export default async () => ({",
-              '  "shell.env": (input, output) => {',
-              '    output.env.SHARED = "plugin"',
-              '    output.env.PLUGIN = "plugin"',
-              '    output.env.TERM = "plugin"',
-              "    output.env.HOOK_CWD = input.cwd",
-              "  },",
-              "})",
-              "",
-            ].join("\n"),
-          ),
-        )
-        yield* Effect.promise(() =>
-          Bun.write(
-            path.join(dir, "opencode.json"),
-            JSON.stringify({ plugin: [pathToFileURL(plugin).href], formatter: false, lsp: false }),
-          ),
-        )
-
+        const dir = yield* tmpdirScoped({ config: { formatter: false, lsp: false } })
         const created = yield* HttpClientRequest.post("/api/pty").pipe(
           directoryHeader(dir),
           HttpClientRequest.bodyJson({
-            command: "/bin/sh",
-            args: ["-c", 'printf "%s|%s|%s|%s|%s\\n" "$CALLER" "$SHARED" "$PLUGIN" "$TERM" "$HOOK_CWD"; sleep 5'],
-            cwd,
-            env: { CALLER: "caller", SHARED: "caller", TERM: "caller" },
+            command: "cmd",
+            args: ["/D", "/Q", "/C", "echo %CALLER%^|%TERM% & ping -n 6 127.0.0.1 >NUL"],
+            env: { CALLER: "caller", TERM: "caller" },
           }),
           Effect.flatMap(HttpClient.execute),
         )
@@ -249,9 +245,7 @@ describe("v2 pty HttpApi", () => {
             return yield* takeUntil(expected, next)
           })
 
-        expect(yield* takeUntil(`caller|plugin|plugin|xterm-256color|${cwd}`)).toContain(
-          `caller|plugin|plugin|xterm-256color|${cwd}`,
-        )
+        expect(yield* takeUntil("caller|xterm-256color")).toContain("caller|xterm-256color")
         yield* write(new Socket.CloseEvent(1000, "done")).pipe(Effect.catch(() => Effect.void))
         yield* HttpClientRequest.delete(`/api/pty/${info.id}`).pipe(directoryHeader(dir), HttpClient.execute)
       }),

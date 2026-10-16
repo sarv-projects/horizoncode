@@ -303,3 +303,32 @@ The plan's “do not build the shared effect daemon first” wording was clarifi
 5. Rerun only affected Core/Rust checks after the current unrelated Cargo build finishes, then continue the open P6, P2, and raw RC0 measurement tasks; update this handoff with exact evidence.
 
 **Decisions & Gotchas:** `hz-kernel`'s Rust name is load-bearing — `kernel/tests/hz_kernel_process.rs`, the packaging manifest and `installBundledBinary` all require the target name `hz-kernel`, so do not "fix" the dash. The host kernel currently admits one supported filesystem call per batch, and the host principal is the authenticated OS UID (no ServerAuth subject is available to the host yet); do not read that as full P1.3. Core's `pty.ts` type-cleanliness depends on the imported `SessionSupervisorError` class — re-introducing `SessionSupervisor.SessionSupervisorError` will break it again. `kernel/target` grew 848 MB → 1.1 GB and `indexd/target` 69 MB from this session's builds (834 GB free); no worktree, service or staging was created, and nothing was committed or pushed.
+
+## 2026-10-16 — PTY harness correction and next-agent handoff
+
+**Active Goal:** Prepare an accurate, executable handoff for the next coding agent; preserve shared changes and record the user's requested P0–P5 subagent execution split and Windows test authorization.
+
+**Where We Stopped:**
+- `packages/opencode/test/server/httpapi-v2-pty.test.ts`: canonical route helper now uses `HttpApiApp.createRoutes()` with the test password. Added Linux negative/positive boundary: invalid Basic auth → 401; valid auth → typed 503 with `service=host-kernel`; GET confirms no PTY session. Linux run: **1 pass / 4 skip / 0 fail**. Windows-only live cases now use `cmd`; they were not exercised on Windows.
+- `packages/opencode/test/server/httpapi-listen.test.ts`: removed the stale positive `plugin client requests reuse the listening server instance` test. Source trace showed the external configured plugin is not invoked: `packages/opencode/src/plugin/index.ts` loads internal plugins and reports external server plugins unavailable until Guard/ExecutionHost are wired. The listener suite is **9 pass / 3 skip / 0 fail**.
+- `scripts/architecture/audit_workspace_packages.py`: hidden exclusion is limited to `.horizoncode-e2e-*`; arbitrary hidden package manifests remain audited. A temporary hidden manifest probe produced `UNDECLARED_PACKAGE_DIRECTORY`, was removed, and the clean audit returned 36 workspaces / 0 undeclared / 0 errors.
+- `HANDOFF.md`: corrected stale 403/plugin-timeout findings and added the requested next-agent execution and Windows-test directives.
+- `docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md`: added the requested P0/P1.2/P1.3→P2/P3/P4/P5 delegation order and source-reuse/Windows test directions; no implementation gate was marked complete.
+- `CURRENT_RUN.md`: this handoff entry.
+
+**Verification (observed):**
+- `cd packages/opencode && bun test test/server/httpapi-v2-pty.test.ts` → 1 pass, 4 skip, 0 fail (Linux).
+- `cd packages/opencode && bun test test/server/httpapi-listen.test.ts` → 9 pass, 3 skip, 0 fail; 37 assertions.
+- `python3 scripts/architecture/audit_workspace_packages.py` → 36 workspaces, 36 unique names, 0 undeclared, 0 errors. Hidden non-sandbox probe was rejected; probe cleanup was followed by another clean pass.
+- `cd packages/core && bun run typecheck` → no diagnostics in output. This is Core only, not the full workspace typecheck.
+- `powershell.exe -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'` → `5.1.26100.9711`; `/mnt/c/users/sonali/desktop` exists.
+- No Windows PTY/ConPTY acceptance, full workspace typecheck, full P1.3 origin closure or P2 managed vertical was exercised.
+
+**Next Exact Steps:**
+1. Re-read current tree status, worktrees, running agents/processes, and resource pressure. Preserve the shared dirty/untracked tree; do not reset, clean, broadly stage, commit or push.
+2. Main agent reads owner docs and inspects local pinned OpenCode plus the exact OMP/OpenCode source pins in `arch_V1/42`; reuse/adapt where compatible, inspect dependencies/licenses/tests, and record source provenance before any port.
+3. Launch separate bounded agents for P0, P1.2, P1.3→P2 (same agent; sequential), P3, P4 and P5 with non-overlapping files. P2 starts only after P1.2/P1.3 admission gates pass. Keep effectful P3/P4/P5 capabilities unavailable until the canonical Guard path is proven.
+4. For native Windows scenarios, use only a new task-owned temporary directory under `/mnt/c/users/sonali/desktop/` with a `hzcode` child, as authorized by the user. Keep WSL/Linux results distinct from native Windows acceptance.
+5. At integration, run the affected module checks and the required markdown/convergence/push gates; update `HANDOFF.md` with exact platform, tests and remaining blockers.
+
+**Decisions & Gotchas:** The original 403 came from the test helper invoking global `HttpApiApp.webHandler()` instead of the configured test routes; production PTY authorization already existed. Linux PTY start intentionally fails closed because process-tree cleanup cannot be guaranteed. Do not bypass that refusal or restore the external-plugin positive test without implementing its Guard/ExecutionHost boundary. The workspace audit must exempt only the owned `.horizoncode-e2e-*` sandbox namespace, not all hidden paths. No Windows test directory was created; no task worktree or process was created. Existing dirty files from prior work were preserved.
