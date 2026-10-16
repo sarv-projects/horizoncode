@@ -339,9 +339,9 @@ The plan's “do not build the shared effect daemon first” wording was clarifi
 
 **Where We Stopped:**
 - `git worktree list --porcelain` found only `/home/sarvesh/business_Dev/agentx`; `git worktree prune --dry-run --verbose` found no stale registrations. No subagent worktree/commit needed merging. No worktree was removed.
-- The user-requested PTY/auth, listener-test, workspace-audit, and handoff changes were committed locally as `dd51d9e3050a853f46d273b55ce5fe3c22d245c1` (`fix(test): correct PTY harness and workspace audit`). The commit is unsigned (`%G?` = `N`); the configured signing identity has no available secret key.
-- The branch is `p1.3-interactive-pty-integration`; `origin` has no branch of that name. No push occurred. The six-path commit is 7 commits ahead of `origin/main`.
-- Other shared changes were deliberately left untouched: 38 modified and 24 untracked paths remain outside that commit. Do not treat them as merged or task-owned without inspecting exact ownership.
+- The six task-owned paths were committed as `dd51d9e3050a853f46d273b55ce5fe3c22d245c1` (`fix(test): correct PTY harness and workspace audit`), followed by a docs-only checkpoint commit `b9c9f4656d182a97f47ac4e35d92c6b9e47a1d5f`. Both are unsigned because the configured signing identity has no available secret key.
+- The branch is `p1.3-interactive-pty-integration`; `origin` has no branch of that name. At the `b9c9f46` checkpoint, the local branch was 8 commits ahead of `origin/main`. No push occurred.
+- Other shared changes remain untouched: 38 modified and 24 untracked paths are outside these commits. Do not treat them as merged or task-owned without inspecting exact ownership.
 - The root `.horizoncode-e2e-20261013` directory is not a Git worktree. It was preserved; this request did not authorize deleting that sandbox.
 
 **Verification (observed):**
