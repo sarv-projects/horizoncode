@@ -25,7 +25,7 @@ import { Wildcard } from "@/util/wildcard"
 import { SessionID } from "@/session/schema"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
-import { LocationServiceMap } from "@opencode-ai/core/location-services"
+import { LocationServiceMap, locationServiceMapNode } from "@opencode-ai/core/location-services"
 import { Pty } from "@opencode-ai/core/pty"
 import { InstanceState } from "@/effect/instance-state"
 import { Auth } from "@/auth"
@@ -518,6 +518,7 @@ export const node = LayerNode.make({
     llmClient,
     RuntimeFlags.node,
     SessionSupervisor.node,
+    locationServiceMapNode,
   ],
 })
 

@@ -14,7 +14,7 @@ python3 scripts/architecture/validate_convergence.py
 python3 scripts/architecture/audit_markdown_repo.py
 python3 scripts/architecture/validate_external_sources.py
 # Never silently skip positive Rust Guard tests due to an absent binary.
-cargo build --locked --manifest-path kernel/Cargo.toml --bin session_supervisor --quiet
+cargo build --locked --manifest-path kernel/Cargo.toml --bin session_supervisor --bin hz-kernel --quiet
 # P2 owner durability must execute its replay/fencing regressions in hosted CI.
 cargo test --locked --manifest-path kernel/Cargo.toml --test managed_control --quiet
 cargo test --locked --manifest-path kernel/Cargo.toml --lib resource_budget --quiet

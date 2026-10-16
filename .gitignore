@@ -16,6 +16,7 @@
 !/.github/workflows/horizoncode-full-validation.yml
 !/IMPLEMENTER_PROMPT.md
 !/HANDOFF.md
+!/implementationtov1release.md
 !/README.md
 !/SECURITY.md
 !/CONTRIBUTING.md
@@ -112,6 +113,8 @@
 !/packages/tui/src/routes/session/
 !/packages/tui/src/routes/session/index.tsx
 !/packages/tui/src/util/
+!/packages/tui/src/util/artifact-render.ts
+!/packages/tui/src/util/collapse-tool-output.ts
 !/packages/tui/src/util/session-scroll.ts
 !/packages/tui/src/component/
 !/packages/tui/src/component/dialog-workspace-create.tsx
@@ -121,7 +124,12 @@
 !/packages/tui/test/component/
 !/packages/tui/test/component/dialog-workspace-create.test.tsx
 !/packages/tui/test/util/
+!/packages/tui/test/util/artifact-render.test.ts
+!/packages/tui/test/util/collapse-tool-output.test.ts
 !/packages/tui/test/util/session-scroll.test.ts
+!/packages/tui/test/context/
+!/packages/tui/test/context/ui-event-mux.test.ts
+!/packages/tui/test/context/data-stream.test.tsx
 !/packages/app/
 !/packages/app/src/
 !/packages/app/src/index.css
@@ -396,6 +404,7 @@ tsconfig.tsbuildinfo
 !/packages/tui/src/component/prompt/index.tsx
 !/packages/tui/src/context/
 !/packages/tui/src/context/sync.tsx
+!/packages/tui/src/context/ui-event-mux.ts
 !/packages/tui/test/component/dialog-features.test.tsx
 !/packages/opencode/src/tool/shell.ts
 !/packages/opencode/src/server/shared/
@@ -445,3 +454,108 @@ tsconfig.tsbuildinfo
 !/packages/server/src/auth.ts
 !/packages/server/src/cors.ts
 !/packages/server/src/middleware/authorization.ts
+!/packages/opencode/src/agent/
+!/packages/opencode/src/agent/agent.ts
+!/packages/opencode/src/session/system.ts
+!/packages/server/src/location.ts
+!/packages/server/src/middleware/session-location.ts
+!/packages/opencode/src/session/compaction.ts
+!/packages/opencode/src/session/processor.ts
+!/packages/opencode/src/tool/task.ts
+!/packages/opencode/src/server/routes/instance/httpapi/groups/experimental.ts
+!/packages/opencode/src/server/routes/instance/httpapi/groups/file.ts
+!/packages/opencode/src/server/routes/instance/httpapi/handlers/experimental.ts
+!/packages/opencode/src/server/routes/instance/httpapi/handlers/file.ts
+!/packages/opencode/src/server/routes/instance/httpapi/server.ts
+
+# A4: expose current first-party overlay deltas discovered by the 2026-10-16 audit.
+!/packages/core/src/location-services.ts
+!/packages/opencode/src/agent/subagent-permissions.ts
+!/packages/opencode/src/acp/directory.ts
+!/packages/opencode/src/cli/cmd/agent.ts
+!/packages/opencode/src/cli/cmd/debug/file.ts
+!/packages/opencode/src/cli/cmd/debug/v2.ts
+!/packages/opencode/src/project/instance-store.ts
+!/packages/opencode/src/server/routes/instance/httpapi/public.ts
+!/packages/opencode/test/agent/
+!/packages/opencode/test/agent/agent.test.ts
+!/packages/opencode/test/agent/agent-identifier.test.ts
+!/packages/opencode/test/agent/plan-mode-subagent-bypass.test.ts
+!/packages/opencode/test/fixture/config.ts
+!/packages/opencode/test/fixture/fixture.ts
+!/packages/opencode/test/server/httpapi-instance.test.ts
+!/packages/opencode/test/server/httpapi-experimental.test.ts
+!/packages/opencode/test/server/httpapi-layer.ts
+!/packages/opencode/test/server/httpapi-pty.test.ts
+!/packages/opencode/test/session/llm.test.ts
+!/packages/opencode/test/tool/task.test.ts
+!/packages/sdk/
+!/packages/sdk/js/
+!/packages/sdk/js/src/
+!/packages/sdk/js/src/v2/
+!/packages/sdk/js/src/v2/gen/
+!/packages/sdk/js/src/v2/gen/sdk.gen.ts
+!/packages/sdk/js/src/v2/gen/types.gen.ts
+
+# P6: expose provider/agent/TUI-settings overlay deltas.
+!/packages/opencode/src/provider/
+!/packages/opencode/src/provider/provider.ts
+!/packages/opencode/test/provider/
+!/packages/opencode/test/provider/model-pricing.test.ts
+!/packages/opencode/test/provider/provider.test.ts
+!/packages/tui/src/component/dialog-agent.tsx
+!/packages/tui/src/component/dialog-model.tsx
+!/packages/tui/test/component/dialog-agent.test.ts
+!/packages/tui/test/component/dialog-model.test.ts
+!/packages/sdk/js/src/gen/
+!/packages/sdk/js/src/gen/types.gen.ts
+
+# A4 (2026-10-16 audit follow-up): remaining first-party overlay deltas reported
+# by scripts/architecture/audit_overlay_visibility.py. Parent directories are
+# unignored only so the exact files below become Git-visible; siblings stay
+# ignored unless they differ from the pinned opencode/ snapshot.
+# LSP/DAP/REPL service deltas and repo-intel/artifact-search tools.
+!/packages/opencode/src/dap/
+!/packages/opencode/src/dap/protocol.ts
+!/packages/opencode/src/dap/session.ts
+!/packages/opencode/src/lsp/broker.ts
+!/packages/opencode/src/repl/
+!/packages/opencode/src/repl/lifecycle.ts
+!/packages/opencode/src/repl/protocol.ts
+!/packages/opencode/src/tool/artifact-search.ts
+!/packages/opencode/src/tool/repo-intel.ts
+!/packages/opencode/test/dap/
+!/packages/opencode/test/dap/protocol.test.ts
+!/packages/opencode/test/dap/session.test.ts
+!/packages/opencode/test/lsp/broker.test.ts
+!/packages/opencode/test/repl/
+!/packages/opencode/test/repl/lifecycle.test.ts
+!/packages/opencode/test/repl/protocol.test.ts
+!/packages/opencode/test/tool/artifact-search.test.ts
+!/packages/opencode/test/tool/repo-intel.test.ts
+# Provider package deltas (google-vertex provider and provider runtime/tests).
+!/packages/llm/
+!/packages/llm/src/
+!/packages/llm/src/providers/
+!/packages/llm/src/providers/index.ts
+!/packages/llm/src/providers/google-vertex.ts
+!/packages/llm/test/
+!/packages/llm/test/provider/
+!/packages/llm/test/provider/google-vertex.test.ts
+!/packages/opencode/src/session/llm/
+!/packages/opencode/src/session/llm/native-runtime.ts
+!/packages/opencode/test/provider/provider.test.ts
+!/packages/opencode/test/server/httpapi-provider.test.ts
+# TUI question/plugin/context deltas and core location-layer test.
+!/packages/tui/src/plugin/
+!/packages/tui/src/plugin/adapters.tsx
+!/packages/tui/src/context/data.tsx
+!/packages/tui/src/routes/session/question.tsx
+!/packages/tui/test/component/question.test.tsx
+!/packages/tui/test/context/data-question.test.tsx
+!/packages/tui/test/plugin/
+!/packages/tui/test/plugin/adapters.test.tsx
+!/packages/tui/test/util/model.test.ts
+!/packages/core/test/location-layer.test.ts
+!/packages/opencode/test/tool/grep.test.ts
+!/packages/opencode/test/tool/read.test.ts

@@ -769,7 +769,7 @@ from turning an unterminated path/command into an unintended effect.
 
 ## 14.16 Desktop, web search, DAP and REPL effect classification
 
-These are adopted capability families under A-V2-25 and use the same Guard/ExecutionHost.
+DAP and bounded REPL are V1 capability families under A-V2-31 and use the same Guard/ExecutionHost. Desktop control and built-in web search are post-V1 and unavailable; the classifications below are preserved for future promotion and must not be read as V1 exposure.
 
 Desktop:
 - display/window/screenshot/AX queries are scoped reads;
@@ -805,9 +805,9 @@ A shared Rust daemon is **not** approval to run all tools in-process. Every effe
 
 §05 states the threat boundary, §13 the virtual wire topology, §18 measured pressure rules, §32.32 test scenarios. No JCode shell/destructive-action heuristic replaces these controls.
 
-## 14.18 External ACP agents, visual edits and deployment effects
+## 14.18 External ACP agents, visual edits and deployment effects (post-V1 journeys)
 
-Existing §§3.16–3.18 describe accepted interactions; §§37.20–21 now supply missing logical service boundaries. The security classifications below are **required even if the feature remains disabled**.
+External ACP client integration, browser-dependent visual edits and deployment journeys are outside the V1 CLI/TUI scope under A-V2-31 and remain unavailable. Existing §§3.16–3.18 and §§37.20–21 retain their future service/security boundaries; the classifications below are **required even while those features remain disabled**.
 
 - **ACP outbound launch:** process/network EFFECT, not a harmless read. The worker executable/endpoint identity, current principal, initial cwd/repository root, credential scope, capability subset, model selection and budget are frozen before Guard. Even if ACP protocol reports a permission prompt, that is **not** Horizon's Rust Guard proof. An external remote agent whose side effects are opaque cannot be advertised as governed pre-dispatch under Horizon's lease system.
 - **Native separate OpenCode backend:** always a separate explicit provider/session owner with truthful upstream security guarantees. Native OpenCode tool runs are not magically rewritten as Rust effects. If the selected native backend lacks an enforceable equivalent safety boundary, disclose and disable strict governed capability rather than claiming equivalence.

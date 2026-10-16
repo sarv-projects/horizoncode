@@ -4,7 +4,7 @@ import * as fs from "fs/promises"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
-import { Cause, Effect, Exit, Layer } from "effect"
+import { Cause, Effect, Exit, Layer, Stream } from "effect"
 import { ApplyPatchTool, preparePatchBatch } from "../../src/tool/apply_patch"
 import { LSP } from "@/lsp/lsp"
 import { Format } from "../../src/format"
@@ -23,11 +23,16 @@ const supervisor = LayerNode.make({
     SessionSupervisor.Service.of({
       open: () => Effect.die("unexpected supervisor open"),
       openForSession: () => Effect.die("unexpected supervisor open"),
+      registerHostLocation: () => Effect.die("unexpected host location registration"),
+      prepareUserEffect: () => Effect.die("unexpected user effect preparation"),
+      replyGuardApproval: () => Effect.die("unexpected guard approval reply"),
       prepareToolBatch: () => Effect.die("unexpected effect preparation"),
-      approveEffect: () => Effect.die("unexpected effect approval"),
       executeWrite: () => Effect.die("unexpected effect execution"),
       executePatch: () => Effect.die("unexpected patch execution"),
       runPatch: () => Effect.die("unexpected patch execution"),
+      requestHostKernel: () => Effect.die("unexpected host kernel request"),
+      hostOwnerEpoch: () => Effect.die("unexpected host owner epoch read"),
+      subscribeHostKernelEvents: () => Stream.die("unexpected host kernel event subscription"),
       watchSession: () => Effect.die("unexpected session watch"),
     }),
   ),

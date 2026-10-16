@@ -22,7 +22,7 @@ export const debugAgent = Effect.fn("Cli.debug.agent")(function* (args: {
 }) {
   const ctx = yield* InstanceRef
   if (!ctx) return
-  return yield* run(args, ctx)
+  return yield* run(args, ctx).pipe(Effect.catchTag("SessionSupervisorError", (error) => fail(error.message)))
 })
 
 const run = Effect.fn("Cli.debug.agent.body")(function* (

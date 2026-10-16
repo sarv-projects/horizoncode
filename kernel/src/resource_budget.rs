@@ -4,6 +4,8 @@
 //! OS sampler, executor, or live ResourcePolicyV1 service. OS quota discovery,
 //! sample trust/process identity and atomic lease accounting remain separate
 //! work. Missing effective capacity must never mean infinite free resources.
+//! [`PressureState::evaluate`] is a derived control hint with the same
+//! boundary: it never authorizes or performs termination, eviction or launch.
 
 /// Mirrors the single §11.20 reservation lifecycle; no ACTIVE/UNKNOWN aliases.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,6 +121,76 @@ pub fn remaining_capacity(
         .saturating_add(u128::from(safety_reserve))
         .saturating_add(reserved_headroom);
     Capacity::Remaining(u128::from(hard_limit).saturating_sub(charged) as u64)
+}
+
+/// §11.20/§18.18 canonical pressure states, without `SOFT`/`HARD` aliases.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PressureState {
+    Normal,
+    SoftPressure,
+    HardPressure,
+    Recovering,
+}
+
+/// Trusted limits for the observed dimension in one sampling epoch. `None` means the effective
+/// limit is unknown: new costly worker admission is blocked through
+/// [`Capacity::UnknownCapacity`]; this module must not invent a threshold from a missing limit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PressureLimits {
+    pub soft: Option<u64>,
+    pub hard: Option<u64>,
+}
+
+/// One bounded observation for [`PressureState::evaluate`]. The caller must own the reading
+/// history and set `sustained_calm` only after the configured lower watermark held across the
+/// calibrated hysteresis window; a single calm reading must not clear pressure by itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PressureObservation {
+    pub limits: PressureLimits,
+    /// Trusted same-epoch usage for the observed dimension. Hard admission additionally considers
+    /// outstanding reservations through [`remaining_capacity`]; this helper only evaluates the
+    /// configured caps and the OS alarm the caller supplies.
+    pub measured_usage: u64,
+    /// OS quota alarm (cgroup v2/Job Object/task limit) independent of configured limits.
+    pub os_quota_alarm: bool,
+    pub sustained_calm: bool,
+}
+
+impl PressureState {
+    /// Pure transition for the §18.18/§11.20 controller. Escalation is immediate, including
+    /// `NORMAL → HARD_PRESSURE` on an OS quota alarm. De-escalation requires `sustained_calm`
+    /// and never skips `HARD_PRESSURE → RECOVERING → NORMAL`; `HARD_PRESSURE` does not fall back
+    /// to `SOFT_PRESSURE` while usage merely drops below the hard limit.
+    pub fn evaluate(self, observation: PressureObservation) -> Self {
+        use PressureState::{HardPressure, Normal, Recovering, SoftPressure};
+        let PressureObservation {
+            limits,
+            measured_usage,
+            os_quota_alarm,
+            sustained_calm,
+        } = observation;
+        if os_quota_alarm || limits.hard.is_some_and(|hard| measured_usage >= hard) {
+            return HardPressure;
+        }
+        match self {
+            HardPressure => {
+                if sustained_calm {
+                    Recovering
+                } else {
+                    HardPressure
+                }
+            }
+            _ => {
+                if limits.soft.is_some_and(|soft| measured_usage >= soft) {
+                    SoftPressure
+                } else if sustained_calm {
+                    Normal
+                } else {
+                    self
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -385,6 +457,190 @@ mod tests {
         assert_eq!(
             remaining_capacity(Some(250), 200, 100, &[]),
             Capacity::Remaining(0)
+        );
+    }
+
+    fn pressure(usage: u64, soft: Option<u64>, hard: Option<u64>) -> PressureObservation {
+        PressureObservation {
+            limits: PressureLimits { soft, hard },
+            measured_usage: usage,
+            os_quota_alarm: false,
+            sustained_calm: false,
+        }
+    }
+
+    #[test]
+    fn pressure_escalates_immediately_and_holds_without_sustained_calm() {
+        use PressureState::*;
+        assert_eq!(Normal.evaluate(pressure(50, Some(100), Some(200))), Normal);
+        assert_eq!(
+            Normal.evaluate(pressure(100, Some(100), Some(200))),
+            SoftPressure
+        );
+        assert_eq!(
+            SoftPressure.evaluate(pressure(150, Some(100), Some(200))),
+            SoftPressure
+        );
+        assert_eq!(
+            SoftPressure.evaluate(pressure(200, Some(100), Some(200))),
+            HardPressure
+        );
+        assert_eq!(
+            Normal.evaluate(pressure(250, Some(100), Some(200))),
+            HardPressure
+        );
+        // One calm reading below the soft cap does not clear SOFT or HARD pressure.
+        assert_eq!(
+            SoftPressure.evaluate(pressure(10, Some(100), Some(200))),
+            SoftPressure
+        );
+        assert_eq!(
+            HardPressure.evaluate(pressure(10, Some(100), Some(200))),
+            HardPressure
+        );
+    }
+
+    #[test]
+    fn hard_pressure_recovers_only_through_recovering_with_sustained_calm() {
+        use PressureState::*;
+        let mut calm = pressure(10, Some(100), Some(200));
+        calm.sustained_calm = true;
+        // A soft-band reading while HARD does not downgrade directly to SOFT_PRESSURE.
+        assert_eq!(
+            HardPressure.evaluate(pressure(150, Some(100), Some(200))),
+            HardPressure
+        );
+        assert_eq!(HardPressure.evaluate(calm), Recovering);
+        assert_eq!(Recovering.evaluate(calm), Normal);
+        assert_eq!(SoftPressure.evaluate(calm), Normal);
+        // Re-escalation out of RECOVERING is immediate.
+        assert_eq!(
+            Recovering.evaluate(pressure(200, Some(100), Some(200))),
+            HardPressure
+        );
+        assert_eq!(
+            Recovering.evaluate(pressure(100, Some(100), Some(200))),
+            SoftPressure
+        );
+        // RECOVERING holds until a sustained calm reading arrives.
+        assert_eq!(
+            Recovering.evaluate(pressure(10, Some(100), Some(200))),
+            Recovering
+        );
+    }
+
+    #[test]
+    fn os_quota_alarm_escalates_directly_to_hard_pressure() {
+        use PressureState::*;
+        let mut alarm = pressure(10, Some(100), Some(200));
+        alarm.os_quota_alarm = true;
+        assert_eq!(Normal.evaluate(alarm), HardPressure);
+        assert_eq!(Recovering.evaluate(alarm), HardPressure);
+        // An alarm is never cleared in the same observation that reports it.
+        let mut calm_alarm = alarm;
+        calm_alarm.sustained_calm = true;
+        assert_eq!(HardPressure.evaluate(calm_alarm), HardPressure);
+    }
+
+    #[test]
+    fn pressure_never_invents_limits_for_unknown_capacity() {
+        use PressureState::*;
+        // No configured caps and no OS alarm: state is unchanged; new costly admission is
+        // blocked separately through Capacity::UnknownCapacity, not by a fabricated pressure.
+        assert_eq!(Normal.evaluate(pressure(10_000, None, None)), Normal);
+        assert_eq!(
+            SoftPressure.evaluate(pressure(10_000, None, None)),
+            SoftPressure
+        );
+        assert_eq!(
+            Recovering.evaluate(pressure(10_000, None, None)),
+            Recovering
+        );
+    }
+
+    #[test]
+    fn canonical_state_vocabulary_has_no_aliases() {
+        // JC-RES-012.I: exhaustive matches compile only for the canonical §11.20/§18.18 states;
+        // reintroducing ACTIVE/UNKNOWN reservations or SOFT/HARD pressure aliases as variants
+        // breaks this fixture at compile time. Strict wire decoding lives in the owner crate.
+        let reservation_states = [
+            ReservationState::Proposed,
+            ReservationState::Reserved,
+            ReservationState::Claimed,
+            ReservationState::ReleasePending,
+            ReservationState::Quarantined,
+            ReservationState::Released,
+            ReservationState::Expired,
+        ];
+        let names: Vec<&str> = reservation_states
+            .into_iter()
+            .map(|state| match state {
+                ReservationState::Proposed => "PROPOSED",
+                ReservationState::Reserved => "RESERVED",
+                ReservationState::Claimed => "CLAIMED",
+                ReservationState::ReleasePending => "RELEASE_PENDING",
+                ReservationState::Quarantined => "QUARANTINED",
+                ReservationState::Released => "RELEASED",
+                ReservationState::Expired => "EXPIRED",
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "PROPOSED",
+                "RESERVED",
+                "CLAIMED",
+                "RELEASE_PENDING",
+                "QUARANTINED",
+                "RELEASED",
+                "EXPIRED"
+            ]
+        );
+        let pressure_states = [
+            PressureState::Normal,
+            PressureState::SoftPressure,
+            PressureState::HardPressure,
+            PressureState::Recovering,
+        ];
+        let names: Vec<&str> = pressure_states
+            .into_iter()
+            .map(|state| match state {
+                PressureState::Normal => "NORMAL",
+                PressureState::SoftPressure => "SOFT_PRESSURE",
+                PressureState::HardPressure => "HARD_PRESSURE",
+                PressureState::Recovering => "RECOVERING",
+            })
+            .collect();
+        assert_eq!(
+            names,
+            ["NORMAL", "SOFT_PRESSURE", "HARD_PRESSURE", "RECOVERING"]
+        );
+    }
+
+    #[test]
+    fn unlaunched_reservation_expires_but_launched_uncertainty_quarantines() {
+        // JC-RES-012.H: a RESERVED record with proven absence of dispatch may expire; any
+        // timeout after launch is QUARANTINED and keeps holding capacity until reconciliation
+        // and confirmed owner/process/effect settlement.
+        use ReservationState::*;
+        let unlaunched = ReservationProof {
+            no_launch_or_dispatch: true,
+            ..ReservationProof::default()
+        };
+        assert_eq!(Reserved.validate_transition(Expired, unlaunched), Ok(()));
+        assert_eq!(
+            Claimed.validate_transition(Expired, unlaunched),
+            Err(ReservationTransitionError::ForbiddenTransition)
+        );
+        assert_eq!(
+            Claimed.validate_transition(Quarantined, ReservationProof::default()),
+            Ok(())
+        );
+        let quarantined = reservation(Quarantined, 300, Some(100));
+        assert_eq!(quarantined.outstanding_units(), 200);
+        assert_eq!(
+            Quarantined.validate_transition(ReleasePending, ReservationProof::default()),
+            Err(ReservationTransitionError::MissingProof)
         );
     }
 }

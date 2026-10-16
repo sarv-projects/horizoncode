@@ -65,7 +65,7 @@ describe("Horizon repository-intelligence v1 contracts", () => {
       overlayRefs: [artifact],
       operation: "references",
       query: artifact,
-      maxResults: 0,
+      maxResults: 1,
     } as const
     const queryResult = {
       queryId: query.queryId,
@@ -166,7 +166,7 @@ describe("Horizon repository-intelligence v1 contracts", () => {
     expect(arrayItemType(RepoIntel.RepoQueryResultV1, "results")).toBe(Composition.ArtifactRef.ast)
   })
 
-  test("enforces closed literals and the architecture's general integer rule only", () => {
+  test("enforces closed literals and indexd's bounded result limit", () => {
     expect(() => Schema.decodeUnknownSync(RepoIntel.RevisionRefV1)({ ...revision, vcsKind: "svn" })).toThrow()
     expect(() =>
       Schema.decodeUnknownSync(RepoIntel.RepoGenerationV1)({
@@ -187,10 +187,13 @@ describe("Horizon repository-intelligence v1 contracts", () => {
       overlayRefs: [],
       operation: "text",
       query: artifact,
-      maxResults: 0,
+      maxResults: 1,
     } as const
     const decodeQuery = Schema.decodeUnknownSync(RepoIntel.RepoQueryV1)
-    expect(decodeQuery({ ...query, maxResults: Number.MAX_SAFE_INTEGER }).maxResults).toBe(Number.MAX_SAFE_INTEGER)
+    expect(decodeQuery({ ...query, maxResults: 1 }).maxResults).toBe(1)
+    expect(decodeQuery({ ...query, maxResults: 100 }).maxResults).toBe(100)
+    expect(() => decodeQuery({ ...query, maxResults: 0 })).toThrow()
+    expect(() => decodeQuery({ ...query, maxResults: 101 })).toThrow()
     expect(() => decodeQuery({ ...query, operation: "search" })).toThrow()
     expect(() => decodeQuery({ ...query, maxResults: -1 })).toThrow()
     expect(() => decodeQuery({ ...query, maxResults: 1.5 })).toThrow()

@@ -63,7 +63,7 @@ import { ProjectCopy } from "@opencode-ai/core/project/copy"
 import { PtyTicket } from "@opencode-ai/core/pty/ticket"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
+import { SessionSupervisor, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
 import * as SessionExecutionLocal from "@opencode-ai/core/session/execution/local"
@@ -270,10 +270,15 @@ const app = LayerNode.group([
   PtyTicket.node,
 ])
 
+// Building the location graph provisions the Rust host kernel (`Pty` depends on
+// `SessionSupervisor`), so route-layer construction can fail when the pinned
+// `hz-kernel` binary is unavailable or rejects its handshake. Declared here
+// rather than swallowed: a server that cannot provision the host kernel must
+// not start serving mediated effects.
 export function createRoutes(
   corsOptions?: CorsOptions,
   replacements: LayerNode.Replacements = [],
-): Layer.Layer<never, EffectConfig.ConfigError, RouteRequirements> {
+): Layer.Layer<never, EffectConfig.ConfigError | SessionSupervisorError, RouteRequirements> {
   const locationServiceMapV2 = buildLocationServiceMap(replacements)
 
   return Layer.mergeAll(

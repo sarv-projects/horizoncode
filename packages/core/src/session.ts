@@ -13,7 +13,7 @@ import { Prompt } from "./session/prompt"
 import { PromptInput } from "@opencode-ai/schema/prompt-input"
 import { EventV2 } from "./event"
 import { Snapshot } from "./snapshot"
-import { SessionSupervisor } from "./session/supervisor"
+import { SessionSupervisor, type SessionSupervisorError } from "./session/supervisor"
 import { Database } from "./database/database"
 import { SessionProjector } from "./session/projector"
 import { SessionMessageTable, SessionTable } from "./session/sql"
@@ -173,11 +173,11 @@ export interface Interface {
       files?: boolean
     }) => Effect.Effect<
       Revert.State,
-      NotFoundError | SessionRevert.FileChangesUnavailableError | SessionRevert.MessageNotFoundError
+      NotFoundError | SessionRevert.FileChangesUnavailableError | SessionRevert.MessageNotFoundError | SessionSupervisorError
     >
     readonly clear: (
       sessionID: SessionSchema.ID,
-    ) => Effect.Effect<void, NotFoundError | SessionRevert.FileChangesUnavailableError>
+    ) => Effect.Effect<void, NotFoundError | SessionRevert.FileChangesUnavailableError | SessionSupervisorError>
     readonly commit: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError>
   }
 }

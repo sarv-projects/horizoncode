@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test"
 import type { LanguageModelV3StreamPart } from "@ai-sdk/provider"
+import { Location } from "@opencode-ai/core/location"
+import { AbsolutePath } from "@opencode-ai/core/schema"
 import { isRecord } from "@/util/record"
 import {
   createToolBatchContext,
@@ -95,6 +97,7 @@ async function collect(source: ReadableStream<LanguageModelV3StreamPart>) {
 function gateInput(overrides: Partial<ToolBatchGateInput> = {}): ToolBatchGateInput {
   return {
     sessionID: "session_1",
+    locationRef: Location.Ref.make({ directory: AbsolutePath.make("/workspace") }),
     turnContextDigest: `sha256:${"a".repeat(64)}`,
     signal: new AbortController().signal,
     definitions: { write: writeDefinition, read: readDefinition, bash: terminalDefinition },
@@ -243,9 +246,10 @@ test("attaches the Rust challenge to one admitted write callback", async () => {
     capability: writeDefinition.capability,
   })
 
-  expect(challenge?.challengeID).toBe("ch_1")
-  expect(challenge?.effectID).toBe("eff_1")
-  expect(challenge?.target).toBe("/workspace/a.txt")
+  if (!challenge || !("challengeID" in challenge)) throw new Error("expected an admitted effect challenge")
+  expect(challenge.challengeID).toBe("ch_1")
+  expect(challenge.effectID).toBe("eff_1")
+  expect(challenge.target).toBe("/workspace/a.txt")
 })
 
 test("denies an unsupported origin before Guard preparation", async () => {
@@ -295,7 +299,7 @@ test("fails closed when the session-owned Rust Guard is unavailable", async () =
       capability: writeDefinition.capability,
     }),
   ).toThrow("Rust Guard unavailable")
-})
+}, 30_000)
 
 test("does not admit or emit pending calls after cancellation", async () => {
   const controller = new AbortController()

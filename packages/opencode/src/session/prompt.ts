@@ -5,7 +5,7 @@ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import path from "path"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Pty } from "@opencode-ai/core/pty"
-import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/location-services"
+import { LocationServiceMap, locationServiceMapNode } from "@opencode-ai/core/location-services"
 import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 import { SessionV2 } from "@opencode-ai/core/session"
 import os from "os"
@@ -108,21 +108,26 @@ function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
 
 export interface Interface {
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
-  readonly prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error | Session.BusyError>
-  readonly loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
+  readonly prompt: (input: PromptInput) => Effect.Effect<
+    SessionV1.WithParts,
+    Image.Error | Session.BusyError | SessionSupervisorError
+  >
+  readonly loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError | SessionSupervisorError>
   readonly shell: (input: ShellInput) => Effect.Effect<
     SessionV1.WithParts,
-    Image.Error | Session.BusyError | Pty.InvalidInputError | Pty.UnavailableError | SessionSupervisorError,
+    Image.Error | Session.BusyError | Pty.InvalidInputError | Pty.UnavailableError |
+      Pty.ShellProfileUnavailableError | SessionSupervisorError,
     TrustedPrincipalContext
   >
   readonly command: (
     input: CommandInput,
   ) => Effect.Effect<
     SessionV1.WithParts,
-    Image.Error | Session.BusyError | Pty.InvalidInputError | Pty.UnavailableError | SessionSupervisorError,
+    Image.Error | Session.BusyError | Pty.InvalidInputError | Pty.UnavailableError |
+      Pty.ShellProfileUnavailableError | SessionSupervisorError,
     TrustedPrincipalContext
   >
-  readonly resolvePromptParts: (template: string) => Effect.Effect<PromptInput["parts"]>
+  readonly resolvePromptParts: (template: string) => Effect.Effect<PromptInput["parts"], SessionSupervisorError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionPrompt") {}
@@ -163,7 +168,7 @@ const layer = Layer.effect(
       return {
         cancel: (sessionID: SessionID) => cancel(sessionID),
         resolvePromptParts: (template: string) => resolvePromptParts(template),
-        prompt: (input: PromptInput) => prompt(input).pipe(Effect.catch(Effect.die)),
+        prompt: (input: PromptInput) => prompt(input),
       } satisfies TaskPromptOps
     })
 
@@ -805,7 +810,7 @@ const layer = Layer.effect(
       throw new Error("Impossible")
     })
 
-    const runLoop: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.run")(
+    const runLoop: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts, SessionSupervisorError> = Effect.fn("SessionPrompt.run")(
       function* (sessionID: SessionID) {
         const ctx = yield* InstanceState.context
         let structured: unknown
@@ -1073,7 +1078,7 @@ const layer = Layer.effect(
       },
     )
 
-    const loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError> = Effect.fn(
+    const loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError | SessionSupervisorError> = Effect.fn(
       "SessionPrompt.loop",
     )(function* (input: LoopInput) {
       const observedRun = Effect.scoped(
@@ -1089,10 +1094,6 @@ const layer = Layer.effect(
           yield* Fiber.join(watcher)
           return result
         }),
-      ).pipe(
-        Effect.catchTag("SessionSupervisorError", () =>
-          Effect.fail(new Session.BusyError({ sessionID: input.sessionID })),
-        ),
       )
       return yield* state.ensureRunning(input.sessionID, lastAssistant(input.sessionID), observedRun)
     })
@@ -1387,12 +1388,6 @@ export function createStructuredOutputTool(input: {
 const argsRegex = /(?:\[Image\s+\d+\]|"[^"]*"|'[^']*'|[^\s"']+)/gi
 const placeholderRegex = /\$(\d+)/g
 const quoteTrimRegex = /^["']|["']$/g
-
-const locationServiceMapNode = LayerNode.make({
-  service: LocationServiceMap.Service,
-  layer: locationServiceMapLayer,
-  deps: [],
-})
 
 export const node = LayerNode.make({
   service: Service,

@@ -19,7 +19,7 @@ use crate::terminal_profile::{
     ShellProfileRegistry,
 };
 use rusqlite::{Connection, OpenFlags, params};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::Read;
@@ -122,6 +122,11 @@ struct TerminalSubscription {
 pub struct HostKernel {
     state_dir: PathBuf,
     locations: HashMap<String, RegisteredLocation>,
+    /// Durable Location bindings whose canonical root was unavailable when the host
+    /// started. They stay registered on disk and fail closed as unregistered until the
+    /// root returns and the same trusted binding is re-registered, at which point the
+    /// interrupted-effect recovery that a clean startup would have run is performed.
+    deferred_locations: HashSet<String>,
     location_registry: Connection,
     shell_profiles: ShellProfileRegistry,
     challenges: HashMap<String, CapabilityBinding>,
@@ -136,15 +141,18 @@ pub struct HostKernel {
 }
 
 impl HostKernel {
-    /// Load trusted Locations and recover each per-Location EffectHost database
-    /// before READY. Recovery settles only target-proven outcomes; unresolved
-    /// effects remain durable UNKNOWN and are exposed as such, never retried.
+    /// Load trusted Locations and recover each available per-Location EffectHost
+    /// database before READY. Missing roots remain unregistered until a trusted
+    /// re-registration; other invalid or inaccessible bindings fail startup.
+    /// Recovery settles only target-proven outcomes; unresolved effects remain
+    /// durable UNKNOWN and are exposed as such, never retried.
     pub fn open(state_dir: &Path) -> Result<Self, String> {
         let location_state_root = state_dir.join("effect-locations");
         reject_unbound_legacy_effects(state_dir)?;
         ensure_private_directory(&location_state_root)?;
         let location_registry = open_location_registry(state_dir)?;
-        let locations = load_locations(&location_registry, &location_state_root)?;
+        let (locations, deferred_locations) =
+            load_locations(&location_registry, &location_state_root)?;
         let lost_terminals = load_lost_terminals(&location_registry)?;
         let shell_profiles =
             ShellProfileRegistry::open(&state_dir.join("shell-profiles.sqlite"))
@@ -152,6 +160,7 @@ impl HostKernel {
         Ok(Self {
             state_dir: state_dir.to_owned(),
             locations,
+            deferred_locations,
             location_registry,
             shell_profiles,
             challenges: HashMap::new(),
@@ -664,15 +673,23 @@ impl HostKernel {
                 "Location effect state is unavailable",
             )
         })?;
-        drop(
-            EffectHost::open_live(&effect_state_dir, Some(&canonical)).map_err(|_| {
-                (
-                    "effect_unavailable",
-                    ErrorCategoryV1::Unavailable,
-                    "Location effect recovery failed",
-                )
-            })?,
-        );
+        // A deferred Location is being registered for the first time in this owner
+        // epoch: its root was missing at startup, so the interrupted-effect recovery
+        // a clean startup would have run has not happened yet. Run it now, before the
+        // Location becomes usable. Live re-registrations stay unreconciled so an
+        // in-flight terminal grant is never torn down by a duplicate RPC.
+        let opened = if self.deferred_locations.contains(&id) {
+            EffectHost::open(&effect_state_dir, Some(&canonical))
+        } else {
+            EffectHost::open_live(&effect_state_dir, Some(&canonical))
+        };
+        drop(opened.map_err(|_| {
+            (
+                "effect_unavailable",
+                ErrorCategoryV1::Unavailable,
+                "Location effect recovery failed",
+            )
+        })?);
         let transaction = self.location_registry.transaction().map_err(|_| {
             (
                 "effect_unavailable",
@@ -712,6 +729,7 @@ impl HostKernel {
                 "Location binding could not be committed",
             )
         })?;
+        self.deferred_locations.remove(&id);
         self.locations.insert(
             id.clone(),
             RegisteredLocation {
@@ -3301,7 +3319,7 @@ fn location_id(canonical_root: &str, workspace_id: &str) -> String {
 fn load_locations(
     registry: &Connection,
     location_state_root: &Path,
-) -> Result<HashMap<String, RegisteredLocation>, String> {
+) -> Result<(HashMap<String, RegisteredLocation>, HashSet<String>), String> {
     let mut statement = registry
         .prepare(
             "SELECT location_id, canonical_root, workspace_id FROM locations ORDER BY location_id",
@@ -3317,14 +3335,29 @@ fn load_locations(
         })
         .map_err(|_| "Location registry could not be read".to_owned())?;
     let mut locations = HashMap::new();
+    let mut deferred_locations = HashSet::new();
     for row in rows {
         let (id, root_text, workspace_id) =
             row.map_err(|_| "Location registry row is malformed".to_owned())?;
-        let root = fs::canonicalize(&root_text)
-            .map_err(|_| "registered Location root is unavailable".to_owned())?;
+        let root_path = Path::new(&root_text);
+        if root_text.len() > 4096
+            || !root_path.is_absolute()
+            || workspace_id.len() > 256
+            || workspace_id.contains('\0')
+            || location_id(&root_text, &workspace_id) != id
+        {
+            return Err("registered Location binding is not canonical".to_owned());
+        }
+        let root = match fs::canonicalize(root_path) {
+            Ok(root) => root,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                deferred_locations.insert(id);
+                continue;
+            }
+            Err(_) => return Err("registered Location root is unavailable".to_owned()),
+        };
         if root.to_str() != Some(root_text.as_str())
             || !fs::metadata(&root).is_ok_and(|metadata| metadata.is_dir())
-            || location_id(&root_text, &workspace_id) != id
         {
             return Err("registered Location binding is not canonical".to_owned());
         }
@@ -3340,7 +3373,7 @@ fn load_locations(
             },
         );
     }
-    Ok(locations)
+    Ok((locations, deferred_locations))
 }
 fn load_lost_terminals(registry: &Connection) -> Result<HashMap<String, (String, u64)>, String> {
     let mut statement = registry
@@ -3487,6 +3520,411 @@ mod tests {
 
     fn string(value: &str) -> Value {
         Value::String(value.to_owned())
+    }
+
+    /// Read the durable challenge status directly from the per-Location EffectHost
+    /// database, so tests can assert recovery never rewrites a settled outcome.
+    fn db_or_connection_status(db_path: &Path, effect_id: &str) -> String {
+        let connection = Connection::open(db_path).unwrap();
+        connection
+            .query_row(
+                "SELECT status FROM effect_challenges WHERE effect_id=?1",
+                [effect_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn unavailable_registered_location_is_deferred_until_the_trusted_root_returns() {
+        let directory = state_dir();
+        let removed_root = directory.join("removed-location");
+        let root_text = removed_root.to_str().unwrap();
+        let id = location_id(root_text, "");
+        let registry = open_location_registry(&directory).unwrap();
+        registry
+            .execute(
+                "INSERT INTO locations(location_id, canonical_root, workspace_id) VALUES (?1, ?2, '')",
+                params![id, root_text],
+            )
+            .unwrap();
+        drop(registry);
+
+        let mut host = HostKernel::open(&directory).unwrap();
+        assert!(!host.locations.contains_key(&id));
+        assert!(host.deferred_locations.contains(&id));
+        host.set_effects_enabled(true);
+        let fields = BTreeMap::from([("locationID".to_owned(), string(&id))]);
+        assert_eq!(
+            host.location(&fields).err().unwrap().0,
+            "location_not_registered"
+        );
+        let denied = host.handle_request(
+            &request(
+                "prepare_tool_batch",
+                map(&[
+                    ("sessionID", string("ses_deferred")),
+                    ("locationID", string(&id)),
+                    ("batchID", string("batch_deferred")),
+                    (
+                        "turnContextDigest",
+                        string(&format!("sha256:{}", "a".repeat(64))),
+                    ),
+                    (
+                        "calls",
+                        Value::Array(vec![map(&[
+                            ("callID", string("call_deferred")),
+                            ("capabilityID", string("files.write")),
+                            (
+                                "arguments",
+                                map(&[
+                                    ("path", string("must-not-write.txt")),
+                                    ("content", string("denied")),
+                                ]),
+                            ),
+                        ])]),
+                    ),
+                ]),
+                7,
+                "inc_test",
+            ),
+            "host_os_uid:1000",
+            &fence(),
+        );
+        assert_eq!(denied.outcome, RpcOutcomeV1::Error);
+        assert_eq!(
+            denied.error.as_ref().map(|error| error.code.as_str()),
+            Some("location_not_registered")
+        );
+        assert!(!directory.join("must-not-write.txt").exists());
+
+        fs::create_dir(&removed_root).unwrap();
+        fs::set_permissions(&removed_root, fs::Permissions::from_mode(0o700)).unwrap();
+        let still_denied = host.handle_request(
+            &request(
+                "prepare_tool_batch",
+                map(&[
+                    ("sessionID", string("ses_deferred")),
+                    ("locationID", string(&id)),
+                    ("batchID", string("batch_before_reregister")),
+                    (
+                        "turnContextDigest",
+                        string(&format!("sha256:{}", "b".repeat(64))),
+                    ),
+                    (
+                        "calls",
+                        Value::Array(vec![map(&[
+                            ("callID", string("call_before_reregister")),
+                            ("capabilityID", string("files.write")),
+                            (
+                                "arguments",
+                                map(&[
+                                    ("path", string("must-not-write.txt")),
+                                    ("content", string("denied")),
+                                ]),
+                            ),
+                        ])]),
+                    ),
+                ]),
+                7,
+                "inc_test",
+            ),
+            "host_os_uid:1000",
+            &fence(),
+        );
+        assert_eq!(still_denied.outcome, RpcOutcomeV1::Error);
+        assert_eq!(
+            still_denied.error.as_ref().map(|error| error.code.as_str()),
+            Some("location_not_registered")
+        );
+        let response = host.handle_request(
+            &request(
+                "register_location",
+                map(&[("canonicalRoot", string(root_text))]),
+                7,
+                "inc_test",
+            ),
+            "host_os_uid:1000",
+            &fence(),
+        );
+        assert_eq!(response.outcome, RpcOutcomeV1::Ok);
+        assert!(!host.deferred_locations.contains(&id));
+        assert!(host.location(&fields).is_ok());
+
+        drop(host);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn deferred_location_re_registration_recovers_prepared_effect_before_authorization() {
+        let directory = state_dir();
+        let workspace = directory.join("recoverable-location");
+        fs::create_dir(&workspace).unwrap();
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
+        let workspace = fs::canonicalize(workspace).unwrap();
+        let workspace_text = workspace.to_str().unwrap();
+        let target = workspace.join("interrupted.txt");
+
+        let mut host = HostKernel::open(&directory).unwrap();
+        host.set_effects_enabled(true);
+        let registered = host.handle_request(
+            &request(
+                "register_location",
+                map(&[("canonicalRoot", string(workspace_text))]),
+                7,
+                "inc_test",
+            ),
+            "host_os_uid:1000",
+            &fence(),
+        );
+        assert_eq!(registered.outcome, RpcOutcomeV1::Ok);
+        let Some(Value::Map(registered_body)) = registered.body.as_ref() else {
+            panic!("missing registration response")
+        };
+        let id = get_text(registered_body, "locationID").unwrap().to_owned();
+
+        let prepared = host.handle_request(
+            &request(
+                "prepare_tool_batch",
+                map(&[
+                    ("sessionID", string("ses_deferred_recovery")),
+                    ("locationID", string(&id)),
+                    ("batchID", string("batch_deferred_recovery")),
+                    (
+                        "turnContextDigest",
+                        string(&format!("sha256:{}", "c".repeat(64))),
+                    ),
+                    (
+                        "calls",
+                        Value::Array(vec![map(&[
+                            ("callID", string("call_deferred_recovery")),
+                            ("capabilityID", string("files.write")),
+                            (
+                                "arguments",
+                                map(&[
+                                    ("path", string("interrupted.txt")),
+                                    ("content", string("must not replay")),
+                                ]),
+                            ),
+                        ])]),
+                    ),
+                ]),
+                7,
+                "inc_test",
+            ),
+            "host_os_uid:1000",
+            &fence(),
+        );
+        assert_eq!(prepared.outcome, RpcOutcomeV1::Ok);
+        let Some(Value::Map(prepared_body)) = prepared.body.as_ref() else {
+            panic!("missing prepared effect response")
+        };
+        let challenge_id = get_text(prepared_body, "challengeID").unwrap().to_owned();
+        let effect_id = get_text(prepared_body, "effectID").unwrap().to_owned();
+        let approval = host.handle_request(
+            &request(
+                "resolve_approval",
+                map(&[
+                    ("challengeID", string(&challenge_id)),
+                    ("decision", string("allow_once")),
+                ]),
+                7,
+                "inc_test",
+            ),
+            "host_os_uid:1000",
+            &fence(),
+        );
+        assert_eq!(approval.outcome, RpcOutcomeV1::Ok);
+        drop(host);
+
+        let effect_db = directory
+            .join("effect-locations")
+            .join(&id)
+            .join("effects.sqlite");
+        let db = Connection::open(&effect_db).unwrap();
+        assert_eq!(
+            db.execute(
+                "UPDATE effect_challenges SET status='PREPARED', receipt_digest=NULL WHERE effect_id=?1",
+                [&effect_id],
+            )
+            .unwrap(),
+            1
+        );
+        drop(db);
+        fs::remove_dir(&workspace).unwrap();
+
+        let mut deferred = HostKernel::open(&directory).unwrap();
+        assert!(!deferred.locations.contains_key(&id));
+        assert!(deferred.deferred_locations.contains(&id));
+        deferred.set_effects_enabled(true);
+        let before_root_returns = deferred.handle_request(
+            &request(
+                "prepare_tool_batch",
+                map(&[
+                    ("sessionID", string("ses_deferred_recovery")),
+                    ("locationID", string(&id)),
+                    ("batchID", string("batch_before_root_returns")),
+                    (
+                        "turnContextDigest",
+                        string(&format!("sha256:{}", "d".repeat(64))),
+                    ),
+                    (
+                        "calls",
+                        Value::Array(vec![map(&[
+                            ("callID", string("call_before_root_returns")),
+                            ("capabilityID", string("files.write")),
+                            (
+                                "arguments",
+                                map(&[("path", string("new.txt")), ("content", string("denied"))]),
+                            ),
+                        ])]),
+                    ),
+                ]),
+                7,
+                "inc_test",
+            ),
+            "host_os_uid:1000",
+            &fence(),
+        );
+        assert_eq!(before_root_returns.outcome, RpcOutcomeV1::Error);
+        assert_eq!(
+            before_root_returns
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("location_not_registered")
+        );
+        let status_before_reregister: String = db_or_connection_status(&effect_db, &effect_id);
+        assert_eq!(status_before_reregister, "PREPARED");
+
+        fs::create_dir(&workspace).unwrap();
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
+        let before_registration = deferred.handle_request(
+            &request(
+                "prepare_tool_batch",
+                map(&[
+                    ("sessionID", string("ses_deferred_recovery")),
+                    ("locationID", string(&id)),
+                    ("batchID", string("batch_before_registration")),
+                    (
+                        "turnContextDigest",
+                        string(&format!("sha256:{}", "e".repeat(64))),
+                    ),
+                    (
+                        "calls",
+                        Value::Array(vec![map(&[
+                            ("callID", string("call_before_registration")),
+                            ("capabilityID", string("files.write")),
+                            (
+                                "arguments",
+                                map(&[("path", string("new.txt")), ("content", string("denied"))]),
+                            ),
+                        ])]),
+                    ),
+                ]),
+                7,
+                "inc_test",
+            ),
+            "host_os_uid:1000",
+            &fence(),
+        );
+        assert_eq!(before_registration.outcome, RpcOutcomeV1::Error);
+        assert_eq!(
+            before_registration
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("location_not_registered")
+        );
+
+        let reregistered = deferred.handle_request(
+            &request(
+                "register_location",
+                map(&[("canonicalRoot", string(workspace_text))]),
+                7,
+                "inc_test",
+            ),
+            "host_os_uid:1000",
+            &fence(),
+        );
+        assert_eq!(reregistered.outcome, RpcOutcomeV1::Ok);
+        assert!(!deferred.deferred_locations.contains(&id));
+        assert_eq!(db_or_connection_status(&effect_db, &effect_id), "UNKNOWN");
+        assert!(!target.exists());
+        assert!(
+            deferred
+                .location(&BTreeMap::from([("locationID".to_owned(), string(&id))]))
+                .is_ok()
+        );
+
+        drop(deferred);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn invalid_persisted_location_binding_fails_startup_instead_of_deferring() {
+        let directory = state_dir();
+        let root_text = directory.join("missing-root").to_str().unwrap().to_owned();
+        let registry = open_location_registry(&directory).unwrap();
+        registry
+            .execute(
+                "INSERT INTO locations(location_id, canonical_root, workspace_id) VALUES ('loc_invalid', ?1, '')",
+                [&root_text],
+            )
+            .unwrap();
+        drop(registry);
+
+        let result = HostKernel::open(&directory);
+        let error = match result {
+            Ok(host) => {
+                drop(host);
+                panic!("malformed persisted Location unexpectedly allowed startup")
+            }
+            Err(error) => error,
+        };
+        assert_eq!(error, "registered Location binding is not canonical");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn inaccessible_registered_location_root_fails_startup_instead_of_deferring() {
+        let directory = state_dir();
+        let restricted_parent = directory.join("restricted-parent");
+        let root = restricted_parent.join("previously-registered-root");
+        fs::create_dir(&restricted_parent).unwrap();
+        fs::set_permissions(&restricted_parent, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::create_dir(&root).unwrap();
+        let root_text = fs::canonicalize(&root)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        fs::remove_dir(&root).unwrap();
+
+        let id = location_id(&root_text, "");
+        let registry = open_location_registry(&directory).unwrap();
+        registry
+            .execute(
+                "INSERT INTO locations(location_id, canonical_root, workspace_id) VALUES (?1, ?2, '')",
+                params![id, root_text],
+            )
+            .unwrap();
+        drop(registry);
+        fs::set_permissions(&restricted_parent, fs::Permissions::from_mode(0o000)).unwrap();
+        let inaccessible = fs::canonicalize(&root_text).unwrap_err();
+        assert_eq!(inaccessible.kind(), std::io::ErrorKind::PermissionDenied);
+
+        let result = HostKernel::open(&directory);
+        fs::set_permissions(&restricted_parent, fs::Permissions::from_mode(0o700)).unwrap();
+        let error = match result {
+            Ok(host) => {
+                drop(host);
+                panic!("inaccessible persisted Location unexpectedly allowed startup")
+            }
+            Err(error) => error,
+        };
+        assert_eq!(error, "registered Location root is unavailable");
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

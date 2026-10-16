@@ -7,7 +7,7 @@ import { Effect, Layer, Scope, Context } from "effect"
 import { Session } from "./session"
 import { SessionID } from "./schema"
 import { SessionStatus } from "./status"
-import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
+import { SessionSupervisor, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
 
 export interface Interface {
   readonly assertNotBusy: (sessionID: SessionID) => Effect.Effect<void, Session.BusyError>
@@ -19,8 +19,8 @@ export interface Interface {
   readonly ensureRunning: (
     sessionID: SessionID,
     onInterrupt: Effect.Effect<SessionV1.WithParts>,
-    work: Effect.Effect<SessionV1.WithParts, Session.BusyError>,
-  ) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
+    work: Effect.Effect<SessionV1.WithParts, Session.BusyError | SessionSupervisorError>,
+  ) => Effect.Effect<SessionV1.WithParts, Session.BusyError | SessionSupervisorError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionRunState") {}
@@ -34,7 +34,10 @@ const layer = Layer.effect(
     const state = yield* InstanceState.make(
       Effect.fn("SessionRunState.state")(function* () {
         const scope = yield* Scope.Scope
-        const runners = new Map<SessionID, Runner.Runner<SessionV1.WithParts, Session.BusyError>>()
+        const runners = new Map<
+          SessionID,
+          Runner.Runner<SessionV1.WithParts, Session.BusyError | SessionSupervisorError>
+        >()
         yield* Effect.addFinalizer(
           Effect.fnUntraced(function* () {
             yield* Effect.forEach(runners.values(), (runner) => runner.cancel, {
@@ -55,7 +58,7 @@ const layer = Layer.effect(
       const data = yield* InstanceState.get(state)
       const existing = data.runners.get(sessionID)
       if (existing) return existing
-      const next = Runner.make<SessionV1.WithParts, Session.BusyError>(data.scope, {
+      const next = Runner.make<SessionV1.WithParts, Session.BusyError | SessionSupervisorError>(data.scope, {
         onIdle: Effect.gen(function* () {
           data.runners.delete(sessionID)
           yield* status.set(sessionID, { type: "idle" })
@@ -94,7 +97,7 @@ const layer = Layer.effect(
     const ensureRunning = Effect.fn("SessionRunState.ensureRunning")(function* (
       sessionID: SessionID,
       onInterrupt: Effect.Effect<SessionV1.WithParts>,
-      work: Effect.Effect<SessionV1.WithParts, Session.BusyError>,
+      work: Effect.Effect<SessionV1.WithParts, Session.BusyError | SessionSupervisorError>,
     ) {
       const ownedWork = withExecutionOwner(sessionID, work)
       return yield* (yield* runner(sessionID, onInterrupt)).ensureRunning(ownedWork)

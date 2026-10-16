@@ -6,6 +6,7 @@ import * as Socket from "effect/unstable/socket/Socket"
 import { Location } from "@opencode-ai/core/location"
 import { Pty } from "@opencode-ai/core/pty"
 import { PtyTicket } from "@opencode-ai/core/pty/ticket"
+import { SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, tmpdir, tmpdirScoped } from "../fixture/fixture"
@@ -39,10 +40,11 @@ const testStateLayer = Layer.effectDiscard(
 const testRoutes = HttpApiApp.createRoutes().pipe(
   Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_SERVER_PASSWORD: "pty-test-secret" }))),
 )
-const servedRoutes: Layer.Layer<never, EffectConfig.ConfigError, HttpServer.HttpServer> = HttpRouter.serve(
-  testRoutes,
-  { disableListenLog: true, disableLogger: true },
-)
+const servedRoutes: Layer.Layer<never, EffectConfig.ConfigError | SessionSupervisorError, HttpServer.HttpServer> =
+  HttpRouter.serve(
+    testRoutes,
+    { disableListenLog: true, disableLogger: true },
+  )
 const testWebHandler = HttpRouter.toWebHandler(testRoutes, { disableLogger: true }).handler
 
 const effectIt = testEffect(

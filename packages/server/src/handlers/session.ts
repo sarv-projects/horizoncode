@@ -5,6 +5,7 @@ import { Api } from "../api"
 import { SessionsCursor } from "@opencode-ai/protocol/groups/session"
 import {
   ConflictError,
+  ForbiddenError,
   InvalidCursorError,
   MessageNotFoundError,
   ServiceUnavailableError,
@@ -12,9 +13,21 @@ import {
   UnknownError,
 } from "@opencode-ai/protocol/errors"
 import { AbsolutePath } from "@opencode-ai/core/schema"
+import { SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
 
 const DefaultSessionsLimit = 50
 const DefaultSessionHistoryLimit = 50
+
+export function mapSupervisorError(error: SessionSupervisorError, sessionID: string) {
+  switch (error.stage) {
+    case "authorization":
+      return new ForbiddenError({ message: error.message })
+    case "ownership":
+      return new ConflictError({ message: error.message, resource: sessionID })
+    default:
+      return new ServiceUnavailableError({ message: error.message, service: "files.patch" })
+  }
+}
 
 export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handlers) =>
   Effect.gen(function* () {
@@ -235,6 +248,7 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                     message: error.message,
                   })
                 }
+                if (error instanceof SessionSupervisorError) return mapSupervisorError(error, ctx.params.sessionID)
                 return new ServiceUnavailableError({
                   message: error.message,
                   service: "files.patch",
@@ -254,6 +268,7 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                   sessionID: error.sessionID,
                   message: `Session not found: ${error.sessionID}`,
                 })
+              if (error instanceof SessionSupervisorError) return mapSupervisorError(error, ctx.params.sessionID)
               return new ServiceUnavailableError({
                 message: error.message,
                 service: "files.patch",

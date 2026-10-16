@@ -767,7 +767,10 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
         return response.data as FeatureExposure.Feature[]
       },
       async update(directory: string, input: FeatureExposure.Update) {
-        const response = await sdkFor(directory).config.featureUpdate({ directory, ...input }, { throwOnError: true })
+        const response = await sdkFor(directory).config.featureUpdate(
+          { directory, featureExposureUpdate: input },
+          { throwOnError: true },
+        )
         return response.data as FeatureExposure.Feature[]
       },
     },

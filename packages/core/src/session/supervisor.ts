@@ -31,6 +31,7 @@ import { Context, Deferred, Effect, Fiber, Layer, Queue, Ref, Schema, Stream } f
 import type * as Scope from "effect/Scope"
 import * as ChildProcess from "effect/unstable/process/ChildProcess"
 import type { ChildProcessHandle } from "effect/unstable/process/ChildProcessSpawner"
+import { makeGlobalNode } from "../effect/app-node"
 import { LayerNode } from "../effect/layer-node"
 import { Database } from "../database/database"
 import { Global } from "../global"
@@ -1205,7 +1206,7 @@ function waitForSocket(path: string, child: ChildProcessHandle, signal: AbortSig
         return resolve()
       } catch {
         const running = await Effect.runPromise(child.isRunning).catch(() => false)
-        if (!running) return reject(fail("startup", "supervisor exited before binding its socket"))
+        if (!running) return reject(fail("startup", `supervisor exited before binding its socket (${path})`))
         setTimeout(inspect, 20)
       }
     }
@@ -2855,7 +2856,7 @@ export const runtimeConfigNode = LayerNode.make({
   deps: [],
 })
 
-export const node = LayerNode.make({
+export const node = makeGlobalNode({
   service: Service,
   layer,
   deps: [AppProcess.node, runtimeConfigNode, EventV2.node],

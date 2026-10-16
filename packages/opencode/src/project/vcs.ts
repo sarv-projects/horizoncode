@@ -11,7 +11,6 @@ import { Git } from "@/git"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { EventV2 } from "@opencode-ai/core/event"
 import { VcsEvent } from "@opencode-ai/schema/vcs-event"
-import { Database } from "@opencode-ai/core/database/database"
 import {
   Service as SessionSupervisorService,
   node as sessionSupervisorNode,
@@ -488,7 +487,6 @@ const layer: Layer.Layer<
   never,
   | Git.Service
   | EventV2Bridge.Service
-  | Database.Service
   | Session.Service
   | SessionRunState.Service
   | SessionSupervisorService
@@ -497,7 +495,6 @@ const layer: Layer.Layer<
   Effect.gen(function* () {
     const git = yield* Git.Service
     const events = yield* EventV2Bridge.Service
-    const { path: databasePath } = yield* Database.Service
     const sessions = yield* Session.Service
     const runState = yield* SessionRunState.Service
     const supervisor = yield* SessionSupervisorService
@@ -720,11 +717,9 @@ const layer: Layer.Layer<
               yield* supervisor
                 .runPatch({
                   sessionID: session.id,
-                  source: databasePath,
                   workspaceRoot: root,
                   turnContextDigest,
                   operations,
-                  authorize: async () => undefined,
                 })
                 .pipe(
                   Effect.mapError((error) =>
@@ -756,7 +751,7 @@ const layer: Layer.Layer<
 export const node = LayerNode.make({
   service: Service,
   layer,
-  deps: [Git.node, EventV2Bridge.node, Database.node, Session.node, SessionRunState.node, sessionSupervisorNode],
+  deps: [Git.node, EventV2Bridge.node, Session.node, SessionRunState.node, sessionSupervisorNode],
 })
 
 export * as Vcs from "./vcs"

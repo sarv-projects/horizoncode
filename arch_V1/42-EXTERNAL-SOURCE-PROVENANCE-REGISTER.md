@@ -105,16 +105,17 @@ External source inspection does not authorize code copy. Review exact file licen
 - Reject/bound: Free/payed mismatch, provider auth/network policy, no invisible API charges.
 - Proof required: offline, source provenance, cost opt-in, rate-limit, no silent fallback.
 
-### SRC-008 — Multiplex language servers; DAP attach/session debugging API
+### SRC-008 — Multiplex language servers; DAP client/session debugging API
 
 - Source: omp; status **ADOPT_DESIGN**; priority P1.
 - Pinned file: [packages/coding-agent/src/lsp/mux/daemon.ts](https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/lsp/mux/daemon.ts).
 - Pinned file: [packages/coding-agent/src/lsp/tool.ts](https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/lsp/tool.ts).
+- Pinned file: [packages/coding-agent/src/dap/session.ts](https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/dap/session.ts).
 - Pinned file: [packages/coding-agent/src/tools/debug.ts](https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/tools/debug.ts).
-- Extract **algorithm/logic**: Multiplex language servers; DAP attach/session debugging API.
+- Extract **algorithm/logic**: multiplex language servers; DAP client/session lifecycle, adapter catalog and debug-tool flow. Pinned OMP has DAP; inspected OpenCode trees do not.
 - Target **existing service / proposed LLD**: §37 LanguageServiceBrokerV1 and proposed DebugAdapterBrokerV1.
 - Reject/bound: LSP rename/workspace edit and debugger Eval are guarded EFFECTS.
-- Proof required: server crash, restart, multiple workspace, protocol/scope, evaluate denial.
+- Proof required: server/adapter crash and restart, multiple sessions, protocol/scope, launch/install/attach/evaluate/runInTerminal mediation and evaluate denial. OMP's top-level MIT license does not replace exact file/dependency review before copying.
 
 ### SRC-009 — Schema-driven settings, icon slash registry, role/provider hub UX, dynamic statuses
 
@@ -285,6 +286,16 @@ External source inspection does not authorize code copy. Review exact file licen
 - Target **existing service / proposed LLD**: future §30 `ContextService`/`ContextLedger` projection in the existing Core direct Session; no new Session owner.
 - Reject/bound: **DEFERRED/UNAVAILABLE in V1**; no setting, command, capability or runtime code. Do not import OMP `AgentSession`, `@oh-my-pi/snapcompact` or the broad N-API `pi-natives` crate. No hidden provider/model fallback or archive/blob publication. No copied code; package metadata is MIT, but exact native/font license and dependency closure still require review before any port.
 - Proof required before reconsideration: same selected-model task baseline; explicit image capability; image-token/count/request-byte budgeting; protected-fact and code-line fidelity; unsupported-model/render/payload-rejection recovery; persistence/rebuild/disable semantics; privacy, cost, cache impact and rollback. OMP's benchmark/test results are not Horizon evidence.
+
+### SRC-025 — Google Vertex Gemini route with caller-owned authentication
+
+- Source: omp; exact pin and package license in §42.1; decision **ADAPTER**; priority P2.
+- Pinned files: [Vertex route](https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/ai/src/providers/google-vertex.ts), [Vertex endpoint host resolver](https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/catalog/src/hosts.ts), [Vertex request/host fixtures](https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/ai/test/issue-1270-repro.test.ts) and [host fixtures](https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/catalog/test/hosts.test.ts).
+- Target existing owner/seam: `packages/llm/src/providers` plus `packages/llm/src/protocols/gemini.ts`; §§15/20 direct provider transport.
+- Adapt: Vertex project/location endpoint and host shape while reusing Horizon's Gemini protocol, Route/Endpoint, and caller-provided `Auth`; no source code copied.
+- Reject/bound: Do not port `google-auth.ts` ADC file discovery, OAuth/token exchange, metadata-server access or token cache, nor `google-shared.ts` broad stream/dependency closure. No env credential/project lookup, implicit regional-to-global fallback, model catalog/discovery, or non-Gemini publisher routes. Project, location and auth are explicit caller inputs; provider/catalog/Core-session wiring is a separate gate.
+- Provenance: OMP `packages/ai` and `packages/catalog` are MIT; their manifests depend on OMP utility/catalog packages, and `google-vertex.ts` also reaches `google-auth.ts` and the broad `google-shared.ts` module. This adapter reuses only the route/endpoint pattern and compatible local Gemini protocol; it adds no dependency and does not copy OMP code.
+- Proof required: deterministic local fixtures for exact regional/global URL construction, bearer header from caller-owned Auth, Vertex request body and no implicit fallback; no credential-file reads or live provider calls. OMP fixtures are source evidence, not Horizon acceptance.
 
 
 

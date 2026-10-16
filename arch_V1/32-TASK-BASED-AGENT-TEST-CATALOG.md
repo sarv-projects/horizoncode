@@ -2,6 +2,8 @@
 
 **Status:** normative V1 evaluation catalog. This tests the **agent system and harness doing real work**, not which foundation model scores highest.
 
+The catalog also retains future capability acceptance rows. Under A-V2-31, V1 release evidence is Linux/WSL CLI/TUI only; browser/desktop/web-search, visual-edit, deployment and outbound ACP cases are not V1 release gates while those capabilities remain unavailable. LSP/DAP/REPL, local guarded workers, provider/settings UX and TUI/resource/performance cases are in V1 scope and must use their owning acceptance rows.
+
 ## 32.1 Philosophy
 
 HorizonCode must be evaluated on outcomes:

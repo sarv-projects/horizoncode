@@ -810,11 +810,9 @@ const layer = Layer.effect(
                 Effect.andThen(
                   supervisor.runPatch({
                     sessionID: input.sessionID,
-                    source: database.path,
                     workspaceRoot: targetRoot,
                     turnContextDigest,
                     operations,
-                    authorize: async () => {},
                   }),
                 ),
               ),

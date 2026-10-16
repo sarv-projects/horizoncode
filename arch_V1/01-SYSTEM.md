@@ -10,6 +10,8 @@ HorizonCode is an OpenCode-derived coding-agent product with:
 - one progressive UX across TUI, web and desktop;
 - optional supervised workers for index/LSP/DAP/browser/desktop/REPL/rendering/external agents.
 
+Under A-V2-31, the V1 release surface is Linux/WSL-first CLI/TUI. Web/desktop applications, browser/desktop control and built-in web search remain post-V1 and unavailable; their presence in this product-topology target does not make them V1 requirements or runtime capabilities.
+
 The product has one HorizonCode control plane. Create/Develop/Delegate/Operate views do not own separate runtimes; an explicitly selected native backend may own its own external Session without becoming a second Horizon control plane.
 
 ## 1.2 Process topology

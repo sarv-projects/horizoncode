@@ -1,5 +1,6 @@
 import { NodeHttpServer, NodeServices } from "@effect/platform-node"
 import { Flag } from "@opencode-ai/core/flag/flag"
+import { SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
 import { describe, expect } from "bun:test"
 import { Config, ConfigProvider, Effect, Layer } from "effect"
 import { HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/unstable/http"
@@ -26,10 +27,11 @@ const testStateLayer = Layer.effectDiscard(
   }),
 )
 
-const servedRoutes: Layer.Layer<never, Config.ConfigError, HttpServer.HttpServer> = HttpRouter.serve(
-  HttpApiApp.routes,
-  { disableListenLog: true, disableLogger: true },
-)
+const servedRoutes: Layer.Layer<never, Config.ConfigError | SessionSupervisorError, HttpServer.HttpServer> =
+  HttpRouter.serve(
+    HttpApiApp.routes,
+    { disableListenLog: true, disableLogger: true },
+  )
 
 const it = testEffect(
   Layer.mergeAll(

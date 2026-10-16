@@ -1,6 +1,6 @@
 use horizoncode_kernel::resource_sampler::{
     CounterSet, Metric, ProcessBackend, ProcessIdentity, SampleBudget, SampleError, UnknownReason,
-    sample_owned_tree,
+    sample_owned_process, sample_owned_tree,
 };
 
 #[derive(Clone)]
@@ -190,6 +190,36 @@ fn detects_pid_reuse_after_counter_read_and_marks_sample_unknown() {
 }
 
 #[test]
+fn single_process_reuse_after_counter_read_marks_sample_unknown() {
+    let mut backend = FakeBackend {
+        processes: vec![Process {
+            identity: identity(10, 1),
+            parent: None,
+            counters: counters(),
+        }],
+        mutate_after_read: Some((10, identity(10, 2))),
+        ..FakeBackend::default()
+    };
+    let counters = sample_owned_process(&mut backend, identity(10, 1)).unwrap();
+    assert_eq!(
+        counters.pss_bytes,
+        Metric::unknown(UnknownReason::IdentityChanged)
+    );
+}
+
+#[test]
+fn single_process_owner_that_already_exited_is_an_error_not_a_sample() {
+    let mut backend = FakeBackend::default();
+    assert!(matches!(
+        sample_owned_process(&mut backend, identity(10, 1)),
+        Err(SampleError::IdentityUnavailable {
+            pid: 10,
+            reason: UnknownReason::Exited
+        })
+    ));
+}
+
+#[test]
 fn parent_pid_reuse_during_child_enumeration_makes_tree_unknown() {
     let mut backend = FakeBackend {
         processes: root_and_child(),
@@ -296,6 +326,39 @@ fn source_work_item_budget_is_enforced_without_partial_aggregates() {
         Metric::unknown(UnknownReason::BudgetExceeded)
     );
     assert!(result.truncated);
+}
+
+#[test]
+fn single_process_sampling_marks_over_budget_counters_unknown() {
+    let mut backend = FakeBackend {
+        processes: vec![Process {
+            identity: identity(10, 1),
+            parent: None,
+            counters: counters(),
+        }],
+        reported_bytes: 1_048_577,
+        ..FakeBackend::default()
+    };
+    let result = sample_owned_process(&mut backend, identity(10, 1)).unwrap();
+    assert_eq!(
+        result.pss_bytes,
+        Metric::unknown(UnknownReason::BudgetExceeded)
+    );
+
+    let mut backend = FakeBackend {
+        processes: vec![Process {
+            identity: identity(10, 1),
+            parent: None,
+            counters: counters(),
+        }],
+        reported_work: 4097,
+        ..FakeBackend::default()
+    };
+    let result = sample_owned_process(&mut backend, identity(10, 1)).unwrap();
+    assert_eq!(
+        result.pss_bytes,
+        Metric::unknown(UnknownReason::BudgetExceeded)
+    );
 }
 
 #[test]

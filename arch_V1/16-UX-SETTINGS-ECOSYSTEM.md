@@ -4,7 +4,7 @@ Status: normative V1 UX contract. It describes presentation over existing owners
 
 ## 16.1 Surfaces
 
-Retain and adapt existing OpenCode TUI, Solid app/web and Electron desktop surfaces.
+For V1, retain and adapt the existing OpenCode-derived **CLI/TUI**. Web and desktop application surfaces are post-V1; existing code in those packages is not a V1 product or acceptance requirement.
 
 All surfaces expose the same conceptual state/actions:
 - Session/chat;
@@ -17,7 +17,7 @@ All surfaces expose the same conceptual state/actions:
 - artifacts/evidence;
 - extensions/settings.
 
-Layouts may differ by terminal/desktop capabilities but action semantics are identical.
+V1 layouts adapt to terminal capabilities while action semantics remain consistent across CLI/TUI entry points. Future surfaces must project the same state rather than introduce another owner.
 
 ## 16.2 Prompt bar
 
@@ -201,7 +201,7 @@ Required end-to-end cases:
 - Goal draft survives external editor and cannot start work before acceptance;
 - unsupported backend shows reason;
 - permission/effect UNKNOWN is understandable;
-- TUI and desktop expose equivalent underlying action/state.
+- V1 TUI and CLI entry points expose equivalent underlying action/state.
 
 Source inspiration may come from OMP or other products through 42, but this document is the only normative UI contract.
 
@@ -209,7 +209,7 @@ Source inspiration may come from OMP or other products through 42, but this docu
 
 Brand: HorizonCode - Built for the Future. The public npm name is planned as horizoncode, with hzcode as optional short CLI alias.
 A user should understand: what the agent is doing, what changed, what was tested, what it costs and how to undo it. Beginner and expert UIs share one session/runtime, not separate engines.
-Beginner journey: describe app -> approve a clear plan -> build -> inspect live preview -> select a visual element for change -> validate interaction/regression -> guided deployment with approved credentials -> verify public URL -> support rollback. No deployment success claim after compilation alone.
+V1 beginner journey: describe a coding change -> review/accept a clear plan when using managed work -> implement through guarded tools -> inspect the diff -> run tests -> independently verify the final revision -> explain evidence, cost and undo. Browser visual editing, hosted preview and deployment are post-V1.
 Provider UI distinguishes authorized API keys/subscriptions, legitimate free offers, local models and the separate native OpenCode backend. Show restricted-model eligibility; unknown pricing is never free.
 Selectively evaluate OMP SVG/Markdown/chart/model-picker UI patterns, with bounded rendering, accessibility and without importing an alternate session/control layer.
 
@@ -223,20 +223,20 @@ Use two **independent** axes:
 
 Feature exposure descriptor (shape in `contracts-v2/feature-exposure-v1.schema.json`) includes stable feature ID, owning settings key, class, description, optional/default state, exposure audience (`public | developer`), supported scopes, apply boundary, related canonical capability IDs, required runtime prerequisites and risk/cost notes. This contract is a **projection/validation type**, not a new runtime feature registry. A feature with no canonical tool/action (e.g. optional UI layout or search-backend choice) may have zero related capabilities. The setting key is unique and stable; renamed keys require a migration/alias without changing authority.
 
-**Settings UX** (TUI first, with desktop/web/CLI parity as they become available):
+**Settings UX** (V1 CLI/TUI; web/desktop parity is post-V1):
 - Settings → **Features**: searchable list of *all user-optional* features offered for that build/account; categories and current requested/effective/source/locked values, with `Experimental` and `Beta` tags. Experimental choices are also discoverable under Settings → **Experimental**, not hidden only in an undocumented config file.
 - Every optional setting shows what it does, supported OS/model/harness, potential disk/CPU/token/network/cost impact, expected instability, dependencies, owner, apply boundary (`live | next_turn | next_session | restart`), reset/disable and precise unavailable/blocked reason. `UNKNOWN` cost is never displayed as free.
 - User-optional stable/beta features may have a documented default; **experimental defaults OFF**, must be deliberately enabled, and never auto-enable after updates or route/provider changes. Developer-only experiments appear only in eligible developer builds/channels; do not expose a nonfunctional toggle or bypass release gates in public builds. A planned but unimplemented option can appear as disabled “Not available yet,” never an enabled fake feature.
 - Switching changes only its declared config and does **not** itself invoke a paid provider call, spawn workers, mutate repositories, silently switch selected model/harness, relax Guard, or perform irreversible work. Effects still need normal action/approval/lease. A restart/next-session change shows pending state; a failed enable reverts or remains safely blocked with a reason.
 - A mandatory security invariant, foundational subsystem or signed policy floor cannot be turned off by a feature setting. Experimental modules remain subject to the same Guard, sandbox, source-visibility, private-data rules, budgets and verification as stable modules.
-- TUI command palette/slash help/feature-specific pickers and status panels display the **same release class and effective enablement** as Settings, with a plain-text `[Experimental]` suffix and explicit unavailable reason (not color alone). GUI uses accessible “Experimental” text/tooltip. API/SDK exposes metadata + requested/effective state and reason, not new bypass actions. Lifecycle status, release class and user preference must not be conflated.
+- V1 TUI command palette/slash help/feature-specific pickers and status panels display the **same release class and effective enablement** as Settings, with a plain-text `[Experimental]` suffix and explicit unavailable reason (not color alone). Future GUI surfaces use accessible “Experimental” text/tooltip. API/SDK exposes metadata + requested/effective state and reason, not new bypass actions. Lifecycle status, release class and user preference must not be conflated.
 - Promotion `experimental -> beta -> stable` requires reviewed reliability/security/compatibility evidence and versioned migration; existing explicit user preferences are preserved or an explicit migration is offered, never silently transformed into privilege or paid spend. Rollbacks disable the feature safely without losing user data or rewriting canonical sessions/effects.
 
 **Examples (design only, not claimed implemented):** `native repository search (experimental, OFF)`, `Hashline edit dialect (experimental, OFF)`, `warm provider transport (experimental, OFF)`, `CoW worktree backend (experimental, OFF)`. **Snapcompact is DEFERRED/UNAVAILABLE in V1**, not an experimental toggle; its source feasibility is recorded in §16.15.2. Do not assign a setting or claim runtime support while a feature remains only a proposal.
 
 ### 16.15.1 Actual codebase integration status (2026-10-14)
 
-**Snapshot versus live-overlay source truth (rechecked 2026-10-15):** the pinned upstream `opencode/` tree retains separate legacy `ConfigV1.Info.experimental`, Core V2 `Config.Info.experimental`, broad `OPENCODE_EXPERIMENTAL` flags and GUI-local `settings.v3` preferences; upstream alone did not implement Horizon `FeatureExposureV1`. **The HorizonCode first-party overlay now does** include `packages/core/src/v1/config/feature-exposure.ts`, `packages/tui/src/component/dialog-features.tsx` wired as `horizon.settings.features` (`/features`) in `packages/tui/src/app.tsx`, and `packages/app/src/components/settings-v2/features.tsx` wired into Features/Experimental tabs in `dialog-settings-v2.tsx`. `packages/core/test/config/feature-exposure.test.ts` covers a limited derived-projection slice. Status is **CODE_PRESENT/PARTIAL**, not absence of panels, and not evidence of FEAT-001..014, full config source/lock/precedence/pending propagation, API parity or any experimental backend being executable. Bootstrap still preserves root overlays rather than replacing them from upstream.
+**Snapshot versus live-overlay source truth (rechecked 2026-10-15):** the pinned upstream `opencode/` tree retains separate legacy `ConfigV1.Info.experimental`, Core V2 `Config.Info.experimental`, broad `OPENCODE_EXPERIMENTAL` flags and GUI-local `settings.v3` preferences; upstream alone did not implement Horizon `FeatureExposureV1`. **The HorizonCode first-party overlay now does** include `packages/core/src/v1/config/feature-exposure.ts`, `packages/tui/src/component/dialog-features.tsx` wired as `horizon.settings.features` (`/features`) in `packages/tui/src/app.tsx`, and `packages/app/src/components/settings-v2/features.tsx` wired into Features/Experimental tabs in `dialog-settings-v2.tsx`. `packages/core/test/config/feature-exposure.test.ts` covers a limited derived-projection slice. Status is **CODE_PRESENT/PARTIAL**, not absence of panels, and not evidence of FEAT-001..014, full config source/lock/precedence/pending propagation, API parity or any experimental backend being executable. The app GUI is outside V1 release scope; its code presence is not V1 acceptance. Bootstrap still preserves root overlays rather than replacing them from upstream.
 
 Inventory optional user-facing features separately from internal legacy flags. Runtime-capable options must resolve from their existing **backend config owner**, including source precedence, channel, platform, dependent capability, Guard policy and effective state. GUI-local `settings.v3` cannot grant a backend capability. Broad inherited `OPENCODE_EXPERIMENTAL` must not count as individual opt-in for a newly governed HorizonCode experiment; preserve classified legacy compatibility deliberately rather than accidentally enabling all new experiments.
 
@@ -250,7 +250,7 @@ Decision: retain **DEFERRED/UNAVAILABLE in V1**, with no runtime code, setting, 
 
 ## 16.16 Resource, provider-health and multi-session product experience (A-V2-30)
 
-TUI, CLI, web/desktop and SDK project the same authoritative diagnostics and `FeatureExposureV1` state; a UI screenshot or tab never becomes a task/session owner. Show per-Session and aggregate memory **with explicit units and metric types** (Linux PSS/RSS, native Windows private bytes, local model RAM/VRAM separately), CPU/processes/FDs, worktree/disk use, running/queued/blocked headless workers, and measured/estimated/unknown provenance. Avoid false exact costs or cross-platform comparability.
+V1 CLI/TUI project the same authoritative diagnostics and `FeatureExposureV1` state; a UI screenshot or tab never becomes a task/session owner. Show per-Session and aggregate memory **with explicit units and metric types** (Linux PSS/RSS, native Windows private bytes, local model RAM/VRAM separately), CPU/processes/FDs, worktree/disk use, running/queued/blocked headless workers, and measured/estimated/unknown provenance. Avoid false exact costs or cross-platform comparability. Web/desktop projections are post-V1.
 
 - Session list: owner/provider/model/harness, current/last turn status, running child count, change conflicts, pending approvals, cost and quick resume; stable input focus when another Session streams.
 - Provider Doctor: one discoverable action and settings entry, with `offline / catalog / full` tiers and a visible spend/privacy confirmation before real inference. Show endpoint, catalog freshness, ability to stream/tool-call, selected-model support and precise failure reason; never display API keys.
@@ -264,7 +264,7 @@ UI acceptance lives in §32.32. Current source coverage is not inferred from the
 
 ## 16.17 Exact resource and concurrent-session UI behaviour
 
-**One state projection** is consumed by TUI/desktop/web/CLI/SDK from the existing source owner. Every displayed availability badge resolves separately (a) DESIGNED/CODE_PRESENT/WIRED/TESTED, (b) stable/beta/experimental, (c) OS/provider/backend supported, (d) user requested/effective/locked Settings and (e) live health. No toggle can turn a design-only capability into an executable service.
+**One state projection** is consumed by V1 TUI/CLI and the existing SDK from the existing source owner; web/desktop consumers are post-V1. Every displayed availability badge resolves separately (a) DESIGNED/CODE_PRESENT/WIRED/TESTED, (b) stable/beta/experimental, (c) OS/provider/backend supported, (d) user requested/effective/locked Settings and (e) live health. No toggle can turn a design-only capability into an executable service.
 
 | User action / surface | Inputs | Visible output / callback | Failure/approval |
 |---|---|---|---|

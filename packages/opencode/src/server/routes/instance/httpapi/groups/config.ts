@@ -54,7 +54,7 @@ export const ConfigApi = HttpApi.make("config")
           error: [ConflictError, HttpApiError.InternalServerError],
         }).annotateMerge(
           OpenApi.annotations({
-            identifier: "config.features.update",
+            identifier: "config.featureUpdate",
             summary: "Update optional feature setting",
             description: "Conditionally update one supported config setting without changing unrelated values.",
           }),

@@ -4,7 +4,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Session } from "./session"
 import { Database } from "@opencode-ai/core/database/database"
 import type { PatchOperation } from "@opencode-ai/core/session/supervisor"
-import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
+import { SessionSupervisor, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Storage } from "@/storage/storage"
@@ -25,10 +25,13 @@ export class FileChangesUnavailableError extends Schema.TaggedErrorClass<FileCha
 ) {}
 
 export interface Interface {
-  readonly revert: (input: RevertInput) => Effect.Effect<Session.Info, FileChangesUnavailableError | Session.BusyError>
+  readonly revert: (input: RevertInput) => Effect.Effect<
+    Session.Info,
+    FileChangesUnavailableError | Session.BusyError | SessionSupervisorError
+  >
   readonly unrevert: (input: {
     sessionID: SessionID
-  }) => Effect.Effect<Session.Info, FileChangesUnavailableError | Session.BusyError>
+  }) => Effect.Effect<Session.Info, FileChangesUnavailableError | Session.BusyError | SessionSupervisorError>
   readonly cleanup: (session: Session.Info) => Effect.Effect<void>
 }
 
@@ -62,20 +65,10 @@ const layer = Layer.effect(
       yield* supervisor
         .runPatch({
           sessionID: session.id,
-          source: database.path,
           workspaceRoot: session.directory,
           turnContextDigest,
           operations,
-          authorize: async () => {},
         })
-        .pipe(
-          Effect.mapError(
-            (error) =>
-              new FileChangesUnavailableError({
-                message: error.message,
-              }),
-          ),
-        )
     })
 
     const revert = Effect.fn("SessionRevert.revert")(function* (input: RevertInput) {

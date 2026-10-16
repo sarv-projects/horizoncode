@@ -1,6 +1,6 @@
 # 37. Runtime service LLD
 
-Status: normative service interfaces. A service marked proposed is not implemented until source and tests prove it.
+Status: normative service interfaces. A service marked proposed is not implemented until source and tests prove it. Under A-V2-31, V1 runtime exposure is Linux/WSL CLI/TUI; browser, desktop and built-in web-search services below are post-V1 and unavailable. LSP/DAP/REPL are V1 goals but still require their own Guarded implementation and tests.
 
 ## 37.1 Common contract
 
@@ -26,7 +26,7 @@ contracts-v2/capability-registry-v1.json is the machine design/alias seed.
 
 Sealed builtin IDs cannot be shadowed. Alias resolution happens before policy. UI, CLI, model tool schemas and SDK project from the same IDs.
 
-## 37.3 BrowserBackendV1
+## 37.3 BrowserBackendV1 (post-V1)
 
 Target capabilities:
 browser.open/navigate/back/reload/snapshot/screenshot/console/network_errors/wait/assert
@@ -45,7 +45,7 @@ Rules:
 - upload/download/authenticated mutation uses Guard;
 - worker crash invalidates references.
 
-## 37.4 DesktopActionServiceV1
+## 37.4 DesktopActionServiceV1 (post-V1)
 
 Canonical family: desktop.*
 
@@ -80,7 +80,7 @@ Required guards:
 - emergency cancellation;
 - no unrestricted Eval.
 
-## 37.5 WebSearchBrokerV1
+## 37.5 WebSearchBrokerV1 (post-V1)
 
 Canonical family: web.search.*
 
@@ -527,7 +527,7 @@ interface HeadlessBrokerV1 {
 
 ## 37.19 Multi-client SDK, source import/resume and opt-in developer service algorithms
 
-These are **proposed adapters** over the existing public Session/API plus Rust managed control and existing provider transport; do not create a new conversation, Task, Guard, SecretBroker or command catalog.
+These are **proposed adapters** over the existing public Session/API plus Rust managed control and existing provider transport; do not create a new conversation, Task, Guard, SecretBroker or command catalog. Under A-V2-31, V1 SDK/client scope is CLI/TUI only. Web/desktop/mobile clients, remote/cloud continuation and externally hosted clients are post-V1 and unavailable; their type entries below preserve future contract design, not V1 support.
 
 ~~~ts
 type SessionOriginV1 = {source:"HORIZON"|"OPENCODE"|"CODEX"|"CLAUDE"|"PI"|"OTHER"; sourceVersion?:string; sourceSessionRef:string; importTimeMs?:string};

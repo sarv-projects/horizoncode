@@ -50,7 +50,7 @@ type Display =
       text: string
       lineStart: number
       lineEnd: number
-      totalLines: number
+      totalLines?: number
       truncated: boolean
     }
 
@@ -137,7 +137,7 @@ export const ReadTool = Tool.define<
     const lines = Effect.fn("ReadTool.lines")(function* (filepath: string, opts: { limit: number; offset: number }) {
       const start = opts.offset - 1
       const raw: string[] = []
-      const flags = { bytes: 0, count: 0, cut: false, more: false, done: false }
+      const flags = { bytes: 0, count: 0, cut: false, more: false, lineTruncated: false, done: false }
 
       // Note: prefer manual TextDecoder over Stream.decodeText — when the source stream
       // ends without flushing, decodeText drops the final unterminated line. We also
@@ -156,10 +156,13 @@ export const ReadTool = Tool.define<
 
             if (raw.length >= opts.limit) {
               flags.more = true
-              return
+              flags.done = true
+              return yield* new ReadStop()
             }
 
-            const line = text.length > MAX_LINE_LENGTH ? text.substring(0, MAX_LINE_LENGTH) + MAX_LINE_SUFFIX : text
+            const lineWasTruncated = text.length > MAX_LINE_LENGTH
+            if (lineWasTruncated) flags.lineTruncated = true
+            const line = lineWasTruncated ? text.substring(0, MAX_LINE_LENGTH) + MAX_LINE_SUFFIX : text
             const size = Buffer.byteLength(line, "utf-8") + (raw.length > 0 ? 1 : 0)
             if (flags.bytes + size <= MAX_BYTES) {
               raw.push(line)
@@ -176,7 +179,14 @@ export const ReadTool = Tool.define<
         Effect.catchTag("ReadStop", () => Effect.void),
       )
 
-      return { raw, count: flags.count, cut: flags.cut, more: flags.more, offset: opts.offset }
+      return {
+        raw,
+        count: flags.count,
+        cut: flags.cut,
+        more: flags.more,
+        lineTruncated: flags.lineTruncated,
+        offset: opts.offset,
+      }
     })
 
     const isBinaryFile = (filepath: string, bytes: Uint8Array) => {
@@ -340,11 +350,11 @@ export const ReadTool = Tool.define<
 
       const last = file.offset + file.raw.length - 1
       const next = last + 1
-      const truncated = file.more || file.cut
+      const truncated = file.more || file.cut || file.lineTruncated
       if (file.cut) {
         output += `\n\n(Output capped at ${MAX_BYTES_LABEL}. Showing lines ${file.offset}-${last}. Use offset=${next} to continue.)`
       } else if (file.more) {
-        output += `\n\n(Showing lines ${file.offset}-${last} of ${file.count}. Use offset=${next} to continue.)`
+        output += `\n\n(Showing lines ${file.offset}-${last}. More lines available. Use offset=${next} to continue.)`
       } else {
         output += `\n\n(End of file - total ${file.count} lines)`
       }
@@ -369,7 +379,7 @@ export const ReadTool = Tool.define<
             text: file.raw.join("\n"),
             lineStart: file.offset,
             lineEnd: last,
-            totalLines: file.count,
+            totalLines: file.more || file.cut ? undefined : file.count,
             truncated,
           },
         },

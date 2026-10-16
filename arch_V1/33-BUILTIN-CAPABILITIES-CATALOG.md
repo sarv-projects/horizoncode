@@ -4,6 +4,8 @@
 
 A capability being listed here means it belongs in the target product. It is **not** evidence that the current source already implements or verifies it. Runtime status must be one of `DESIGNED | CODE_PRESENT | WIRED | TESTED | VERIFIED | UNAVAILABLE`.
 
+The product catalog retains future capabilities as well as V1 ones. Under A-V2-31, expose only supported Linux/WSL CLI/TUI V1 actions; web/desktop/browser, desktop-control and web-search entries remain unavailable/post-V1. DAP, REPL, LSP, local guarded worker, provider/settings and TUI actions remain V1 goals but require runtime proof before exposure.
+
 ## 33.1 Catalog rules
 
 - Built-in IDs are stable and versioned. A product built-in's stable ID/namespace, not a filesystem filename or display name, is its authority identity.

@@ -14,7 +14,7 @@ import {
   WorkspaceRoutingQueryFields,
 } from "../middleware/workspace-routing"
 import { described } from "./metadata"
-import { ConflictError, ForbiddenError, InvalidRequestError } from "../errors"
+import { ConflictError, ForbiddenError, InvalidRequestError, ServiceUnavailableError } from "../errors"
 
 const PathInfo = Schema.Struct({
   home: Schema.String,
@@ -139,6 +139,7 @@ export const InstanceApi = HttpApi.make("instance")
         HttpApiEndpoint.get("agent", InstancePaths.agent, {
           query: WorkspaceRoutingQuery,
           success: described(Schema.Array(Agent.Info), "List of agents"),
+          error: ServiceUnavailableError,
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "app.agents",

@@ -7,7 +7,8 @@ import { createHash } from "node:crypto"
 import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { Cause, Config, Effect, Exit, Layer, Schema } from "effect"
+import { Cause, Config, Effect, Exit, Layer, Queue, Schema } from "effect"
+import { OpenApi } from "effect/unstable/httpapi"
 import { HttpClient, HttpClientRequest, HttpClientResponse, HttpRouter, HttpServer } from "effect/unstable/http"
 import { layerWebSocketConstructorGlobal } from "effect/unstable/socket/Socket"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -28,11 +29,21 @@ import { InstanceStore } from "../../src/project/instance-store"
 import { Project } from "../../src/project/project"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import * as HttpSessionError from "../../src/server/routes/instance/httpapi/handlers/session-errors"
+import * as LegacySessionHandler from "../../src/server/routes/instance/httpapi/handlers/session"
+import * as V2SessionHandler from "@opencode-ai/server/handlers/session"
+import { PublicApi } from "../../src/server/routes/instance/httpapi/public"
 import { ExperimentalPaths } from "../../src/server/routes/instance/httpapi/groups/experimental"
 import { SessionPaths } from "../../src/server/routes/instance/httpapi/groups/session"
 import { McpPaths } from "../../src/server/routes/instance/httpapi/groups/mcp"
 import { Session } from "@/session/session"
-import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
+import {
+  GuardApprovalRequested,
+  SessionSupervisor,
+  SessionSupervisorError,
+  type GuardApprovalRequest,
+} from "@opencode-ai/core/session/supervisor"
+import { EventV2Bridge } from "@/event-v2-bridge"
+import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 import { MessageID, PartID, SessionID, type SessionID as SessionIDType } from "../../src/session/schema"
 import { Database } from "@opencode-ai/core/database/database"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
@@ -52,7 +63,7 @@ import {
 } from "../fixture/fixture"
 import { TestLLMServer } from "../lib/llm-server"
 import { testProviderConfig } from "../lib/test-provider"
-import { pollWithTimeout, testEffect } from "../lib/effect"
+import { pollWithTimeout, testEffect, awaitWithTimeout } from "../lib/effect"
 
 const originalWorkspaces = Flag.OPENCODE_EXPERIMENTAL_WORKSPACES
 const noopBootstrapLayer = Layer.succeed(
@@ -61,10 +72,19 @@ const noopBootstrapLayer = Layer.succeed(
 )
 const rustTestRoot = mkdtempSync(path.join(tmpdir(), "hc-httpapi-session-guard-"))
 const supervisorBinary = path.resolve(import.meta.dir, "../../../../kernel/target/debug/session_supervisor")
+const hostKernelBinary = path.resolve(import.meta.dir, "../../../../kernel/target/debug/hz-kernel")
+const hostKernelAvailable = process.platform === "linux" && existsSync(hostKernelBinary)
 const supervisorAvailable = process.platform === "linux" && existsSync(supervisorBinary)
 const supervisorDigest = supervisorAvailable
   ? createHash("sha256").update(readFileSync(supervisorBinary)).digest("hex")
   : undefined
+const hostKernelDigest = hostKernelAvailable
+  ? createHash("sha256").update(readFileSync(hostKernelBinary)).digest("hex")
+  : undefined
+// The default suite fixture deliberately leaves the host kernel unavailable: the
+// shell/command 503 surface and the legacy-revert unavailability contract are
+// defined for an unmediated Guard host. Tests that need the real Guard-mediated
+// `files.patch` flow opt into `hostIt` below.
 const supervisorRuntime = Layer.succeed(
   SessionSupervisor.RuntimeConfig,
   SessionSupervisor.RuntimeConfig.of({
@@ -96,19 +116,95 @@ const appLayer = AppNodeBuilder.build(
   LayerNode.group([InstanceStore.node, Project.node, Session.node, Workspace.node, Database.node, Ripgrep.node]),
   [[InstanceStore.bootstrapNode, noopBootstrapLayer], ...routeReplacements],
 )
-const servedRoutes: Layer.Layer<never, Config.ConfigError, HttpServer.HttpServer> = HttpRouter.serve(
-  HttpApiApp.createRoutes(undefined, routeReplacements),
-  {
-    disableListenLog: true,
-    disableLogger: true,
-  },
-)
+const servedRoutes: Layer.Layer<never, Config.ConfigError | SessionSupervisorError, HttpServer.HttpServer> =
+  HttpRouter.serve(
+    HttpApiApp.createRoutes(undefined, routeReplacements),
+    {
+      disableListenLog: true,
+      disableLogger: true,
+    },
+  )
 const httpApiLayer = servedRoutes.pipe(
   Layer.provide(layerWebSocketConstructorGlobal),
   Layer.provideMerge(NodeHttpServer.layerTest),
   Layer.provideMerge(NodeServices.layer),
 )
 const it = testEffect(Layer.mergeAll(appLayer, httpApiLayer))
+
+// Real host-backed instance: mirrors the `hostKernelRuntime` wiring in
+// test/session/prompt.test.ts (same fresh `hz-kernel`, sha256 manifest, and
+// per-suite install/state roots). Used only by tests that exercise the real
+// Guard-mediated files.patch flow.
+const hostKernelRuntime = Layer.succeed(
+  SessionSupervisor.RuntimeConfig,
+  SessionSupervisor.RuntimeConfig.of({
+    assetPath: supervisorAvailable ? supervisorBinary : undefined,
+    manifestJSON: supervisorDigest
+      ? JSON.stringify({
+          schemaVersion: 1,
+          status: "available",
+          binaryName: "session_supervisor",
+          target: `linux-${process.arch}-gnu`,
+          sha256: supervisorDigest,
+        })
+      : undefined,
+    installRoot: path.join(rustTestRoot, "host-suite-install"),
+    stateRoot: path.join(rustTestRoot, "host-suite-state"),
+    hostKernelAssetPath: hostKernelAvailable ? hostKernelBinary : undefined,
+    hostKernelManifestJSON: hostKernelDigest
+      ? JSON.stringify({
+          schemaVersion: 1,
+          status: "available",
+          binaryName: "hz-kernel",
+          target: `linux-${process.arch}-gnu`,
+          sha256: hostKernelDigest,
+        })
+      : undefined,
+    hostKernelInstallRoot: path.join(rustTestRoot, "host-kernel-install"),
+    hostKernelStateRoot: path.join(rustTestRoot, "host-kernel-state"),
+  }),
+)
+const hostRouteReplacements = [
+  [Database.node, testDatabaseNode],
+  [SessionSupervisor.runtimeConfigNode, hostKernelRuntime],
+] as const
+const hostAppLayer = AppNodeBuilder.build(
+  LayerNode.group([
+    InstanceStore.node,
+    Project.node,
+    Session.node,
+    Workspace.node,
+    Database.node,
+    Ripgrep.node,
+    EventV2Bridge.node,
+    SessionSupervisor.node,
+  ]),
+  [[InstanceStore.bootstrapNode, noopBootstrapLayer], ...hostRouteReplacements],
+)
+const hostServedRoutes: Layer.Layer<never, Config.ConfigError | SessionSupervisorError, HttpServer.HttpServer> =
+  HttpRouter.serve(
+    HttpApiApp.createRoutes(undefined, hostRouteReplacements),
+    {
+      disableListenLog: true,
+      disableLogger: true,
+    },
+  )
+const hostHttpApiLayer = hostServedRoutes.pipe(
+  Layer.provide(layerWebSocketConstructorGlobal),
+  Layer.provideMerge(NodeHttpServer.layerTest),
+  Layer.provideMerge(NodeServices.layer),
+)
+// Guard approval replies are explicit user actions and require a trusted
+// principal, exactly as test/session/prompt.test.ts provides for its live tests.
+const trustedPrincipalLayer = Layer.succeed(TrustedPrincipalContext, {
+  principal: { kind: "host_os" as const },
+})
+const hostIt = testEffect(
+  Layer.mergeAll(hostAppLayer, hostHttpApiLayer).pipe(Layer.provideMerge(trustedPrincipalLayer)),
+)
+const publicApiSpec = OpenApi.fromApi(PublicApi) as {
+  paths: Record<string, Partial<Record<"post", { responses?: Record<string, unknown> }>>>
+}
 
 function pathFor(path: string, params: Record<string, string>) {
   return Object.entries(params).reduce((result, [key, value]) => result.replace(`:${key}`, value), path)
@@ -322,6 +418,135 @@ afterAll(async () => {
 })
 
 describe("session HttpApi", () => {
+  it.effect("maps legacy prompt failures to explicit client, conflict, denial, and host errors", () =>
+    Effect.sync(() => {
+      const mapper = (HttpSessionError as typeof HttpSessionError & {
+        mapLegacyPromptError?: (error: unknown, sessionID: SessionIDType) => unknown
+      }).mapLegacyPromptError
+      expect(mapper).toBeTypeOf("function")
+      if (!mapper) return
+
+      const sessionID = SessionID.descending()
+      expect(mapper(new Error("invalid prompt input"), sessionID)).toMatchObject({ _tag: "BadRequest" })
+      expect(mapper(new Session.BusyError({ sessionID }), sessionID)).toMatchObject({
+        _tag: "SessionBusyError",
+        sessionID,
+      })
+      expect(
+        mapper(new SessionSupervisorError({ stage: "authorization", reason: "Guard denied" }), sessionID),
+      ).toMatchObject({ _tag: "ForbiddenError", message: "Session supervisor authorization failed: Guard denied" })
+      expect(mapper(new SessionSupervisorError({ stage: "ownership", reason: "another owner" }), sessionID)).toMatchObject({
+        _tag: "SessionBusyError",
+        sessionID,
+      })
+      expect(mapper(new SessionSupervisorError({ stage: "transport", reason: "channel closed" }), sessionID)).toMatchObject({
+        _tag: "ServiceUnavailableError",
+        service: "host-kernel",
+      })
+    }),
+  )
+
+  it.effect("maps v2 revert Guard denial and owner conflict separately from host unavailability", () =>
+    Effect.sync(() => {
+      const mapper = (V2SessionHandler as typeof V2SessionHandler & {
+        mapSupervisorError?: (error: SessionSupervisorError, sessionID: string) => unknown
+      }).mapSupervisorError
+      expect(mapper).toBeTypeOf("function")
+      if (!mapper) return
+
+      const sessionID = SessionID.descending()
+      expect(mapper(new SessionSupervisorError({ stage: "authorization", reason: "Guard denied" }), sessionID)).toMatchObject({
+        _tag: "ForbiddenError",
+        message: "Session supervisor authorization failed: Guard denied",
+      })
+      expect(mapper(new SessionSupervisorError({ stage: "ownership", reason: "another owner" }), sessionID)).toMatchObject({
+        _tag: "ConflictError",
+        resource: sessionID,
+      })
+      expect(mapper(new SessionSupervisorError({ stage: "transport", reason: "channel closed" }), sessionID)).toMatchObject({
+        _tag: "ServiceUnavailableError",
+        service: "files.patch",
+      })
+    }),
+  )
+
+  it.effect("maps legacy command and revert Guard denials to Forbidden", () =>
+    Effect.sync(() => {
+      const sessionID = SessionID.descending()
+      const commandMapper = (LegacySessionHandler as typeof LegacySessionHandler & {
+        mapLegacySupervisorError?: (error: SessionSupervisorError, sessionID: string, service?: string) => unknown
+      }).mapLegacySupervisorError
+      const revertMapper = (LegacySessionHandler as typeof LegacySessionHandler & {
+        mapLegacyRevertError?: (error: SessionSupervisorError, sessionID: string) => unknown
+      }).mapLegacyRevertError
+
+      expect(commandMapper).toBeTypeOf("function")
+      expect(revertMapper).toBeTypeOf("function")
+      if (!commandMapper || !revertMapper) return
+
+      const denied = new SessionSupervisorError({ stage: "authorization", reason: "Guard denied" })
+      const expected = {
+        _tag: "ForbiddenError",
+        message: "Session supervisor authorization failed: Guard denied",
+      }
+      expect(commandMapper(denied, sessionID)).toMatchObject(expected)
+      expect(revertMapper(denied, sessionID)).toMatchObject(expected)
+      const ownership = new SessionSupervisorError({ stage: "ownership", reason: "another owner" })
+      expect(commandMapper(ownership, sessionID)).toMatchObject({ _tag: "SessionBusyError", sessionID })
+      expect(revertMapper(ownership, sessionID)).toMatchObject({ _tag: "SessionBusyError", sessionID })
+      const unavailable = new SessionSupervisorError({ stage: "transport", reason: "channel closed" })
+      expect(commandMapper(unavailable, sessionID)).toMatchObject({
+        _tag: "ServiceUnavailableError",
+        service: "host-kernel",
+      })
+      expect(revertMapper(unavailable, sessionID)).toMatchObject({
+        _tag: "ServiceUnavailableError",
+        service: "files.patch",
+      })
+    }),
+  )
+
+  it.effect("declares the legacy and v2 session failure mappings in OpenAPI", () =>
+    Effect.sync(() => {
+      const responses = (path: string) => publicApiSpec.paths[path]?.post?.responses ?? {}
+      const encodedResponse = (path: string, status: string) => JSON.stringify(responses(path)[status] ?? {})
+
+      for (const path of ["/session/{sessionID}/init", "/session/{sessionID}/message"]) {
+        expect(responses(path), `${path} 400 client error`).toHaveProperty("400")
+        expect(responses(path), `${path} 409 busy conflict`).toHaveProperty("409")
+        expect(encodedResponse(path, "403"), `${path} Guard denial`).toContain("ForbiddenError")
+        expect(encodedResponse(path, "503"), `${path} host failure`).toContain("ServiceUnavailableError")
+      }
+
+      for (const path of ["/session/{sessionID}/command", "/session/{sessionID}/shell"]) {
+        expect(responses(path), `${path} Guard denial`).toHaveProperty("403")
+        expect(responses(path), `${path} owner conflict`).toHaveProperty("409")
+        expect(responses(path), `${path} host failure`).toHaveProperty("503")
+        expect(encodedResponse(path, "403")).toContain("ForbiddenError")
+        expect(encodedResponse(path, "409")).toContain("SessionBusyError")
+        expect(encodedResponse(path, "503")).toContain("ServiceUnavailableError")
+      }
+
+      for (const path of ["/session/{sessionID}/revert", "/session/{sessionID}/unrevert"]) {
+        expect(responses(path), `${path} Guard denial`).toHaveProperty("403")
+        expect(responses(path), `${path} owner conflict`).toHaveProperty("409")
+        expect(responses(path), `${path} host failure`).toHaveProperty("503")
+        expect(encodedResponse(path, "403")).toContain("ForbiddenError")
+        expect(encodedResponse(path, "409")).toContain("SessionBusyError")
+        expect(encodedResponse(path, "503")).toContain("ServiceUnavailableError")
+      }
+
+      for (const path of ["/api/session/{sessionID}/revert/stage", "/api/session/{sessionID}/revert/clear"]) {
+        expect(responses(path), `${path} owner conflict`).toHaveProperty("409")
+        expect(responses(path), `${path} Guard denial`).toHaveProperty("403")
+        expect(responses(path), `${path} host failure`).toHaveProperty("503")
+        expect(encodedResponse(path, "409")).toContain("ConflictError")
+        expect(encodedResponse(path, "403")).toContain("ForbiddenError")
+        expect(encodedResponse(path, "503")).toContain("ServiceUnavailableError")
+      }
+    }),
+  )
+
   it.effect("maps busy sessions to public session busy errors", () =>
     Effect.gen(function* () {
       const sessionID = SessionID.descending()
@@ -368,12 +593,13 @@ describe("session HttpApi", () => {
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
+        const marker = path.join(test.directory, "shell-must-not-run")
         yield* Effect.promise(() =>
           writeFile(
             path.join(test.directory, "opencode.json"),
             JSON.stringify({
               $schema: "https://opencode.ai/config.json",
-              command: { probe: { template: "Probe !`echo shell-must-not-run`" } },
+              command: { probe: { template: `Probe !\`touch ${marker}\`` } },
             }),
           ),
         )
@@ -393,8 +619,88 @@ describe("session HttpApi", () => {
           message: "Shell execution is unavailable until terminal.run is mediated by Rust Guard and ExecutionHost.",
           service: "terminal.run",
         })
+        expect(existsSync(marker)).toBe(false)
       }),
     { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
+    "keeps legacy revert unavailable and leaves files unchanged when the Guard host is unavailable",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const instance = yield* requireInstance
+        const { db } = yield* Database.Service
+        yield* db
+          .insert(ProjectTable)
+          .values({
+            id: instance.project.id,
+            worktree: AbsolutePath.make(test.directory),
+            vcs: "git",
+            sandboxes: [],
+          })
+          .onConflictDoNothing()
+          .run()
+          .pipe(Effect.orDie)
+
+        const tracked = path.join(test.directory, "legacy-revert.txt")
+        yield* Effect.promise(() => writeFile(tracked, "before\n"))
+        const session = yield* createSession({ title: "legacy revert unavailable" })
+        const user = yield* createTextMessage(session.id, "revert target")
+        const sessionSvc = yield* Session.Service
+        const timestamp = Date.now()
+        const assistant = yield* sessionSvc.updateMessage({
+          id: MessageID.ascending(),
+          role: "assistant",
+          sessionID: session.id,
+          time: { created: timestamp, completed: timestamp },
+          parentID: user.info.id,
+          modelID: ModelV2.ID.make("model"),
+          providerID: ProviderV2.ID.make("provider"),
+          mode: "build",
+          agent: "build",
+          path: { cwd: test.directory, root: test.directory },
+          cost: 0,
+          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        })
+        const { Snapshot: legacySnapshot } = yield* Effect.promise(() => import("@/snapshot"))
+        const snapshotLayer = AppNodeBuilder.build(legacySnapshot.node)
+        const patch = yield* Effect.gen(function* () {
+          const snapshot = yield* legacySnapshot.Service
+          const baseline = yield* snapshot.track()
+          if (!baseline) throw new Error("Snapshot capture was unavailable for the legacy revert fixture")
+          yield* Effect.promise(() => writeFile(tracked, "after\n"))
+          return yield* snapshot.patch(baseline)
+        }).pipe(Effect.provide(snapshotLayer))
+
+        yield* sessionSvc.updatePart({
+          id: PartID.ascending(),
+          sessionID: session.id,
+          messageID: assistant.id,
+          type: "patch",
+          hash: patch.hash,
+          files: patch.files,
+        })
+
+        const response = yield* request(pathFor(SessionPaths.revert, { sessionID: session.id }), {
+          method: "POST",
+          headers: {
+            "x-opencode-directory": test.directory,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ messageID: user.info.id }),
+        })
+
+        expect(response.status).toBe(503)
+        expect(yield* responseJson(response)).toMatchObject({
+          _tag: "ServiceUnavailableError",
+          service: "files.patch",
+        })
+        expect(yield* Effect.promise(() => readFile(tracked, "utf8"))).toBe("after\n")
+        expect((yield* Session.use.get(session.id)).revert).toBeUndefined()
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+    30_000,
   )
 
   it.instance(
@@ -764,72 +1070,159 @@ describe("session HttpApi", () => {
     }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
   )
 
-  if (supervisorAvailable) {
-    it.instance(
+  it.instance(
+    "returns a conflict before V2 revert stage when another backend owns the Session",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const instance = yield* requireInstance
+        const { db } = yield* Database.Service
+        yield* db
+          .insert(ProjectTable)
+          .values({
+            id: instance.project.id,
+            worktree: AbsolutePath.make(test.directory),
+            vcs: "git",
+            sandboxes: [],
+          })
+          .onConflictDoNothing()
+          .run()
+          .pipe(Effect.orDie)
+
+        const tracked = path.join(test.directory, "tracked.txt")
+        yield* Effect.promise(() => writeFile(tracked, "before\n"))
+        const session = yield* createSession({ title: "V2 revert owner conflict" })
+        const snapshotLayer = AppNodeBuilder.build(Snapshot.node, [
+          [Location.node, Location.boundNode(Location.Ref.make({ directory: AbsolutePath.make(test.directory) }))],
+        ])
+        const baseline = yield* Effect.gen(function* () {
+          const snapshot = yield* Snapshot.Service
+          return yield* snapshot.capture()
+        }).pipe(Effect.provide(snapshotLayer))
+        if (!baseline) throw new Error("Snapshot capture was unavailable for the V2 revert fixture")
+
+        yield* Effect.promise(() => writeFile(tracked, "after\n"))
+        const boundary = yield* insertV2AssistantMessage(session.id, 1)
+        yield* insertV2AssistantMessage(session.id, 2, { start: baseline, files: ["tracked.txt"] })
+        const response = yield* Effect.scoped(
+          SessionSupervisor.acquireExecutionOwner(session.id, "opencode-v1").pipe(
+            Effect.andThen(
+              request(`/api/session/${session.id}/revert/stage`, {
+                method: "POST",
+                headers: {
+                  "x-opencode-directory": test.directory,
+                  "content-type": "application/json",
+                },
+                body: JSON.stringify({ messageID: boundary.id }),
+              }),
+            ),
+          ),
+        )
+
+        expect(response.status).toBe(409)
+        expect(yield* responseJson(response)).toMatchObject({
+          _tag: "ConflictError",
+          resource: session.id,
+        })
+        expect(yield* Effect.promise(() => readFile(tracked, "utf8"))).toBe("after\n")
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  if (supervisorAvailable && hostKernelAvailable) {
+    hostIt.instance(
       "stages and clears V2 revert file changes through Guarded files.patch",
       () =>
         Effect.gen(function* () {
-          const test = yield* TestInstance
-          const instance = yield* requireInstance
-          const { db } = yield* Database.Service
-          yield* db
-            .insert(ProjectTable)
-            .values({
-              id: instance.project.id,
-              worktree: AbsolutePath.make(test.directory),
-              vcs: "git",
-              sandboxes: [],
+          // Stage and clear each prepare one `files.patch` ToolBatch, which blocks
+          // until a concurrent surface answers `guard.approval.requested`; a fiber
+          // that prepares the batch can never reply to itself.
+          const events = yield* EventV2Bridge.Service
+          const supervisor = yield* SessionSupervisor.Service
+          const approvals = yield* Queue.unbounded<GuardApprovalRequest>()
+          const off = yield* events.listen((event) => {
+            if (event.type === GuardApprovalRequested.type) {
+              Queue.offerUnsafe(approvals, event.data as GuardApprovalRequest)
+            }
+            return Effect.void
+          })
+          const approve = Effect.gen(function* () {
+            for (let index = 0; index < 2; index++) {
+              const request = yield* awaitWithTimeout(
+                Queue.take(approvals),
+                "timed out waiting for the Guard files.patch approval",
+                "15 seconds",
+              )
+              expect(request.capabilityID).toBe("files.patch")
+              yield* supervisor.replyGuardApproval({ approvalID: request.approvalID, decision: "allow_once" })
+            }
+          })
+          const body = Effect.gen(function* () {
+            const test = yield* TestInstance
+            const instance = yield* requireInstance
+            const { db } = yield* Database.Service
+            yield* db
+              .insert(ProjectTable)
+              .values({
+                id: instance.project.id,
+                worktree: AbsolutePath.make(test.directory),
+                vcs: "git",
+                sandboxes: [],
+              })
+              .onConflictDoNothing()
+              .run()
+              .pipe(Effect.orDie)
+            const tracked = path.join(test.directory, "tracked.txt")
+            yield* Effect.promise(() => writeFile(tracked, "before\n"))
+
+            const session = yield* createSession({ title: "guarded V2 revert" })
+
+            const snapshotLayer = AppNodeBuilder.build(Snapshot.node, [
+              [Location.node, Location.boundNode(Location.Ref.make({ directory: AbsolutePath.make(test.directory) }))],
+            ])
+            const baseline = yield* Effect.gen(function* () {
+              const snapshot = yield* Snapshot.Service
+              return yield* snapshot.capture()
+            }).pipe(Effect.provide(snapshotLayer))
+            if (!baseline) throw new Error("Snapshot capture was unavailable for the V2 revert fixture")
+
+            yield* Effect.promise(() => writeFile(tracked, "after\n"))
+            const boundary = yield* insertV2AssistantMessage(session.id, 1)
+            yield* insertV2AssistantMessage(session.id, 2, { start: baseline, files: ["tracked.txt"] })
+            const headers = {
+              "x-opencode-directory": test.directory,
+              "content-type": "application/json",
+            }
+
+            const stage = yield* request(`/api/session/${session.id}/revert/stage`, {
+              method: "POST",
+              headers,
+              body: JSON.stringify({ messageID: boundary.id }),
             })
-            .onConflictDoNothing()
-            .run()
-            .pipe(Effect.orDie)
-          const tracked = path.join(test.directory, "tracked.txt")
-          yield* Effect.promise(() => writeFile(tracked, "before\n"))
+            if (stage.status !== 200) {
+              const body = yield* responseJson(stage)
+              throw new Error(`V2 revert stage returned ${stage.status}: ${JSON.stringify(body)}`)
+            }
+            const staged = yield* json<{ data: { messageID: string; restoreFiles?: readonly string[] } }>(stage)
+            expect(staged.data.messageID).toBe(boundary.id)
+            expect(staged.data.restoreFiles).toEqual(["tracked.txt"])
+            expect(yield* Effect.promise(() => readFile(tracked, "utf8"))).toBe("before\n")
 
-          const session = yield* createSession({ title: "guarded V2 revert" })
-
-          const snapshotLayer = AppNodeBuilder.build(Snapshot.node, [
-            [Location.node, Location.boundNode(Location.Ref.make({ directory: AbsolutePath.make(test.directory) }))],
-          ])
-          const baseline = yield* Effect.gen(function* () {
-            const snapshot = yield* Snapshot.Service
-            return yield* snapshot.capture()
-          }).pipe(Effect.provide(snapshotLayer))
-          if (!baseline) throw new Error("Snapshot capture was unavailable for the V2 revert fixture")
-
-          yield* Effect.promise(() => writeFile(tracked, "after\n"))
-          const boundary = yield* insertV2AssistantMessage(session.id, 1)
-          yield* insertV2AssistantMessage(session.id, 2, { start: baseline, files: ["tracked.txt"] })
-          const headers = {
-            "x-opencode-directory": test.directory,
-            "content-type": "application/json",
-          }
-
-          const stage = yield* request(`/api/session/${session.id}/revert/stage`, {
-            method: "POST",
-            headers,
-            body: JSON.stringify({ messageID: boundary.id }),
+            const clear = yield* request(`/api/session/${session.id}/revert/clear`, {
+              method: "POST",
+              headers: { "x-opencode-directory": test.directory },
+            })
+            expect(clear.status).toBe(204)
+            expect(yield* Effect.promise(() => readFile(tracked, "utf8"))).toBe("after\n")
           })
-          if (stage.status !== 200) {
-            const body = yield* responseJson(stage)
-            throw new Error(`V2 revert stage returned ${stage.status}: ${JSON.stringify(body)}`)
-          }
-          const staged = yield* json<{ data: { messageID: string; restoreFiles?: readonly string[] } }>(stage)
-          expect(staged.data.messageID).toBe(boundary.id)
-          expect(staged.data.restoreFiles).toEqual(["tracked.txt"])
-          expect(yield* Effect.promise(() => readFile(tracked, "utf8"))).toBe("before\n")
-
-          const clear = yield* request(`/api/session/${session.id}/revert/clear`, {
-            method: "POST",
-            headers: { "x-opencode-directory": test.directory },
-          })
-          expect(clear.status).toBe(204)
-          expect(yield* Effect.promise(() => readFile(tracked, "utf8"))).toBe("after\n")
+          return yield* Effect.all([body, approve] as const, { concurrency: "unbounded" }).pipe(
+            Effect.ensuring(off),
+          )
         }),
       { git: true, config: { formatter: false, lsp: false } },
     )
   } else {
-    it.instance.skip("stages and clears V2 revert file changes through Guarded files.patch", () => Effect.void, {
+    hostIt.instance.skip("stages and clears V2 revert file changes through Guarded files.patch", () => Effect.void, {
       git: true,
     })
   }

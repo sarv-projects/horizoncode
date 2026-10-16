@@ -73,27 +73,24 @@ Exit: common coding change remains fast, guarded and source-grounded.
 
 Exit: crash/restart, stale generation, multi-workspace and permission tests pass.
 
-## 10.7 P5 — Browser, desktop and built-in web search
+## 10.7 P5 — Browser, desktop and built-in web search (post-V1)
 
-- BrowserBackend with owned/attached profile distinction and observation generation;
-- DesktopAction service with window/display/AX/screenshot generation and OS capability matrix;
-- WebSearch broker with direct search versus model-grounded search distinction, source provenance, auth and cost class;
-- all mutations through Guard; no hidden paid fallback.
+Browser automation/attached-browser interaction, desktop/computer control, browser-based visual editing and built-in web search are **deferred post-V1** under A-V2-31. Keep these paths unavailable; a documented service contract or upstream implementation is not a V1 feature. Reopen only through an explicit scope decision and the existing Guard, privacy, auth, cost and platform acceptance gates.
 
-Exit: real platform journeys plus stale-ref, auth, privacy and denial tests pass.
-
-## 10.8 P6 — Agents, extensions and provider/model UX
+## 10.8 P6 — Agents, extensions, providers and settings UX (V1 CLI/TUI)
 
 - AgentProfile/Harness registry and bounded specialist delegation;
 - skills/hooks/MCP/plugin registry with sealed IDs and capability scoping;
 - one ActionDescriptor for slash/menu/keybinding/API;
-- session model picker plus broader provider/model/role hub;
-- schema-driven settings with requested/effective/source/locked values;
+- session model picker plus provider/model/role hub, with OMP as the preferred source for compatible provider/UI patterns;
+- schema-driven CLI/TUI settings with requested/effective/source/locked values;
 - Goal review UI that cannot start effects without accepted SpecVersion.
 
-Exit: TUI/desktop parity and credential/cost tests pass.
+V1 scope is CLI/TUI only. Preserve one config/auth/Session owner and prove credential/cost/no-fallback behavior. Web/desktop parity is post-V1.
 
-## 10.9 P7 — Streaming UI, artifacts, analytics and automations
+Exit: CLI/TUI state and action semantics agree, and credential/cost/Guard tests pass.
+
+## 10.9 P7 — Streaming TUI, artifacts, analytics and automations (V1)
 
 - stable-prefix streaming and bounded UiEventMux;
 - safe SVG preview, closed-fence Mermaid, deterministic table charts;
@@ -102,11 +99,14 @@ Exit: TUI/desktop parity and credential/cost tests pass.
 - analytics measured/estimated/unknown provenance;
 - durable automation scheduling that still invokes Guarded actions.
 
-Exit: render fault isolation, accessibility fallback, no scroll/focus theft, crash/replay and artifact persistence tests pass.
+V1 renders through CLI/TUI only; web/desktop render surfaces are post-V1. Automations remain owned by Rust and invoke ordinary Guarded actions.
 
-## 10.10 P8 — Long horizon, recovery and real-work evaluation
+Exit: render fault isolation, keyboard/accessibility fallback, no scroll/focus theft, crash/replay and artifact persistence tests pass.
 
-- bounded parallelism/worktree pool;
+## 10.10 P8 — Resource efficiency, recovery and real-work evaluation (V1)
+
+- measured process-tree baseline and bounded parallelism/worktree/resource pools;
+- worker/subagent DAG with typed results, added only after the single managed Attempt and independent verifier pass;
 - deterministic recovery and effect reconciliation;
 - stopping criteria and quota-aware execution without hidden rerouting;
 - task catalog across strong/small/local models;
@@ -125,7 +125,9 @@ Exit: user intent is independently verified on final integrated revision.
 
 ## 10.12 Post-V1 / separately gated
 
-Remote/cloud continuation, shared live collaboration, autonomous self-improvement, broad voice/media features, hosted image generation, and full product identity migration remain separate product decisions unless 17 explicitly promotes them.
+Web and desktop applications, browser/desktop interaction, built-in web search, remote/cloud continuation, shared live collaboration, autonomous self-improvement, broad voice/media features, hosted image generation, external ACP/VIS/DEP journeys, and full product identity/build migration remain post-V1 unless a later §17 decision promotes them.
+
+**Targeted adapted-code identity during V1:** newly adapted first-party modules, packages, folders and configuration identifiers use HorizonCode naming as they are created. Preserve upstream notices and genuine dependency names. This does not mean a wholesale rename of the pinned OpenCode-derived source or a public package migration during V1.
 
 ### Deferred engineering TODO — after V1 implementation and verification only
 
@@ -138,7 +140,7 @@ Do **not** start this migration during P1–P9 or use it to block core V1 delive
 - [ ] Test Linux/Windows clean install, executable launch, full builds, monorepo and affected-package typechecks, tests/Guard flows, update/migration, npm publish dry-run/tarball contents, backward compatibility and rollback at the final integrated revision.
 - [ ] Remove temporary compatibility paths only after their replacement is validated and migration is documented. Avoid unnecessary duplicate builds, disk growth or concurrent heavy compilers.
 
-**Exit:** supported HorizonCode-facing naming is consistent, no legacy product-name leaks remain outside genuine upstream dependency/license references, development validation is efficient, and clean-install/release tests pass. Treat this as a **deferred post-V1 TODO**, not an implementation task for the current gate.
+**Exit:** supported HorizonCode-facing naming is consistent, no legacy product-name leaks remain outside genuine upstream dependency/license references, development validation is efficient, and clean-install/release tests pass. Treat the global migration as a **deferred post-V1 TODO**; the targeted naming rule for new adapted modules is in force during V1.
 
 ## 10.13 Current gate
 
@@ -180,14 +182,14 @@ This is accepted engineering work, **not a feature-cut list**. Preserve the P0�
 
 **Per-slice sign-off:** 1. exact owner/source/hydrated paths; 2. wire schema version + typed error; 3. user authorization/feature exposure; 4. state transition with durable vs derived distinction; 5. happy path **and** timeout/cancel/crash/unknown; 6. process/disk/token/cost resource charge; 7. source-revision/final outcome proof; 8. benchmark/task regression and native platform qualification; 9. raw CI commit/test/OS evidence in HANDOFF. Checklist owner: existing `docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md`. A task is not complete because its HLD/LLD is present.
 
-## 10.16 Complete accepted-journey coverage: ACP, visual edit and deploy
+## 10.16 Accepted journeys outside the V1 CLI/TUI boundary: ACP, visual edit and deploy
 
-These previously had normative user journeys (§§3.16–3.18), but not the same explicit function/contract/test coverage as resource work. They **remain part of implementation planning**, not silently excluded.
+These previously had normative user journeys (§§3.16–3.18), but not the same explicit function/contract/test coverage as resource work. Under A-V2-31, they are **not V1 release blockers** and remain unavailable unless separately promoted.
 
-- **External agent integration (P6):** separate existing pinned upstream ACP *server* from Horizon ACP *client*, native OpenCode backend and generic CLI/remote adapters. Implement version/auth/capability negotiation, session ownership, typed child result, correct model/grant/worker budget and cancel/UNKNOWN. Required owner: §29.19/§37.20 and ACP-001..008.
-- **Visual source edit (P5/P7):** supervised preview process → DOM/AX/source-map snapshot → bounded candidate path/digest/confidence → user-reviewed target selection → Guarded patch → re-observe/test/undo; no pixel-to-file guessing. Owner §20.13/§37.21 and VIS-001..004.
-- **Deployment with verification (P5/P9 integration):** explicit deployment target/account/environment → frozen artifact/source revision and price/credential scopes → approval → Guarded target effect and receipt → real deployed URL/version + health and critical-route check → independent criteria proof → guarded rollback/reconciliation if needed. Owner §14/§37.21 and DEP-001..008.
+- **ACP outbound adapter:** external ACP protocol/client integration is post-V1. Local Rust-owned subagents/workers remain V1 under §29 and the V1 tracker; a native OpenCode backend remains an explicit separate session owner if selected.
+- **Visual source edit:** depends on browser/DOM observation and is post-V1. Keep it unavailable; preserve VIS-001..004 as future acceptance.
+- **Deployment with verification:** production/provider deployment journeys are post-V1. Keep remote mutation unavailable; preserve DEP-001..008 as future acceptance.
 - **No automatic availability promotion:** §33.30 candidate IDs are design-reserved; actual runtime, platform and credential adapters require compiled contracts and tests first. Unsupported remote/hosted effects must be disabled in governed mode.
 - **Release evidence:** test an actual user-selected available backend against a disposable example application, with mutation isolation and outcome proof, before describing these as working. Running a generic shell command does not fulfill the deployment API, and the existence of OpenCode's ACP server does not fulfill Horizon's outbound adapter.
 
-The single operative implementation tracker is the existing P0–P9 plus RC0–RC5 plan. Work can proceed on source-verified read-only adapter discovery in parallel with P1, but **no effectful rollout before universal Guard**.
+The single operative dependency order is P0–P9 plus RC0–RC5 in the current plan; `implementationtov1release.md` owns the user-requested V1 scope/status crosswalk. Work can proceed on source-verified read-only adapter discovery in parallel with P1, but **no effectful rollout before universal Guard**.

@@ -84,8 +84,7 @@ export const GrepTool = Tool.define(
           if (final.length === 0) return empty
 
           const total = rows.length
-          const hasMore = truncated || result.length === limit
-          const output = [`Found ${total} matches${hasMore ? " (more matches available)" : ""}`]
+          const output = [`Found ${total} matches`]
 
           let current = ""
           for (const match of final) {
@@ -99,7 +98,7 @@ export const GrepTool = Tool.define(
 
           if (truncated) {
             output.push("")
-            output.push("(Results truncated. Consider using a more specific path or pattern.)")
+            output.push("(Result limit reached; additional matches may be available. Consider a more specific path or pattern.)")
           }
 
           return {

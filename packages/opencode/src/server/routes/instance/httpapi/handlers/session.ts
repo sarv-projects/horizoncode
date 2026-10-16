@@ -22,6 +22,7 @@ import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { NamedError } from "@opencode-ai/core/util/error"
+import { SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
 import { Cause, Effect, Option, Schema, Scope } from "effect"
 import * as Stream from "effect/Stream"
 import { InstanceState } from "@/effect/instance-state"
@@ -43,17 +44,59 @@ import {
   SummarizePayload,
   UpdatePayload,
 } from "../groups/session"
-import { ConflictError, ForbiddenError, PermissionNotFoundError, ServiceUnavailableError } from "../errors"
+import {
+  ConflictError,
+  ForbiddenError,
+  PermissionNotFoundError,
+  ServiceUnavailableError,
+  SessionBusyError,
+} from "../errors"
 import * as SessionError from "./session-errors"
 
 const SHELL_UNAVAILABLE_MESSAGE =
   "Shell execution is unavailable until terminal.run is mediated by Rust Guard and ExecutionHost."
+
+export function mapLegacySupervisorError(error: SessionSupervisorError, sessionID: string, service = "host-kernel") {
+  switch (error.stage) {
+    case "authorization":
+      return new ForbiddenError({ message: error.message })
+    case "ownership":
+      return new SessionBusyError({ sessionID, message: `Session is busy: ${sessionID}` })
+    default:
+      return new ServiceUnavailableError({ message: error.message, service })
+  }
+}
+
+export function mapLegacyRevertError(
+  error: SessionRevert.FileChangesUnavailableError | Session.BusyError | SessionSupervisorError,
+  sessionID: string,
+) {
+  if (error instanceof SessionSupervisorError) return mapLegacySupervisorError(error, sessionID, "files.patch")
+  if (error instanceof Session.BusyError)
+    return new SessionBusyError({ sessionID, message: `Session is busy: ${sessionID}` })
+  return new ServiceUnavailableError({ message: error.message, service: "files.patch" })
+}
 
 const tryParseJson = (text: string) =>
   Effect.try({
     try: () => JSON.parse(text) as unknown,
     catch: () => new HttpApiError.BadRequest({}),
   })
+
+// A Guard approval decision can fail for four distinct reasons; the host kernel
+// reports them through the typed `approvalCode` rather than a message match.
+function guardApprovalFailure(error: SessionSupervisorError) {
+  switch (error.approvalCode) {
+    case "approval-not-found":
+      return new HttpApiError.NotFound({})
+    case "approval-conflict":
+      return new ConflictError({ message: "Guard approval is no longer active" })
+    case "approval-invalid":
+      return new HttpApiError.BadRequest({})
+    default:
+      return new ServiceUnavailableError({ message: error.message, service: "host-kernel" })
+  }
+}
 
 export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", (handlers) =>
   Effect.gen(function* () {
@@ -269,7 +312,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
             arguments: "",
           })
           .pipe(
-            Effect.mapError((error) => (error instanceof Session.BusyError ? error : new HttpApiError.BadRequest({}))),
+            Effect.mapError((error) => SessionError.mapLegacyPromptError(error, ctx.params.sessionID)),
           ),
       )
       return true
@@ -323,6 +366,10 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
             return true
           }),
         ),
+      ).pipe(
+        Effect.catchTag("SessionSupervisorError", (error) =>
+          Effect.fail(mapLegacySupervisorError(error, ctx.params.sessionID)),
+        ),
       )
     })
 
@@ -338,7 +385,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
             sessionID: ctx.params.sessionID,
           })
           .pipe(
-            Effect.mapError((error) => (error instanceof Session.BusyError ? error : new HttpApiError.BadRequest({}))),
+            Effect.mapError((error) => SessionError.mapLegacyPromptError(error, ctx.params.sessionID)),
           ),
       )
       return HttpServerResponse.stream(Stream.make(JSON.stringify(message)).pipe(Stream.encodeText), {
@@ -376,11 +423,20 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         promptSvc.command({ ...ctx.payload, sessionID: ctx.params.sessionID }).pipe(
           Effect.mapError((error) => {
             if (error instanceof Session.BusyError) return error
-            if (error instanceof SessionV2.OperationUnavailableError && error.operation === "shell") {
+            if (error instanceof Pty.ShellProfileUnavailableError) {
               return new ServiceUnavailableError({
                 message: SHELL_UNAVAILABLE_MESSAGE,
                 service: "terminal.run",
               })
+            }
+            if (error instanceof SessionSupervisorError) {
+              if (error.stage === "authorization" || error.stage === "ownership") {
+                return mapLegacySupervisorError(error, ctx.params.sessionID)
+              }
+              return new ServiceUnavailableError({ message: SHELL_UNAVAILABLE_MESSAGE, service: "terminal.run" })
+            }
+            if (error instanceof Pty.UnavailableError) {
+              return new ServiceUnavailableError({ message: error.message, service: "terminal.run" })
             }
             return new HttpApiError.BadRequest({})
           }),
@@ -394,13 +450,14 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     }) {
       yield* requireSession(ctx.params.sessionID)
       return yield* promptSvc.shell({ ...ctx.payload, sessionID: ctx.params.sessionID }).pipe(
-        Effect.mapError(
-          () =>
-            new ServiceUnavailableError({
-              message: SHELL_UNAVAILABLE_MESSAGE,
-              service: "terminal.run",
-            }),
-        ),
+        Effect.mapError((error) => {
+          if (
+            error instanceof SessionSupervisorError &&
+            (error.stage === "authorization" || error.stage === "ownership")
+          )
+            return mapLegacySupervisorError(error, ctx.params.sessionID)
+          return new ServiceUnavailableError({ message: SHELL_UNAVAILABLE_MESSAGE, service: "terminal.run" })
+        }),
       )
     })
 
@@ -410,26 +467,14 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     }) {
       yield* requireSession(ctx.params.sessionID)
       return yield* revertSvc.revert({ sessionID: ctx.params.sessionID, ...ctx.payload }).pipe(
-        Effect.mapError(
-          (error) =>
-            new ServiceUnavailableError({
-              message: error.message,
-              service: "files.patch",
-            }),
-        ),
+        Effect.mapError((error) => mapLegacyRevertError(error, ctx.params.sessionID)),
       )
     })
 
     const unrevert = Effect.fn("SessionHttpApi.unrevert")(function* (ctx: { params: { sessionID: SessionID } }) {
       yield* requireSession(ctx.params.sessionID)
       return yield* revertSvc.unrevert({ sessionID: ctx.params.sessionID }).pipe(
-        Effect.mapError(
-          (error) =>
-            new ServiceUnavailableError({
-              message: error.message,
-              service: "files.patch",
-            }),
-        ),
+        Effect.mapError((error) => mapLegacyRevertError(error, ctx.params.sessionID)),
       )
     })
 
@@ -462,20 +507,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           service.replyGuardApproval({ approvalID: ctx.params.approvalID, decision: ctx.payload.decision }),
         ),
       ).pipe(
-          Effect.provideService(TrustedPrincipalContext, principal.value),
-          Effect.catchTag("SessionSupervisorError", (error) => {
-            switch (error.stage) {
-              case "approval-not-found":
-                return Effect.fail(new HttpApiError.NotFound({}))
-              case "approval-conflict":
-                return Effect.fail(new ConflictError({ message: "Guard approval is no longer active" }))
-              case "approval-invalid":
-                return Effect.fail(new HttpApiError.BadRequest({}))
-              default:
-                return Effect.fail(error)
-            }
-          }),
-        )
+        Effect.provideService(TrustedPrincipalContext, principal.value),
+        Effect.catchTag("SessionSupervisorError", (error) => Effect.fail(guardApprovalFailure(error))),
+      )
       return true
     })
 

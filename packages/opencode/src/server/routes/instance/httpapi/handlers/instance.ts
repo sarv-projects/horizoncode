@@ -9,7 +9,7 @@ import { Skill } from "@/skill"
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
-import { ConflictError, ForbiddenError, InvalidRequestError } from "../errors"
+import { ConflictError, ForbiddenError, InvalidRequestError, ServiceUnavailableError } from "../errors"
 import { markInstanceForDisposal } from "../lifecycle"
 
 export const instanceHandlers = HttpApiBuilder.group(InstanceHttpApi, "instance", (handlers) =>
@@ -75,7 +75,12 @@ export const instanceHandlers = HttpApiBuilder.group(InstanceHttpApi, "instance"
     })
 
     const getAgent = Effect.fn("InstanceHttpApi.agent")(function* () {
-      return yield* agent.list()
+      return yield* agent.list().pipe(
+        Effect.catchTag(
+          "SessionSupervisorError",
+          (error) => new ServiceUnavailableError({ message: error.message, service: "host-kernel" }),
+        ),
+      )
     })
 
     const getSkill = Effect.fn("InstanceHttpApi.skill")(function* () {

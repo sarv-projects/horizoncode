@@ -313,6 +313,7 @@ const layer = Layer.effect(
   }),
 )
 
+export * as Broker from "./broker"
 export * as Diagnostic from "./diagnostic"
 
 export const node = LayerNode.make({

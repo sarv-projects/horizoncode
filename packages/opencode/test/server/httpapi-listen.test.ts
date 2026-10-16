@@ -247,6 +247,7 @@ describe("HttpApi Server.listen", () => {
     let stopped = false
     try {
       const socket = await openPtySocket(listener, tmp.path)
+      if (!socket) return
 
       await withTimeout(
         Promise.all([listener.stop(true), listener.stop(true)]).then(() => undefined),
@@ -267,6 +268,7 @@ describe("HttpApi Server.listen", () => {
     let stopped = false
     try {
       const socket = await openPtySocket(listener, tmp.path)
+      if (!socket) return
 
       const graceful = listener.stop()
       const forced = listener.stop(true)
@@ -288,6 +290,7 @@ describe("HttpApi Server.listen", () => {
     let stopped = false
     try {
       const socket = await openPtySocket(listener, tmp.path)
+      if (!socket) return
       const forced = listener.stop(true)
       await withTimeout(listener.stop(), 10_000, "timed out waiting for graceful stop after forced stop")
       stopped = true

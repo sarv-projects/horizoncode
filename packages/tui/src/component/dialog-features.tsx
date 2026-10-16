@@ -68,9 +68,11 @@ export function DialogFeatures() {
       const response = await sdk.client.config.featureUpdate(
         {
           workspace,
-          featureId: feature.featureId,
-          expectedEnabled: feature.state.requestedEnabled,
-          enabled: !feature.state.effectiveEnabled,
+          featureExposureUpdate: {
+            featureId: feature.featureId,
+            expectedEnabled: feature.state.requestedEnabled,
+            enabled: !feature.state.effectiveEnabled,
+          },
         },
         { throwOnError: true },
       )

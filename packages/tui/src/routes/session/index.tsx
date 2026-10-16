@@ -19,6 +19,7 @@ import { mkdir, writeFile } from "node:fs/promises"
 import { useRoute, useRouteData } from "../../context/route"
 import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
+import { useData } from "../../context/data"
 import { useEvent } from "../../context/event"
 import { SplitBorder } from "../../ui/border"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
@@ -79,6 +80,7 @@ import { usePluginRuntime } from "../../plugin/runtime"
 import { DialogRetryAction } from "../../component/dialog-retry-action"
 import { getRevertDiffFiles } from "../../util/revert-diff"
 import { findNextVisibleMessage as findVisibleMessage } from "../../util/session-scroll"
+import { renderTuiArtifacts } from "../../util/artifact-render"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
@@ -186,6 +188,7 @@ export function Session() {
   const route = useRouteData("session")
   const { navigate } = useRoute()
   const sync = useSync()
+  const data = useData()
   const event = useEvent()
   const project = useProject()
   const paths = useTuiPaths()
@@ -236,10 +239,23 @@ export function Session() {
   })
   const questions = createMemo(() => {
     if (session()?.parentID) return []
-    return children().flatMap((x) => sync.data.question[x.id] ?? [])
+    return children().flatMap((x) => data.session.question.list(x.id) ?? [])
   })
   const visible = createMemo(() => !session()?.parentID && permissions().length === 0 && questions().length === 0)
   const disabled = createMemo(() => permissions().length > 0 || questions().length > 0)
+
+  const hydratedQuestionSessions = new Set<string>()
+  createEffect(() => {
+    if (!session() || session()?.parentID) return
+    for (const child of children()) {
+      if (hydratedQuestionSessions.has(child.id)) continue
+      hydratedQuestionSessions.add(child.id)
+      void data.session.question.refresh(child.id).catch((error) => {
+        hydratedQuestionSessions.delete(child.id)
+        console.error("Failed to refresh session questions", error)
+      })
+    }
+  })
 
   const pending = createMemo(() => {
     const completed = messages().findLastIndex((message) => message.role === "assistant" && message.time.completed)
@@ -1306,7 +1322,6 @@ export function Session() {
                 <Show when={permissions().length === 0 && questions().length > 0}>
                   <QuestionPrompt
                     request={questions()[0]}
-                    directory={sync.session.get(questions()[0].sessionID)?.directory}
                   />
                 </Show>
                 <Show when={session()?.parentID}>
@@ -1689,14 +1704,18 @@ function ReasoningHeader(props: {
 function TextPart(props: { last: boolean; part: TextPart; message: AssistantMessage }) {
   const ctx = use()
   const { theme, syntax } = useTheme()
+  const complete = createMemo(() => props.part.time?.end !== undefined)
+  const rendered = createMemo(() =>
+    renderTuiArtifacts(props.part.text.trim(), { complete: complete() }),
+  )
   return (
     <Show when={props.part.text.trim()}>
       <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3} marginTop={1} flexShrink={0}>
         <markdown
           syntaxStyle={syntax()}
-          streaming={true}
+          streaming={!complete()}
           internalBlockMode="top-level"
-          content={props.part.text.trim()}
+          content={rendered().content}
           tableOptions={{ style: "grid" }}
           conceal={ctx.conceal()}
           fg={theme.markdownText}
@@ -1828,7 +1847,13 @@ function GenericTool(props: ToolProps) {
         <box gap={1}>
           <text fg={theme.text}>{limited()}</text>
           <Show when={collapsed().overflow}>
-            <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
+            <text fg={theme.textMuted}>
+              {expanded()
+                ? "Click to collapse"
+                : collapsed().truncated === "chars"
+                  ? `Preview: first ${collapsed().shownChars} chars — click to expand`
+                  : `Preview: first ${collapsed().shownLines} of ${collapsed().totalLines} lines — click to expand`}
+            </text>
           </Show>
         </box>
       </BlockTool>
@@ -2091,7 +2116,13 @@ function Shell(props: ToolProps) {
               <text fg={theme.text}>{limited()}</text>
             </Show>
             <Show when={collapsed().overflow}>
-              <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
+              <text fg={theme.textMuted}>
+                {expanded()
+                  ? "Click to collapse"
+                  : collapsed().truncated === "chars"
+                    ? `Preview: first ${collapsed().shownChars} chars — click to expand`
+                    : `Preview: first ${collapsed().shownLines} of ${collapsed().totalLines} lines — click to expand`}
+              </text>
             </Show>
           </box>
         </BlockTool>

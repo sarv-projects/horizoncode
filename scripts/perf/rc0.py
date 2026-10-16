@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Capture owner-identified RC0 process samples as JSONL; never launches workloads."""
+"""Capture owner-identified RC0 process samples as JSONL; never launches product workloads.
+
+``--selfcheck`` samples only this process's own bounded ``sleep`` child tree to verify the
+harness against the live OS; it is not a product-session measurement.
+"""
 import argparse
 import json
 import os
@@ -119,6 +123,24 @@ def proc_identity(pid, budget):
     return int(fields[19]), int(fields[1])
 
 
+def smaps_private_bytes(text):
+    """Private resident bytes from smaps_rollup; None unless all three fields are present.
+
+    Private_Clean + Private_Dirty + Private_Hugetlb is a separate labeled method from PSS/RSS;
+    a missing field is unknown, never an under-counted partial sum."""
+    values = {}
+    for line in text.splitlines():
+        for field in ("Private_Clean:", "Private_Dirty:", "Private_Hugetlb:"):
+            if line.startswith(field):
+                try:
+                    values[field] = int(line.split()[1])
+                except (IndexError, ValueError):
+                    return None
+    if len(values) != 3:
+        return None
+    return (values["Private_Clean:"] + values["Private_Dirty:"] + values["Private_Hugetlb:"]) * 1024
+
+
 def linux_counters(pid, budget):
     base = PROC_ROOT / str(pid)
     reasons = {}
@@ -129,12 +151,20 @@ def linux_counters(pid, budget):
         counters["pss_bytes"] = int(pss) * 1024 if pss is not None else None
         if pss is None:
             reasons["pss_bytes"] = "missing"
+        private = smaps_private_bytes(text)
+        counters["private_bytes"] = private
+        if private is None:
+            reasons["private_bytes"] = "missing_private_fields"
     except PermissionError:
         counters["pss_bytes"] = None
+        counters["private_bytes"] = None
         reasons["pss_bytes"] = "permission_denied"
+        reasons["private_bytes"] = "permission_denied"
     except (OSError, ValueError, IndexError):
         counters["pss_bytes"] = None
+        counters["private_bytes"] = None
         reasons["pss_bytes"] = "unavailable_or_malformed_or_budget_exceeded"
+        reasons["private_bytes"] = "unavailable_or_malformed_or_budget_exceeded"
     try:
         text = read_limited(base / "status", budget)
         values = {line.split(":", 1)[0]: line.split(":", 1)[1].strip().split()[0]
@@ -159,8 +189,6 @@ def linux_counters(pid, budget):
     except (OSError, ValueError):
         counters["fd_count"] = None
         reasons["fd_count"] = "permission_denied_or_unavailable_or_budget_exceeded"
-    counters["private_bytes"] = None
-    reasons["private_bytes"] = "unsupported_on_linux"
     return counters, reasons
 
 
@@ -297,18 +325,80 @@ def identity_arg(value):
         raise argparse.ArgumentTypeError("expected SESSION=PID:START_IDENTITY") from error
 
 
+def run_selfcheck():
+    """Sample this process's own bounded child tree through the real OS sampler."""
+    platform = platform_name()
+    if platform["name"] not in ("linux-native", "linux-wsl"):
+        return False, {
+            "record_type": "rc0_harness_selfcheck",
+            "status": "UNSUPPORTED_PLATFORM",
+            "platform": platform,
+            "known_limitations": ["this smoke check requires Linux /proc"],
+        }
+    child = subprocess.Popen(["sleep", "60"])
+    try:
+        start, _parent = proc_identity(os.getpid(), Budget())
+        sample = sample_tree(os.getpid(), start)
+        pids = sorted(item["pid"] for item in sample["processes"])
+        complete = (
+            sample["quality"] == "MEASURED"
+            and not sample["truncated"]
+            and os.getpid() in pids
+            and child.pid in pids
+            and all(
+                item["identity_valid"] and item["quality"] == "MEASURED"
+                and all(item["metrics"].get(metric) is not None
+                        for metric in REQUIRED_LINUX_METRICS)
+                for item in sample["processes"]
+            )
+        )
+        return complete, {
+            "record_type": "rc0_harness_selfcheck",
+            "status": "MEASURED" if complete else "INCOMPLETE",
+            "platform": platform,
+            "commit": git_metadata()[0],
+            "owner": {"pid": os.getpid(), "start_identity": str(start)},
+            "pids": pids,
+            "quality": sample["quality"],
+            "truncated": sample["truncated"],
+            "processes": sample["processes"],
+        }
+    finally:
+        child.kill()
+        child.wait()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--selfcheck", action="store_true",
+                        help="sample only this process's own bounded sleep tree to verify the harness against the live OS")
     parser.add_argument("--identity", action="append", type=identity_arg, default=[], help="owner-issued SESSION=PID:START_IDENTITY; repeat per session")
     parser.add_argument("--outcomes", type=Path, help="JSON object mapping sessions to expected/actual/status task outcomes")
-    parser.add_argument("--scenario", required=True, help="real workload/task description")
-    parser.add_argument("--build", required=True, help="build profile and compiler/runtime identifiers")
-    parser.add_argument("--warm-cold", choices=("warm", "cold"), required=True)
-    parser.add_argument("--provider-model", required=True, help="selected provider and model")
-    parser.add_argument("--harness", required=True, help="selected coding agent or harness")
-    parser.add_argument("--local-inference", choices=("included", "excluded"), required=True)
+    parser.add_argument("--scenario", help="real workload/task description")
+    parser.add_argument("--build", help="build profile and compiler/runtime identifiers")
+    parser.add_argument("--warm-cold", choices=("warm", "cold"))
+    parser.add_argument("--provider-model", help="selected provider and model")
+    parser.add_argument("--harness", help="selected coding agent or harness")
+    parser.add_argument("--local-inference", choices=("included", "excluded"))
     parser.add_argument("--output", type=Path, help="append JSONL to this path (default: stdout)")
     args = parser.parse_args()
+
+    if args.selfcheck:
+        ok, record = run_selfcheck()
+        print(json.dumps(record, sort_keys=True, separators=(",", ":")))
+        return 0 if ok else 1
+
+    required = {
+        "--scenario": args.scenario,
+        "--build": args.build,
+        "--warm-cold": args.warm_cold,
+        "--provider-model": args.provider_model,
+        "--harness": args.harness,
+        "--local-inference": args.local_inference,
+    }
+    missing = [flag for flag, value in required.items() if not value or not str(value).strip()]
+    if missing:
+        parser.error("the following arguments are required unless --selfcheck is used: " + ", ".join(missing))
 
     grouped = {}
     for session, pid, start in args.identity:

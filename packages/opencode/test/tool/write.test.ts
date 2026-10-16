@@ -1,6 +1,6 @@
 import { afterEach, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Exit, Effect, Layer } from "effect"
+import { Exit, Effect, Layer, Stream } from "effect"
 import path from "path"
 import fs from "fs/promises"
 import { WriteTool } from "../../src/tool/write"
@@ -34,11 +34,16 @@ const supervisor = LayerNode.make({
     SessionSupervisor.Service.of({
       open: () => Effect.die("unexpected supervisor open"),
       openForSession: () => Effect.die("unexpected supervisor open"),
+      registerHostLocation: () => Effect.die("unexpected host location registration"),
+      prepareUserEffect: () => Effect.die("unexpected user effect preparation"),
+      replyGuardApproval: () => Effect.die("unexpected guard approval reply"),
       prepareToolBatch: () => Effect.die("unexpected effect preparation"),
-      approveEffect: () => Effect.die("unexpected effect approval"),
       executeWrite: () => Effect.die("unexpected effect execution"),
       executePatch: () => Effect.die("unexpected patch execution"),
       runPatch: () => Effect.die("unexpected patch execution"),
+      requestHostKernel: () => Effect.die("unexpected host kernel request"),
+      hostOwnerEpoch: () => Effect.die("unexpected host owner epoch read"),
+      subscribeHostKernelEvents: () => Stream.die("unexpected host kernel event subscription"),
       watchSession: () => Effect.die("unexpected session watch"),
     }),
   ),

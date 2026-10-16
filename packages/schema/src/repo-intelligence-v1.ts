@@ -77,7 +77,7 @@ export const RepoQueryV1 = Schema.Struct({
   overlayRefs: Schema.Array(Composition.ArtifactRef),
   operation: Schema.Literals(["text", "symbol", "references", "impact", "expand"]),
   query: Composition.ArtifactRef,
-  maxResults: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  maxResults: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })),
 }).annotate({ identifier: "Horizon.RepoIntelligenceV1.RepoQueryV1" })
 
 export interface RepoQueryResultV1 extends Schema.Schema.Type<typeof RepoQueryResultV1> {}

@@ -675,7 +675,7 @@ const layer = Layer.effect(
             const updated = patchJsonc(text || "{}", { compaction: { [key]: input.enabled } })
             await fsNode.writeFile(file, updated, "utf8")
           },
-          catch: (error) => error,
+          catch: (error) => (error instanceof Error ? error : new Error(String(error), { cause: error })),
         }),
         `config-feature-setting:${file}`,
       )

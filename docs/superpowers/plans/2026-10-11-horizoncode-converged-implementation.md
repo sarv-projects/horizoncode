@@ -132,7 +132,9 @@ Use §30, §37 and §33.
 
 Exit: no language/debug/REPL route has ambient host authority.
 
-## Gate 6 — P5 browser, desktop and built-in web search
+## Gate 6 — P5 browser, desktop and built-in web search (post-V1)
+
+**Not a V1 release gate under A-V2-31. Keep every route unavailable; do not spend V1 implementation time here.** Preserve these checkboxes as future acceptance if the scope is separately promoted.
 
 - [ ] browser managed vs attached context ownership;
 - [ ] generation-bound DOM/ARIA/screenshot refs;
@@ -147,7 +149,7 @@ Exit: no language/debug/REPL route has ambient host authority.
 
 Exit: privileged interaction is mediated and support status truthful.
 
-## Gate 7 — P6 agents/extensions/provider/model/settings UX
+## Gate 7 — P6 agents/extensions/provider/model/settings UX (V1 CLI/TUI)
 
 Use §16, §29, §33.
 
@@ -156,12 +158,14 @@ Use §16, §29, §33.
 - [ ] one ActionDescriptor for slash/menu/key/API/model.
 - [ ] agent/harness picker constrains model picker correctly.
 - [ ] provider/model/role hub with cost/auth/status provenance.
+- [ ] Adapt compatible non-OpenCode provider/auth/model integrations primarily from pinned OMP under Horizon's existing provider, auth, catalog and direct-Session owners; no account rotation or hidden fallback.
+- [ ] For an explicitly selected native OpenCode backend, pin one official SDK/API generation and prove the actual provider/model list, streaming and account entitlements; SDK presence is not universal model access.
 - [ ] schema-driven settings requested/effective/source/locked/apply boundary.
 - [ ] Goal draft/review/accept UI before managed effects.
-- [ ] TUI/desktop underlying action/state parity.
+- [ ] V1 CLI/TUI underlying action/state parity; web/desktop parity is post-V1.
 - [ ] credentials never leak.
 
-## Gate 8 — P7 streaming/artifacts/analytics/automation
+## Gate 8 — P7 streaming/artifacts/analytics/automation (V1 CLI/TUI)
 
 Use §31/§37.
 
@@ -175,9 +179,11 @@ Use §31/§37.
 - [ ] analytics measured/estimated/unknown provenance;
 - [ ] automation durable overlap/missed/retry policy and Guarded invocation.
 
-## Gate 9 — P8 long-horizon/recovery/evaluation
+## Gate 9 — P8 resource efficiency, long-horizon/recovery/evaluation (V1)
 
 - [ ] bounded worktree/resource pool;
+- [ ] reproducible RC0 process-tree baseline at 1/5/10/20 sessions and measured optimization with identical task success; local-model memory accounted separately;
+- [ ] bounded worker/subagent pool and typed DAG only after the P2 single managed Attempt and independent verifier pass;
 - [ ] deterministic recovery across host/kernel/worker/provider failure;
 - [ ] stop criteria avoid quota waste;
 - [ ] §32 real-work suites across model classes;
@@ -185,10 +191,11 @@ Use §31/§37.
 - [ ] performance budgets;
 - [ ] final integrated revision verification.
 
-## Gate 10 — P9 packaging/release
+## Gate 10 — P9 Linux/WSL CLI/TUI packaging/release
 
 - [ ] license/notices closure;
 - [ ] native platform support matrix;
+- [ ] explicitly mark native Windows unavailable until native tests pass; WSL is not Windows evidence;
 - [ ] signing/update/rollback if enabled;
 - [ ] config/data migration;
 - [ ] clean-install/upgrade;
@@ -271,7 +278,7 @@ Short Hashline display anchors (including 2-byte line hashes) never authorize ed
 - [ ] **P2 managed vertical slice:** Accepted immutable SpecVersion -> Task/Attempt -> supervised bounded action -> effect receipt -> independently verified final integrated revision; crash/restart and human-edit conflict test before multiple workers.
 - [ ] **Context/edit:** Preserve original direct history; rebuild compact control footer from canonical Rust task/effect state; pin checkpoint producer/model/harness/source cursor; reject malformed newest checkpoint rather than trusting older grant. Benchmark trim/compact retention, re-fetch, latency and outcome.
 - [ ] **Speed:** Benchmark existing ripgrep/Git/index and patch paths first. Enable guarded native search/gix, Hashline, connection warming or CoW only behind rollback flags once both correctness/security and net benefit are proven.
-- [ ] **V1 remaining gates:** Continue LSP, DAP, persistent REPL, browser, desktop, web-search, skills/hooks/plugin distribution, ACP/MCP integration, artifacts, rendering, UX and automation within their already approved owners, independently tested and accurately labeled.
+- [ ] **V1 remaining capability gates:** Continue LSP, DAP, persistent REPL, skills/hooks/plugin and guarded local MCP integration, providers, CLI/TUI settings, artifacts/rendering/analytics, local agents/workers and Rust-owned automation within their approved owners, independently tested and accurately labeled. Browser, desktop, built-in web-search, web/desktop/mobile SDK clients and outbound ACP/VIS/DEP remain post-V1 under A-V2-31.
 
 #### Selected next four major slices (2026-10-15)
 
@@ -298,7 +305,7 @@ Integrate with the existing §16 Settings/config owner and §33 canonical capabi
 
 - [ ] At every optional feature introduction, register one searchable owning setting with stable key, default/scope, requested/effective/source/locked/apply-boundary and availability; display in Settings → Features, plus Settings → Experimental if classed experimental.
 - [ ] Experimental default OFF; user explicitly opts in on eligible developer/early-access build. A DESIGNED/unsupported feature is disabled/unavailable, **never fake-enabled**. A developer-only feature is invisible as an actionable control in ordinary public builds.
-- [ ] TUI command palette, help, tool/agent picker, running status and eventual desktop/web/API render `[Experimental]` or accessible equivalent from the **same descriptor**, and show effective status/reason. No TUI-only independent source of flags.
+- [ ] V1 TUI command palette, help, tool/agent picker, running status and CLI/SDK surfaces render `[Experimental]` or equivalent from the **same descriptor**, and show effective status/reason. Future desktop/web consumers must reuse that projection; no TUI-only independent source of flags.
 - [ ] Enabling a setting cannot override Guard/policy, change selected model/harness, launch paid inference, or perform an unauthorized effect. Apply boundary and next-turn/next-session/restart state are explicit.
 - [ ] Run FEAT-001..010 in §32 with schema/registry validation before declaring a feature TESTED or VERIFIED; preserve safe disable/migration when class changes.
 
@@ -306,12 +313,12 @@ The 2026-10-15 source review in §§16.15.2/30.4/42 SRC-024 finds future Context
 
 ### Feature-source audit and smallest implementation route (2026-10-14)
 
-**Inspected source:** Core V2 and legacy V1 experimental/config/migration, OpenCode instance config/runtime flags and config API, GUI-local `settings.v3`, GUI Settings tabs, TUI config/app/command/status, schema and architecture validator. These paths **do not yet implement a shared feature exposure resolver, actionable Experimental Settings, or TUI labels**. Exact source-to-owner mapping: §20.10.1; UX semantics §16.15; runtime acceptance §32 FEAT-001..014.
+**Historical source snapshot (2026-10-14; superseded by the 2026-10-15 live-overlay correction and A-V2-31):** Core V2 and legacy V1 experimental/config/migration, OpenCode instance config/runtime flags and config API, GUI-local `settings.v3`, GUI Settings tabs, TUI config/app/command/status, schema and architecture validator were inspected. At that snapshot these paths did not implement the later shared projection/UI. Current first-party CODE_PRESENT/PARTIAL status and V1 CLI/TUI scope are recorded in `HANDOFF.md`, §20.10.1 and `implementationtov1release.md`; app GUI is not a V1 acceptance surface. Exact runtime acceptance remains §32 FEAT-001..014.
 
 - [ ] Inventory user-selectable optional controls and legacy experimental environment variables. Deliberately classify `OPENCODE_EXPERIMENTAL` inheritance so broad flags cannot silently enable newly governed experiments.
 - [ ] Implement one derived `FeatureExposureV1` read/effective-state projection from existing backend config, source precedence, platform/build/eligibility and Guard constraints; don't make GUI-local `settings.v3` the execution authority.
 - [ ] Implement narrow source-version-safe opt-in persistence using current config update owner. Concurrency, denied policy, pending turn/session/restart, rollback and opt-out must work.
-- [ ] Add keyboard-accessible TUI Settings → Features/Experimental and GUI Settings entries plus command/status `[Experimental]` labels. All show the same effective runtime state and unavailable reason.
+- [ ] Add keyboard-accessible V1 TUI Settings → Features/Experimental and command/status `[Experimental]` labels. GUI/web settings entries are post-V1; future consumers must project the same effective runtime state and unavailable reason.
 - [ ] Run schema/contract validator, V1/V2 binding tests and FEAT-001..014 actual integration. A passing generic typecheck or designed schema is not completion.
 
 This work is part of P6 Settings/UX but must be integrated before *new optional effectful features* are presented as executable. It does not replace P1.3 Guard completion.
@@ -396,13 +403,13 @@ Work on RC0 **without** claiming P1/P2 completion; proceed with required real Gu
 The original 24-candidate audit includes supporting features beyond core RAM. Track all of them explicitly; implementation can overlap where different code owners/tests permit.
 
 - [ ] **Active user steering and terminal input compatibility:** confirm existing durable steer/queue behaviour under concurrent streams; render queued/accepted/next-turn state, verify Shift+Enter/tmux/SSH, and never corrupt the selected provider request/cache prefix.
-- [ ] **Cross-client SDK/protocol:** thin documented, authenticated TUI/CLI/web/desktop SDK over one Core Session and Rust managed owner; API version negotiation, reconnect/replay and simultaneous multi-client session activity, without new conversation authority.
+- [ ] **V1 CLI/TUI SDK/protocol:** thin documented, authenticated CLI/TUI SDK over one Core Session and Rust managed owner; API version negotiation, reconnect/replay and simultaneous local client activity, without new conversation authority. Remote/mobile/web/desktop SDK clients and hosting remain post-V1.
 - [ ] **Rich provider auth/catalog/compatibility:** evaluate JCode provider-source breadth alongside existing OpenCode/OMP candidates, reuse current transport/model picker and secret ownership, verify explicit user selection and cache/cost provenance with Doctor fixtures.
 - [ ] **Tool intent and large-output opt-in:** add concise user-visible intent/purpose only behind canonical ActionDescriptor/ToolBatch schema; bounded output remains an artifact/stream, not an escape from limits.
 - [ ] **Compile-time rebuild and release-resource hygiene:** profile Rust crate/Bun TypeScript invalidation, no duplicated heavyweight build trees, benchmark incremental compile and install size; only split modules after measured hot-path impact.
 - [ ] **Multi-session activity map:** derived UI over the same Session/Run state, focus/scroll isolation, pausing/resuming and clean external terminal/tmux integrations; JCode multisurface is Proposed, not shipping proof.
 - [ ] **Human-quality performance/demo trial:** repeat real user workflows and record authentic TUI video, input/stream p95, verification success, understandable errors and accessibility; never represent mock/demo placeholders as completed product.
-- [ ] **Opt-in self-development/hot swap and thin mobile client:** developer-only signed/reversible canary with fencing and rollback; secure remote authenticated SDK client/mobile surface with no separate Task/Session engine, no exposed secrets and correct disconnect behaviour. Respect A-V2-29 Experimental settings and human authorization.
+- [ ] **Post-V1 separately gated:** developer-only signed/reversible self-development/hot-swap canary and secure remote/mobile SDK surface with fencing, rollback and no separate Task/Session engine. These are not V1 release gates; preserve A-V2-29 and human authorization if later promoted.
 
 Source-to-feature coverage crosswalk: §42.10. These are accepted product capabilities with individually honest availability/evidence, **not an instruction to discard them on scope grounds**.
 
@@ -452,3 +459,28 @@ This records the requested delegation method; it does not change P0–P9 depende
 - P3/P4/P5 may research or implement compatible non-effectful paths in parallel, but every effectful origin remains unavailable until the canonical Guard/ExecutionHost boundary and its negative/recovery tests pass.
 - The user explicitly authorized native Windows testing under `/mnt/c/users/sonali/desktop/` in a newly created temporary directory with a child `hzcode` folder. PowerShell 5.1.26100.9711 is available and the Desktop path exists. No such test directory was created in this continuation; keep Windows results separate from WSL/Linux evidence.
 - Current implementation status and exact verification remain in `HANDOFF.md`; chronological changes and next steps remain in root `CURRENT_RUN.md`.
+
+## 2026-10-16 — V1 scope decision (revised by user) — Linux-first CLI/TUI with source-adapted capabilities
+
+**Scope boundary only: no gate is marked complete and the fail-closed rule stands.** The detailed V1 goal/status/source map is `implementationtov1release.md`; architecture authority remains the exact topic owners in `arch_V1/README.md`.
+
+**Platform and surface:** V1 targets Linux/WSL-first **CLI/TUI**. Native Windows stays truthfully **UNAVAILABLE** until native acceptance. Web app, desktop app, browser automation/attached-browser, desktop/computer control, and built-in web search are post-V1. Browser-based visual editing, deployment journeys and external ACP client integration remain post-V1; local Rust-owned subagents/workers remain V1.
+
+**V1 finish list (must complete):**
+- **A1–A4** — fix `packages/opencode` typecheck → rerun `scripts/architecture/run_push_gate.sh` → push `main` (11 commits ahead of origin) → restore Git visibility of hidden first-party files. Nothing ships while the gate is red or commits are unpublished.
+- **C13, C14, C15** — guarded shell/process origin, command interpolation, Task/subagent origin. The coding-agent mutations; without them "safe coding agent" is false.
+- **C16–C18, C10** — close remaining effect origins (plugins/MCP/hooks, hosted tools, legacy routes) by **mediate-or-disable** with zero-spawn negative tests proving no bypass; full mediation only if capacity allows.
+- **C20, C21** — Guard generalization (complete batch/lease/receipt/UNKNOWN settlement) + ToolBatch bounds. Makes the Guard story uniform.
+- **C25 (trimmed)** — adversarial matrix limited to origins that are actually enabled. The security claim's evidence.
+- **D1, D2, D4–D8, D11 (+ D9-minimal, H7)** — P2 single managed vertical: SpecVersion → one Task/Attempt → one guarded action → receipt → independent verifier; pause/cancel/restart/UNKNOWN and fault tests; API/TUI entry point + Goal review/accept. One Attempt, no fan-out yet.
+- **K1, K2-honest, K5, K6** — license/notices, declared platform matrix (Linux/WSL supported; Windows truthfully unavailable), clean install, release gates. Legal + installability are irreducible.
+- **S1** — question/`question.ask` catalog + schema + live acceptance (user-flagged).
+- **S3** — final-head CI, full gate, DOC guards. The release evidence itself.
+- **Expanded V1 capabilities:** LSP, DAP, bounded REPL, OMP-preferred provider/settings/TUI UX, broad tested providers, streaming/rendering, artifacts/analytics/Rust-owned automations, bounded worktree/resource pools, quotas, cross-model suites, worker/subagent DAG, file conflicts, Provider Doctor, session import, bounded caches/local memory, TUI performance and measured JCode-informed RAM/resource optimization. Full goal/status/source mapping and evidence criteria are in `implementationtov1release.md`.
+- **RC0 measurement is required V1 work:** capture reproducible 1/5/10/20-session resource baselines and verify measured optimization without correctness/security regressions. **Optional:** RC0.3 cache/renderer baseline capture (bounded cache behavior itself remains a V1 goal) and C22 Linux PTY process-tree cleanup guarantee.
+
+**Post-V1 deferral (keep unavailable, never fake-enable):** web/desktop application surfaces; browser automation/attached-browser and desktop/computer control; built-in web search; external ACP client, visual source-edit and deployment journeys; native Windows acceptance; remote/cloud continuation; shared live collaboration; autonomous self-improvement; broad voice/media and hosted image generation; full product/package/build naming migration; updater and other explicitly deferred platform features.
+
+**V1 source-intake method (user directive 2026-10-16):** do **not** rebuild compatible capabilities from scratch without first checking the pinned references. Source clones and exact pins are recorded in `repo_take/NOTES.md` and §42. Use OMP first for compatible provider implementations and CLI/TUI settings/visual patterns; inspect both pinned OpenCode and OMP for LSP/DAP/REPL; use the documented, version-appropriate official OpenCode API/SDK only for explicitly selected OpenCode-owned sessions. Claude Code is behavior reference only; no source reuse. Every port still requires exact file/callee/test, license/dependency, and `REUSE EXISTING / ADAPT ALGORITHM / ADAPTER / REJECT` review; preserve Horizon owner/Guard and test locally. New adapted first-party modules use HorizonCode naming while preserving notices and genuine dependency IDs. Never replace the tracked `opencode/` snapshot with a clean upstream checkout.
+
+**Dependency order and evidence:** P1.3 Guard precedes effectful feature exposure. Then prove one managed Attempt and an independent final-revision verifier before expanding worker/DAG fan-out. RC0 measurement can proceed independently on stable owner identities. The main agent owns integration and status changes; keep at most one heavyweight Rust build active. Scope does not promote implementation status.

@@ -12,7 +12,7 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { eq } from "drizzle-orm"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { afterAll, expect } from "bun:test"
-import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Option, Ref } from "effect"
+import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Stream } from "effect"
 import path from "path"
 import { tmpdir } from "node:os"
 import { fileURLToPath } from "url"
@@ -48,7 +48,12 @@ import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
-import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
+import {
+  GuardApprovalRequested,
+  SessionSupervisor,
+  type GuardApprovalRequest,
+} from "@opencode-ai/core/session/supervisor"
+import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 import { Skill } from "../../src/skill"
 import { SystemPrompt } from "../../src/session/system"
 import { Snapshot } from "../../src/snapshot"
@@ -63,7 +68,12 @@ import { reply, TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/location-services"
+import {
+  buildLocationServiceMap,
+  LocationServiceMap,
+  locationServiceMapLayer,
+  locationServiceMapNode,
+} from "@opencode-ai/core/location-services"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -158,11 +168,16 @@ const testSupervisorLayer = Layer.succeed(
   SessionSupervisor.Service.of({
     open: () => Effect.die("unexpected direct supervisor open"),
     openForSession: () => Effect.die("unexpected direct supervisor open"),
+    registerHostLocation: () => Effect.die("unexpected host location registration"),
+    prepareUserEffect: () => Effect.die("unexpected user effect preparation"),
+    replyGuardApproval: () => Effect.die("unexpected guard approval reply"),
     prepareToolBatch: () => Effect.die("unexpected effect preparation"),
-    approveEffect: () => Effect.die("unexpected effect approval"),
     executeWrite: () => Effect.die("unexpected effect execution"),
     executePatch: () => Effect.die("unexpected patch execution"),
     runPatch: () => Effect.die("unexpected patch execution"),
+    requestHostKernel: () => Effect.die("unexpected host kernel request"),
+    hostOwnerEpoch: () => Effect.die("unexpected host owner epoch read"),
+    subscribeHostKernelEvents: () => Stream.die("unexpected host kernel event subscription"),
     watchSession: (sessionID, source, workspaceRoot, turnComplete, ready) =>
       Effect.gen(function* () {
         yield* Effect.sync(() => {
@@ -179,16 +194,26 @@ const testSupervisorNode = LayerNode.make({
   service: SessionSupervisor.Service,
   layer: testSupervisorLayer,
   deps: [],
+  tag: SessionSupervisor.node.tag,
+})
+
+// Direct-session prompt tests act as the local host owner; Guard/effect
+// boundaries require an explicit trusted principal context.
+const trustedPrincipalLayer = Layer.succeed(TrustedPrincipalContext, {
+  principal: { kind: "host_os" as const },
 })
 
 // Rust needs an owner-only parent for its pinned executable and observer state.
 const rustTestRoot = mkdtempSync(path.join(tmpdir(), "horizoncode-v1-rust-"))
 afterAll(() => rmSync(rustTestRoot, { recursive: true, force: true }))
 const rustSupervisorPath = path.resolve(import.meta.dir, "../../../../kernel/target/debug/session_supervisor")
-const rustSupervisorAvailable = process.platform === "linux" && existsSync(rustSupervisorPath)
+const hostKernelPath = path.resolve(import.meta.dir, "../../../../kernel/target/debug/hz-kernel")
+const hostKernelAvailable = process.platform === "linux" && existsSync(hostKernelPath)
+const rustSupervisorAvailable = process.platform === "linux" && existsSync(rustSupervisorPath) && hostKernelAvailable
 const rustSupervisorDigest = rustSupervisorAvailable
   ? createHash("sha256").update(readFileSync(rustSupervisorPath)).digest("hex")
   : undefined
+const hostKernelDigest = hostKernelAvailable ? createHash("sha256").update(readFileSync(hostKernelPath)).digest("hex") : undefined
 const rustSupervisorRuntimeNode = LayerNode.make({
   service: SessionSupervisor.RuntimeConfig,
   layer: Layer.succeed(
@@ -206,8 +231,25 @@ const rustSupervisorRuntimeNode = LayerNode.make({
         : undefined,
       installRoot: path.join(rustTestRoot, "session-observer"),
       stateRoot: path.join(rustTestRoot, "session-state"),
+      hostKernelAssetPath: hostKernelAvailable ? hostKernelPath : undefined,
+      hostKernelManifestJSON: hostKernelDigest
+        ? JSON.stringify({
+            schemaVersion: 1,
+            status: "available",
+            binaryName: "hz-kernel",
+            target: `linux-${process.arch}-gnu`,
+            sha256: hostKernelDigest,
+          })
+        : undefined,
+      hostKernelInstallRoot: path.join(rustTestRoot, "host-kernel-install"),
+      hostKernelStateRoot: path.join(rustTestRoot, "host-kernel-state"),
     }),
   ),
+  deps: [],
+})
+const rustLocationServiceMapNode = LayerNode.make({
+  service: LocationServiceMap.Service,
+  layer: buildLocationServiceMap([[SessionSupervisor.runtimeConfigNode, rustSupervisorRuntimeNode]]),
   deps: [],
 })
 
@@ -267,9 +309,11 @@ function makePrompt(input?: { mcpInstructions?: MCP.ServerInstructions[]; proces
     [SessionSupervisor.node, testSupervisorNode],
   ] as const
   if (input?.processor === "blocking") {
-    return LayerNode.compile(promptRoot, [...replacements, [SessionProcessor.node, blockingProcessor]])
+    return LayerNode.compile(promptRoot, [...replacements, [SessionProcessor.node, blockingProcessor]]).pipe(
+      Layer.provideMerge(trustedPrincipalLayer),
+    )
   }
-  return LayerNode.compile(promptRoot, replacements)
+  return LayerNode.compile(promptRoot, replacements).pipe(Layer.provideMerge(trustedPrincipalLayer))
 }
 
 function makeHttp(input?: {
@@ -286,11 +330,14 @@ function makeHttp(input?: {
       [MCP.node, makeMcp(input.mcpInstructions)],
       [RuntimeFlags.node, runtimeFlags],
       [SessionSupervisor.runtimeConfigNode, rustSupervisorRuntimeNode],
+      [locationServiceMapNode, rustLocationServiceMapNode],
     ] as const
     if (input.processor === "blocking") {
-      return LayerNode.compile(root, [...replacements, [SessionProcessor.node, blockingProcessor]])
+      return LayerNode.compile(root, [...replacements, [SessionProcessor.node, blockingProcessor]]).pipe(
+        Layer.provideMerge(trustedPrincipalLayer),
+      )
     }
-    return LayerNode.compile(root, replacements)
+    return LayerNode.compile(root, replacements).pipe(Layer.provideMerge(trustedPrincipalLayer))
   }
   const replacements = [
     [SessionSummary.node, summary],
@@ -300,9 +347,11 @@ function makeHttp(input?: {
     [SessionSupervisor.node, testSupervisorNode],
   ] as const
   if (input?.processor === "blocking") {
-    return LayerNode.compile(root, [...replacements, [SessionProcessor.node, blockingProcessor]])
+    return LayerNode.compile(root, [...replacements, [SessionProcessor.node, blockingProcessor]]).pipe(
+      Layer.provideMerge(trustedPrincipalLayer),
+    )
   }
-  return LayerNode.compile(root, replacements)
+  return LayerNode.compile(root, replacements).pipe(Layer.provideMerge(trustedPrincipalLayer))
 }
 
 function makeHttpNoLLMServer(input?: { mcpInstructions?: MCP.ServerInstructions[]; processor?: "blocking" }) {
@@ -773,7 +822,31 @@ withRustSupervisor(
       })
       yield* llm.tool("write", { filePath: filepath, content: "approved by Rust" })
 
-      yield* prompt.loop({ sessionID: session.id })
+      const events = yield* EventV2Bridge.Service
+      const supervisor = yield* SessionSupervisor.Service
+      const approvals = yield* Queue.unbounded<GuardApprovalRequest>()
+      const off = yield* events.listen((event) => {
+        if (event.type === GuardApprovalRequested.type) {
+          Queue.offerUnsafe(approvals, event.data as GuardApprovalRequest)
+        }
+        return Effect.void
+      })
+      yield* Effect.all(
+        [
+          prompt.loop({ sessionID: session.id }),
+          Effect.gen(function* () {
+            const request = yield* awaitWithTimeout(
+              Queue.take(approvals),
+              "timed out waiting for Rust Guard approval",
+              "10 seconds",
+            )
+            expect(request.capabilityID).toBe("files.write")
+            expect(request.sessionID).toBe(session.id)
+            yield* supervisor.replyGuardApproval({ approvalID: request.approvalID, decision: "allow_once" })
+          }),
+        ] as const,
+        { concurrency: "unbounded" },
+      ).pipe(Effect.ensuring(off))
       const content = yield* Effect.promise(() => Bun.file(filepath).text())
       expect(content).toBe("approved by Rust")
 
@@ -787,6 +860,109 @@ withRustSupervisor(
       if (toolCall.state.status !== "completed") return
       expect(toolCall.state.metadata.effectID).toBeString()
       expect(toolCall.state.metadata.receiptDigest).toMatch(/^blake3:[0-9a-f]{64}$/)
+    }),
+  { config: cfg },
+  180000,
+)
+
+withRustSupervisor(
+  "V1 model bash waits for Rust approval and runs only with a receipted lease",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make(dir), sandboxes: [] })
+        .onConflictDoNothing()
+        .run()
+        .pipe(Effect.orDie)
+
+      const events = yield* EventV2Bridge.Service
+      const supervisor = yield* SessionSupervisor.Service
+      const approvals = yield* Queue.unbounded<GuardApprovalRequest>()
+      const off = yield* events.listen((event) => {
+        if (event.type === GuardApprovalRequested.type) {
+          Queue.offerUnsafe(approvals, event.data as GuardApprovalRequest)
+        }
+        return Effect.void
+      })
+
+      const runBash = (title: string, command: string, marker: string, decision: "allow_once" | "deny") =>
+        Effect.gen(function* () {
+          const session = yield* sessions.create({
+            title,
+            permission: [{ permission: "bash", pattern: "*", action: "allow" }],
+          })
+          yield* prompt.prompt({
+            sessionID: session.id,
+            agent: "build",
+            noReply: true,
+            parts: [{ type: "text", text: title }],
+          })
+          yield* llm.tool("bash", { command, timeout: 30_000 })
+
+          const [result] = yield* Effect.all(
+            [
+              prompt.loop({ sessionID: session.id }),
+              Effect.gen(function* () {
+                const request = yield* awaitWithTimeout(
+                  Queue.take(approvals),
+                  "timed out waiting for Rust terminal.run approval",
+                  "10 seconds",
+                )
+                expect(request.capabilityID).toBe("terminal.run")
+                expect(request.sessionID).toBe(session.id)
+                expect(existsSync(marker)).toBe(false)
+                yield* supervisor.replyGuardApproval({ approvalID: request.approvalID, decision })
+              }),
+            ] as const,
+            { concurrency: "unbounded" },
+          )
+          return { sessionID: session.id, result }
+        })
+
+      yield* Effect.gen(function* () {
+        const deniedMarker = path.join(dir, "rust-guarded-bash-denied.txt")
+        const denied = yield* runBash(
+          "Rust-denied bash",
+          `printf 'DENIED_MODEL_BASH\\n' && touch '${deniedMarker}'`,
+          deniedMarker,
+          "deny",
+        )
+        expect(existsSync(deniedMarker)).toBe(false)
+        const deniedMessages = yield* sessions.messages({ sessionID: denied.sessionID })
+        expect(
+          deniedMessages
+            .flatMap((message) => message.parts)
+            .some((part) => part.type === "tool" && part.tool === "bash" && part.state.status === "completed"),
+        ).toBe(false)
+
+        const approvedMarker = path.join(dir, "rust-guarded-bash-approved.txt")
+        const approved = yield* runBash(
+          "Rust-approved bash",
+          `printf 'APPROVED_MODEL_BASH\\n' && touch '${approvedMarker}'`,
+          approvedMarker,
+          "allow_once",
+        )
+        expect(existsSync(approvedMarker)).toBe(true)
+
+        const approvedMessages = yield* sessions.messages({ sessionID: approved.sessionID })
+        const toolCall = approvedMessages
+          .flatMap((message) => message.parts)
+          .find((part) => part.type === "tool" && part.tool === "bash")
+        expect(toolCall?.type).toBe("tool")
+        if (toolCall?.type !== "tool") return
+        expect(toolCall.state.status).toBe("completed")
+        if (toolCall.state.status !== "completed") return
+        expect(toolCall.state.metadata.output).toContain("APPROVED_MODEL_BASH")
+        expect(toolCall.state.metadata.receiptRef).toBeString()
+        expect(toolCall.state.metadata.artifactRef).toBeString()
+        expect(toolCall.state.metadata.truncated).toBe(false)
+        expect(approved.result.info.role).toBe("assistant")
+      }).pipe(Effect.ensuring(off))
     }),
   { config: cfg },
   180000,
@@ -1700,8 +1876,9 @@ noLLMServer.instance(
       expect(Exit.isFailure(exit)).toBe(true)
       if (Exit.isFailure(exit)) {
         expect(Option.getOrUndefined(Cause.findErrorOption(exit.cause))).toMatchObject({
-          _tag: "Session.OperationUnavailableError",
-          operation: "shell",
+          _tag: "SessionSupervisorError",
+          stage: "host-kernel",
+          reason: "host kernel is unavailable",
         })
       }
       const fs = yield* FSUtil.Service
@@ -1727,8 +1904,9 @@ noLLMServer.instance(
       expect(Exit.isFailure(exit)).toBe(true)
       if (Exit.isFailure(exit)) {
         expect(Option.getOrUndefined(Cause.findErrorOption(exit.cause))).toMatchObject({
-          _tag: "Session.OperationUnavailableError",
-          operation: "shell",
+          _tag: "SessionSupervisorError",
+          stage: "host-kernel",
+          reason: "host kernel is unavailable",
         })
       }
       const fs = yield* FSUtil.Service

@@ -147,7 +147,9 @@ On crash/restart:
 6. Cancellation/restart reconnects by native Session ID and version-compatible protocol.
 7. Restricted/free-model eligibility errors surface unchanged; no client spoofing or paid fallback.
 
-## 3.17 Visual edit
+## 3.17 Visual edit (post-V1)
+
+This browser/preview-dependent journey is outside the V1 CLI/TUI scope under A-V2-31 and remains unavailable; retain it as a future acceptance flow.
 
 1. Start a local preview through an approved process capability.
 2. Capture route, DOM/ARIA, source-map and build generation.
@@ -160,7 +162,9 @@ On crash/restart:
 
 Pixel selection alone is never treated as guaranteed source mapping.
 
-## 3.18 Deploy and verify
+## 3.18 Deploy and verify (post-V1)
+
+This hosted deployment journey is outside the V1 CLI/TUI scope under A-V2-31 and remains unavailable; retain it as a future acceptance flow.
 
 1. Detect deployment target and required account/config without exposing secrets to the model.
 2. Show provider, environment, estimated/known cost class and requested external effects.

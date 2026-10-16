@@ -2,6 +2,8 @@
 
 Status: normative V1 presentation/performance contract.
 
+Under A-V2-31, V1 presentation targets the Linux/WSL CLI/TUI only. Web/desktop surfaces and browser/desktop preview are post-V1; this owner still specifies their future-safe boundary and does not make them available.
+
 ## 31.1 Streaming lanes
 
 Separate:
@@ -37,7 +39,7 @@ Do not market a target as a measured guarantee until benchmarked.
 
 ## 31.4 Embedded editor
 
-Preferred V1 editor: CodeMirror 6 for web/desktop code/diff/structured text unless a measured ADR justifies replacement.
+Preferred future web/desktop editor: CodeMirror 6 for code/diff/structured text unless a measured ADR justifies replacement. The V1 CLI/TUI uses its existing terminal-native diff/editor patterns.
 
 Lazy language support. Editor actions map to canonical file/LSP capabilities and Guard.
 
@@ -144,9 +146,9 @@ Show:
 
 Scheduled action still uses the same Guard.
 
-## 31.13 Browser/desktop preview
+## 31.13 Browser/desktop preview (post-V1)
 
-Browser and desktop screenshots/DOM/AX state can appear in panes/artifacts. UI labels whether target is managed or attached and the observation generation. Action feedback must not pretend stale screenshots are current.
+Browser and desktop screenshots/DOM/AX state are unavailable in V1. If promoted post-V1, they may appear in panes/artifacts; UI labels whether target is managed or attached and the observation generation. Action feedback must not pretend stale screenshots are current.
 
 ## 31.14 Self-improvement boundary
 

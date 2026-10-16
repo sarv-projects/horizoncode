@@ -444,7 +444,8 @@ async function admitBatch(
         return deny("terminal.run requires PTY host preparation")
       admission = preparedBatch
     }
-  } catch {
+  } catch (error) {
+    console.error("ToolBatch preparation diagnostic", error)
     return deny("Rust Guard unavailable")
   }
   if (input.signal.aborted) return deny("tool batch interrupted before execution")

@@ -23,14 +23,14 @@ Status: normative and frozen for V1 implementation. This file resolves product/o
 | A-V2-15 | Local/small models are first-class | No hidden cloud fallback |
 | A-V2-16 | Performance budgets are release architecture | Streaming/startup/index regressions can block release |
 | A-V2-17 | Deep analytics in V1; autonomous self-improvement post-V1 | No V1 self-changing routing/policy |
-| A-V2-18 | Browser/DOM and safe artifact/Mermaid are core | MCP/browser adapters share the same Guard |
+| A-V2-18 | Safe artifact/Mermaid rendering is core; browser/DOM interaction is post-V1 | V1 artifacts render in CLI/TUI; browser adapters stay unavailable until a later scope decision |
 | A-V2-19 | CodeMirror 6 is the preferred embedded code/diff editor | Monaco needs a measured ADR |
 | A-V2-20 | Real-work task catalog is mandatory | Harness correctness and model ability measured separately |
 | A-V2-21 | Contract convergence precedes new subsystem wiring | One schema/ID/error model per boundary |
 | A-V2-22 | Discoverable command/provider/model-role/settings/Goal UX is adopted | One ActionDescriptor and existing auth/config owners |
 | A-V2-23 | Safe SVG preview, deterministic charts, terminal Mermaid and artifact fidelity are adopted | Rendering is sandboxed and source-preserving |
 | A-V2-24 | External source reuse is immutable-pin/provenance/license/test gated | Source inspection is not integration |
-| A-V2-25 | Desktop/computer control, built-in web search, DAP debugging, and bounded persistent REPL are first-class coding-agent capability families | They reuse Guard/ExecutionHost, capability registry and provider/auth owners; no parallel runtime |
+| A-V2-25 | DAP debugging and bounded persistent REPL are V1 coding-agent capability families; desktop/computer control and built-in web search are post-V1 | V1 DAP/REPL reuse Guard/ExecutionHost and canonical capability/provider owners; deferred desktop/browser/search paths remain unavailable |
 | A-V2-26 | Active architecture has one topic owner; research/audit/history are non-normative | Compatibility stubs may point to the owner but must not restate contracts |
 
 ## 17.2 Canonical ownership
@@ -146,3 +146,15 @@ The owning config retains requested/effective/source/lock/precedence/apply-bound
 - **Practical diagnostics:** one explicit Provider Doctor with offline/catalog/full consent tiers; local redacted resource timeline; file-touch advisory index plus authoritative file-revision/lease fences; adaptive TUI refresh; bounded tool-tail and cache budgets; explicit native/open external-session import and resume, without dual ownership.
 - **Proof before promotion:** same-machine task/model/repository baselines at 1/5/10/20 sessions, Linux PSS and RSS, macOS/Windows platform-specific private-memory measurements, cold/warm startup, idle/active/long-run growth, crash/replay, file-edit collisions and scoped denial. JCode's published figures are competitor measurements only, not HorizonCode guarantees.
 - **No artificial omission:** all accepted capabilities remain in the product inventory and implementation plan; statuses `DESIGNED → CODE_PRESENT → WIRED → TESTED → VERIFIED → RELEASED` are stated honestly. Experimental setting and availability rules in A-V2-29 continue to apply. Optional self-development/canary code must use explicit developer opt-in, state fencing and rollback.
+
+## 17.11 A-V2-31 — Linux-first CLI/TUI V1 scope and selective source intake (2026-10-16)
+
+This user-approved scope decision supersedes the prior 2026-10-16 plan entry that deferred LSP/DAP/REPL, settings/UI, workers, resource features and related capabilities. It changes delivery scope, not implementation status or Guard policy.
+
+- **V1 surface/platform:** ship the Linux/WSL-first CLI/TUI. Web, desktop, browser automation/attached-browser and desktop/computer control are post-V1 and unavailable in V1. Keep native Windows unavailable until native tests pass. Safe artifact/Mermaid rendering remains a CLI/TUI capability.
+- **V1 feature scope:** LSP, DAP, bounded REPL, settings/provider/model UX, streaming/rendering, artifacts/analytics/automations, bounded worktree/resource pools, quotas, cross-model suites, subagents/workers/DAG, file-conflict signals, Provider Doctor, session import, bounded caches/local recall, and TUI performance are V1 goals. The order remains P1.3 Guard → P2 single managed vertical → bounded worker fan-out and remaining feature modules; no effectful origin becomes available before Guard proof.
+- **Source preference:** adapt compatible non-OpenCode providers and CLI/TUI settings/visual patterns from the immutable Oh My Pi reference; use the official version-appropriate OpenCode API/SDK path for explicitly selected OpenCode-owned sessions. SDK/API use does not promise every provider model, subscription or free-tier entitlement and does not override the one-session-owner law. Verify supported entitlements through documented user auth and actual acceptance tests.
+- **Naming and provenance:** new adapted first-party Horizon modules, packages, folders and configuration identifiers use HorizonCode identity as they are introduced. Preserve third-party authorship, licenses and genuine upstream dependency names. This does not authorize replacing the pinned `opencode/` snapshot or a global package migration.
+- **Status authority:** `implementationtov1release.md` is the main-agent-maintained V1 goal/status map; `HANDOFF.md` records observed implementation evidence; the operative plan owns dependency order; topic owners remain normative. No tracker entry promotes runtime status without exact tests and evidence.
+
+Affected delivery/surface/resource owners: §§10, 16, 18, 20, 21, 29, 30, 31, 32, 33 and 37. Their scope notes and acceptance filters must be kept consistent with this decision; the tracker records the exact source map and open gates.

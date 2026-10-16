@@ -378,3 +378,35 @@ The plan's “do not build the shared effect daemon first” wording was clarifi
 4. Only after successful push, delete local `p1.3-interactive-pty-integration`; preserve `p2-foundation` and every remote branch. Recheck status; there are no subagent worktrees to prune.
 
 **Decisions & Gotchas:** The fast-forward merged the branch locally; it did not publish it. The current 10-commit unpublished `main` includes the task commit and the gate failure is on the merged tree. The three unmerged remote branches are outside the user's selected pruning scope. Keep the task branch as a recoverable ref until the mandatory gate passes and publication succeeds.
+
+## 2026-10-16 — V1 scope decision recorded; repo_take reference clones + surveys
+
+**Active Goal:** Record the user-approved V1 scope boundary (Linux/WSL-first; finish list vs post-V1 deferral) and set up the post-V1 "take from upstream repos" intake (`repo_take/` reference clones + read-only subagent surveys), without changing any implementation gate.
+
+**Where We Stopped:**
+- User approved the full V1 finish list (A1–A4; C13–C15; C16–C18/C10 mediate-or-disable; C20/C21; C25 trimmed; D1–D8/D11 + D9-minimal + H7; K1/K2-honest/K5/K6; S1; S3) and added: post-V1 items are to be **taken/adapted directly** from OpenCode and Oh My Pi instead of built from scratch; settings/UI preferred from OMP; Claude Code behavior reference only; Linux/bash first with Windows deferred.
+- Scope decision recorded in `docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md` → "2026-10-16 — V1 scope decision (user-approved) — Linux-first, take-from-repos post-V1"; `HANDOFF.md` gained a matching scope-boundary section (explicitly no status upgrade); `AGENTS.md` Source-reuse section now points at `repo_take/` + `repo_take/NOTES.md`.
+- `repo_take/` created (ignore-covered; absent from `git status`): shallow clones `repo_take/opencode` (HEAD `09ef07e11e3b6df39625d89e72167d83be199bee`, dev; pinned `b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322` fetched) and `repo_take/oh-my-pi` (HEAD `a536558dc21634462c1b2647676953204569779c`, main; pinned `eec114a9226da698ebc015fd8996a8ca3bc4625c` fetched); both top-level MIT; claude-code not cloned (`reference_only` per §42).
+- Four read-only explore subagents launched to survey the clones (opencode core-eng, opencode UI, oh-my-pi core-eng, oh-my-pi UI); their reports fill the take-mapping table in `repo_take/NOTES.md`.
+
+**Verification (observed):**
+- Clone HEADs and both pinned commit objects verified in-place (`git log -1 --format=%H`, `cat-file -t` → `commit`).
+- `git status --porcelain | grep repo_take` → empty (clones are ignore-covered; no dirty-tree pollution).
+- Disk after clones: 844 GB free; `repo_take/opencode` 249 MB, `repo_take/oh-my-pi` 312 MB.
+
+**Next Exact Steps:**
+1. When surveys return, fill the `repo_take/NOTES.md` take-mapping (per area: files, REUSE/ADAPT/ADAPTER/REJECT, Guard impact) and present the final implement-list checked against arch_V1 owners.
+2. Then Wave 1 per scope decision: A1 typecheck repair → A2 push gate + push → A4 Git visibility; parallel C13/C14 (serialize same file), C15, C20/C21.
+3. Run `audit_markdown_repo.py` + `validate_convergence.py` after these doc edits.
+
+**Decisions & Gotchas:** Do not build post-V1 features from scratch when compatible code exists in the pinned clones; every port still needs §42 provenance (revision/license/deps/decision), owner/Guard preservation and local tests, and must never replace the tracked `opencode/` snapshot. Windows stays truthfully UNAVAILABLE; do not use the Windows test authorization in V1. No push/commit occurred in this checkpoint; `main` remains 11 commits ahead of `origin/main` (gate red at Core `tsgo`).
+
+## 2026-10-16 — revised CLI/TUI V1 scope and tracker (no runtime status changed)
+
+**Active goal:** replace the superseded post-V1 feature list with the user-approved Linux/WSL-first CLI/TUI V1 scope, maintain a single goals/status/source map, and reconcile the architecture, plan, handoff and reference notes. This is a documentation/source-research update only.
+
+**Changes:** added `implementationtov1release.md` as the main-agent-owned V1 goals/status/evidence/source map; updated A-V2-31 and affected delivery, UX, effects, agent-adapter, test, capability, runtime-service and provenance owners; revised the operative plan, `AGENTS.md`, `HANDOFF.md` and `repo_take/NOTES.md` to distinguish V1 CLI/TUI from post-V1 web/desktop/browser/search surfaces. No implementation status was promoted. RC0.3 cache/renderer baseline capture and C22 Linux PTY process-tree cleanup remain optional; broader bounded caches/memory and resource/performance work remain V1 goals.
+
+**Source findings:** the exact pinned OMP revision contains a DAP client/session manager and debug tool (`packages/coding-agent/src/dap/session.ts`, `packages/coding-agent/src/tools/debug.ts`); prior notes claiming DAP was absent from both sources were incorrect. OMP is a candidate only: exact file/dependency review and Guard mediation of adapter launch/install/attach/evaluate/terminal callbacks remain. The JCode checkout at `repo_take/jcode` is clean but at `0c5968d138b1d94e7182aebe08d0860ba4ae2638`, not §42's `1f612a7d376e06e4eb8641736197f61a21106131`; exact pinned source review is blocked, and no JCode code/settings were copied. A1 subagent reports Core and OpenCode package typechecks exit 0, but the main agent has not verified the diff/typechecks and the full push gate has not been rerun; A1 remains IN PROGRESS, A2/A3 remain blocked.
+
+**Next:** finish scope/source-note consistency, run Markdown, convergence and external-source validators plus `git diff --check`, inspect the new tracker despite it being untracked, then parent-verify A1 and continue the P1.3 gate. Preserve all dirty paths and the unrelated `litecowork` Cargo test; no commit, push, build or cleanup was done for this documentation update.

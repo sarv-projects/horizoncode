@@ -160,6 +160,9 @@ pub fn sample_owned_process<B: ProcessBackend>(
         return Err(SampleError::IdentityChanged { pid: owner.pid });
     }
     let counters = backend.counters(&owner);
+    if backend.bytes_consumed() > DEFAULT_MAX_BYTES || backend.work_consumed() > DEFAULT_MAX_WORK {
+        return Ok(CounterSet::unknown(UnknownReason::BudgetExceeded));
+    }
     match backend.identity(owner.pid) {
         Ok(identity) if identity == owner => Ok(counters),
         Ok(_) => Ok(CounterSet::unknown(UnknownReason::IdentityChanged)),
@@ -414,19 +417,6 @@ impl LinuxProcBackend {
         let cpu_ns = (utime + stime).saturating_mul(1_000_000_000) / self.clock_ticks;
         Ok((parent, start, cpu_ns))
     }
-
-    fn metric_file<T>(
-        &mut self,
-        path: &std::path::Path,
-        parse: impl FnOnce(&str) -> Option<T>,
-    ) -> Metric<T> {
-        match self.read_source(path) {
-            Ok(data) => parse(&data)
-                .map(Metric::measured)
-                .unwrap_or(Metric::Unknown(UnknownReason::Malformed)),
-            Err(reason) => Metric::Unknown(reason),
-        }
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -506,17 +496,13 @@ impl ProcessBackend for LinuxProcBackend {
 
     fn counters(&mut self, identity: &ProcessIdentity) -> CounterSet {
         let base = self.proc_root.join(identity.pid.to_string());
-        let pss = self.metric_file(&base.join("smaps_rollup"), |data| {
-            data.lines()
-                .find_map(|line| {
-                    line.strip_prefix("Pss:")?
-                        .split_whitespace()
-                        .next()?
-                        .parse::<u128>()
-                        .ok()
-                })
-                .map(|kb| kb * 1024)
-        });
+        let (pss, private_bytes) = match self.read_source(&base.join("smaps_rollup")) {
+            Ok(data) => (
+                parse_smaps_pss_bytes(&data),
+                parse_smaps_private_bytes(&data),
+            ),
+            Err(reason) => (Metric::unknown(reason.clone()), Metric::unknown(reason)),
+        };
         let status_path = base.join("status");
         let status = self.read_source(&status_path);
         let (rss, threads) = match status {
@@ -591,7 +577,7 @@ impl ProcessBackend for LinuxProcBackend {
             cpu_ns,
             thread_count: threads,
             fd_count,
-            private_bytes: Metric::unknown(UnknownReason::Unsupported),
+            private_bytes,
         }
     }
 
@@ -608,6 +594,47 @@ impl ProcessBackend for LinuxProcBackend {
     fn work_consumed(&self) -> usize {
         self.work_used
     }
+}
+
+#[cfg(target_os = "linux")]
+fn smaps_kb_field(data: &str, name: &str) -> Option<u128> {
+    data.lines().find_map(|line| {
+        line.strip_prefix(name)?
+            .split_whitespace()
+            .next()?
+            .parse::<u128>()
+            .ok()
+    })
+}
+
+/// Linux PSS from `smaps_rollup`. A missing or malformed field is UNKNOWN, never 0 and never RSS.
+#[cfg(target_os = "linux")]
+fn parse_smaps_pss_bytes(data: &str) -> Metric<u128> {
+    smaps_kb_field(data, "Pss:")
+        .and_then(|kb| kb.checked_mul(1024))
+        .map(Metric::measured)
+        .unwrap_or(Metric::Unknown(UnknownReason::Malformed))
+}
+
+/// Linux private resident bytes from `smaps_rollup` (`Private_Clean + Private_Dirty +
+/// Private_Hugetlb`). This is a separate, explicitly labeled method from PSS/RSS; any missing
+/// field is UNKNOWN rather than an under-counted partial sum.
+#[cfg(target_os = "linux")]
+fn parse_smaps_private_bytes(data: &str) -> Metric<u128> {
+    let mut total = 0u128;
+    for field in ["Private_Clean:", "Private_Dirty:", "Private_Hugetlb:"] {
+        let Some(kb) = smaps_kb_field(data, field) else {
+            return Metric::Unknown(UnknownReason::Malformed);
+        };
+        let Some(sum) = kb
+            .checked_mul(1024)
+            .and_then(|bytes| total.checked_add(bytes))
+        else {
+            return Metric::Unknown(UnknownReason::Malformed);
+        };
+        total = sum;
+    }
+    Metric::measured(total)
 }
 
 #[cfg(target_os = "linux")]
@@ -746,5 +773,232 @@ impl ProcessBackend for WindowsHandleBackend {
             result.private_bytes = Metric::measured(counters.private_usage as u128);
         }
         result
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_backend_tests {
+    use super::*;
+    use std::{
+        fs,
+        path::PathBuf,
+        process::Command,
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    };
+
+    struct TempProcRoot(PathBuf);
+
+    impl TempProcRoot {
+        fn new() -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock before unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "horizoncode-resource-sampler-{}-{nonce}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("create fake proc root");
+            Self(path)
+        }
+    }
+
+    impl Drop for TempProcRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn linux_backend_measures_private_bytes_from_smaps_rollup() {
+        let proc_root = TempProcRoot::new();
+        let process_root = proc_root.0.join("123");
+        fs::create_dir_all(process_root.join("fd")).expect("create fake fd directory");
+
+        let mut fields = vec!["0"; 20];
+        fields[0] = "S";
+        fields[1] = "1";
+        fields[11] = "3";
+        fields[12] = "4";
+        fields[19] = "77";
+        fs::write(
+            process_root.join("stat"),
+            format!("123 (horizoncode-sampler) {}\n", fields.join(" ")),
+        )
+        .expect("write fake stat");
+        fs::write(process_root.join("status"), "VmRSS: 20 kB\nThreads: 1\n")
+            .expect("write fake status");
+        fs::write(
+            process_root.join("smaps_rollup"),
+            "Pss: 10 kB\nPrivate_Clean: 2 kB\nPrivate_Dirty: 3 kB\nPrivate_Hugetlb: 1 kB\n",
+        )
+        .expect("write fake smaps rollup");
+
+        let mut backend = LinuxProcBackend {
+            proc_root: proc_root.0.clone(),
+            clock_ticks: 100,
+            byte_limit: DEFAULT_MAX_BYTES,
+            bytes_read: 0,
+            work_limit: DEFAULT_MAX_WORK,
+            work_used: 0,
+        };
+        let counters = backend.counters(&ProcessIdentity::new(123, 77));
+
+        assert_eq!(counters.pss_bytes, Metric::measured(10 * 1024));
+        assert_eq!(counters.private_bytes, Metric::measured(6 * 1024));
+    }
+
+    #[test]
+    fn linux_backend_private_bytes_never_fabricates_partial_sums() {
+        let proc_root = TempProcRoot::new();
+
+        // PSS present but hugetlb missing: private bytes stay UNKNOWN, PSS is independent.
+        let partial = proc_root.0.join("124");
+        fs::create_dir_all(&partial).expect("create fake proc dir");
+        fs::write(
+            partial.join("smaps_rollup"),
+            "Pss: 10 kB\nPrivate_Clean: 2 kB\nPrivate_Dirty: 3 kB\n",
+        )
+        .expect("write fake smaps rollup");
+        let mut backend = LinuxProcBackend {
+            proc_root: proc_root.0.clone(),
+            clock_ticks: 100,
+            byte_limit: DEFAULT_MAX_BYTES,
+            bytes_read: 0,
+            work_limit: DEFAULT_MAX_WORK,
+            work_used: 0,
+        };
+        let counters = backend.counters(&ProcessIdentity::new(124, 78));
+        assert_eq!(counters.pss_bytes, Metric::measured(10 * 1024));
+        assert_eq!(
+            counters.private_bytes,
+            Metric::unknown(UnknownReason::Malformed)
+        );
+
+        // Unreadable smaps: both are UNKNOWN with the read reason, never a fabricated zero.
+        let counters = backend.counters(&ProcessIdentity::new(125, 79));
+        assert_eq!(
+            counters.pss_bytes,
+            Metric::unknown(UnknownReason::Unavailable)
+        );
+        assert_eq!(
+            counters.private_bytes,
+            Metric::unknown(UnknownReason::Unavailable)
+        );
+
+        // Private fields present but PSS missing: PSS stays UNKNOWN, private remains measured.
+        let no_pss = proc_root.0.join("126");
+        fs::create_dir_all(&no_pss).expect("create fake proc dir");
+        fs::write(
+            no_pss.join("smaps_rollup"),
+            "Private_Clean: 1 kB\nPrivate_Dirty: 1 kB\nPrivate_Hugetlb: 0 kB\n",
+        )
+        .expect("write fake smaps rollup");
+        let counters = backend.counters(&ProcessIdentity::new(126, 80));
+        assert_eq!(
+            counters.pss_bytes,
+            Metric::unknown(UnknownReason::Malformed)
+        );
+        assert_eq!(counters.private_bytes, Metric::measured(2 * 1024));
+    }
+
+    #[test]
+    fn smaps_parsers_reject_malformed_and_overflowing_values() {
+        assert_eq!(
+            parse_smaps_pss_bytes("Pss: not-a-number kB\n"),
+            Metric::unknown(UnknownReason::Malformed)
+        );
+        assert_eq!(
+            parse_smaps_pss_bytes("Rss: 1 kB\n"),
+            Metric::unknown(UnknownReason::Malformed)
+        );
+        assert_eq!(
+            parse_smaps_private_bytes("Private_Clean: 1 kB\nPrivate_Dirty: 2 kB\n"),
+            Metric::unknown(UnknownReason::Malformed)
+        );
+        let overflowing = format!(
+            "Private_Clean: {} kB\nPrivate_Dirty: 0 kB\nPrivate_Hugetlb: 0 kB\n",
+            u128::MAX / 1024 + 1
+        );
+        assert_eq!(
+            parse_smaps_private_bytes(&overflowing),
+            Metric::unknown(UnknownReason::Malformed)
+        );
+        let overflowing_pss = format!("Pss: {} kB\n", u128::MAX / 1024 + 1);
+        assert_eq!(
+            parse_smaps_pss_bytes(&overflowing_pss),
+            Metric::unknown(UnknownReason::Malformed)
+        );
+    }
+
+    #[test]
+    fn linux_backend_tracks_a_real_owned_process_tree_until_release() {
+        // Real /proc integration: own a bounded bash+sleep tree, fence both PIDs by start
+        // identity, sample them, then prove the identity no longer matches after reaping.
+        // The owner is this test's own child, so sibling lib tests that spawn their own
+        // children cannot be misattributed into the sampled tree.
+        let mut shell = Command::new("bash")
+            .arg("-c")
+            .arg("sleep 30 & wait")
+            .spawn()
+            .expect("spawn owned bash tree");
+        let mut backend = LinuxProcBackend::system();
+        let owner = backend
+            .identity(shell.id())
+            .expect("read owned bash identity");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let descendant = loop {
+            match backend.children(&owner) {
+                Ok(children) if !children.is_empty() => break children[0].clone(),
+                _ if Instant::now() >= deadline => {
+                    let _ = shell.kill();
+                    let _ = shell.wait();
+                    panic!("owned sleep descendant did not appear");
+                }
+                _ => std::thread::sleep(Duration::from_millis(20)),
+            }
+        };
+
+        let counters = sample_owned_process(&mut backend, descendant.clone())
+            .expect("sample owned descendant");
+        assert!(matches!(counters.pss_bytes, Metric::Measured(value) if value > 0));
+        assert!(matches!(counters.rss_bytes, Metric::Measured(value) if value > 0));
+        assert!(matches!(counters.cpu_ns, Metric::Measured(_)));
+        assert!(matches!(counters.fd_count, Metric::Measured(_)));
+        assert!(
+            !matches!(
+                counters.private_bytes,
+                Metric::Unknown(UnknownReason::IdentityChanged)
+            ),
+            "a live owned descendant must not be misreported as PID reuse"
+        );
+
+        let sample = sample_owned_tree(&mut backend, owner.clone(), SampleBudget::default())
+            .expect("sample owned tree");
+        assert!(!sample.truncated);
+        assert!(
+            sample
+                .processes
+                .iter()
+                .any(|process| process.pid == owner.pid)
+        );
+        assert!(
+            sample
+                .processes
+                .iter()
+                .any(|process| process.pid == descendant.pid)
+        );
+        assert!(matches!(sample.metrics.rss_bytes, Metric::Measured(value) if value > 0));
+        assert!(matches!(sample.metrics.thread_count, Metric::Measured(value) if value > 0));
+
+        unsafe { libc::kill(descendant.pid as i32, libc::SIGKILL) };
+        let _ = shell.kill();
+        let _ = shell.wait();
+        let after = backend.identity(owner.pid);
+        assert!(match after {
+            Ok(identity) => identity != owner,
+            Err(_) => true,
+        });
     }
 }

@@ -10,7 +10,7 @@ import { EventV2 } from "../event"
 import { Snapshot } from "../snapshot"
 import { Hash } from "../util/hash"
 import type { RelativePath } from "../schema"
-import { SessionSupervisor, type PatchOperation } from "./supervisor"
+import { SessionSupervisor, SessionSupervisorError, type PatchOperation } from "./supervisor"
 import { SessionEvent } from "./event"
 import { SessionMessage } from "./message"
 import { SessionSchema } from "./schema"
@@ -154,7 +154,6 @@ const applyGuardedRestore = Effect.fn("SessionRevert.applyGuardedRestore")(funct
   session: SessionSchema.Info,
   plan: Snapshot.RestorePlan,
 ) {
-  const database = yield* Database.Service
   const supervisor = yield* SessionSupervisor.Service
   yield* Effect.scoped(
     Effect.gen(function* () {
@@ -168,17 +167,18 @@ const applyGuardedRestore = Effect.fn("SessionRevert.applyGuardedRestore")(funct
       yield* supervisor
         .runPatch({
           sessionID: session.id,
-          source: database.path,
           workspaceRoot,
           turnContextDigest: `sha256:${Hash.sha256(JSON.stringify({ capabilityID: "files.patch", sessionID: session.id, workspaceRoot, operations }))}`,
           operations,
           // This API is called by an explicit user action. Rust still evaluates
           // Guard policy and binds approval to this exact operation set.
-          authorize: async () => undefined,
         })
-        .pipe(Effect.mapError(unavailable))
     }),
-  ).pipe(Effect.mapError((error) => (error instanceof FileChangesUnavailableError ? error : unavailable(error))))
+  ).pipe(
+    Effect.mapError((error) =>
+      error instanceof FileChangesUnavailableError || error instanceof SessionSupervisorError ? error : unavailable(error),
+    ),
+  )
 })
 
 const buildOperations = Effect.fn("SessionRevert.buildOperations")(function* (
