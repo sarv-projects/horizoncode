@@ -357,3 +357,24 @@ The plan's “do not build the shared effect daemon first” wording was clarifi
 4. Recheck worktree/process/disk state. Remove only a confirmed task-created worktree after its work is committed, pushed, and no process/evidence depends on it; currently there is none to remove.
 
 **Decisions & Gotchas:** `git worktree prune --dry-run` returned no entries, so worktree cleanup is a no-op. Do not delete the E2E sandbox or `p2-foundation`/`main` branches as substitutes for absent subagent worktrees. Do not push around the failing Core typecheck or change Git signing configuration.
+
+## 2026-10-16 — local main integration and publication gate
+
+**Active Goal:** The user requested merging the task branch to `main`, pushing, then pruning branches. The user selected the narrow prune scope: remove only the merged local `p1.3-interactive-pty-integration` branch after a successful push; preserve `p2-foundation` and all remote branches.
+
+**Where We Stopped:**
+- `git worktree list --porcelain` showed one checkout at `/home/sarvesh/business_Dev/agentx`; `git worktree prune --dry-run --verbose` had no stale registrations. No worktree was removed.
+- On clean branch `p1.3-interactive-pty-integration`, the task commit was `243bd986d9ae9e06296a60463a92adb47615aa9c` (`commit`). The user authorized local integration. `git merge p1.3-interactive-pty-integration` on `main` fast-forwarded `c47657ef5..243bd986d` with no conflicts.
+- Current state: `main` at `243bd986d`, `origin/main...main` is `0 10` (main is 10 commits ahead), and `git status --short --branch` reported a clean tree. The local topic branch still points to the same commit. `p2-foundation` remains at `a22f810da` and tracks `origin/p2-foundation`.
+- Remote refs `origin/docs/readme-product-first-20261014`, `origin/docs/readme-visual-first-20261014`, and `origin/fix/p1-3-streamed-tool-input-lifecycle` are not merged into local main. Preserve all remote refs per the selected prune scope.
+- After the merge, `bash scripts/architecture/run_push_gate.sh` ran on this tree. Source bootstrap, overlay/workspace/convergence/Markdown/provenance audits passed; kernel build passed; `managed_control` passed 10/10 and `resource_budget` passed 9/9. It then exited 2 at Core `tsgo --noEmit`. Type errors remain across Core and imported OpenCode/server/session owners, including `SessionSupervisorError` escaping route effect channels, incompatible shell-profile/PTY error types, stale `source` in a `PatchOperation` object in `packages/opencode/src/session/revert.ts`, and further route/prompt/system effect incompatibilities.
+- **No push occurred and no branch was deleted.** The pre-push gate is failing; do not bypass it. Do not delete the merged topic ref before successful publication.
+- Post-gate resource check: `df -h .` reported 846 GB available; `kernel/target` 1.8 GB, `indexd/target` 69 MB, root `node_modules` 2.5 GB. No worktree or service was created.
+
+**Next Exact Steps:**
+1. Repair the actual Core/OpenCode TypeScript contract errors at their owning APIs; preserve Guard and error semantics rather than suppressing diagnostics.
+2. Run the focused Core typecheck, then `bash scripts/architecture/run_push_gate.sh` on the repaired `main`; do not publish unless the full gate passes.
+3. After the gate passes, push `main` through the normal pre-push hook.
+4. Only after successful push, delete local `p1.3-interactive-pty-integration`; preserve `p2-foundation` and every remote branch. Recheck status; there are no subagent worktrees to prune.
+
+**Decisions & Gotchas:** The fast-forward merged the branch locally; it did not publish it. The current 10-commit unpublished `main` includes the task commit and the gate failure is on the merged tree. The three unmerged remote branches are outside the user's selected pruning scope. Keep the task branch as a recoverable ref until the mandatory gate passes and publication succeeds.

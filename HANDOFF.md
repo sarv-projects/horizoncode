@@ -199,3 +199,18 @@ The user requested merging subagent worktrees, committing and pushing, then prun
 The six verified handoff/test/audit paths were committed as `dd51d9e3050a853f46d273b55ce5fe3c22d245c1` (`fix(test): correct PTY harness and workspace audit`); the status/cleanup record was committed separately as `b9c9f4656d182a97f47ac4e35d92c6b9e47a1d5f`. Both are unsigned because the configured GPG identity has no available secret key. `origin` had no `p1.3-interactive-pty-integration` branch; at the `b9c9f46` checkpoint, the local topic branch was 8 commits ahead of `origin/main`. No push occurred.
 
 Push is blocked: the required pre-push hook runs `scripts/architecture/run_push_gate.sh`, which fails in the Core TypeScript check. Do not bypass the hook. Repair the recorded Core/OpenCode type errors and rerun the gate before pushing. The uncommitted remainder is 38 modified and 24 untracked paths; inspect ownership before staging. The root `.horizoncode-e2e-20261013` sandbox is not a Git worktree and was not removed.
+
+## 2026-10-16 — local main integration status
+
+**Current branch:** local `main` was fast-forwarded from `c47657ef5` to `243bd986d9ae9e06296a60463a92adb47615aa9c` (`commit`) from `p1.3-interactive-pty-integration`, with no conflicts. The tree was clean after integration. `main` is 10 commits ahead of `origin/main`; **nothing has been pushed**. The prior 38-modified/24-untracked status above is historical and superseded.
+
+**Publication gate:** `bash scripts/architecture/run_push_gate.sh` on merged `main` passed source, package, convergence, Markdown and provenance audits; kernel build; `managed_control` (10/10); and `resource_budget` (9/9). It exited 2 at `tsgo --noEmit` due to unresolved Core/OpenCode/server/session TypeScript errors. Examples include `SessionSupervisorError` not fitting route error channels, incompatible PTY/shell-profile errors, and a stale `source` property in `packages/opencode/src/session/revert.ts`. **Do not bypass the pre-push hook.**
+
+**Branch/worktree cleanup:** there is one registered worktree (the main checkout) and no stale worktrees. No worktree was removed. The user selected pruning only local `p1.3-interactive-pty-integration`, and only after a successful push. Keep it until then. Preserve local `p2-foundation` and all remote refs; three remote refs are not merged into main: `origin/docs/readme-product-first-20261014`, `origin/docs/readme-visual-first-20261014`, and `origin/fix/p1-3-streamed-tool-input-lifecycle`.
+
+**Immediate next steps:**
+1. Fix the owning Core/OpenCode TypeScript contracts; rerun focused Core typecheck and the full push gate.
+2. Push `main` only after the required gate passes.
+3. After a successful push, delete only local `p1.3-interactive-pty-integration`; retain `p2-foundation` and remote branches. Verify status and worktree inventory.
+
+**Resource check after gate:** 846 GB available; `kernel/target` 1.8 GB, `indexd/target` 69 MB, root `node_modules` 2.5 GB. No task-created worktree or service remains.
