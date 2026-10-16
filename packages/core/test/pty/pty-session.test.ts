@@ -143,15 +143,19 @@ describe("pty", () => {
       first.attachment.write("BBB\n")
       yield* waitForOutput(first.output, "BBB")
 
-      // A later attachment replays everything already buffered.
+      // A later attachment replays everything already buffered, as ordered stream events.
       const replayed = yield* attachCollecting(info.id)
-      expect(replayed.attachment.replay).toContain("AAA")
-      expect(replayed.attachment.replay).toContain("BBB")
+      const replayedText = replayed.attachment.replay
+        .filter((event) => event.kind === "output")
+        .map((event) => new TextDecoder().decode(event.payload as Uint8Array))
+        .join("")
+      expect(replayedText).toContain("AAA")
+      expect(replayedText).toContain("BBB")
       expect(replayed.attachment.cursor).toBeGreaterThan(0)
 
       // Tail attachments skip the buffer and only see subsequent output.
       const tail = yield* attachCollecting(info.id, -1)
-      expect(tail.attachment.replay).toBe("")
+      expect(tail.attachment.replay).toEqual([])
       expect(tail.attachment.cursor).toBe(replayed.attachment.cursor)
     }),
   )

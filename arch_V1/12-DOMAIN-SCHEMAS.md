@@ -286,13 +286,13 @@ Any existing code type with those names is treated as legacy/prototype until exp
 
 ## 12.15 Proposed resource diagnostics and session-attachment schema mapping (A-V2-30)
 
-Before any resource, provider-doctor, file-touch or shared-kernel endpoint is WIRED, define versioned single-owner typed schemas for `ResourceSampleV1`, `ProviderDoctorRequest/ResultV1`, `FileTouchV1` and any `VirtualSessionAttachmentV1` in `contracts-v2`, with generated TypeScript/Rust conformance tests. §37.15 contains **illustrative interfaces**, not machine-enforced schemas and not new authority.
+Before any resource, provider-doctor, file-touch or shared-kernel endpoint is WIRED, define versioned single-owner typed schemas for `ResourceSampleV1`, `ProviderDoctorRequest/ResultV1`, `FileTouchV1` and any `VirtualSessionAttachmentV1` in `contracts-v2`, with generated TypeScript/Rust conformance tests. §37.16 contains **illustrative interfaces**, not machine-enforced schemas and not new authority.
 
 Fields must include logical owner/epoch and measurement source; PSS/RSS/private-bytes are different metric IDs with platform/provenance (measured/estimated/unknown), optional value when unavailable and bounded history. File activity uses canonical workspace+revision, access kind, session/Attempt, time/TTL but **not** a new write permission. Provider Doctor records tier, selected endpoint/model, deadline/spend consent reference and bounded redacted outcomes. Virtual attachment binds an authenticated ingress channel and existing SessionLink/lease generation; clients cannot self-declare principal/Guard grants. Reject unsupported versions/unknown effect class and cross-session ownership confusion. These schemas must reuse existing `ActionDescriptor`, error code registry and §33 IDs.
 
 ## 12.16 Machine-contract completion rules for A-V2-30
 
-**One schema for each wire shape.** The following is a REQUIRED design schema inventory with logical field types and version/adoption process. Before CODE_PRESENT → WIRED, add to the existing `arch_V1/contracts-v2/` generator/test pipeline, do not invent separate packages or hand-written incompatible TS/Rust wire DTOs. §37.16–17 may show interface pseudotypes; the machine-generated schema is authoritative once added.
+**One schema for each wire shape.** The following is a REQUIRED design schema inventory with logical field types and version/adoption process. Before CODE_PRESENT → WIRED, add to the existing `arch_V1/contracts-v2/` generator/test pipeline, do not invent separate packages or hand-written incompatible TS/Rust wire DTOs. §37.17–18 may show interface pseudotypes; the machine-generated schema is authoritative once added.
 
 | Schema target (new; not currently generated) | Required identity/binding fields | Limits and required negative validation |
 |---|---|---|

@@ -188,4 +188,4 @@ Stop when objective satisfied and verified, user cancels/pauses, required author
 7. Task outputs typed artifact refs and evidence; reviewer/critique checks coverage, dependencies unblock only on independent PASS, and integrated revision is reverified. Report true success/blocked/failed/NeedsYou and clean owned disposable workers/worktrees.
 8. Optional external Session import creates a provenance-preserving **snapshot or handoff** under one chosen backend owner. It does not silently merge two live canonical transcripts.
 
-Acceptance journeys and fault injections are §32.32; resource contract is §18.17 and exact interfaces are §37.15. No step above is implicitly CODE_PRESENT merely because documented.
+Acceptance journeys and fault injections are §32.32; resource contract is §18.17 and exact interfaces are §37.16. No step above is implicitly CODE_PRESENT merely because documented.

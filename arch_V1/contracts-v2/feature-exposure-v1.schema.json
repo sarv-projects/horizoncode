@@ -114,7 +114,8 @@
         "requestedEnabled",
         "effectiveEnabled",
         "effectiveState",
-        "valueSource"
+        "valueSource",
+        "policyLock"
       ],
       "properties": {
         "implementationStatus": {
@@ -157,6 +158,10 @@
             "system_policy",
             "unknown"
           ]
+        },
+        "policyLock": {
+          "const": "unknown",
+          "description": "No feature-setting policy action is currently owned by the policy catalog; report unknown rather than inferring an unlocked or locked state."
         },
         "blockedReason": {
           "type": "string",

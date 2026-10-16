@@ -210,6 +210,14 @@ export type HostKernelResnapshot = {
 }
 export type HostKernelStreamMessage = HostKernelEvent | HostKernelResnapshot
 
+/**
+ * A terminal event carries a free-form `kind` from the host, so the control message is
+ * identified structurally: only a resnapshot carries `requested`/`latest` cursors.
+ */
+export function isHostKernelResnapshot(message: HostKernelStreamMessage): message is HostKernelResnapshot {
+  return "latest" in message
+}
+
 export type ServerMessage = SessionEvent | PageEnd | ResnapshotRequired
 export type OpenOptions = {
   /** Absolute path to the pinned `session_supervisor` binary. */

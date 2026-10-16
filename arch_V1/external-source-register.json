@@ -671,5 +671,58 @@
       "do_not_copy_or_security_limits": "Do not copy framework/extension licensing without review",
       "required_tests": "end-to-end UI+permissions parity"
     }
+    ,
+    {
+      "id": "SRC-024",
+      "source_repo": "omp",
+      "status": "EXPERIMENT_ONLY",
+      "priority": "P3",
+      "exact_source_files": [
+        {
+          "path": "packages/coding-agent/src/session/snapcompact-inline.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/session/snapcompact-inline.ts"
+        },
+        {
+          "path": "packages/coding-agent/src/session/compaction-methods.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/session/compaction-methods.ts"
+        },
+        {
+          "path": "packages/coding-agent/src/session/compact-modes.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/session/compact-modes.ts"
+        },
+        {
+          "path": "packages/snapcompact/src/snapcompact.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/snapcompact/src/snapcompact.ts"
+        },
+        {
+          "path": "packages/snapcompact/test/snapcompact.test.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/snapcompact/test/snapcompact.test.ts"
+        },
+        {
+          "path": "packages/coding-agent/test/agent-session-snapcompact-budget.test.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/test/agent-session-snapcompact-budget.test.ts"
+        },
+        {
+          "path": "packages/coding-agent/test/agent-session-snapcompact-auto-fallback.test.ts",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/test/agent-session-snapcompact-auto-fallback.test.ts"
+        },
+        {
+          "path": "crates/pi-natives/src/snapcompact.rs",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/crates/pi-natives/src/snapcompact.rs"
+        },
+        {
+          "path": "docs/compaction.md",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/docs/compaction.md"
+        },
+        {
+          "path": "packages/snapcompact/package.json",
+          "url": "https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/snapcompact/package.json"
+        }
+      ],
+      "specific_logic_to_extract": "Distinguish transient provider-context imaging from persistent compaction archives; compare renderability, fidelity, and model-aware budget methods only",
+      "horizon_owner_or_adaptation_target": "Future §30 ContextService/ContextLedger projection through the existing Core direct Session owner",
+      "do_not_copy_or_security_limits": "No V1 implementation, OMP AgentSession/package/pi-natives import, persistent archive or blob publication, provider/model fallback, or authority change; review exact native/font licenses and dependency closure before any port",
+      "required_tests": "Future only: exact selected-model image capability/no fallback, canonical history/source recovery, image/token/byte budgets, protected-fact accuracy, render/413 recovery, privacy/cost/cache and rollback"
+    }
   ]
 }

@@ -1,3 +1,5 @@
+import { Schema } from "effect"
+
 export * as FeatureExposure from "./feature-exposure"
 
 /**
@@ -32,10 +34,47 @@ export interface Feature {
     effectiveEnabled: boolean
     effectiveState: EffectiveState
     valueSource: "default" | "user" | "project" | "session" | "system_policy" | "unknown"
+    policyLock: "unknown"
     blockedReason?: string
     pendingApplyAt?: "next_turn" | "next_session" | "restart"
   }
 }
+export const FeatureSchema = Schema.Struct({
+  schemaVersion: Schema.Literal(1),
+  featureId: Schema.Literals(["compaction.auto", "compaction.prune", "native_search", "hashline_edit", "cow_worktrees"]),
+  settingKey: Schema.String,
+  title: Schema.String,
+  description: Schema.String,
+  releaseClass: Schema.Literals(["stable", "beta", "experimental"]),
+  optional: Schema.Literal(true),
+  audience: Schema.Literals(["public", "developer"]),
+  defaultEnabled: Schema.Boolean,
+  supportedScopes: Schema.Array(Schema.Literals(["user", "project", "session"])),
+  applyBoundary: Schema.Literals(["live", "next_turn", "next_session", "restart"]),
+  capabilityIds: Schema.Array(Schema.String),
+  riskNotes: Schema.optional(Schema.String),
+  costNotes: Schema.optional(Schema.String),
+  state: Schema.Struct({
+    implementationStatus: Schema.Literals(["designed", "code_present", "wired", "tested", "verified", "released"]),
+    requestedEnabled: Schema.Union([Schema.Boolean, Schema.Null]),
+    effectiveEnabled: Schema.Boolean,
+    effectiveState: Schema.Literals(["on", "off", "blocked", "pending_apply", "unavailable"]),
+    valueSource: Schema.Literals(["default", "user", "project", "session", "system_policy", "unknown"]),
+    policyLock: Schema.Literal("unknown"),
+    blockedReason: Schema.optional(Schema.String),
+    pendingApplyAt: Schema.optional(Schema.Literals(["next_turn", "next_session", "restart"])),
+  }),
+}).annotate({ identifier: "FeatureExposure" })
+
+export const FeatureListSchema = Schema.Array(FeatureSchema).annotate({ identifier: "FeatureExposureList" })
+
+export const UpdateSchema = Schema.Struct({
+  featureId: Schema.Literals(["compaction.auto", "compaction.prune"]),
+  expectedEnabled: Schema.Union([Schema.Boolean, Schema.Null]),
+  enabled: Schema.Boolean,
+}).annotate({ identifier: "FeatureExposureUpdate" })
+
+export type Update = Schema.Schema.Type<typeof UpdateSchema>
 
 export interface SourceConfig {
   compaction?: {
@@ -95,10 +134,12 @@ const experiments: readonly PlannedOption[] = [
   },
 ]
 
-export function list(config: SourceConfig): Feature[] {
+export function list(config: SourceConfig, effective: SourceConfig = config): Feature[] {
   const supported: Feature[] = compactionOptions.map((option) => {
     const requested = config.compaction?.[option.key] ?? null
-    const enabled = requested ?? option.defaultEnabled
+    const wanted = requested ?? option.defaultEnabled
+    const enabled = effective.compaction?.[option.key] ?? option.defaultEnabled
+    const blocked = wanted && !enabled
     return {
       schemaVersion: 1,
       featureId: option.id,
@@ -109,17 +150,19 @@ export function list(config: SourceConfig): Feature[] {
       optional: true,
       audience: "public",
       defaultEnabled: option.defaultEnabled,
-      supportedScopes: ["user", "project"],
-      applyBoundary: "next_session",
+      supportedScopes: ["project"],
+      applyBoundary: "next_turn",
       capabilityIds: [],
       state: {
         implementationStatus: "wired",
         requestedEnabled: requested,
         effectiveEnabled: enabled,
-        effectiveState: enabled ? "on" : "off",
+        effectiveState: enabled ? "on" : blocked ? "blocked" : "off",
         // Merged ConfigV1 does not expose the winning file or policy source.
         // Never invent "user" or "project" from a merged value.
         valueSource: requested === null ? "default" : "unknown",
+        policyLock: "unknown",
+        ...(blocked ? { blockedReason: "A runtime disable override is active" } : {}),
       },
     }
   })
@@ -140,13 +183,13 @@ export function list(config: SourceConfig): Feature[] {
         applyBoundary: "next_session",
         capabilityIds: [],
         riskNotes: "Experimental: not enabled in this build.",
-        costNotes: "Costs and resource impact have not been measured.",
         state: {
           implementationStatus: "designed",
           requestedEnabled: null,
           effectiveEnabled: false,
           effectiveState: "unavailable",
           valueSource: "default",
+          policyLock: "unknown",
           blockedReason: "Not implemented or release-verified",
         },
       }),

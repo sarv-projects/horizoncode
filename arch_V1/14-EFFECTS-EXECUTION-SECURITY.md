@@ -807,7 +807,7 @@ A shared Rust daemon is **not** approval to run all tools in-process. Every effe
 
 ## 14.18 External ACP agents, visual edits and deployment effects
 
-Existing §§3.16–3.18 describe accepted interactions; §37.19–20 now supplies missing logical service boundaries. The security classifications below are **required even if the feature remains disabled**.
+Existing §§3.16–3.18 describe accepted interactions; §§37.20–21 now supply missing logical service boundaries. The security classifications below are **required even if the feature remains disabled**.
 
 - **ACP outbound launch:** process/network EFFECT, not a harmless read. The worker executable/endpoint identity, current principal, initial cwd/repository root, credential scope, capability subset, model selection and budget are frozen before Guard. Even if ACP protocol reports a permission prompt, that is **not** Horizon's Rust Guard proof. An external remote agent whose side effects are opaque cannot be advertised as governed pre-dispatch under Horizon's lease system.
 - **Native separate OpenCode backend:** always a separate explicit provider/session owner with truthful upstream security guarantees. Native OpenCode tool runs are not magically rewritten as Rust effects. If the selected native backend lacks an enforceable equivalent safety boundary, disclose and disable strict governed capability rather than claiming equivalence.

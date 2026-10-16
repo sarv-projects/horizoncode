@@ -135,7 +135,7 @@ During P1/P2 implementation, read RC0–RC5 in the existing operative plan once;
 - Use exactly the §11.20 / §18.18 reservation states (`PROPOSED/RESERVED/CLAIMED/RELEASE_PENDING/QUARANTINED/RELEASED/EXPIRED`) and §18.18 pressure states (`NORMAL/SOFT_PRESSURE/HARD_PRESSURE/RECOVERING`). `UNKNOWN` is a measurement/effect outcome, not a resource-reservation enum, and `ACTIVE` is not a valid alias. Bind provider Doctor, file-touch and headless-worker requests to authenticated owner/Session/Attempt scope; a queue ticket/owner epoch/lease ID alone never authorizes work. Run the §32.37 JC-RES-012.C–L transition, math and impersonation negatives before marking these contracts WIRED.
 - Update the exact §32.32 JC-RES test rows, observed platform/commit/test data and user-visible status. Add new feature exposure in existing config/capability owners only after WIRED; experimental is not synonymous with working. No performance change may weaken correctness, security or independent verification.
 
-For JCode-informed RAM/worker/protocol features: read §01.13 HLD and the exact §37.16–18 function interfaces, §20.12 hydrated source seams, §18.18 pressure/eviction algorithm, §21.11 worker leases, §29.18 task DAG, §32.33 tests, then RC0–RC5. **A designed type is not implemented until machine schema, source, negative tests and actual OS measurements exist.**
+For JCode-informed RAM/worker/protocol features: read §01.13 HLD and the exact §37.17–19 function interfaces, §20.12 hydrated source seams, §18.18 pressure/eviction algorithm, §21.11 worker leases, §29.18 task DAG, §32.33 tests, then RC0–RC5. **A designed type is not implemented until machine schema, source, negative tests and actual OS measurements exist.**
 
 ## Source reuse
 

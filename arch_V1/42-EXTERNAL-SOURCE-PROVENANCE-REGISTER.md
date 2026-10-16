@@ -25,7 +25,7 @@ First-party Horizon source is the live local working tree. At the 2026-10-11 aud
 
 External source inspection does not authorize code copy. Review exact file license, transitive dependencies, notices, ABI/platform constraints and tests before reuse.
 
-## 42.2 Exact upstream extraction matrix (23 bounded source routes)
+## 42.2 Exact upstream extraction matrix (24 bounded source routes)
 
 **Meaning of statuses:** PRESERVE_EXISTING = retain current OpenCode path; ADOPT_DESIGN = a new Horizon capability to implement after gates, NOT already shipped; EXPERIMENT_ONLY = benchmark and assess before importing; REFERENCE_ONLY = do not port code; DEFER = post-V1.
 
@@ -276,6 +276,16 @@ External source inspection does not authorize code copy. Review exact file licen
 - Target **existing service / proposed LLD**: §16/26 UI and §32 acceptance.
 - Reject/bound: Do not copy framework/extension licensing without review.
 - Proof required: end-to-end UI+permissions parity.
+
+### SRC-024 — Snapcompact transient imaging versus persistent archive compaction
+
+- Source: omp; status **EXPERIMENT_ONLY**; priority P3. Exact repository pin and package license: §42.1.
+- Pinned files: [transient imaging](https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/session/snapcompact-inline.ts), [persistent compaction selection](https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/session/compaction-methods.ts), [archive algorithm](https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/snapcompact/src/snapcompact.ts), [native PNG renderer](https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/crates/pi-natives/src/snapcompact.rs), [tests](https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/snapcompact/test/snapcompact.test.ts) and [compaction contract](https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/docs/compaction.md).
+- Extract **algorithm/logic**: compare transient, non-mutating provider-context imaging separately from `/compact snapcompact`, which persists archive data and restores image blocks on later context builds.
+- Target **existing service / proposed LLD**: future §30 `ContextService`/`ContextLedger` projection in the existing Core direct Session; no new Session owner.
+- Reject/bound: **DEFERRED/UNAVAILABLE in V1**; no setting, command, capability or runtime code. Do not import OMP `AgentSession`, `@oh-my-pi/snapcompact` or the broad N-API `pi-natives` crate. No hidden provider/model fallback or archive/blob publication. No copied code; package metadata is MIT, but exact native/font license and dependency closure still require review before any port.
+- Proof required before reconsideration: same selected-model task baseline; explicit image capability; image-token/count/request-byte budgeting; protected-fact and code-line fidelity; unsupported-model/render/payload-rejection recovery; persistence/rebuild/disable semantics; privacy, cost, cache impact and rollback. OMP's benchmark/test results are not Horizon evidence.
+
 
 
 ## 42.3 Mandatory upstream-to-Horizon implementation procedure

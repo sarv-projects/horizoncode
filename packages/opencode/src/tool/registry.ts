@@ -50,6 +50,7 @@ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { McpCatalog } from "@/mcp/catalog"
 
 import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
+import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/location-services"
 export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
   return (
     providerID === ProviderV2.ID.opencode ||
@@ -279,6 +280,12 @@ const layer = Layer.effect(
   }),
 )
 
+const locationServiceMapNode = LayerNode.make({
+  service: LocationServiceMap.Service,
+  layer: locationServiceMapLayer,
+  deps: [],
+})
+
 export const node = LayerNode.make({
   service: Service,
   layer,
@@ -305,6 +312,7 @@ export const node = LayerNode.make({
     MCP.node,
     Database.node,
     Ripgrep.node,
+    locationServiceMapNode,
   ],
 })
 

@@ -299,6 +299,21 @@ missing approval yields no digest. The kernel-issued opaque digest binds challen
 input, Location, principal and owner epoch, and is consumed once by `terminal.run`
 or `terminal.start`.
 
+Admission blocks on approval: `effects.v2.prepare_tool_batch` does not return a
+challenge for the caller to answer later. It resolves when the approval surface
+replies through `replyGuardApproval({approvalID,decision})`, so a caller that tries
+to approve *after* prepare returns deadlocks; approve concurrently, as the HTTP
+adapter and the event broker do. Normalized effect targets carry
+`operation ∈ {"write","delete","run"}`: `run` is the process-effect target of a
+`terminal.run` challenge (target = canonical working directory, resource = location-relative
+path) and never carries `executable`, which is a filesystem-only field. A settlement
+record must echo the operation that was admitted — a terminal challenge reconciles as
+`run`, never as `write`. Host deadlines such as `expiresAtUnixMs` are unsigned
+64-bit MessagePack integers encoded in the shortest form, so any timestamp beyond
+32 bits reaches a TypeScript reader as `BigInt`; readers normalize through
+`wireUnixMs` and must not assume a plain safe integer, while values that stay within
+32 bits (owner epoch, generation, sequence, exit code, timeout) remain numbers.
+
 User-originated `terminal.start` and `terminal.run` use only
 `effects.v2/prepare_user_effect {locationID,sessionID?,userActionID,capabilityID,arguments}`.
 The server generates `userActionID`; Core injects the typed principal only from
@@ -321,7 +336,7 @@ without ServerAuth the host OS identity is kernel-derived.
 
 | Operation | Input → result | Class and bound |
 |---|---|---|
-| `terminal.run` | `{effectID, capabilityLeaseDigest, locationID, sessionID?, shellProfileID, command, cwd, timeoutMs, resolvedEnvironment}` → `{status: exited\|timed_out\|cancelled\|unknown, exitCode?, preview, artifactRef, receiptRef}` | `guarded_effect` → runtime `effect`; one-shot PREPARED/lease/ExecutionHost/settlement; command ≤64 KiB UTF-8, cwd ≤4 KiB, timeout 120 s default / ≤600 s (over-limit is `TIMEOUT_LIMIT`, never clamped); max 100 MiB stored per log, then drain and report truncation; 50 KiB/2,000-line preview; 1 GiB host artifact quota; 7-day retention. Environment resolved by host, not model. |
+| `terminal.run` | `{effectID, capabilityLeaseDigest, locationID, sessionID?, shellProfileID, command, cwd, timeoutMs, resolvedEnvironment}` → `{status: exited\|timed_out\|cancelled\|unknown, exitCode?, preview, previewTruncated, artifactTruncated, artifactRef, receiptRef}` | `guarded_effect` → runtime `effect`; one-shot PREPARED/lease/ExecutionHost/settlement; command ≤64 KiB UTF-8, cwd ≤4 KiB, timeout 120 s default / ≤600 s (over-limit is `TIMEOUT_LIMIT`, never clamped); max 100 MiB stored per log, then drain and report truncation; 50 KiB/2,000-line preview; 1 GiB host artifact quota; 7-day retention. `previewTruncated` reports the preview slice and `artifactTruncated` the artifact cap/drain independently; Core rejects a result that omits either flag, so a caller can never present a truncated run as complete. Environment resolved by host, not model. |
 | `terminal.start` | `{effectID, capabilityLeaseDigest, locationID, sessionID?, terminalID, shellProfileID?, command?, args?, cwd?, cols?, rows?, env?}` → `{terminalID, generation, grantID, leaseRef, expiresAt, backend, cols, rows, byteCursor, pid}` | `guarded_effect` → runtime `effect`; durable PREPARED + one-use launch lease becomes InteractiveTerminalGrantV1, explicit approval, at most 60 min. command ≤64 KiB UTF-8, args ≤256 entries/≤256 KiB total UTF-8, cwd ≤4 KiB, env ≤128 entries/≤64 KiB total key/value UTF-8, cols 1–500, rows 1–300. Bind exact normalized launch/config and approved environment; never inherit ambient `process.env`. |
 | `terminal.input` | `{terminalID, generation, grantID, attachmentID, sequence, bytes}` → ack `{terminalID, generation, attachmentID, acknowledgedSequence, state}` | `guarded_effect` → runtime `effect`; continuation under current grant/Guard; bytes ≤16 KiB. |
 | `terminal.resize` | `{terminalID, generation, grantID, attachmentID, sequence, cols, rows}` → ack `{terminalID, generation, attachmentID, acknowledgedSequence, state}` | `guarded_effect` → runtime `effect`; same checked continuation lane; cols 1–500, rows 1–300. |
@@ -402,11 +417,11 @@ Before any service becomes WIRED:
 
 Research/source extraction in 42 does not skip these gates.
 
-## 37.15 ResourceSnapshot, ProviderDoctor, FileTouch and virtual Session LLD (A-V2-30)
+## 37.16 ResourceSnapshot, ProviderDoctor, FileTouch and virtual Session LLD (A-V2-30)
 
 These are **proposed interfaces**, not existing RPC operations. Reuse the current `SessionSupervisor.Service`, Rust kernel/owner log, provider host, SessionStore, indexd and derived UI lanes. Before adding any new wire operation, define a single authoritative machine schema and versioned positive/negative fixture, map it into existing action IDs in §33 and preserve §14 Guard.
 
-**Canonical interface details:** §37.16 owns ResourceSampler metric names/units/decimal counter types; §37.17 owns Provider Doctor, file touches, worker and UI algorithms; §37.18 owns import/SDK/steering/canary. Any earlier illustrative wire fields must be interpreted using §12.16's generated machine schema, not as competing definitions.
+**Canonical interface details:** §37.17 owns ResourceSampler metric names/units/decimal counter types; §37.18 owns Provider Doctor, file touches, worker and UI algorithms; §37.19 owns import/SDK/steering/canary. Any earlier illustrative wire fields must be interpreted using §12.16's generated machine schema, not as competing definitions.
 
 **ResourceSampler adapter:** owns platform-specific process-tree discovery and per-owner quota/pressure sampling. PIDs must be combined with OS process-start generation/owner lease to prevent PID-reuse attribution; detached/unowned processes are not silently claimed. Linux PSS samples may be costly: rate-limit, sample off the UI event loop, redact paths, separate local inference and cap history. Platform unsupported counters remain unknown. Worker accounting includes child trees and OS hard limits where available, with no accidental foreign process cleanup.
 
@@ -418,7 +433,7 @@ These are **proposed interfaces**, not existing RPC operations. Reuse the curren
 
 These proposed signatures require schema/real-code review; do not mark them WIRED or advertise a public API from this document.
 
-## 37.16 ResourceSamplerV1 — implementable interface and algorithms (A-V2-30)
+## 37.17 ResourceSamplerV1 — implementable interface and algorithms (A-V2-30)
 
 **Boundary/placement:** `ResourceSampler` is a supervised diagnostic adapter, **not** a new authority: it reads OS counters and Rust-owned WorkerExecution/process leases; its public projections are through existing §33 action IDs and `RuntimeObservationV1`. Collector may run on the host or kernel side according to OS support, but only Rust can allocate/revoke worker capacity or authorize process termination. Never authorize from a sample.
 
@@ -466,7 +481,7 @@ interface ResourceSamplerV1 {
 
 **Control/evidence tests:** PID reuse during sampling, orphan/detached child, missing proc permission, 10/20 parallel Sessions, shared kernel double-count, macOS/Windows unsupported metrics, process exited mid-walk, local model separately owned, secret redaction, >2^53 byte counter roundtrip, slow smaps stall and snapshot eviction without losing an EffectReceipt. Refer to §18.18 for recording and §32.33 for fixtures.
 
-## 37.17 ProviderDoctorV1, FileTouchIndexV1, HeadlessBrokerV1 and renderer algorithms
+## 37.18 ProviderDoctorV1, FileTouchIndexV1, HeadlessBrokerV1 and renderer algorithms
 
 These signatures are **target contracts**. Implement each as a thin existing-owner adapter and generate canonical contracts-v2 schemas first (§12.16). Proposed source path names are placement candidates, not proof files exist.
 
@@ -510,7 +525,7 @@ interface HeadlessBrokerV1 {
 
 **Error/failure contract:** use canonical §12 `ErrorV1` code registry, not ad-hoc error strings. Before registering new names, map to existing stable codes (e.g. CONFLICT for a reused idempotency key), update schema/tests together and reject unknown error codes. Operational categories: `UNAVAILABLE` (unsupported platform/feature); `DENIED` (scope/policy); `STALE` (revision/epoch/cursor); `RESOURCE_BLOCKED` (bounded queue/capacity); `RECONCILING_UNKNOWN` (potentially executed effect); `PROVIDER_COST_APPROVAL_REQUIRED` (full Doctor); `PARTIAL_OBSERVATION` (measurement missing). These labels are **semantic categories**, not newly registered error-code enumerants. Every result includes typed category, retry class, origin, support status and redacted evidence ref.
 
-## 37.18 Multi-client SDK, source import/resume and opt-in developer service algorithms
+## 37.19 Multi-client SDK, source import/resume and opt-in developer service algorithms
 
 These are **proposed adapters** over the existing public Session/API plus Rust managed control and existing provider transport; do not create a new conversation, Task, Guard, SecretBroker or command catalog.
 
@@ -550,7 +565,7 @@ type SteeringRequestV1 = {sessionId:string;expectedTurnEpoch:string;intent:"NEXT
 
 **Cross-cutting error classes:** unsupported backend/version, malformed source, permission denied, stale preview/turn epoch, dual-writer conflict, client disconnected, approval missing, unconfirmed effects and canary rollback failure must each preserve a typed redacted outcome and never fabricate historical tool success.
 
-## 37.19 External agent ACP adapter — source-bound client/service LLD
+## 37.20 External agent ACP adapter — source-bound client/service LLD
 
 This is **PROPOSED** HorizonCode interoperability work, not an implemented external-agent client. The pinned OpenCode source at `opencode/packages/opencode/src/acp/{service,session,permission,event}.ts` and `cli/cmd/acp.ts` implements an **agent-side ACP server**; it is not evidence that HorizonCode can act as an ACP **client** controlling arbitrary external agents. The `AgentProfileV2.adapter.kind = "acp"` and the optional native OpenCode backend are accepted product integration seams (§29/§17). Do not create an additional direct Session authority.
 
@@ -588,7 +603,7 @@ interface ExternalAgentClientAdapterV1 {
 
 **Failure cases:** handle protocol mismatch, auth challenge, provider restriction, disabled mode, byte/rate flood, malformed ACP part, duplicate/late update, crashed child, host restart, cancellation racing with remote action, hidden outbound connector, stale workspace, unexplained cost and orphaned backend session. Preserve UNKNOWN for any unobservable side effect. Fail closed on unsupported permission mediation, maintain bounded buffers and redacted telemetry, and do not silently switch agent/provider.
 
-## 37.20 Visual source selection and deployment verification LLD
+## 37.21 Visual source selection and deployment verification LLD
 
 These two flows already exist normatively in §§3.17–3.18; this section **fills their missing service contract**. It does not declare new deployed functionality or grant an unrestricted cloud credential.
 

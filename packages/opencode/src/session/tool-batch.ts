@@ -38,6 +38,10 @@ export type ToolBatchDefinition = {
   readonly internal?: boolean
 }
 
+export type ToolBatchAdmissionResult =
+  | EffectAdmission
+  | { readonly admission: EffectAdmission; readonly calls: ReadonlyArray<GuardedToolCall> }
+
 export type ToolCallOutcome =
   | { readonly status: "allowed"; readonly capabilityID: string }
   | { readonly status: "no_effect"; readonly capabilityID: string; readonly execution: unknown }
@@ -168,7 +172,7 @@ export type ToolBatchGateInput = {
     readonly batchID: string
     readonly turnContextDigest: string
     readonly calls: ReadonlyArray<GuardedToolCall>
-  }) => Promise<EffectAdmission>
+  }) => Promise<ToolBatchAdmissionResult>
   readonly context: ToolBatchContext
 }
 
@@ -406,13 +410,40 @@ async function admitBatch(
 
   let admission: EffectAdmission
   try {
-    admission = await input.prepareToolBatch({
+    const preparedBatch = await input.prepareToolBatch({
       sessionID: input.sessionID,
       locationRef: input.locationRef,
       batchID: `batch_${randomUUID().replaceAll("-", "")}`,
       turnContextDigest: input.turnContextDigest,
       calls: prepared.map(({ call }) => call),
     })
+    if ("admission" in preparedBatch && "calls" in preparedBatch) {
+      if (!Array.isArray(preparedBatch.calls) || preparedBatch.calls.length !== prepared.length)
+        return deny("Rust returned a mismatched prepared tool batch")
+      const normalized: typeof prepared = []
+      for (const [index, call] of preparedBatch.calls.entries()) {
+        const previous = prepared[index]!
+        if (call.callID !== previous.call.callID || call.capabilityID !== previous.call.capabilityID)
+          return deny("Rust returned a mismatched prepared tool call")
+        const argumentsValue = cloneJson(call.arguments)
+        if (
+          call.capabilityID !== "terminal.run" &&
+          JSON.stringify(argumentsValue) !== JSON.stringify(previous.call.arguments)
+        )
+          return deny("Rust changed arguments for an unsupported tool")
+        normalized.push({
+          ...previous,
+          call: { ...call, arguments: argumentsValue },
+          ...(call.capabilityID === "terminal.run" ? { execution: argumentsValue } : {}),
+        })
+      }
+      prepared.splice(0, prepared.length, ...normalized)
+      admission = preparedBatch.admission
+    } else {
+      if (prepared.some(({ call }) => call.capabilityID === "terminal.run"))
+        return deny("terminal.run requires PTY host preparation")
+      admission = preparedBatch
+    }
   } catch {
     return deny("Rust Guard unavailable")
   }

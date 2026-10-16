@@ -103,6 +103,9 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
       internal ||
       capability.effectClass === "read_only" ||
       (capability.effectClass === "effect" && ["files.write", "files.patch", "terminal.run"].includes(capability.id))
+    // Unknown/default effect class and unclassified plugin or project tools fail closed:
+    // they are not projected into the model-facing tool list or its batch definitions.
+    if (!supported) continue
 
     const schema = ProviderTransform.schema(input.model, ToolJsonSchema.fromTool(item))
     const normalize =

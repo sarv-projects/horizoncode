@@ -122,6 +122,8 @@ recovery order:
   7. if still impossible -> CONTEXT_BUDGET_EXCEEDED with exact diagnostics
 ```
 
+**Snapcompact feasibility (DEFERRED/UNAVAILABLE in V1):** pinned OMP distinguishes ephemeral inline imaging from a persistent archive stored in compaction state. The latter would require a new durable archive/reference and rebuild contract; the former still needs a future ContextService projection, selected-model image-capability metadata, image-aware token/count/byte budgeting and a local renderer. Current Core V2 provides media transport for user attachments, but not those owners or proofs. No code or setting is added. Any later experiment must preserve canonical history, use only the selected provider/model, remain rebuildable/disableable, and pass protected-fact, privacy, cost, cache and rejection/recovery tests; see §16.15.2 and §42 SRC-024.
+
 A provider's reported input-token usage, when available, is recorded and may raise pressure earlier than estimates. Estimates never overwrite measured usage.
 
 Protect:

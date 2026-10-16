@@ -10,6 +10,7 @@ describe("FeatureExposure derived Settings projection", () => {
       effectiveEnabled: false,
       effectiveState: "off",
       valueSource: "unknown",
+      policyLock: "unknown",
     })
     const prune = all.find((x) => x.featureId === "compaction.prune")
     expect(prune?.state.effectiveEnabled).toBe(true)
@@ -23,13 +24,59 @@ describe("FeatureExposure derived Settings projection", () => {
       requestedEnabled: null,
       valueSource: "default",
       effectiveEnabled: true,
+      policyLock: "unknown",
     })
     expect(all.find((x) => x.featureId === "compaction.prune")?.state).toMatchObject({
       requestedEnabled: null,
       valueSource: "default",
       effectiveEnabled: false,
+      policyLock: "unknown",
     })
+    for (const feature of all.filter((item) => item.releaseClass === "stable")) {
+      expect(feature.supportedScopes).toEqual(["project"])
+      expect(feature.applyBoundary).toBe("next_turn")
+    }
   })
+  test("merged values distinguish defaults from explicit overrides without guessing scope", () => {
+    for (const [auto, effectiveState] of [
+      [true, "on"],
+      [false, "off"],
+    ] as const) {
+      const feature = FeatureExposure.list({ compaction: { auto } }).find((item) => item.featureId === "compaction.auto")
+      expect(feature?.state).toEqual({
+        implementationStatus: "wired",
+        requestedEnabled: auto,
+        effectiveEnabled: auto,
+        effectiveState,
+        valueSource: "unknown",
+        policyLock: "unknown",
+      })
+    }
+
+    const inheritedDefault = FeatureExposure.list({}).find((item) => item.featureId === "compaction.auto")
+    expect(inheritedDefault?.state.valueSource).toBe("default")
+    expect(inheritedDefault?.state.requestedEnabled).toBeNull()
+  })
+
+  test("runtime disable overrides block requested-on auto and prune settings", () => {
+    for (const featureId of ["compaction.auto", "compaction.prune"] as const) {
+      const key = featureId === "compaction.auto" ? "auto" : "prune"
+      const feature = FeatureExposure.list(
+        { compaction: { [key]: true } },
+        { compaction: { [key]: false } },
+      ).find((item) => item.featureId === featureId)
+      expect(feature?.state).toMatchObject({
+        requestedEnabled: true,
+        effectiveEnabled: false,
+        effectiveState: "blocked",
+        blockedReason: "A runtime disable override is active",
+        valueSource: "unknown",
+        policyLock: "unknown",
+      })
+      expect(feature?.state.pendingApplyAt).toBeUndefined()
+    }
+  })
+
 
   test("planned experiments are disabled and do not become executable", () => {
     const all = FeatureExposure.list({})
@@ -45,6 +92,7 @@ describe("FeatureExposure derived Settings projection", () => {
       })
       expect(feature.state.blockedReason).toBeTruthy()
       expect(FeatureExposure.updateCompaction({}, feature.featureId, true)).toBeUndefined()
+      expect(FeatureExposure.updateCompaction({}, feature.featureId, false)).toBeUndefined()
     }
   })
 

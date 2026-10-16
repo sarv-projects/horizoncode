@@ -3,6 +3,11 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
+pub mod repo_intel;
+pub use repo_intel::{
+    RepoIntelGeneration, RepoIntelOperation, RepoIntelQuery, RepoIntelQueryResult,
+    RepoIntelStatus, RepoIntelUnavailableReason,
+};
 
 pub const MAX_BASE_FILES: usize = 4_096;
 pub const MAX_FILE_BYTES: usize = 1_048_576;
@@ -888,6 +893,7 @@ pub enum IndexError {
     MultilineQuery,
     InvalidResultLimit { limit: usize },
     OverlayGenerationMismatch { expected: Digest, actual: Digest },
+    GenerationMismatch { expected: Digest, actual: Digest },
     InvalidSearchCursor,
     CursorQueryMismatch,
     CursorGenerationMismatch,
@@ -961,6 +967,10 @@ impl fmt::Display for IndexError {
             Self::OverlayGenerationMismatch { expected, actual } => write!(
                 formatter,
                 "overlay is pinned to {actual}, not requested generation {expected}"
+            ),
+            Self::GenerationMismatch { expected, actual } => write!(
+                formatter,
+                "query is bound to {actual}, not requested generation {expected}"
             ),
             Self::InvalidSearchCursor => formatter.write_str("search cursor is malformed"),
             Self::CursorQueryMismatch => {

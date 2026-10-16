@@ -623,7 +623,7 @@ type CandidateTaskResultV1 = {
 
 ## 29.19 ACP/CLI/remote adapters and subagent delegation completeness
 
-`AgentProfileV2.adapter.kind` already permits `native | acp | cli | container | remote`. This field is **profile configuration**, not proof that those runtime adapters exist. The pinned OpenCode ACP agent-side server is NOT Horizon's ACP client for delegating work to another running coding agent; §37.19 owns the proposed client interface, version negotiation and bounded event protocol.
+`AgentProfileV2.adapter.kind` already permits `native | acp | cli | container | remote`. This field is **profile configuration**, not proof that those runtime adapters exist. The pinned OpenCode ACP agent-side server is NOT Horizon's ACP client for delegating work to another running coding agent; §37.20 owns the proposed client interface, version negotiation and bounded event protocol.
 
 Required capability negotiation by adapter: exact protocol version, session lifecycle, stream/cancel support, external tool/permission observability, artifact result format, model/provider routing and spend reporting, OS sandbox guarantees and health/reconnect. Return UNAVAILABLE when a required feature cannot be proven, rather than blindly treating a generic CLI as privileged Horizon code. Avoid adapter-specific UI/Task stores: return candidate SubagentDelivery through existing mailbox and Rust task lease.
 

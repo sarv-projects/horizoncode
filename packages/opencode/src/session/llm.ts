@@ -25,6 +25,8 @@ import { Wildcard } from "@/util/wildcard"
 import { SessionID } from "@/session/schema"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
+import { LocationServiceMap } from "@opencode-ai/core/location-services"
+import { Pty } from "@opencode-ai/core/pty"
 import { InstanceState } from "@/effect/instance-state"
 import { Auth } from "@/auth"
 import { EffectBridge } from "@/effect/bridge"
@@ -93,6 +95,7 @@ const live: Layer.Layer<
     const llmClient = yield* LLMClient.Service
     const flags = yield* RuntimeFlags.Service
     const supervisor = yield* SessionSupervisor.Service
+    const locations = yield* Effect.serviceOption(LocationServiceMap.Service)
 
     const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
       const instance = yield* InstanceState.context
@@ -178,7 +181,22 @@ const live: Layer.Layer<
         signal: input.abort,
         definitions,
         context: batchContext,
-        prepareToolBatch: (request) => bridge.promise(supervisor.prepareToolBatch(request)),
+        prepareToolBatch: (request) => {
+          if (!request.calls.some((call) => call.capabilityID === "terminal.run"))
+            return bridge.promise(supervisor.prepareToolBatch(request))
+          if (!Option.isSome(locations)) {
+            return Promise.resolve({
+              status: "denied" as const,
+              reason: "PTY location services are unavailable",
+            })
+          }
+          return bridge.promise(
+            Effect.gen(function* () {
+              const terminal = yield* Pty.Service
+              return yield* terminal.prepareToolBatch(request)
+            }).pipe(Effect.provide(locations.value.get(locationRef))),
+          )
+        },
       })
       if (language instanceof GitLabWorkflowLanguageModel) {
         const workflowModel = language as GitLabWorkflowLanguageModel & {

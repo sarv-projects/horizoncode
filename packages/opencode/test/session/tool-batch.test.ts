@@ -373,7 +373,17 @@ test("binds model terminal execution to a host-prepared one-use Guard lease", as
   const gate = gateInput({
     prepareToolBatch: async (value) => {
       request = value
-      return { status: "prepared", lease }
+      const canonicalArguments = {
+        command: "echo ok",
+        cwd: "/workspace",
+        timeoutMs: 1000,
+        shellProfileID: "profile_linux_bash",
+        resolvedEnvironment: {},
+      }
+      return {
+        admission: { status: "prepared", lease },
+        calls: value.calls.map((call) => ({ ...call, arguments: canonicalArguments })),
+      }
     },
   })
   const output = await collect(
@@ -399,6 +409,18 @@ test("binds model terminal execution to a host-prepared one-use Guard lease", as
       },
     ],
   })
+  expect(gate.context.outcomes.get(call.toolCallId)).toMatchObject({
+    status: "prepared",
+    capabilityID: "terminal.run",
+    lease,
+    execution: {
+      command: "echo ok",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      shellProfileID: "profile_linux_bash",
+      resolvedEnvironment: {},
+    },
+  })
   expect(
     requireToolExecution({
       context: gate.context,
@@ -406,6 +428,28 @@ test("binds model terminal execution to a host-prepared one-use Guard lease", as
       capability: terminalDefinition.capability,
     }),
   ).toEqual(lease)
+})
+
+test("denies terminal execution when Guard admission skipped PTY profile preparation", async () => {
+  const gate = gateInput({
+    prepareToolBatch: async () => ({
+      status: "prepared",
+      lease: {
+        effectID: "effect_terminal",
+        capabilityLeaseDigest: `blake3:${"b".repeat(64)}`,
+      },
+    }),
+  })
+  await collect(
+    gateToolCallStream(
+      stream([toolCall("call_bash", "bash", '{"command":"echo ok","cwd":"/workspace","timeoutMs":1000}'), finish]),
+      gate,
+    ),
+  )
+  expect(gate.context.outcomes.get("call_bash")).toEqual({
+    status: "denied",
+    reason: "terminal.run requires PTY host preparation",
+  })
 })
 
 test("denies malformed model terminal arguments before Guard preparation", async () => {

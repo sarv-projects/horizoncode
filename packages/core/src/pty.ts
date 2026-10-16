@@ -20,6 +20,7 @@ import {
   type GuardApprovalDecision,
   type GuardedToolCall,
   type HostKernelEvent,
+  isHostKernelResnapshot,
   type HostKernelResnapshot,
   type HostKernelStreamMessage,
 } from "./session/supervisor"
@@ -869,7 +870,7 @@ const layer = Layer.effect(
       })
       const fiber = yield* stream.pipe(
         Stream.runForEach((message) =>
-          message.kind === "resnapshot_required" ? recoverResnapshot(session, message) : consumeEvent(session, message),
+          isHostKernelResnapshot(message) ? recoverResnapshot(session, message) : consumeEvent(session, message),
         ),
         Effect.catchCause(() => Effect.sync(() => markUnavailable(session))),
         Effect.forkScoped({ startImmediately: true }),

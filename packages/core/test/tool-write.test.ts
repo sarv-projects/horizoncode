@@ -1,7 +1,7 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 import { describe, expect } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Stream } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Location } from "@opencode-ai/core/location"
@@ -61,6 +61,11 @@ const supervisor = Layer.succeed(
       leasePrepared = true
       return Effect.succeed({ status: "prepared" as const, lease })
     },
+    registerHostLocation: () => Effect.die("unused"),
+    prepareUserEffect: () => Effect.die("unused"),
+    requestHostKernel: () => Effect.die("unused"),
+    hostOwnerEpoch: () => Effect.die("unused"),
+    subscribeHostKernelEvents: () => Stream.empty,
     replyGuardApproval: () => Effect.die("unused"),
     executeWrite: ({ lease: providedLease, content }) =>
       Effect.gen(function* () {

@@ -154,6 +154,58 @@ if (hasNativeLinuxTarget) {
     sha256: createHash("sha256").update(bytes).digest("hex"),
   }
 }
+
+const kernelRoot = path.resolve(dir, "../../kernel")
+const hostKernelBinaryName = "hz-kernel"
+const hostKernelAssetName = process.platform === "win32" ? `${hostKernelBinaryName}.exe` : hostKernelBinaryName
+let hostKernelAsset: { readonly source: string; readonly sha256: string; readonly target: string } | undefined
+let hostKernelUnavailableReason = "Host-kernel packaging is supported only for native Linux GNU targets."
+const hasNativeHostKernelTarget = targets.some(
+  (item) =>
+    process.platform === "linux" &&
+    item.os === process.platform &&
+    item.arch === process.arch &&
+    item.abi === undefined &&
+    item.avx2 === undefined,
+)
+if (hasNativeHostKernelTarget) {
+  const metadata = JSON.parse(
+    await $`cargo metadata --manifest-path ${path.join(kernelRoot, "Cargo.toml")} --locked --offline --no-deps --format-version 1`.text(),
+  ) as {
+    packages?: { name: string; targets: { name: string; kind: string[] }[] }[]
+  }
+  const kernelPackage = metadata.packages?.find((item) => item.name === "horizoncode-kernel")
+  const hasHostKernelBinary = kernelPackage?.targets.some(
+    (target) => target.name === hostKernelBinaryName && target.kind.includes("bin"),
+  )
+  if (hasHostKernelBinary) {
+    const rustVersion = await $`rustc -vV`.text()
+    const rustTarget = rustVersion.match(/^host: (.+)$/m)?.[1]
+    const expectedRustTarget =
+      process.arch === "x64" ? "x86_64-unknown-linux-gnu" : process.arch === "arm64" ? "aarch64-unknown-linux-gnu" : undefined
+    if (!rustTarget || rustTarget !== expectedRustTarget) {
+      hostKernelUnavailableReason = `Native Rust host target ${rustTarget ?? "unknown"} does not match the supported Linux GNU target for ${process.arch}.`
+    } else {
+      await $`cargo build --manifest-path ${path.join(kernelRoot, "Cargo.toml")} --locked --offline --release --target ${rustTarget} --bin ${hostKernelBinaryName}`
+      const source = path.join(kernelRoot, "target", rustTarget, "release", hostKernelAssetName)
+      const bytes = await Bun.file(source).bytes()
+      if (bytes.length === 0) throw new Error("Rust hz-kernel build produced an empty executable")
+      hostKernelAsset = {
+        source,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        target: rustTarget === "x86_64-unknown-linux-gnu" ? "linux-x64-gnu" : "linux-arm64-gnu",
+      }
+    }
+  } else {
+    hostKernelUnavailableReason = "The Rust kernel package does not yet declare a hz-kernel binary target."
+  }
+}
+if (!hasNativeHostKernelTarget) {
+  hostKernelUnavailableReason =
+    process.platform === "linux"
+      ? `No compatible native hz-kernel target was selected for ${process.platform}-${process.arch}.`
+      : `Host-kernel packaging is unavailable for ${process.platform}-${process.arch}; Core currently accepts only native Linux GNU artifacts.`
+}
 if (!skipInstall) {
   await $`bun install --os="*" --cpu="*" @opentui/core@${pkg.dependencies["@opentui/core"]}`
   await $`bun install --os="*" --cpu="*" @parcel/watcher@${pkg.dependencies["@parcel/watcher"]}`
@@ -196,6 +248,33 @@ for (const item of targets) {
   await Bun.file(`dist/${name}/bin/session-observer.manifest.json`).write(
     `${JSON.stringify(observerManifest, null, 2)}\n`,
   )
+  const includeHostKernel =
+    hostKernelAsset !== undefined &&
+    item.os === process.platform &&
+    item.arch === process.arch &&
+    item.abi === undefined &&
+    item.avx2 === undefined &&
+    hostKernelAsset.target === `linux-${item.arch}-gnu`
+  const hostKernelAssetPath = hostKernelAssetName
+  const hostKernelManifest = includeHostKernel
+    ? {
+        schemaVersion: 1,
+        status: "available",
+        binaryName: hostKernelBinaryName,
+        target: hostKernelAsset!.target,
+        sha256: hostKernelAsset!.sha256,
+      }
+    : {
+        schemaVersion: 1,
+        status: "unavailable",
+        binaryName: hostKernelBinaryName,
+        target: name,
+        sha256: null,
+        reason: hostKernelAsset
+          ? `No compatible native hz-kernel artifact was built for ${name}; the embedded artifact is limited to ${hostKernelAsset.target}.`
+          : hostKernelUnavailableReason,
+      }
+  await Bun.file(`dist/${name}/bin/host-kernel.manifest.json`).write(`${JSON.stringify(hostKernelManifest, null, 2)}\n`)
 
   const workerPath = "./src/cli/tui/worker.ts"
   const treeSitterWorkerPath = "opentui-tree-sitter-worker.js"
@@ -216,7 +295,14 @@ for (const item of targets) {
       autoloadTsconfig: true,
       autoloadPackageJson: true,
       target: name.replace(pkg.name, "bun") as any,
-      ...(includeObserver ? { assets: [observerAssetSource!] } : {}),
+      ...(includeObserver || includeHostKernel
+        ? {
+            assets: [
+              ...(includeObserver ? [observerAssetSource!] : []),
+              ...(includeHostKernel ? [hostKernelAsset!.source] : []),
+            ],
+          }
+        : {}),
       outfile: `dist/${name}/bin/opencode`,
       execArgv: [`--user-agent=opencode/${Script.version}`, "--use-system-ca", "--"],
       windows: {},
@@ -239,6 +325,8 @@ for (const item of targets) {
       OPENCODE_WORKER_PATH: workerPath,
       OPENCODE_SESSION_OBSERVER_MANIFEST: JSON.stringify(JSON.stringify(observerManifest)),
       ...(includeObserver ? { OPENCODE_SESSION_OBSERVER_ASSET: JSON.stringify(bunfsRoot + observerAssetPath) } : {}),
+      OPENCODE_HOST_KERNEL_MANIFEST: JSON.stringify(JSON.stringify(hostKernelManifest)),
+      OPENCODE_HOST_KERNEL_ASSET: JSON.stringify(includeHostKernel ? bunfsRoot + hostKernelAssetPath : ""),
       OPENCODE_CHANNEL: `'${Script.channel}'`,
       OPENCODE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "",
       ...(item.os === "linux" ? { "process.env.OPENTUI_LIBC": JSON.stringify(item.abi ?? "glibc") } : {}),

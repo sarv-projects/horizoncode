@@ -1,9 +1,11 @@
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import path from "path"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Pty } from "@opencode-ai/core/pty"
+import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/location-services"
 import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 import { SessionV2 } from "@opencode-ai/core/session"
 import os from "os"
@@ -155,7 +157,7 @@ const layer = Layer.effect(
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
     const supervisor = yield* SessionSupervisor.Service
-    const terminal = yield* Pty.Service
+    const locations = yield* LocationServiceMap.Service
     const { db } = database
     const ops = Effect.fn("SessionPrompt.ops")(function* () {
       return {
@@ -960,6 +962,7 @@ const layer = Layer.effect(
               Effect.provideService(Permission.Service, permission),
               Effect.provideService(ToolRegistry.Service, registry),
               Effect.provideService(FSUtil.Service, fsys),
+              Effect.provideService(RuntimeFlags.Service, flags),
             )
             const tools = resolvedTools.tools
             const toolDefinitions = resolvedTools.definitions
@@ -1094,6 +1097,17 @@ const layer = Layer.effect(
       return yield* state.ensureRunning(input.sessionID, lastAssistant(input.sessionID), observedRun)
     })
 
+    // Pty is a location-scoped service: resolve it per call through the
+    // LocationServiceMap instead of binding it in this global graph.
+    const runTerminal = (
+      locationRef: typeof Location.Ref.Type,
+      input: Pty.TerminalRunInput & { readonly sessionID?: string },
+    ) =>
+      Effect.gen(function* () {
+        const terminal = yield* Pty.Service
+        return yield* terminal.runUser({ ...input, locationRef })
+      }).pipe(Effect.provide(locations.get(locationRef)))
+
     const shell: Interface["shell"] = Effect.fn("SessionPrompt.shell")(function* (input) {
       const instance = yield* InstanceState.context
       const message = yield* createUserMessage({
@@ -1103,9 +1117,8 @@ const layer = Layer.effect(
         model: input.model,
         parts: [{ type: "text", text: `! ${input.command}` }],
       })
-      const result = yield* terminal.runUser({
+      const result = yield* runTerminal(Location.Ref.make({ directory: AbsolutePath.make(instance.directory) }), {
         sessionID: input.sessionID,
-        locationRef: Location.Ref.make({ directory: AbsolutePath.make(instance.directory) }),
         command: input.command,
         cwd: instance.directory,
         timeoutMs: flags.bashDefaultTimeoutMs ?? 120_000,
@@ -1170,9 +1183,8 @@ const layer = Layer.effect(
         let offset = 0
         for (const block of shellBlocks) {
           rendered += template.slice(offset, block.index)
-          const result = yield* terminal.runUser({
+          const result = yield* runTerminal(Location.Ref.make({ directory: AbsolutePath.make(instance.directory) }), {
             sessionID: input.sessionID,
-            locationRef: Location.Ref.make({ directory: AbsolutePath.make(instance.directory) }),
             command: block[1],
             cwd: instance.directory,
             timeoutMs: flags.bashDefaultTimeoutMs ?? 120_000,
@@ -1376,6 +1388,12 @@ const argsRegex = /(?:\[Image\s+\d+\]|"[^"]*"|'[^']*'|[^\s"']+)/gi
 const placeholderRegex = /\$(\d+)/g
 const quoteTrimRegex = /^["']|["']$/g
 
+const locationServiceMapNode = LayerNode.make({
+  service: LocationServiceMap.Service,
+  layer: locationServiceMapLayer,
+  deps: [],
+})
+
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
@@ -1406,6 +1424,7 @@ export const node = LayerNode.make({
     RuntimeFlags.node,
     Database.node,
     SessionSupervisor.node,
+    locationServiceMapNode,
   ],
 })
 

@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, Show, type Component } from "solid-js"
+import { createMemo, createResource, createSignal, For, Show, type Component } from "solid-js"
 import { FeatureExposure } from "@opencode-ai/core/v1/config/feature-exposure"
 import { Switch } from "@opencode-ai/ui/v2/switch-v2"
 import { TextInputV2 } from "@opencode-ai/ui/v2/text-input-v2"
@@ -15,7 +15,11 @@ export const SettingsFeaturesV2: Component<{ experimentalOnly?: boolean }> = (pr
   const sync = useServerSync()
   const [filter, setFilter] = createSignal("")
   const [busy, setBusy] = createSignal(false)
-  const all = createMemo(() => FeatureExposure.list(sync().data.config))
+  const [features, { mutate }] = createResource(
+    () => sync().data.path.directory,
+    (directory) => sync().featureExposure.get(directory),
+  )
+  const all = createMemo(() => features() ?? [])
   const shown = createMemo(() =>
     all().filter((feature) => {
       if (props.experimentalOnly && feature.releaseClass !== "experimental") return false
@@ -28,11 +32,17 @@ export const SettingsFeaturesV2: Component<{ experimentalOnly?: boolean }> = (pr
     if (busy()) return
     const previous = all().find((item) => item.featureId === featureId)
     if (!previous || previous.state.effectiveState === "unavailable" || previous.state.effectiveState === "blocked") return
-    const patch = FeatureExposure.updateCompaction(sync().data.config, featureId, enabled)
-    if (!patch) return
+    if (featureId !== "compaction.auto" && featureId !== "compaction.prune") return
+    const directory = sync().data.path.directory
+    if (!directory) return
     setBusy(true)
     try {
-      await sync().updateConfig(patch)
+      const updated = await sync().featureExposure.update(directory, {
+        featureId,
+        expectedEnabled: previous.state.requestedEnabled,
+        enabled,
+      })
+      mutate(updated)
       showToast({
         variant: "success",
         title: "Setting saved",
@@ -80,18 +90,25 @@ export const SettingsFeaturesV2: Component<{ experimentalOnly?: boolean }> = (pr
                     </span>
                   }
                   description={
-                    <span>
-                      {feature.description}
-                      <Show when={unavailable()}>
-                        <span> — {feature.state.blockedReason ?? "Unavailable in this build"}</span>
-                      </Show>
-                      <Show when={!unavailable()}>
-                        <span> — Applies {feature.applyBoundary.replaceAll("_", " ")}</span>
-                      </Show>
-                      <Show when={feature.state.valueSource === "unknown"}>
-                        <span> — Configuration source: unknown</span>
-                      </Show>
-                    </span>
+                      <span>
+                        {feature.description}
+                        <Show when={unavailable()}>
+                          <span> — {feature.state.blockedReason ?? "Unavailable in this build"}</span>
+                        </Show>
+                        <span>
+                          {" — "}
+                          {feature.state.requestedEnabled === null
+                            ? `Requested: default ${feature.defaultEnabled ? "on" : "off"}`
+                            : `Requested: ${feature.state.requestedEnabled ? "on" : "off"}`}
+                          {` · Effective: ${feature.state.effectiveEnabled ? "on" : "off"} (${feature.state.effectiveState})`}
+                          {feature.state.pendingApplyAt ? ` · Pending ${feature.state.pendingApplyAt.replaceAll("_", " ")}` : ""}
+                          {` · Source: ${feature.state.valueSource}`}
+                          {` · Policy lock: ${feature.state.policyLock}`}
+                          {` · Scope: ${feature.supportedScopes.join(", ")}`}
+                          {` · Implementation: ${feature.state.implementationStatus.replaceAll("_", " ")}`}
+                          {` · Applies ${feature.applyBoundary.replaceAll("_", " ")}`}
+                        </span>
+                      </span>
                   }
                 >
                   <Switch

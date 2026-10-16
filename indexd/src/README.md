@@ -1,10 +1,10 @@
 # `indexd` library slice
 
-This crate is a bounded, in-memory lexical indexing library. It is **not** an
-`hz-indexd` process, supervisor, persistence layer, RepoIntelService implementation,
-or a claim that P4 is complete. It reads no filesystem, starts no tasks or threads,
-performs no external calls, and has no Rust-side Thread, Memory, Workspace, or Guard
-authority.
+This crate is a bounded, in-memory lexical indexing library with a generation-bound
+RepoIntel query adapter. It is **not** an `hz-indexd` process, supervisor, persistence
+layer, complete RepoIntelService implementation, or a claim that P4 is complete. It
+reads no filesystem, starts no tasks or threads, performs no external calls, and has no
+Rust-side Thread, Memory, Workspace, or Guard authority.
 
 ## Implemented slice
 
@@ -17,6 +17,13 @@ authority.
   preimage.
 - Strict normalized relative-path checks; paths are preserved as UTF-8 and compared
   byte-for-byte (no case folding or Unicode normalization).
+- `RepoIntelGeneration` exposes the existing `BaseGeneration` as a query adapter without
+  duplicating its search engine. Its ID binds repository, optional workspace, revision
+  set, read scope, read policy, source receipt, parser set, paths, and file bytes.
+- Adapter queries carry the expected generation ID. Old generation IDs, overlays from
+  another base, and stale/cross-query/cross-overlay cursors fail explicitly. Text
+  results remain `PARTIAL`; symbol, references, impact, and expand operations return
+  typed `UNAVAILABLE` until a real parser/LSP owner supplies them.
 - Bounded, deterministic, line-oriented lexical search with generation provenance.
 - Stable path-then-line cursor pagination. A bounded versioned token binds the exact
   query digest, base-generation digest, optional overlay digest, and last returned
@@ -34,8 +41,10 @@ authority.
   violations fail without changing the prior overlay. A batch is limited to 128 unique
   paths and 8 MiB of replacement bytes; the resulting overlay remains subject to the
   same file-count and aggregate-content limits.
-- Generation and query status are always `PARTIAL`. Tree-sitter, LSP, SCIP, and vector
-  enrichment are explicitly unavailable; this crate never reports `CURRENT`.
+- Generation status is always `PARTIAL`. Text query status is `PARTIAL`, including
+  bounded/truncated results; symbol/reference/impact/expand status is `UNAVAILABLE`.
+  Tree-sitter, LSP, SCIP, and vector enrichment are not implemented; this crate never
+  reports `CURRENT`.
 
 ## Initial hard limits
 

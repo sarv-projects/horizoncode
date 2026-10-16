@@ -199,9 +199,11 @@ Do not migrate JCode's entire agent/session tool runtime. Preserve exact Horizon
 
 **Measured branch migration:** zero changes to canonical Session storage or provider catalog, no second Rust Task database, no extra independent shared daemon besides one selected host-kernel effect owner. Shared observer prototype is intentionally read-only; effect cutover is a **separate** guarded, fully tested commit. Keep feature flag OFF on unsupported OS and preserve old supervisor for rollback. Record exact current source paths, hydrated-file diffs, tasks/test IDs, CI runs and benchmark before marking WIRED.
 
+**Snapcompact source boundary:** OMP provides both a transient outgoing-context imaging transform and a separate persisted archive-compaction method; neither is inherited from the pinned OpenCode substrate. The only future Horizon target is a derived projection owned by the §30 ContextService in the existing Core direct Session. Do not import OMP `AgentSession`, add a second compaction/history owner, or enable a transform before exact selected-model capability and image-aware budget checks. Current feasibility and source provenance are §16.15.2, §30.4 and §42 SRC-024.
+
 ## 20.13 Previously under-specified ACP client, visual-source and deployment wiring
 
-The active §03.16–18 user journeys and §29 AgentProfileV2 adapter kinds already accept these product behaviours. §37.19–20 is the function/service boundary and §32.35 the test contract. These are **not currently wired Horizon features**.
+The active §03.16–18 user journeys and §29 AgentProfileV2 adapter kinds already accept these product behaviours. §§37.20–21 are the function/service boundary and §32.35 the test contract. These are **not currently wired Horizon features**.
 
 | Functionality | Confirmed existing source | Required Horizon integration, one owner |
 |---|---|---|
