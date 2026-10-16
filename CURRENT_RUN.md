@@ -320,7 +320,7 @@ The plan's “do not build the shared effect daemon first” wording was clarifi
 - `cd packages/opencode && bun test test/server/httpapi-v2-pty.test.ts` → 1 pass, 4 skip, 0 fail (Linux).
 - `cd packages/opencode && bun test test/server/httpapi-listen.test.ts` → 9 pass, 3 skip, 0 fail; 37 assertions.
 - `python3 scripts/architecture/audit_workspace_packages.py` → 36 workspaces, 36 unique names, 0 undeclared, 0 errors. Hidden non-sandbox probe was rejected; probe cleanup was followed by another clean pass.
-- `cd packages/core && bun run typecheck` → no diagnostics in output. This is Core only, not the full workspace typecheck.
+- The earlier standalone `cd packages/core && bun run typecheck` invocation emitted no diagnostics, but the later mandatory publication gate failed during its Core typecheck; the later result is controlling. See the 2026-10-16 Git publication checkpoint below.
 - `powershell.exe -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'` → `5.1.26100.9711`; `/mnt/c/users/sonali/desktop` exists.
 - No Windows PTY/ConPTY acceptance, full workspace typecheck, full P1.3 origin closure or P2 managed vertical was exercised.
 
@@ -332,3 +332,28 @@ The plan's “do not build the shared effect daemon first” wording was clarifi
 5. At integration, run the affected module checks and the required markdown/convergence/push gates; update `HANDOFF.md` with exact platform, tests and remaining blockers.
 
 **Decisions & Gotchas:** The original 403 came from the test helper invoking global `HttpApiApp.webHandler()` instead of the configured test routes; production PTY authorization already existed. Linux PTY start intentionally fails closed because process-tree cleanup cannot be guaranteed. Do not bypass that refusal or restore the external-plugin positive test without implementing its Guard/ExecutionHost boundary. The workspace audit must exempt only the owned `.horizoncode-e2e-*` sandbox namespace, not all hidden paths. No Windows test directory was created; no task worktree or process was created. Existing dirty files from prior work were preserved.
+
+## 2026-10-16 — Git integration and worktree cleanup checkpoint
+
+**Active Goal:** Integrate verified subagent work, publish exact task-owned changes, then remove only confirmed task-created worktrees.
+
+**Where We Stopped:**
+- `git worktree list --porcelain` found only `/home/sarvesh/business_Dev/agentx`; `git worktree prune --dry-run --verbose` found no stale registrations. No subagent worktree/commit needed merging. No worktree was removed.
+- The user-requested PTY/auth, listener-test, workspace-audit, and handoff changes were committed locally as `dd51d9e3050a853f46d273b55ce5fe3c22d245c1` (`fix(test): correct PTY harness and workspace audit`). The commit is unsigned (`%G?` = `N`); the configured signing identity has no available secret key.
+- The branch is `p1.3-interactive-pty-integration`; `origin` has no branch of that name. No push occurred. The six-path commit is 7 commits ahead of `origin/main`.
+- Other shared changes were deliberately left untouched: 38 modified and 24 untracked paths remain outside that commit. Do not treat them as merged or task-owned without inspecting exact ownership.
+- The root `.horizoncode-e2e-20261013` directory is not a Git worktree. It was preserved; this request did not authorize deleting that sandbox.
+
+**Verification (observed):**
+- PTY route test: 1 pass / 4 skip; listener test: 9 pass / 3 skip.
+- Package audit: 36 workspaces / 0 undeclared / 0 errors; convergence: 1,224 checks / 0 failures; Markdown audit: 279 tracked files / 0 active blockers; staged and unstaged diff checks clean before commit.
+- `bash scripts/architecture/run_push_gate.sh` passed source bootstrap, overlay/package/convergence/Markdown/provenance audits, kernel build, `managed_control` (10/10), and `resource_budget` (9/9), then **failed** at the Core TypeScript check. Errors span `packages/core/src/session.ts`, `session/revert.ts`, and imported OpenCode/session/server owners, including incompatible `SessionSupervisorError` effects and stale patch-operation fields. Later push-gate evidence supersedes the earlier standalone no-diagnostic typecheck result.
+- Post-build check: one worktree, no matching active Cargo/Rust/Bun test process, 844 GB free; `kernel/target` 1.8 GB, `indexd/target` 69 MB, root `node_modules` 2.5 GB.
+
+**Next Exact Steps:**
+1. Preserve the 38 modified and 24 untracked paths; inspect ownership before any staging or cleanup.
+2. Repair the Core typecheck failures at their canonical owners and rerun the full push gate. Do not bypass the pre-push hook.
+3. After the gate passes, stage only reviewed task-owned paths, commit, then push the topic branch with upstream tracking.
+4. Recheck worktree/process/disk state. Remove only a confirmed task-created worktree after its work is committed, pushed, and no process/evidence depends on it; currently there is none to remove.
+
+**Decisions & Gotchas:** `git worktree prune --dry-run` returned no entries, so worktree cleanup is a no-op. Do not delete the E2E sandbox or `p2-foundation`/`main` branches as substitutes for absent subagent worktrees. Do not push around the failing Core typecheck or change Git signing configuration.
