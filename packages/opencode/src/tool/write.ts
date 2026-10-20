@@ -10,7 +10,8 @@ import { InstanceState } from "@/effect/instance-state"
 import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
-import type { EffectLease } from "@opencode-ai/core/session/supervisor"
+import type { DirectAttemptScopeV1, EffectLease, ManagedAttemptScopeV1 } from "@opencode-ai/core/session/supervisor"
+import type { ManagedAttemptAuthority } from "@/session/managed-control"
 
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
 
@@ -47,6 +48,12 @@ export const WriteTool = Tool.define(
           const instance = yield* InstanceState.context
           const lease = ctx.extra?.guardedLease
           if (!guardedLease(lease)) return yield* Effect.fail(new Error("Write denied: missing Guard lease"))
+          const trustedPrincipal = ctx.trustedPrincipal
+          if (trustedPrincipal?.kind !== "server_auth" || !trustedPrincipal.subject) {
+            return yield* Effect.fail(new Error("Write denied: missing authenticated principal"))
+          }
+          const managedAttempt = ctx.extra?.managedAttempt as ManagedAttemptAuthority | undefined
+          const managedAttemptScope = managedAttempt?.currentScope()
           const locationRef = Location.Ref.make({ directory: AbsolutePath.make(instance.directory) })
           const receipt = yield* Effect.uninterruptible(
             supervisor.executeWrite({
@@ -54,8 +61,25 @@ export const WriteTool = Tool.define(
               locationRef,
               lease,
               content: params.content,
+              trustedPrincipal,
+              ...(ctx.extra?.directAttempt !== undefined
+                ? { directAttempt: ctx.extra.directAttempt as DirectAttemptScopeV1 }
+                : {}),
+              ...(managedAttemptScope !== undefined
+                ? { managedAttempt: managedAttemptScope as ManagedAttemptScopeV1 }
+                : {}),
             }),
           )
+          if (managedAttemptScope) {
+            if (!receipt.managedAttempt || receipt.attemptScopeTransition !== "effect_receipt") {
+              return yield* Effect.fail(new Error("Write denied: HostKernel omitted managed receipt scope"))
+            }
+            managedAttempt?.acceptRefreshedScope({
+              previous: managedAttemptScope,
+              refreshed: receipt.managedAttempt,
+              transition: "effect_receipt",
+            })
+          }
           const filepath = receipt.target
           const relative = path.relative(instance.directory, filepath).split(path.sep).join("/")
           yield* events.publish(FileSystem.Event.Edited, { file: filepath })

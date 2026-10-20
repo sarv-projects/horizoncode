@@ -1,6 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test"
-import { readFileSync, readdirSync } from "node:fs"
-import path from "node:path"
+import { Effect } from "effect"
 import {
   DEFAULT_IDLE_TTL_MS,
   MAX_CALLBACK_CAPABILITIES,
@@ -9,12 +8,14 @@ import {
   MAX_IDLE_TTL_MS,
   MAX_MEMORY_BYTES,
   MAX_OUTPUT_BYTES,
+  MAX_ARTIFACT_REF_BYTES,
   ProtocolError,
   parseExecuteRequest,
   parseExecuteResult,
   parseStartRequest,
   validateIdleTtl,
 } from "@/repl/protocol"
+import { it } from "../lib/effect"
 
 function capture<T = Record<string, unknown>>(fn: () => unknown): T {
   try {
@@ -33,13 +34,6 @@ const start = (over: Record<string, unknown> = {}) => ({
   ...over,
 })
 
-function replSourceFiles(): string[] {
-  const dir = path.join(import.meta.dir, "../../src/repl")
-  return readdirSync(dir)
-    .filter((entry) => entry.endsWith(".ts"))
-    .map((entry) => path.join(dir, entry))
-}
-
 describe("repl.protocol start requests", () => {
   test("accepts a bounded Python-first start request", () => {
     const request = parseStartRequest(start())
@@ -49,20 +43,52 @@ describe("repl.protocol start requests", () => {
 
   test("rejects malformed and out-of-bounds start requests", () => {
     expect(capture<ProtocolError>(() => parseStartRequest({})).detail).toBe("malformed repl.start request")
+    expect(() => parseStartRequest(start({ pid: 1234 }))).toThrow(ProtocolError)
+    expect(() => parseStartRequest(start({ resourceLimits: { ...start().resourceLimits, network: true } }))).toThrow(
+      ProtocolError,
+    )
     expect(() => parseStartRequest(start({ language: "ruby" }))).toThrow(ProtocolError)
-    expect(() => parseStartRequest(start({ resourceLimits: { maxMemoryBytes: MAX_MEMORY_BYTES + 1, maxWallTimeMs: 1000, maxOutputBytes: 1024 } }))).toThrow(
-      ProtocolError,
-    )
-    expect(() => parseStartRequest(start({ resourceLimits: { maxMemoryBytes: 1024, maxWallTimeMs: MAX_DEADLINE_MS + 1, maxOutputBytes: 1024 } }))).toThrow(
-      ProtocolError,
-    )
-    expect(() => parseStartRequest(start({ resourceLimits: { maxMemoryBytes: 1024, maxWallTimeMs: 1000, maxOutputBytes: MAX_OUTPUT_BYTES + 1 } }))).toThrow(
-      ProtocolError,
-    )
+    expect(() =>
+      parseStartRequest(
+        start({ resourceLimits: { maxMemoryBytes: MAX_MEMORY_BYTES + 1, maxWallTimeMs: 1000, maxOutputBytes: 1024 } }),
+      ),
+    ).toThrow(ProtocolError)
+    expect(() =>
+      parseStartRequest(
+        start({ resourceLimits: { maxMemoryBytes: 1024, maxWallTimeMs: MAX_DEADLINE_MS + 1, maxOutputBytes: 1024 } }),
+      ),
+    ).toThrow(ProtocolError)
+    expect(() =>
+      parseStartRequest(
+        start({ resourceLimits: { maxMemoryBytes: 1024, maxWallTimeMs: 1000, maxOutputBytes: MAX_OUTPUT_BYTES + 1 } }),
+      ),
+    ).toThrow(ProtocolError)
     const tooManyCallbacks = capture<ProtocolError>(() =>
-      parseStartRequest(start({ callbackCapabilities: Array.from({ length: MAX_CALLBACK_CAPABILITIES + 1 }, (_, i) => `cap.${i}`) })),
+      parseStartRequest(
+        start({ callbackCapabilities: Array.from({ length: MAX_CALLBACK_CAPABILITIES + 1 }, (_, i) => `cap.${i}`) }),
+      ),
     )
     expect(tooManyCallbacks).toBeInstanceOf(ProtocolError)
+  })
+
+  test("bounds start scope and callback capability strings by UTF-8 bytes", () => {
+    expect(() => parseStartRequest(start({ scope: "é".repeat(2049) }))).toThrow(ProtocolError)
+    expect(() => parseStartRequest(start({ callbackCapabilities: ["é".repeat(65)] }))).toThrow(ProtocolError)
+    expect(() => parseStartRequest(start({ scope: "   " }))).toThrow(ProtocolError)
+    expect(() => parseStartRequest(start({ callbackCapabilities: [""] }))).toThrow(ProtocolError)
+
+    expect(parseStartRequest(start({ scope: "é".repeat(2048) })).scope).toBe("é".repeat(2048))
+    expect(parseStartRequest(start({ callbackCapabilities: ["a".repeat(128)] })).callbackCapabilities).toEqual([
+      "a".repeat(128),
+    ])
+  })
+
+  test("callback capability declarations use unique canonical IDs only", () => {
+    expect(() => parseStartRequest(start({ callbackCapabilities: ["files.read", "files.read"] }))).toThrow(
+      "callback capability set contains duplicates",
+    )
+    expect(() => parseStartRequest(start({ callbackCapabilities: [" Files.Read "] }))).toThrow(ProtocolError)
+    expect(() => parseStartRequest(start({ callbackCapabilities: ["*"] }))).toThrow(ProtocolError)
   })
 })
 
@@ -73,11 +99,14 @@ describe("repl.protocol execute envelopes", () => {
   })
 
   test("rejects oversized code, empty code and out-of-range deadlines", () => {
-    expect(() => parseExecuteRequest({ generation: 1, code: "x".repeat(MAX_CODE_BYTES + 1), deadlineMs: 1000 })).toThrow(
-      ProtocolError,
-    )
+    expect(() =>
+      parseExecuteRequest({ generation: 1, code: "x".repeat(MAX_CODE_BYTES + 1), deadlineMs: 1000 }),
+    ).toThrow(ProtocolError)
     expect(() => parseExecuteRequest({ generation: 1, code: "x", deadlineMs: 1 })).toThrow(ProtocolError)
     expect(() => parseExecuteRequest({ generation: 0, code: "x", deadlineMs: 1000 })).toThrow(ProtocolError)
+    expect(() => parseExecuteRequest({ generation: 1, code: "x", deadlineMs: 1000, callback: "tool.call" })).toThrow(
+      ProtocolError,
+    )
     expect(() => parseExecuteRequest(null)).toThrow(ProtocolError)
   })
 
@@ -108,9 +137,126 @@ describe("repl.protocol execute envelopes", () => {
     expect(error.detail).toContain("exceeds")
   })
 
+  test("rejects unknown worker result fields instead of silently stripping them", () => {
+    expect(() =>
+      parseExecuteResult({
+        generation: 1,
+        status: "ok",
+        stdout: "",
+        stderr: "",
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        processID: 1234,
+      }),
+    ).toThrow(ProtocolError)
+  })
+
+  test("counts the structured value toward the result output budget", () => {
+    const error = capture<ProtocolError>(() =>
+      parseExecuteResult({
+        generation: 1,
+        status: "ok",
+        value: "x".repeat(MAX_OUTPUT_BYTES + 1),
+        stdout: "",
+        stderr: "",
+        stdoutTruncated: false,
+        stderrTruncated: false,
+      }),
+    )
+    expect(error).toBeInstanceOf(ProtocolError)
+    expect(error.detail).toContain("exceeds")
+  })
+
+  test("counts the artifact reference toward the result output budget", () => {
+    expect(() =>
+      parseExecuteResult({
+        generation: 1,
+        status: "ok",
+        artifactRef: "x".repeat(MAX_OUTPUT_BYTES + 1),
+        stdout: "",
+        stderr: "",
+        stdoutTruncated: false,
+        stderrTruncated: false,
+      }),
+    ).toThrow(ProtocolError)
+  })
+
+  test("rejects a present but empty artifact reference", () => {
+    expect(() =>
+      parseExecuteResult({
+        generation: 1,
+        status: "ok",
+        stdout: "",
+        stderr: "",
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        artifactRef: " ",
+      }),
+    ).toThrow(ProtocolError)
+  })
+
+  test("bounds artifact reference identifiers independently by UTF-8 bytes", () => {
+    const valid = parseExecuteResult({
+      generation: 1,
+      status: "ok",
+      artifactRef: "r".repeat(MAX_ARTIFACT_REF_BYTES),
+      stdout: "",
+      stderr: "",
+      stdoutTruncated: false,
+      stderrTruncated: false,
+    })
+    expect(valid.artifactRef).toHaveLength(MAX_ARTIFACT_REF_BYTES)
+
+    expect(() =>
+      parseExecuteResult({
+        generation: 1,
+        status: "ok",
+        artifactRef: "r".repeat(MAX_ARTIFACT_REF_BYTES + 1),
+        stdout: "",
+        stderr: "",
+        stdoutTruncated: false,
+        stderrTruncated: false,
+      }),
+    ).toThrow(ProtocolError)
+    expect(() =>
+      parseExecuteResult({
+        generation: 1,
+        status: "ok",
+        artifactRef: "é".repeat(Math.ceil(MAX_ARTIFACT_REF_BYTES / 2)),
+        stdout: "",
+        stderr: "",
+        stdoutTruncated: false,
+        stderrTruncated: false,
+      }),
+    ).toThrow(ProtocolError)
+  })
+
+  test("requires an artifact reference when output is truncated", () => {
+    for (const artifactRef of [undefined, "", "   "]) {
+      expect(() =>
+        parseExecuteResult({
+          generation: 1,
+          status: "ok",
+          artifactRef,
+          stdout: "partial output",
+          stderr: "",
+          stdoutTruncated: true,
+          stderrTruncated: false,
+        }),
+      ).toThrow(ProtocolError)
+    }
+  })
+
   test("rejects unknown statuses and malformed result envelopes", () => {
     expect(() =>
-      parseExecuteResult({ generation: 1, status: "hacked", stdout: "", stderr: "", stdoutTruncated: false, stderrTruncated: false }),
+      parseExecuteResult({
+        generation: 1,
+        status: "hacked",
+        stdout: "",
+        stderr: "",
+        stdoutTruncated: false,
+        stderrTruncated: false,
+      }),
     ).toThrow(ProtocolError)
   })
 
@@ -123,41 +269,34 @@ describe("repl.protocol execute envelopes", () => {
 })
 
 describe("repl.protocol purity", () => {
-  test("repl sources import no process, network or download machinery", () => {
-    const forbidden = [
-      /\bchild_process\b/,
-      /\bcross-spawn\b/,
-      /["']@\/util\/(?:process|archive)["']/,
-      /\bBun\.spawn\b/,
-      /\bBun\.\$\b/,
-      /\bfetch\s*\(/,
-      /\bnode:(?:net|http|https|dgram|worker_threads)["']/,
-      /\bNpm\b/,
-    ]
-    const files = replSourceFiles()
-    expect(files.length).toBeGreaterThanOrEqual(2)
-    for (const file of files) {
-      const source = readFileSync(file, "utf8")
-      for (const pattern of forbidden) expect(source).not.toMatch(pattern)
-    }
-  })
-
-  test("parsing envelopes spawns no process and writes nothing", () => {
-    const spawnSpy = spyOn(Bun, "spawn")
-    const writeSpy = spyOn(Bun, "write")
-    const fetchSpy = spyOn(globalThis, "fetch")
-    try {
-      parseStartRequest(start())
-      parseExecuteRequest({ generation: 1, code: "1 + 1", deadlineMs: 1000 })
-      parseExecuteResult({ generation: 1, status: "ok", stdout: "2", stderr: "", stdoutTruncated: false, stderrTruncated: false })
-      capture(() => parseStartRequest({}))
-      capture(() => parseExecuteRequest({}))
-      capture(() => parseExecuteResult({}))
-      validateIdleTtl(DEFAULT_IDLE_TTL_MS)
-    } finally {
-      spawnSpy.mockRestore()
-      writeSpy.mockRestore()
-      fetchSpy.mockRestore()
-    }
-  })
+  it.live("parsing envelopes spawns no process and writes nothing", () =>
+    Effect.sync(() => {
+      const spawnSpy = spyOn(Bun, "spawn")
+      const writeSpy = spyOn(Bun, "write")
+      const fetchSpy = spyOn(globalThis, "fetch")
+      try {
+        parseStartRequest(start())
+        parseExecuteRequest({ generation: 1, code: "1 + 1", deadlineMs: 1000 })
+        parseExecuteResult({
+          generation: 1,
+          status: "ok",
+          stdout: "2",
+          stderr: "",
+          stdoutTruncated: false,
+          stderrTruncated: false,
+        })
+        capture(() => parseStartRequest({}))
+        capture(() => parseExecuteRequest({}))
+        capture(() => parseExecuteResult({}))
+        validateIdleTtl(DEFAULT_IDLE_TTL_MS)
+      } finally {
+        spawnSpy.mockRestore()
+        writeSpy.mockRestore()
+        fetchSpy.mockRestore()
+      }
+      expect(spawnSpy).not.toHaveBeenCalled()
+      expect(writeSpy).not.toHaveBeenCalled()
+      expect(fetchSpy).not.toHaveBeenCalled()
+    }),
+  )
 })

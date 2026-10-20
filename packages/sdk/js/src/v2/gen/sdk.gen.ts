@@ -42,6 +42,22 @@ import type {
   ExperimentalConsoleSwitchOrgResponses,
   ExperimentalControlPlaneMoveSessionErrors,
   ExperimentalControlPlaneMoveSessionResponses,
+  ExperimentalGoalReviewGoalProposeErrors,
+  ExperimentalGoalReviewGoalProposeResponses,
+  ExperimentalGoalReviewGoalReviewDecisionErrors,
+  ExperimentalGoalReviewGoalReviewDecisionResponses,
+  ExperimentalGoalReviewGoalVerificationErrors,
+  ExperimentalGoalReviewGoalVerificationResponses,
+  ExperimentalGoalReviewGoalRunControlErrors,
+  ExperimentalGoalReviewGoalRunControlResponses,
+  ExperimentalGoalReviewGoalRunPlanErrors,
+  ExperimentalGoalReviewGoalRunPlanResponses,
+  ExperimentalGoalReviewGoalRunStartErrors,
+  ExperimentalGoalReviewGoalRunStartResponses,
+  ExperimentalGoalReviewGoalReviewErrors,
+  ExperimentalGoalReviewGoalReviewResponses,
+  ExperimentalGoalReviewGoalReviewsErrors,
+  ExperimentalGoalReviewGoalReviewsResponses,
   ExperimentalProjectCopyGenerateNameErrors,
   ExperimentalProjectCopyGenerateNameResponses,
   ExperimentalResourceListErrors,
@@ -95,6 +111,7 @@ import type {
   GlobalUpgradeResponses,
   GuardApprovalReplyErrors,
   GuardApprovalReplyResponses,
+  HorizonProviderDoctorV1SelectionRefV1,
   InstanceDisposeErrors,
   InstanceDisposeResponses,
   LocationRef,
@@ -152,6 +169,8 @@ import type {
   PromptInput,
   ProviderAuthErrors,
   ProviderAuthResponses,
+  ProviderDoctorOfflineErrors,
+  ProviderDoctorOfflineResponses,
   ProviderListErrors,
   ProviderListResponses,
   ProviderOauthAuthorizeErrors,
@@ -1247,6 +1266,390 @@ export class Workspace extends HeyApiClient {
   }
 }
 
+export class GoalReview extends HeyApiClient {
+  /**
+   * Read pending Goal review proposals
+   *
+   * Read-only projection of pending SpecVersion proposals for one durable Goal, restricted to the authenticated current project and workspace.
+   */
+  public goalReview<ThrowOnError extends boolean = false>(
+    parameters: {
+      goalID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "goalID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      ExperimentalGoalReviewGoalReviewResponses,
+      ExperimentalGoalReviewGoalReviewErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/control-plane/goal-review",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Discover pending Goal review proposals
+   *
+   * Bounded discovery inbox filtered by the authenticated current project and workspace. Each proposal carries reviewer availability derived from trusted ServerAuth context; local host identity remains read-only.
+   */
+  public goalReviews<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      afterGoalID?: string
+      limit?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "afterGoalID" },
+            { in: "query", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      ExperimentalGoalReviewGoalReviewsResponses,
+      ExperimentalGoalReviewGoalReviewsErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/control-plane/goal-reviews",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Propose a managed Goal
+   *
+   * Create a Goal and pending SpecVersion from a bounded schemaVersion 1 user draft. Project and workspace are derived from the authenticated instance route; IDs and proposer identity are assigned by the server. This is the canonical goal.propose capability.
+   */
+  public goalPropose<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      schemaVersion?: 1
+      objective?: string
+      capabilityScope?: Array<string>
+      scope?: Array<string>
+      constraints?: Array<string>
+      criteria?: Array<{
+        id: string
+        description: string
+      }>
+      budget?: {
+        maxTasks: number
+        maxAttemptsPerTask: number
+        maxRunDurationMs: number
+        maxWorkers: number
+        maxMemoryBytes?: number
+        maxDiskBytes?: number
+        maxTokens?: number
+        maxCostMicros?: number
+      }
+      sourceDigests?: Array<string>
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "schemaVersion" },
+            { in: "body", key: "objective" },
+            { in: "body", key: "capabilityScope" },
+            { in: "body", key: "scope" },
+            { in: "body", key: "constraints" },
+            { in: "body", key: "criteria" },
+            { in: "body", key: "budget" },
+            { in: "body", key: "sourceDigests" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalGoalReviewGoalProposeResponses,
+      ExperimentalGoalReviewGoalProposeErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/control-plane/goal-proposals",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Apply a Goal review decision
+   *
+   * Accept or reject one proposed SpecVersion digest at an exact reviewed Goal revision. Success requires authenticated ServerAuth distinct from the proposer.
+   */
+  public goalReviewDecision<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      decision?: "accept" | "reject"
+      goalID?: string
+      specID?: string
+      specDigest?: string
+      expectedRevision?: string | number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "decision" },
+            { in: "body", key: "goalID" },
+            { in: "body", key: "specID" },
+            { in: "body", key: "specDigest" },
+            { in: "body", key: "expectedRevision" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalGoalReviewGoalReviewDecisionResponses,
+      ExperimentalGoalReviewGoalReviewDecisionErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/control-plane/goal-review/decision",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Run the managed independent verifier
+   *
+   * Begin the HostKernel-owned verifier for a Goal/Run using the authenticated current workspace. Guard approvals are collected through the existing Core flow; request bodies cannot choose the verifier, profile, tests, workspace revision, verdict, lease or artifacts.
+   */
+  public goalVerification<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      schemaVersion?: 1
+      goalID?: string
+      runID?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "schemaVersion" },
+            { in: "body", key: "goalID" },
+            { in: "body", key: "runID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalGoalReviewGoalVerificationResponses,
+      ExperimentalGoalReviewGoalVerificationErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/control-plane/goal-verification",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /** Pause, resume, or cancel a managed Run */
+  public goalRunControl<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      schemaVersion?: 1
+      action?: "pause" | "resume" | "cancel"
+      goalID?: string
+      runID?: string
+      expectedRevision?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "schemaVersion" },
+            { in: "body", key: "action" },
+            { in: "body", key: "goalID" },
+            { in: "body", key: "runID" },
+            { in: "body", key: "expectedRevision" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalGoalReviewGoalRunControlResponses,
+      ExperimentalGoalReviewGoalRunControlErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/control-plane/goal-run-control",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /** Record a reviewable, plan-only managed Run with exact AgentProfile pins. */
+  public goalRunPlan<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      schemaVersion?: 1
+      goalID?: string
+      specID?: string
+      specDigest?: string
+      expectedGoalRevision?: string
+      runID?: string
+      tasks?: Array<{
+        taskID: string
+        dependencies: Array<string>
+        criterionIDs: Array<string>
+        requiredCapabilities: Array<string>
+        profileSelection: { profileId: string; revision: string }
+      }>
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "schemaVersion" },
+            { in: "body", key: "goalID" },
+            { in: "body", key: "specID" },
+            { in: "body", key: "specDigest" },
+            { in: "body", key: "expectedGoalRevision" },
+            { in: "body", key: "runID" },
+            { in: "body", key: "tasks" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalGoalReviewGoalRunPlanResponses,
+      ExperimentalGoalReviewGoalRunPlanErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/control-plane/goal-run-plan",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /** Explicitly start a persisted accepted managed Run plan. */
+  public goalRunStart<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      schemaVersion?: 1
+      goalID?: string
+      runID?: string
+      expectedGoalRevision?: string
+      specID?: string
+      specDigest?: string
+      sessionID?: string
+      idempotencyKey?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [{ args: [
+        { in: "query", key: "directory" },
+        { in: "query", key: "workspace" },
+        { in: "body", key: "schemaVersion" },
+        { in: "body", key: "goalID" },
+        { in: "body", key: "runID" },
+        { in: "body", key: "expectedGoalRevision" },
+        { in: "body", key: "specID" },
+        { in: "body", key: "specDigest" },
+        { in: "body", key: "sessionID" },
+        { in: "body", key: "idempotencyKey" },
+      ] }],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalGoalReviewGoalRunStartResponses,
+      ExperimentalGoalReviewGoalRunStartErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/control-plane/goal-run-start",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Experimental extends HeyApiClient {
   private _controlPlane?: ControlPlane
   get controlPlane(): ControlPlane {
@@ -1281,6 +1684,62 @@ export class Experimental extends HeyApiClient {
   private _workspace?: Workspace
   get workspace(): Workspace {
     return (this._workspace ??= new Workspace({ client: this.client }))
+  }
+
+  private _goalReview?: GoalReview
+  get goalReview(): GoalReview {
+    return (this._goalReview ??= new GoalReview({ client: this.client }))
+  }
+
+  private _automation?: Automation
+  get automation(): Automation {
+    return (this._automation ??= new Automation({ client: this.client }))
+  }
+}
+
+export class Automation extends HeyApiClient {
+  private queryParams(parameters: object) {
+    return buildClientParams([parameters], [{ args: Object.keys(parameters).map((key) => ({ in: "query" as const, key })) }])
+  }
+
+  public list<ThrowOnError extends boolean = false>(parameters: { directory?: string; workspace?: string; sessionID: string }, options?: Options<never, ThrowOnError>) {
+    const params = this.queryParams(parameters)
+    return (options?.client ?? this.client).get<{ automations: Array<Record<string, unknown>> }, Record<string, unknown>, ThrowOnError>({ url: "/experimental/automation/list", ...options, ...params })
+  }
+
+  public inspect<ThrowOnError extends boolean = false>(parameters: { directory?: string; workspace?: string; sessionID: string; automationID: string }, options?: Options<never, ThrowOnError>) {
+    const params = this.queryParams(parameters)
+    return (options?.client ?? this.client).get<Record<string, unknown>, Record<string, unknown>, ThrowOnError>({ url: "/experimental/automation/inspect", ...options, ...params })
+  }
+
+  public history<ThrowOnError extends boolean = false>(parameters: { directory?: string; workspace?: string; sessionID: string; automationID: string; limit?: string }, options?: Options<never, ThrowOnError>) {
+    const params = this.queryParams(parameters)
+    return (options?.client ?? this.client).get<Record<string, unknown>, Record<string, unknown>, ThrowOnError>({ url: "/experimental/automation/history", ...options, ...params })
+  }
+
+  private mutate<ThrowOnError extends boolean = false>(path: string, parameters: { directory?: string; workspace?: string; schemaVersion: 1; sessionID: string; automationID: string; idempotencyKey: string; expectedVersion?: string; definition?: Record<string, unknown> }, options?: Options<never, ThrowOnError>) {
+    const { directory, workspace, ...body } = parameters
+    const params = buildClientParams([{ directory, workspace }, body], [
+      { args: [{ in: "query", key: "directory" }, { in: "query", key: "workspace" }] },
+      { args: Object.keys(body).map((key) => ({ in: "body" as const, key })) },
+    ])
+    return (options?.client ?? this.client).post<Record<string, unknown>, Record<string, unknown>, ThrowOnError>({ url: `/experimental/automation/${path}`, ...options, ...params, headers: { "Content-Type": "application/json", ...options?.headers, ...params.headers } })
+  }
+
+  public create<ThrowOnError extends boolean = false>(parameters: { directory?: string; workspace?: string; schemaVersion: 1; sessionID: string; automationID: string; idempotencyKey: string; definition: Record<string, unknown> }, options?: Options<never, ThrowOnError>) {
+    return this.mutate("create", parameters, options)
+  }
+  public update<ThrowOnError extends boolean = false>(parameters: { directory?: string; workspace?: string; schemaVersion: 1; sessionID: string; automationID: string; idempotencyKey: string; expectedVersion: string; definition: Record<string, unknown> }, options?: Options<never, ThrowOnError>) {
+    return this.mutate("update", parameters, options)
+  }
+  public enable<ThrowOnError extends boolean = false>(parameters: { directory?: string; workspace?: string; schemaVersion: 1; sessionID: string; automationID: string; idempotencyKey: string; expectedVersion: string }, options?: Options<never, ThrowOnError>) {
+    return this.mutate("enable", parameters, options)
+  }
+  public disable<ThrowOnError extends boolean = false>(parameters: { directory?: string; workspace?: string; schemaVersion: 1; sessionID: string; automationID: string; idempotencyKey: string; expectedVersion: string }, options?: Options<never, ThrowOnError>) {
+    return this.mutate("disable", parameters, options)
+  }
+  public runNow<ThrowOnError extends boolean = false>(parameters: { directory?: string; workspace?: string; schemaVersion: 1; sessionID: string; automationID: string; idempotencyKey: string; expectedVersion: string }, options?: Options<never, ThrowOnError>) {
+    return this.mutate("run-now", parameters, options)
   }
 }
 
@@ -1362,7 +1821,7 @@ export class Global extends HeyApiClient {
   /**
    * Upgrade opencode
    *
-   * Upgrade opencode to the specified version.
+   * Installation upgrades are unavailable in the current release.
    */
   public upgrade<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -1661,7 +2120,7 @@ export class Worktree extends HeyApiClient {
   /**
    * Remove worktree
    *
-   * Remove a git worktree and delete its branch.
+   * Unavailable until worktree removal is mediated by Rust Guard and ExecutionHost with a fenced lease and settled effects.
    */
   public remove<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -1728,7 +2187,7 @@ export class Worktree extends HeyApiClient {
   /**
    * Create worktree
    *
-   * Create a new git worktree for the current project and run any configured startup scripts.
+   * Unavailable until worktree creation is mediated by Rust Guard and ExecutionHost before git, filesystem, or startup-script effects.
    */
   public create<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -1765,7 +2224,7 @@ export class Worktree extends HeyApiClient {
   /**
    * Reset worktree
    *
-   * Reset a worktree branch to the primary default branch.
+   * Unavailable until worktree reset is mediated by Rust Guard and ExecutionHost with a fenced lease and settled effects.
    */
   public reset<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -3372,6 +3831,67 @@ export class Oauth extends HeyApiClient {
   }
 }
 
+export class Doctor extends HeyApiClient {
+  /**
+   * Inspect provider configuration offline
+   *
+   * Inspect the selected provider/model configuration without reading credentials or contacting a provider.
+   */
+  public offline<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      schemaVersion?: 1
+      doctorRunId?: string
+      selection?: HorizonProviderDoctorV1SelectionRefV1
+      deadlineMs?: number
+      tier?: "offline"
+      maxNetworkRequests?: 0
+      ownerRef?: unknown
+      ownerEpoch?: unknown
+      networkGrantRef?: string
+      spendConsentRef?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "schemaVersion" },
+            { in: "body", key: "doctorRunId" },
+            { in: "body", key: "selection" },
+            { in: "body", key: "deadlineMs" },
+            { in: "body", key: "tier" },
+            { in: "body", key: "maxNetworkRequests" },
+            { in: "body", key: "ownerRef" },
+            { in: "body", key: "ownerEpoch" },
+            { in: "body", key: "networkGrantRef" },
+            { in: "body", key: "spendConsentRef" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ProviderDoctorOfflineResponses,
+      ProviderDoctorOfflineErrors,
+      ThrowOnError
+    >({
+      url: "/provider/doctor/offline",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Provider extends HeyApiClient {
   /**
    * List providers
@@ -3436,6 +3956,11 @@ export class Provider extends HeyApiClient {
   private _oauth?: Oauth
   get oauth(): Oauth {
     return (this._oauth ??= new Oauth({ client: this.client }))
+  }
+
+  private _doctor?: Doctor
+  get doctor(): Doctor {
+    return (this._doctor ??= new Doctor({ client: this.client }))
   }
 }
 

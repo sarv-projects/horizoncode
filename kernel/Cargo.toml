@@ -8,9 +8,15 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
+horizoncode-sandbox = { path = "../horizoncode-sandbox" }
+horizon-indexd-library = { path = "../indexd" }
 blake3 = "=1.8.7"
 rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled", "bundled-windows"] }
+serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.150"
+reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls"] }
+ring = "=0.17.14"
+tokio = { version = "=1.53.2", default-features = false, features = ["macros", "rt", "time"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "=0.2.190"

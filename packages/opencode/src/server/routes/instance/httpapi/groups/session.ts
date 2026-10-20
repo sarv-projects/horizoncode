@@ -10,7 +10,7 @@ import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
-import { Snapshot } from "@/snapshot"
+import { Info as FileDiffSchema } from "@opencode-ai/schema/file-diff"
 import { Schema, Struct } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
 import { Authorization } from "../middleware/authorization"
@@ -25,6 +25,7 @@ import { described } from "./metadata"
 import { QueryBoolean } from "./query"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { QuestionV2 } from "@opencode-ai/core/question"
 
 const root = "/session"
 export const ListQuery = Schema.Struct({
@@ -99,6 +100,9 @@ export const SessionPaths = {
   promptAsync: `${root}/:sessionID/prompt_async`,
   command: `${root}/:sessionID/command`,
   guardApproval: "/guard/approval/:approvalID/reply",
+  questions: `${root}/:sessionID/question`,
+  questionReply: `${root}/:sessionID/question/:requestID/reply`,
+  questionReject: `${root}/:sessionID/question/:requestID/reject`,
   shell: `${root}/:sessionID/shell`,
   revert: `${root}/:sessionID/revert`,
   unrevert: `${root}/:sessionID/unrevert`,
@@ -169,10 +173,47 @@ export const SessionApi = HttpApi.make("session")
             description: "Retrieve the todo list associated with a specific session, showing tasks and action items.",
           }),
         ),
+        HttpApiEndpoint.get("questions", SessionPaths.questions, {
+          params: { sessionID: SessionV2.ID },
+          query: WorkspaceRoutingQuery,
+          success: described(Schema.Array(QuestionV2.Request), "Pending questions for this session"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError, ForbiddenError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.questions",
+            summary: "List pending session questions",
+            description: "List pending question.ask prompts for the authenticated session owner.",
+          }),
+        ),
+        HttpApiEndpoint.post("questionReply", SessionPaths.questionReply, {
+          params: { sessionID: SessionV2.ID, requestID: QuestionV2.ID },
+          query: WorkspaceRoutingQuery,
+          payload: QuestionV2.Reply,
+          success: HttpApiSchema.NoContent,
+          error: [HttpApiError.BadRequest, ApiNotFoundError, ForbiddenError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.question.reply",
+            summary: "Reply to a pending question",
+            description: "Answer a question.ask prompt only in its owning session.",
+          }),
+        ),
+        HttpApiEndpoint.post("questionReject", SessionPaths.questionReject, {
+          params: { sessionID: SessionV2.ID, requestID: QuestionV2.ID },
+          query: WorkspaceRoutingQuery,
+          success: HttpApiSchema.NoContent,
+          error: [HttpApiError.BadRequest, ApiNotFoundError, ForbiddenError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.question.reject",
+            summary: "Reject a pending question",
+            description: "Dismiss a question.ask prompt only in its owning session.",
+          }),
+        ),
         HttpApiEndpoint.get("diff", SessionPaths.diff, {
           params: { sessionID: SessionID },
           query: DiffQuery,
-          success: described(Schema.Array(Snapshot.FileDiff), "Successfully retrieved diff"),
+          success: described(Schema.Array(FileDiffSchema), "Successfully retrieved diff"),
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.diff",

@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, mock, test } from "bun:test"
 import path from "path"
+import type { ChildProcess } from "child_process"
 import { Shell } from "@opencode-ai/core/shell"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { which } from "@opencode-ai/core/util/which"
@@ -127,13 +128,8 @@ describe("shell", () => {
       login: false,
     })
     expect(Shell.resolveProfile("powershell.exe", discovery)).toBeUndefined()
-    expect(Shell.resolveProfile("wsl:Ubuntu-24.04", discovery)).toMatchObject({
-      profileKey: "wsl:Ubuntu-24.04",
-      kind: "wsl.ubuntu.bash",
-      distribution: "Ubuntu-24.04",
-    })
-    expect(Shell.resolveProfile("wsl:Debian", discovery)?.profileKey).toBe("wsl:Debian")
-    expect(Shell.resolveProfile("wsl:ubuntu-24.04", discovery)).toBeUndefined()
+    expect(Shell.resolveProfile("wsl:Ubuntu-24.04", discovery)).toBeUndefined()
+    expect(Shell.resolveProfile("wsl:Debian", discovery)).toBeUndefined()
     expect(Shell.resolveProfile("not-installed.exe", discovery)).toBeUndefined()
   })
 
@@ -169,14 +165,20 @@ describe("shell", () => {
     expect(Shell.supportsPowerShell7Path("C:\\Windows\\System32\\powershell.exe")).toBe(false)
   })
 
-  test("parses WSL UTF-16LE output and preserves exact distro names", () => {
-    const output = Buffer.from("\uFEFFUbuntu-24.04\r\nDebian\r\n", "utf16le")
-    expect(Shell.parseWslDistributions(output)).toEqual(["Ubuntu-24.04", "Debian"])
+  test("does not expose WSL profiles on the V1 Windows path", () => {
     const profiles = Shell.profilesFromDiscovery({
       platform: "win32",
+      wsl: "C:\\Windows\\System32\\wsl.exe",
       distributions: ["Ubuntu-24.04", "Debian"],
     })
-    expect(profiles.map((profile) => profile.profileKey)).toEqual(["wsl:Ubuntu-24.04", "wsl:Debian"])
+    expect(profiles.some((profile) => profile.profileKey.startsWith("wsl:"))).toBe(false)
+  })
+
+  test("does not signal caller-supplied or stale child PID state", async () => {
+    const kill = mock(() => undefined)
+    const staleChild = { pid: 987654321, kill } as unknown as ChildProcess
+    await Shell.killTree(staleChild)
+    expect(kill).not.toHaveBeenCalled()
   })
 
   test("does not resolve a profile without discovery", () => {

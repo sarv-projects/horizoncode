@@ -1,0 +1,65 @@
+{
+  "schema": "horizon.worker-resource-reservation-wire.v1",
+  "description": "Frozen §11.20/§18.18 wire vocabulary for WorkerResourceReservationV1.status, ResourcePressure state and BudgetDimension. Rust is the canonical consumer today; the TypeScript consumer is intentionally null until the Core/TS side consumes this exact fixture, so JC-RES-012.I cannot claim a TS roundtrip yet.",
+  "consumers": {
+    "rust": "kernel/src/resource_budget.rs",
+    "typescript": null
+  },
+  "reservationStatus": {
+    "canonical": [
+      "PROPOSED",
+      "RESERVED",
+      "CLAIMED",
+      "RELEASE_PENDING",
+      "QUARANTINED",
+      "RELEASED",
+      "EXPIRED"
+    ],
+    "forbidden": [
+      "ACTIVE",
+      "UNKNOWN",
+      "PENDING",
+      "CANCELLED",
+      "proposed",
+      "reserved",
+      "Reserved",
+      ""
+    ]
+  },
+  "pressureState": {
+    "canonical": [
+      "NORMAL",
+      "SOFT_PRESSURE",
+      "HARD_PRESSURE",
+      "RECOVERING"
+    ],
+    "forbidden": [
+      "SOFT",
+      "HARD",
+      "soft",
+      "soft_pressure",
+      "NORMAL_PRESSURE",
+      ""
+    ]
+  },
+  "dimension": {
+    "canonical": [
+      "MEMORY_BYTES",
+      "CPU_MILLICORES",
+      "PROCESSES",
+      "FILE_DESCRIPTORS",
+      "DISK_BYTES",
+      "TOOL_OUTPUT_BYTES",
+      "ACTIVE_WORKERS",
+      "TOKENS",
+      "PROVIDER_COST_MICROS"
+    ],
+    "forbidden": [
+      "memory_bytes",
+      "MEMORY",
+      "CPU",
+      "ProviderCostMicros",
+      ""
+    ]
+  }
+}

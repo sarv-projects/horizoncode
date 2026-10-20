@@ -1,5 +1,17 @@
 import { Schema } from "effect"
 import { PositiveInt } from "@opencode-ai/core/schema"
+import { languageServiceProcessRouteAvailable } from "./launch"
+import type { DirectAttemptScopeV1, ManagedAttemptScopeV1 } from "@/session/managed-control"
+import {
+  HostProcessRefV1,
+  freezeDirectAttemptScope,
+  freezeManagedAttemptScope,
+  sameDirectAttemptScope,
+  sameManagedAttemptScope,
+  validateExecutionLaunchProfileRef,
+  validateHostProcessRef,
+  validateHostProcessScope,
+} from "./process-scope"
 
 /**
  * LanguageServiceBrokerV1 — language-service identity, routing policy and the
@@ -44,7 +56,8 @@ export type EditorSource = typeof EditorSource.Type
 
 export const SupervisedSource = Schema.Struct({
   kind: Schema.Literal("supervised"),
-  executionId: Schema.String,
+  processRef: HostProcessRefV1,
+  launchProfileRef: Schema.Struct({ profileId: Schema.String, revision: Schema.String, profileDigest: Schema.String }),
   serverName: Schema.String,
 }).annotate({ identifier: "LanguageServiceSupervisedSourceV1" })
 export type SupervisedSource = typeof SupervisedSource.Type
@@ -66,17 +79,47 @@ export type Health = typeof Health.Type
 
 /**
  * Identity key material for a language service (§37.6): workspace + language +
- * root + configuration digest + executable/version + owner type.
+ * root + configuration digest + HostKernel executable digest/version + owner type, authenticated
+ * principal/read scope, policy generation, and sandbox profile. All authority
+ * fields are resolved by trusted host owners; caller-supplied values are not
+ * credentials and must never be used to register production snapshots.
  */
 export const Identity = Schema.Struct({
+  sessionID: Schema.String,
+  locationID: Schema.String,
+  ownerEpoch: Schema.String,
+  managedAttemptScopeKey: Schema.String,
+  directAttemptScopeKey: Schema.String,
   workspaceId: Schema.String,
   languageId: Schema.String,
   rootUri: Schema.String,
   configurationDigest: Schema.String,
-  executable: Schema.String,
+  principalId: Schema.String,
+  readScopeDigest: Schema.String,
+  policyGeneration: Schema.String,
+  sandboxProfileDigest: Schema.String,
+  ownerInstance: Schema.String,
+  executableDigest: Schema.optional(Schema.String),
+  serverVersion: Schema.optional(Schema.String),
+  /** Host process generation; distinct from the LanguageService snapshot generation. */
+  processGeneration: Schema.optional(Schema.String),
+  launchProfileId: Schema.optional(Schema.String),
+  launchProfileRevision: Schema.optional(Schema.String),
+  launchProfileDigest: Schema.optional(Schema.String),
   owner: SourceKind,
 }).annotate({ identifier: "LanguageServiceIdentityV1" })
 export type Identity = typeof Identity.Type
+
+function ownerInstanceOf(source: Source): string {
+  switch (source.kind) {
+    case "editor":
+      return source.clientId
+    case "supervised":
+      return source.processRef.executionID
+    case "external":
+      return source.adapterId
+  }
+}
 
 export function executableOf(source: Source): string {
   switch (source.kind) {
@@ -91,45 +134,198 @@ export function executableOf(source: Source): string {
 
 export function identityOf(input: {
   source: Source
+  sessionID: string
+  locationID: string
+  workspaceRevision: string
+  ownerEpoch: string
+  managedAttemptScope?: ManagedAttemptScopeV1
+  directAttemptScope?: DirectAttemptScopeV1
   workspaceId: string
   languageId: string
   rootUri: string
   configurationDigest: string
+  principalId: string
+  readScopeDigest: string
+  policyGeneration: string
+  sandboxProfileDigest: string
+  serverVersion?: string
 }): Identity {
-  return {
+  for (const [field, value] of Object.entries({
+    sessionID: input.sessionID,
+    locationID: input.locationID,
+    ownerEpoch: input.ownerEpoch,
     workspaceId: input.workspaceId,
     languageId: input.languageId,
     rootUri: input.rootUri,
     configurationDigest: input.configurationDigest,
-    executable: executableOf(input.source),
+    principalId: input.principalId,
+    readScopeDigest: input.readScopeDigest,
+    policyGeneration: input.policyGeneration,
+    sandboxProfileDigest: input.sandboxProfileDigest,
+  })) {
+    if (value.trim().length === 0) throw new TypeError(`language-service identity ${field} must be non-empty`)
+  }
+  let processGeneration: string | undefined
+  let executableDigest: string | undefined
+  let launchProfileRef: ReturnType<typeof validateExecutionLaunchProfileRef> | undefined
+  if (input.source.kind === "supervised") {
+    const processRef = validateHostProcessRef(input.source.processRef)
+    if (processRef.kind !== "language_server" || processRef.ownerEpoch !== input.ownerEpoch) {
+      throw new TypeError("supervised language-service process ref must match the authenticated owner epoch and language_server kind")
+    }
+    processGeneration = processRef.generation
+    executableDigest = processRef.executableDigest
+    launchProfileRef = validateExecutionLaunchProfileRef(input.source.launchProfileRef)
+    if (
+      processRef.profileID !== launchProfileRef.profileId ||
+      processRef.profileRevision !== launchProfileRef.revision ||
+      processRef.profileDigest !== launchProfileRef.profileDigest
+    ) {
+      throw new TypeError("supervised language-service process ref does not match its launch profile pin")
+    }
+  }
+  validateHostProcessScope({
+    sessionID: input.sessionID,
+    locationID: input.locationID,
+    ownerEpoch: input.ownerEpoch,
+    workspaceRevision: input.workspaceRevision,
+    managedAttemptScope: input.managedAttemptScope,
+    directAttemptScope: input.directAttemptScope,
+    workspaceID: input.workspaceId,
+  })
+  return {
+    sessionID: input.sessionID,
+    locationID: input.locationID,
+    ownerEpoch: input.ownerEpoch,
+    managedAttemptScopeKey: managedAttemptScopeKey(input.managedAttemptScope),
+    directAttemptScopeKey: directAttemptScopeKey(input.directAttemptScope),
+    workspaceId: input.workspaceId,
+    languageId: input.languageId,
+    rootUri: input.rootUri,
+    configurationDigest: input.configurationDigest,
+    principalId: input.principalId,
+    readScopeDigest: input.readScopeDigest,
+    policyGeneration: input.policyGeneration,
+    sandboxProfileDigest: input.sandboxProfileDigest,
+    ownerInstance: ownerInstanceOf(input.source),
+    executableDigest,
+    serverVersion: input.serverVersion,
+    processGeneration,
+    launchProfileId: launchProfileRef?.profileId,
+    launchProfileRevision: launchProfileRef?.revision,
+    launchProfileDigest: launchProfileRef?.profileDigest,
     owner: input.source.kind,
   }
+}
+
+function managedAttemptScopeKey(scope: ManagedAttemptScopeV1 | undefined): string {
+  if (!scope) return "direct"
+  return JSON.stringify([
+    scope.goalID,
+    scope.runID,
+    scope.taskID,
+    scope.attemptID,
+    scope.ownerEpoch,
+    scope.expectedManagedRevision,
+    scope.locationID,
+    scope.sessionID,
+    scope.workspaceRevision,
+    scope.delegationBindingDigest,
+  ])
+}
+
+function directAttemptScopeKey(scope: DirectAttemptScopeV1 | undefined): string {
+  if (!scope) return "no-direct-attempt"
+  return JSON.stringify([
+    scope.attemptID,
+    scope.parentSessionID,
+    scope.childSessionID,
+    scope.ownerEpoch,
+    scope.expectedRevision,
+    scope.locationID,
+    scope.workspaceID,
+    scope.workspaceRevision,
+    scope.profileID,
+    scope.profileRevision,
+    scope.profileDigest,
+    scope.capabilityDigest,
+    scope.permissionsDigest,
+    scope.budgetDigest,
+    scope.scopeDigest,
+  ])
 }
 
 export function identityKey(identity: Identity): string {
   return JSON.stringify([
     identity.owner,
+    identity.sessionID,
+    identity.locationID,
+    identity.ownerEpoch,
+    identity.managedAttemptScopeKey,
+    identity.directAttemptScopeKey,
     identity.workspaceId,
     identity.languageId,
     identity.rootUri,
     identity.configurationDigest,
-    identity.executable,
+    identity.principalId,
+    identity.readScopeDigest,
+    identity.policyGeneration,
+    identity.sandboxProfileDigest,
+    identity.ownerInstance,
+    identity.serverVersion ?? null,
+    identity.processGeneration ?? null,
+    identity.executableDigest ?? null,
+    identity.launchProfileId ?? null,
+    identity.launchProfileRevision ?? null,
+    identity.launchProfileDigest ?? null,
   ])
 }
 
 export const Snapshot = Schema.Struct({
   source: Source,
+  /** Authenticated process scope; callers cannot supply these in editor/LSP payloads. */
+  sessionID: Schema.String,
+  locationID: Schema.String,
+  ownerEpoch: Schema.String,
+  managedAttemptScope: Schema.optional(Schema.Unknown),
+  directAttemptScope: Schema.optional(Schema.Unknown),
   workspaceId: Schema.String,
+  /** Trusted workspace content revision when this server snapshot was made. */
+  workspaceRevision: Schema.String,
   languageId: Schema.String,
   rootUri: Schema.String,
   configurationDigest: Schema.String,
+  principalId: Schema.String,
+  readScopeDigest: Schema.String,
+  policyGeneration: Schema.String,
+  sandboxProfileDigest: Schema.String,
+  executable: Schema.optional(Schema.String),
   serverVersion: Schema.optional(Schema.String),
   capabilitiesDigest: Schema.String,
   health: Health,
   generation: PositiveInt,
 }).annotate({ identifier: "LanguageServiceSnapshotV1" })
-export type Snapshot = typeof Snapshot.Type
+export type Snapshot = Omit<typeof Snapshot.Type, "managedAttemptScope" | "directAttemptScope"> & {
+  readonly managedAttemptScope?: ManagedAttemptScopeV1
+  readonly directAttemptScope?: DirectAttemptScopeV1
+}
 export type SnapshotInput = Omit<Snapshot, "generation">
+
+/** Authenticated owner scope required for a language-service read. */
+export type AuthorityBinding = Pick<
+  Snapshot,
+  | "sessionID"
+  | "locationID"
+  | "ownerEpoch"
+  | "managedAttemptScope"
+  | "directAttemptScope"
+  | "workspaceId"
+  | "workspaceRevision"
+  | "principalId"
+  | "readScopeDigest"
+  | "policyGeneration"
+  | "sandboxProfileDigest"
+>
 
 export const Ref = Schema.Struct({
   key: Schema.String,
@@ -156,11 +352,19 @@ export class StaleRefError extends Schema.TaggedErrorClass<StaleRefError>()("LSP
   current: Schema.optional(PositiveInt),
 }) {}
 
+export class NotReadyError extends Schema.TaggedErrorClass<NotReadyError>()("LSPGenerationNotReadyError", {
+  key: Schema.String,
+  generation: PositiveInt,
+  health: Schema.Literal("starting"),
+}) {}
+
 export const UnavailableReason = Schema.Literals([
   "guard_not_verified",
   "source_absent",
+  "source_starting",
   "stale_generation",
   "editor_ingress_absent",
+  "owner_scope_mismatch",
 ])
 export type UnavailableReason = typeof UnavailableReason.Type
 
@@ -212,15 +416,27 @@ export interface Availability {
 /**
  * Non-throwing availability report for UI/CLI/status surfaces and tests.
  */
-export function availability(input: { operation: Operation; ledger?: Ledger; ref?: Ref }): Availability {
+export function availability(input: {
+  operation: Operation
+  ledger?: Ledger
+  ref?: Ref
+  authority?: AuthorityBinding
+}): Availability {
   const operation = input.operation
   if (PROCESS_OPERATIONS.has(operation)) {
-    return {
-      operation,
-      available: false,
-      reason: "guard_not_verified",
-      detail: "language-server process control needs the Rust Guard/ExecutionHost route, which is not verified for this origin",
+    // Process control is reported available only when the single spawn choke point
+    // (`launch.ts`) actually has a registered Guard/ExecutionHost route. Today it does not,
+    // so the broker, the status surface and the gate all agree on `guard_not_verified`.
+    if (!languageServiceProcessRouteAvailable()) {
+      return {
+        operation,
+        available: false,
+        reason: "guard_not_verified",
+        detail:
+          "language-server process control needs the Rust Guard/ExecutionHost route, which is not registered for this origin",
+      }
     }
+    return { operation, available: true }
   }
   if (PREPARE_OPERATIONS.has(operation)) {
     return {
@@ -248,6 +464,22 @@ export function availability(input: { operation: Operation; ledger?: Ledger; ref
         detail: `reference generation ${input.ref.generation} is not the current usable generation ${current.generation}`,
       }
     }
+    if (current.health === "starting") {
+      return {
+        operation,
+        available: false,
+        reason: "source_starting",
+        detail: `language-service generation ${current.generation} is still starting`,
+      }
+    }
+    if (!input.authority || !authorityMatches(current, input.authority)) {
+      return {
+        operation,
+        available: false,
+        reason: "owner_scope_mismatch",
+        detail: "language-service query requires the authenticated workspace, read scope, policy and sandbox binding",
+      }
+    }
     return {
       operation,
       available: true,
@@ -268,7 +500,12 @@ export function availability(input: { operation: Operation; ledger?: Ledger; ref
  * throws `UnavailableError` (server-backed/prepare operations, missing source)
  * or `StaleRefError` (dropped generation) otherwise.
  */
-export function requireAvailable(input: { operation: Operation; ledger?: Ledger; ref?: Ref }): Snapshot {
+export function requireAvailable(input: {
+  operation: Operation
+  ledger?: Ledger
+  ref?: Ref
+  authority?: AuthorityBinding
+}): Snapshot {
   if (PROCESS_OPERATIONS.has(input.operation) || PREPARE_OPERATIONS.has(input.operation)) {
     const report = availability(input)
     throw new UnavailableError({
@@ -277,7 +514,17 @@ export function requireAvailable(input: { operation: Operation; ledger?: Ledger;
       detail: report.detail,
     })
   }
-  if (input.ledger && input.ref) return input.ledger.require(input.ref)
+  if (input.ledger && input.ref) {
+    const report = availability(input)
+    if (report.reason === "source_starting" || report.reason === "owner_scope_mismatch") {
+      throw new UnavailableError({
+        operation: input.operation,
+        reason: report.reason,
+        detail: report.detail,
+      })
+    }
+    return input.ledger.require(input.ref, input.authority!)
+  }
   throw new UnavailableError({
     operation: input.operation,
     reason: "source_absent",
@@ -355,8 +602,21 @@ export interface Ledger {
   /** Register or replace a snapshot. Replacement advances the generation. */
   readonly register: (input: SnapshotInput) => Snapshot
   readonly get: (key: string) => Snapshot | undefined
-  /** Throws `StaleRefError` unless the reference names the current usable generation. */
-  readonly require: (ref: Ref) => Snapshot
+  /** Throws `StaleRefError` for stale/failed refs and `NotReadyError` while a generation is starting. */
+  readonly require: (ref: Ref, authority: AuthorityBinding) => Snapshot
+  /**
+   * Hold the exact usable generation for the lifetime of one read-only query.
+   * The caller supplies its cancellation/deadline signal and must settle the
+   * query before the pin is released; an abort request alone never drains it.
+   */
+  readonly withQueryPin: <T>(
+    ref: Ref,
+    authority: AuthorityBinding,
+    query: (snapshot: Snapshot, signal?: AbortSignal) => Promise<T>,
+    signal?: AbortSignal,
+  ) => Promise<T>
+  /** Active query pins for this exact generation; useful to an owner before idle eviction. */
+  readonly queryPinCount: (ref: Ref) => number
   /** Drop the referenced generation. Stale references are ignored, not errors. */
   readonly invalidate: (ref: Ref) => void
   readonly list: () => readonly Snapshot[]
@@ -365,46 +625,145 @@ export interface Ledger {
 export function makeLedger(): Ledger {
   const generations = new Map<string, number>()
   const snapshots = new Map<string, Snapshot>()
+  const queryPins = new Map<string, Map<number, number>>()
+
+  const requireSnapshot = (ref: Ref): Snapshot => {
+    const snapshot = snapshots.get(ref.key)
+    if (!snapshot) {
+      throw new StaleRefError({ key: ref.key, generation: ref.generation, reason: "invalidated" })
+    }
+    if (snapshot.generation !== ref.generation) {
+      throw new StaleRefError({
+        key: ref.key,
+        generation: ref.generation,
+        reason: "replaced",
+        current: snapshot.generation,
+      })
+    }
+    if (snapshot.health === "failed") {
+      throw new StaleRefError({ key: ref.key, generation: ref.generation, reason: "failed" })
+    }
+    if (snapshot.health === "starting") {
+      throw new NotReadyError({ key: ref.key, generation: ref.generation, health: snapshot.health })
+    }
+    return snapshot
+  }
+
+  const requireAuthority = (snapshot: Snapshot, authority: AuthorityBinding): void => {
+    if (!authorityMatches(snapshot, authority)) {
+      throw new UnavailableError({
+        operation: "query.hover",
+        reason: "owner_scope_mismatch",
+        detail: "language-service query scope does not match the authenticated owner binding",
+      })
+    }
+  }
 
   return {
     register(input) {
+      if (!input.workspaceRevision.trim()) {
+        throw new TypeError("language-service snapshot workspaceRevision must be non-empty")
+      }
+      try {
+        validateHostProcessScope({
+          sessionID: input.sessionID,
+          locationID: input.locationID,
+          ownerEpoch: input.ownerEpoch,
+          workspaceRevision: input.workspaceRevision,
+          managedAttemptScope: input.managedAttemptScope as ManagedAttemptScopeV1 | undefined,
+          directAttemptScope: input.directAttemptScope as DirectAttemptScopeV1 | undefined,
+          workspaceID: input.workspaceId,
+        })
+      } catch (error) {
+        throw new TypeError(error instanceof Error ? error.message : "language-service process scope is invalid")
+      }
       const key = identityKey(identityOf(input))
       const generation = (generations.get(key) ?? 0) + 1
       generations.set(key, generation)
-      const snapshot: Snapshot = { ...input, generation }
+      const snapshot: Snapshot = Object.freeze({
+        ...input,
+        source:
+          input.source.kind === "supervised"
+            ? Object.freeze({
+                ...input.source,
+                processRef: Object.freeze({ ...validateHostProcessRef(input.source.processRef) }),
+                launchProfileRef: validateExecutionLaunchProfileRef(input.source.launchProfileRef),
+              })
+            : Object.freeze({ ...input.source }),
+        managedAttemptScope: freezeManagedAttemptScope(input.managedAttemptScope),
+        directAttemptScope: freezeDirectAttemptScope(input.directAttemptScope),
+        generation,
+      })
       snapshots.set(key, snapshot)
       return snapshot
     },
     get(key) {
       return snapshots.get(key)
     },
-    require(ref) {
-      const snapshot = snapshots.get(ref.key)
-      if (!snapshot) {
-        throw new StaleRefError({ key: ref.key, generation: ref.generation, reason: "invalidated" })
-      }
-      if (snapshot.generation !== ref.generation) {
-        throw new StaleRefError({
-          key: ref.key,
-          generation: ref.generation,
-          reason: "replaced",
-          current: snapshot.generation,
-        })
-      }
-      if (snapshot.health === "failed") {
-        throw new StaleRefError({ key: ref.key, generation: ref.generation, reason: "failed" })
-      }
+    require(ref, authority) {
+      const snapshot = requireSnapshot(ref)
+      requireAuthority(snapshot, authority)
       return snapshot
+    },
+    async withQueryPin(ref, authority, query, signal) {
+      signal?.throwIfAborted()
+      const snapshot = requireSnapshot(ref)
+      requireAuthority(snapshot, authority)
+      let generations = queryPins.get(ref.key)
+      if (!generations) {
+        generations = new Map()
+        queryPins.set(ref.key, generations)
+      }
+      generations.set(ref.generation, (generations.get(ref.generation) ?? 0) + 1)
+
+      try {
+        signal?.throwIfAborted()
+        return await query(snapshot, signal)
+      } finally {
+        const remaining = (generations.get(ref.generation) ?? 1) - 1
+        if (remaining === 0) generations.delete(ref.generation)
+        else generations.set(ref.generation, remaining)
+        if (generations.size === 0) queryPins.delete(ref.key)
+      }
+    },
+    queryPinCount(ref) {
+      return queryPins.get(ref.key)?.get(ref.generation) ?? 0
     },
     invalidate(ref) {
       const snapshot = snapshots.get(ref.key)
       if (!snapshot || snapshot.generation !== ref.generation) return
+      // Eviction is allowed only after every read pinned to this exact
+      // generation has settled. The caller may retry invalidation afterward;
+      // cancellation by itself does not drain a query.
+      if ((queryPins.get(ref.key)?.get(ref.generation) ?? 0) > 0) return
       snapshots.delete(ref.key)
     },
     list() {
       return [...snapshots.values()]
     },
   }
+}
+
+function authorityMatches(snapshot: Snapshot, authority: AuthorityBinding): boolean {
+  return (
+    snapshot.sessionID === authority.sessionID &&
+    snapshot.locationID === authority.locationID &&
+    snapshot.ownerEpoch === authority.ownerEpoch &&
+    sameManagedAttemptScope(
+      snapshot.managedAttemptScope as ManagedAttemptScopeV1 | undefined,
+      authority.managedAttemptScope as ManagedAttemptScopeV1 | undefined,
+    ) &&
+    sameDirectAttemptScope(
+      snapshot.directAttemptScope as DirectAttemptScopeV1 | undefined,
+      authority.directAttemptScope as DirectAttemptScopeV1 | undefined,
+    ) &&
+    snapshot.workspaceId === authority.workspaceId &&
+    snapshot.workspaceRevision === authority.workspaceRevision &&
+    snapshot.principalId === authority.principalId &&
+    snapshot.readScopeDigest === authority.readScopeDigest &&
+    snapshot.policyGeneration === authority.policyGeneration &&
+    snapshot.sandboxProfileDigest === authority.sandboxProfileDigest
+  )
 }
 
 export * as Broker from "./broker"

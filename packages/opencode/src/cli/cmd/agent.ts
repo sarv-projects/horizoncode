@@ -77,6 +77,10 @@ const AgentCreateCommand = effectCmd({
         describe: "model to use in the format of provider/model",
       }),
   handler: Effect.fn("Cli.agent.create")(function* (args) {
+    if (!agentCreationRouteAvailable()) {
+      return yield* fail("Agent creation is unavailable until guarded execution is implemented")
+    }
+
     const { InstanceRef } = yield* Effect.promise(() => import("@/effect/instance-ref"))
     const { Agent } = yield* Effect.promise(() => import("../../agent/agent"))
     const { Provider } = yield* Effect.promise(() => import("@/provider/provider"))
@@ -248,6 +252,12 @@ const AgentCreateCommand = effectCmd({
     })
   }),
 })
+
+// Agent creation can make a provider request and writes executable agent
+// configuration. Keep this origin closed until both effects use Guard.
+function agentCreationRouteAvailable(): boolean {
+  return false
+}
 
 const AgentListCommand = effectCmd({
   command: "list",

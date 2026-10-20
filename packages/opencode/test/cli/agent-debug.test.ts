@@ -1,9 +1,12 @@
 import { expect } from "bun:test"
 import { Effect } from "effect"
+import { existsSync, mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { cliIt } from "../lib/cli-process"
 import { testProviderConfig } from "../lib/test-provider"
 
-cliIt.concurrent("debug agent ask permission cannot perform webfetch", ({ opencode }) =>
+cliIt.concurrent("debug agent tool mode fails closed before ask permission can perform webfetch", ({ opencode }) =>
   Effect.gen(function* () {
     let requests = 0
     const server = yield* Effect.acquireRelease(
@@ -34,13 +37,11 @@ cliIt.concurrent("debug agent ask permission cannot perform webfetch", ({ openco
     const output = `${result.stdout}\n${result.stderr}`
     expect(result.exitCode).not.toBe(0)
     expect(requests).toBe(0)
-    // A boot/graph failure also exits non-zero; require the permission path to be reached.
-    expect(output).not.toContain("Service not found")
-    expect(output).not.toContain("Unbound layer node")
+    expect(output).toContain("Debug agent tool execution is unavailable until guarded execution is implemented")
   }),
 )
 
-cliIt.concurrent("debug agent deny permission cannot perform webfetch", ({ opencode }) =>
+cliIt.concurrent("debug agent tool mode fails closed before deny permission can perform webfetch", ({ opencode }) =>
   Effect.gen(function* () {
     let requests = 0
     const server = yield* Effect.acquireRelease(
@@ -71,13 +72,11 @@ cliIt.concurrent("debug agent deny permission cannot perform webfetch", ({ openc
     const output = `${result.stdout}\n${result.stderr}`
     expect(result.exitCode).not.toBe(0)
     expect(requests).toBe(0)
-    // A boot/graph failure also exits non-zero; require the permission path to be reached.
-    expect(output).not.toContain("Service not found")
-    expect(output).not.toContain("Unbound layer node")
+    expect(output).toContain("Debug agent tool execution is unavailable until guarded execution is implemented")
   }),
 )
 
-cliIt.concurrent("debug agent explicit allow permission performs webfetch", ({ opencode }) =>
+cliIt.concurrent("debug agent tool mode does not turn explicit permission allow into Guard bypass", ({ opencode }) =>
   Effect.gen(function* () {
     let requests = 0
     const server = yield* Effect.acquireRelease(
@@ -105,8 +104,36 @@ cliIt.concurrent("debug agent explicit allow permission performs webfetch", ({ o
       },
     )
 
-    opencode.expectExit(result, 0, "debug agent webfetch allow")
-    expect(requests).toBe(1)
-    expect(result.stdout).toContain("debug tool reached server")
+    expect(result.exitCode).not.toBe(0)
+    expect(requests).toBe(0)
+    expect(`${result.stdout}\n${result.stderr}`).toContain(
+      "Debug agent tool execution is unavailable until guarded execution is implemented",
+    )
+  }),
+)
+
+cliIt.concurrent("debug agent tool mode rejects executable params without evaluating them", ({ opencode }) =>
+  Effect.gen(function* () {
+    const directory = mkdtempSync(path.join(tmpdir(), "horizoncode-debug-agent-params-"))
+    yield* Effect.addFinalizer(() => Effect.sync(() => rmSync(directory, { recursive: true, force: true })))
+    const marker = path.join(directory, "params-evaluated")
+    const expression = `(()=>{require("node:fs").writeFileSync(${JSON.stringify(marker)},"executed");return {}})()`
+    const result = yield* opencode.spawn(
+      ["debug", "agent", "debug_probe", "--tool", "webfetch", "--params", expression],
+      {
+        env: {
+          OPENCODE_CONFIG_CONTENT: JSON.stringify({
+            ...testProviderConfig("http://127.0.0.1:1/v1"),
+            agent: { debug_probe: { mode: "subagent", model: "test/test-model", permission: { webfetch: "allow" } } },
+          }),
+        },
+      },
+    )
+
+    expect(result.exitCode).not.toBe(0)
+    expect(existsSync(marker)).toBe(false)
+    expect(`${result.stdout}\n${result.stderr}`).toContain(
+      "Debug agent tool execution is unavailable until guarded execution is implemented",
+    )
   }),
 )

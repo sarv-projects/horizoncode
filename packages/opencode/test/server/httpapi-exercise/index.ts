@@ -186,14 +186,11 @@ const scenarios: Scenario[] = [
       body: { name: "HTTP API Project", commands: { start: "bun --version" } },
     }))
     .json(
-      200,
+      503,
       (body) => {
         object(body)
-        check(body.name === "HTTP API Project", "project update should return patched name")
-        check(
-          isRecord(body.commands) && body.commands.start === "bun --version",
-          "project update should return patched command",
-        )
+        check(body._tag === "ServiceUnavailableError", "project update should be unavailable before Guard mediation")
+        check(body.service === "project", "project update should identify the unavailable service")
       },
       "status",
     ),
@@ -205,7 +202,14 @@ const scenarios: Scenario[] = [
       headers: ctx.headers(),
       body: { name: "Missing Project" },
     }))
-    .json(404, object, "status"),
+    .json(
+      503,
+      (body) => {
+        object(body)
+        check(body._tag === "ServiceUnavailableError", "project update should stay unavailable for unknown projects")
+      },
+      "status",
+    ),
   http.protected
     .post("/project/git/init", "project.initGit")
     .mutating()

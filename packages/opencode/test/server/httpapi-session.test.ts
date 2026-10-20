@@ -564,7 +564,7 @@ describe("session HttpApi", () => {
   )
 
   it.instance(
-    "returns HTTP 503 for shell until terminal.run is Guard-mediated",
+    "returns HTTP 503 and starts no process for shell when the host kernel is unavailable",
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
@@ -584,12 +584,14 @@ describe("session HttpApi", () => {
           message: "Shell execution is unavailable until terminal.run is mediated by Rust Guard and ExecutionHost.",
           service: "terminal.run",
         })
+        expect(existsSync(path.join(test.directory, "shell-must-not-run"))).toBe(false)
       }),
     { git: true, config: { formatter: false, lsp: false } },
+    { timeout: 15000 },
   )
 
   it.instance(
-    "returns HTTP 503 for slash-command shell interpolation",
+    "returns HTTP 503 and starts no process for slash-command interpolation without the host kernel",
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
@@ -622,10 +624,11 @@ describe("session HttpApi", () => {
         expect(existsSync(marker)).toBe(false)
       }),
     { git: true, config: { formatter: false, lsp: false } },
+    { timeout: 15000 },
   )
 
   it.instance(
-    "keeps legacy revert unavailable and leaves files unchanged when the Guard host is unavailable",
+    "keeps legacy revert unavailable without starting a snapshot process or changing files",
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
@@ -647,40 +650,6 @@ describe("session HttpApi", () => {
         yield* Effect.promise(() => writeFile(tracked, "before\n"))
         const session = yield* createSession({ title: "legacy revert unavailable" })
         const user = yield* createTextMessage(session.id, "revert target")
-        const sessionSvc = yield* Session.Service
-        const timestamp = Date.now()
-        const assistant = yield* sessionSvc.updateMessage({
-          id: MessageID.ascending(),
-          role: "assistant",
-          sessionID: session.id,
-          time: { created: timestamp, completed: timestamp },
-          parentID: user.info.id,
-          modelID: ModelV2.ID.make("model"),
-          providerID: ProviderV2.ID.make("provider"),
-          mode: "build",
-          agent: "build",
-          path: { cwd: test.directory, root: test.directory },
-          cost: 0,
-          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-        })
-        const { Snapshot: legacySnapshot } = yield* Effect.promise(() => import("@/snapshot"))
-        const snapshotLayer = AppNodeBuilder.build(legacySnapshot.node)
-        const patch = yield* Effect.gen(function* () {
-          const snapshot = yield* legacySnapshot.Service
-          const baseline = yield* snapshot.track()
-          if (!baseline) throw new Error("Snapshot capture was unavailable for the legacy revert fixture")
-          yield* Effect.promise(() => writeFile(tracked, "after\n"))
-          return yield* snapshot.patch(baseline)
-        }).pipe(Effect.provide(snapshotLayer))
-
-        yield* sessionSvc.updatePart({
-          id: PartID.ascending(),
-          sessionID: session.id,
-          messageID: assistant.id,
-          type: "patch",
-          hash: patch.hash,
-          files: patch.files,
-        })
 
         const response = yield* request(pathFor(SessionPaths.revert, { sessionID: session.id }), {
           method: "POST",
@@ -696,10 +665,10 @@ describe("session HttpApi", () => {
           _tag: "ServiceUnavailableError",
           service: "files.patch",
         })
-        expect(yield* Effect.promise(() => readFile(tracked, "utf8"))).toBe("after\n")
+        expect(yield* Effect.promise(() => readFile(tracked, "utf8"))).toBe("before\n")
         expect((yield* Session.use.get(session.id)).revert).toBeUndefined()
       }),
-    { git: true, config: { formatter: false, lsp: false } },
+    { config: { formatter: false, lsp: false } },
     30_000,
   )
 

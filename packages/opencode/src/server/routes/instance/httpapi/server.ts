@@ -43,7 +43,6 @@ import { SessionShare } from "@/share/session"
 import { ShareNext } from "@/share/share-next"
 import { Skill } from "@/skill"
 import { Discovery } from "@/skill/discovery"
-import { Snapshot } from "@/snapshot"
 import { Storage } from "@/storage/storage"
 import { ToolRegistry } from "@/tool/registry"
 import { Truncate } from "@/tool/truncate"
@@ -86,6 +85,8 @@ import { eventHandlers } from "./handlers/event"
 import { configHandlers } from "./handlers/config"
 import { controlHandlers } from "./handlers/control"
 import { controlPlaneHandlers } from "./handlers/control-plane"
+import { goalReviewHandlers } from "./handlers/goal-review"
+import { automationHandlers } from "./handlers/automation"
 import { experimentalHandlers } from "./handlers/experimental"
 import { fileHandlers } from "./handlers/file"
 import { globalHandlers } from "./handlers/global"
@@ -95,6 +96,7 @@ import { permissionHandlers } from "./handlers/permission"
 import { projectHandlers } from "./handlers/project"
 import { projectCopyHandlers } from "./handlers/project-copy"
 import { providerHandlers } from "./handlers/provider"
+import { providerDoctorHandlers } from "./handlers/provider-doctor"
 import { ptyConnectHandlers, ptyHandlers } from "./handlers/pty"
 import { questionHandlers } from "./handlers/question"
 import { sessionHandlers } from "./handlers/session"
@@ -165,10 +167,13 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
     questionHandlers,
     permissionHandlers,
     providerHandlers,
+    providerDoctorHandlers,
     sessionHandlers,
     syncHandlers,
     tuiHandlers,
     workspaceHandlers,
+    goalReviewHandlers,
+    automationHandlers,
   ]),
 )
 
@@ -221,7 +226,6 @@ const app = LayerNode.group([
   Git.node,
   Ripgrep.node,
   Storage.node,
-  Snapshot.node,
   Plugin.node,
   ModelsDev.node,
   Provider.node,

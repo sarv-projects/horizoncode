@@ -10,6 +10,7 @@ use std::fmt;
 use std::fs::{self, FileType, Metadata};
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -22,10 +23,64 @@ pub struct UnixPeerPolicy {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnixPeerIdentity {
-    pub pid: u32,
-    pub uid: u32,
-    pub gid: u32,
-    pub executable: PathBuf,
+    pid: u32,
+    uid: u32,
+    gid: u32,
+    executable: PathBuf,
+    /// Kernel process generation from `/proc/<pid>/stat` field 22. This
+    /// distinguishes a live authenticated peer from later PID reuse.
+    start_identity: u64,
+}
+
+impl UnixPeerIdentity {
+    pub fn pid(&self) -> u32 { self.pid }
+    pub fn uid(&self) -> u32 { self.uid }
+    pub fn gid(&self) -> u32 { self.gid }
+    pub fn executable(&self) -> &Path { &self.executable }
+    pub fn start_identity(&self) -> u64 { self.start_identity }
+
+    /// Re-check the same kernel PID, process generation and executable before
+    /// using this identity as a durable owner proof.
+    pub fn is_current(&self) -> bool {
+        let Ok(start_identity) = process_start_identity(self.pid) else {
+            return false;
+        };
+        if start_identity != self.start_identity {
+            return false;
+        }
+        fs::canonicalize(format!("/proc/{}/exe", self.pid))
+            .is_ok_and(|executable| executable == self.executable)
+    }
+
+    /// Domain-separated digest of the kernel-referenced executable object. It
+    /// includes the executable path and stable device/inode/size/mtime facts,
+    /// and rechecks the peer generation around observation; it is provenance,
+    /// not a code-signing or launch authorization claim.
+    pub fn executable_identity_digest(&self) -> Option<String> {
+        if !self.is_current() {
+            return None;
+        }
+        let file = File::open(format!("/proc/{}/exe", self.pid)).ok()?;
+        let metadata = file.metadata().ok()?;
+        if !metadata.is_file() {
+            return None;
+        }
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"horizoncode.authenticated-peer-executable-identity.v1\0");
+        let pid = self.pid.to_be_bytes();
+        let start_identity = self.start_identity.to_be_bytes();
+        for value in [self.executable.as_os_str().as_bytes(), pid.as_slice(), start_identity.as_slice()] {
+            hasher.update(&(value.len() as u64).to_be_bytes());
+            hasher.update(value);
+        }
+        for value in [metadata.dev(), metadata.ino(), metadata.len(), metadata.mtime() as u64, metadata.mtime_nsec() as u64] {
+            hasher.update(&value.to_be_bytes());
+        }
+        if !self.is_current() {
+            return None;
+        }
+        Some(format!("blake3:{}", hasher.finalize().to_hex()))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -330,10 +385,44 @@ fn authenticate(
             "kernel peer executable does not match policy",
         ));
     }
+    let start_identity = process_start_identity(credentials.pid as u32)?;
+    // Verify the PID did not exit and get reused between SO_PEERCRED, executable
+    // resolution and reading the generation field.
+    if !fs::canonicalize(format!("/proc/{}/exe", credentials.pid))
+        .is_ok_and(|current| current == executable)
+        || process_start_identity(credentials.pid as u32).ok() != Some(start_identity)
+    {
+        return Err(UnixPeerError::new(
+            UnixPeerErrorKind::PeerIdentityUnavailable,
+            "peer process changed while its kernel identity was being captured",
+        ));
+    }
     Ok(UnixPeerIdentity {
         pid: credentials.pid as u32,
         uid: credentials.uid,
         gid: credentials.gid,
         executable,
+        start_identity,
     })
+}
+
+fn process_start_identity(pid: u32) -> Result<u64, UnixPeerError> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).map_err(|error| {
+        UnixPeerError::new(UnixPeerErrorKind::PeerIdentityUnavailable, error.to_string())
+    })?;
+    // comm (field 2) is parenthesized and may itself contain spaces or ')'.
+    // Parse fields after its final delimiter: state is index 0 (field 3), and
+    // starttime is index 19 (field 22).
+    let (_, fields) = stat.rsplit_once(')').ok_or_else(|| {
+        UnixPeerError::new(UnixPeerErrorKind::PeerIdentityUnavailable, "malformed /proc process stat")
+    })?;
+    fields
+        .split_whitespace()
+        .nth(19)
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| UnixPeerError::new(
+            UnixPeerErrorKind::PeerIdentityUnavailable,
+            "peer process start identity is unavailable",
+        ))
 }

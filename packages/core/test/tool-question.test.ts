@@ -12,6 +12,11 @@ import { testEffect } from "./lib/effect"
 import { toolIdentity, executeTool, settleTool, toolDefinitions } from "./lib/tool"
 
 const sessionID = SessionV2.ID.make("ses_question_tool_test")
+const inputQuestion: QuestionV2.Prompt = {
+  question: "Proceed?",
+  header: "Confirm",
+  options: [{ label: "Yes", description: "Continue" }],
+}
 const assertions: PermissionV2.AssertInput[] = []
 let captured: QuestionV2.AskInput | undefined
 let reject = false
@@ -64,7 +69,7 @@ describe("QuestionTool", () => {
         yield* settleTool(registry, {
           sessionID,
           ...toolIdentity,
-          call: { type: "tool-call", id: "call-question-denied", name: "question", input: { questions: [] } },
+          call: { type: "tool-call", id: "call-question-denied", name: "question", input: { questions: [inputQuestion] } },
         }),
       ).toEqual({ result: { type: "error", value: "Permission denied: question" } })
       expect(capturedInput()).toBeUndefined()
@@ -134,11 +139,11 @@ describe("QuestionTool", () => {
       yield* executeTool(registryService, {
         sessionID,
         ...toolIdentity,
-        call: { type: "tool-call", id: "call-question", name: "question", input: { questions: [] } },
+        call: { type: "tool-call", id: "call-question", name: "question", input: { questions: [inputQuestion] } },
       })
       expect(capturedInput()).toEqual({
         sessionID,
-        questions: [],
+        questions: [inputQuestion],
         tool: { messageID: toolIdentity.assistantMessageID, callID: "call-question" },
       })
     }),
@@ -153,7 +158,7 @@ describe("QuestionTool", () => {
       const fiber = yield* executeTool(registryService, {
         sessionID,
         ...toolIdentity,
-        call: { type: "tool-call", id: "call-question", name: "question", input: { questions: [] } },
+        call: { type: "tool-call", id: "call-question", name: "question", input: { questions: [inputQuestion] } },
       }).pipe(Effect.forkScoped)
 
       const exit = yield* Fiber.await(fiber)

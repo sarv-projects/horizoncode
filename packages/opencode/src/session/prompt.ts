@@ -46,6 +46,7 @@ import { decodeDataUrl } from "@/util/data-url"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Scope, Context, Schema, Types } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
+import type { ManagedAttemptAuthority } from "./managed-control"
 import { SessionRunState } from "./run-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -58,6 +59,7 @@ import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
 import { requireToolExecution } from "./tool-batch"
+import type { DirectAttemptAuthority } from "./tool-batch"
 
 import { LLMEvent } from "@opencode-ai/llm"
 
@@ -85,8 +87,41 @@ IMPORTANT:
 
 const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested structured output. You MUST use the StructuredOutput tool to provide your final response. Do NOT respond with plain text - you MUST call the StructuredOutput tool with your answer formatted according to the schema.`
 
+function sessionAgentProfilePin(metadata: Record<string, unknown> | undefined) {
+  const raw = metadata?.horizonAgentProfileV2
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined
+  const value = raw as Record<string, unknown>
+  if (
+    Object.keys(value).length !== 5 ||
+    ["harness", "permissionsDigest", "profileDigest", "profileID", "profileRevision"].some((key) => !Object.hasOwn(value, key)) ||
+    typeof value.profileID !== "string" ||
+    typeof value.profileRevision !== "string" ||
+    !/^[1-9][0-9]{0,15}$/.test(value.profileRevision) ||
+    typeof value.profileDigest !== "string" ||
+    !/^blake3:[0-9a-f]{64}$/.test(value.profileDigest) ||
+    typeof value.permissionsDigest !== "string" ||
+    !/^(sha256|blake3):[0-9a-f]{64}$/.test(value.permissionsDigest) ||
+    typeof value.harness !== "string" ||
+    !/^[A-Za-z0-9._-]{1,256}$/.test(value.harness)
+  ) {
+    throw new SessionSupervisorError({ stage: "agent-profile", reason: "child Session has an invalid immutable AgentProfileV2 pin" })
+  }
+  const revision = Number(value.profileRevision)
+  if (!Number.isSafeInteger(revision) || revision < 1) {
+    throw new SessionSupervisorError({ stage: "agent-profile", reason: "child Session AgentProfileV2 revision exceeds Core's supported integer range" })
+  }
+  return { profileID: value.profileID, revision, harness: value.harness }
+}
+
 const AGENT_SPAWN_UNAVAILABLE_MESSAGE =
   "Agent delegation is unavailable until agents.spawn is mediated by Rust Guard and ExecutionHost."
+
+export function shouldApplyPendingFeatures(
+  directAttempt?: DirectAttemptAuthority,
+  managedAttempt?: ManagedAttemptAuthority,
+) {
+  return directAttempt === undefined && managedAttempt === undefined
+}
 
 function mcpResourceBase64Size(value: string) {
   const trimmed = value.replace(/\s/g, "")
@@ -112,6 +147,14 @@ export interface Interface {
     SessionV1.WithParts,
     Image.Error | Session.BusyError | SessionSupervisorError
   >
+  /**
+   * Internal managed-run entry. The authority must be minted by HostKernel
+   * admission; request handlers never accept it from client payloads.
+   */
+  readonly promptManaged: (
+    input: PromptInput,
+    authority: ManagedAttemptAuthority,
+  ) => Effect.Effect<SessionV1.WithParts, Image.Error | Session.BusyError | SessionSupervisorError>
   readonly loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError | SessionSupervisorError>
   readonly shell: (input: ShellInput) => Effect.Effect<
     SessionV1.WithParts,
@@ -164,11 +207,17 @@ const layer = Layer.effect(
     const supervisor = yield* SessionSupervisor.Service
     const locations = yield* LocationServiceMap.Service
     const { db } = database
-    const ops = Effect.fn("SessionPrompt.ops")(function* () {
+    const ops: () => Effect.Effect<TaskPromptOps> = Effect.fn("SessionPrompt.ops")(function* () {
       return {
-        cancel: (sessionID: SessionID) => cancel(sessionID),
-        resolvePromptParts: (template: string) => resolvePromptParts(template),
-        prompt: (input: PromptInput) => prompt(input),
+        cancel: (sessionID: SessionID): Effect.Effect<void> => cancel(sessionID),
+        resolvePromptParts: (template: string): Effect.Effect<PromptInput["parts"], SessionSupervisorError> =>
+          resolvePromptParts(template),
+        prompt: (
+          input: PromptInput,
+          directAttempt?: DirectAttemptAuthority,
+          managedAttempt?: ManagedAttemptAuthority,
+        ): Effect.Effect<SessionV1.WithParts, Image.Error | Session.BusyError | SessionSupervisorError> =>
+          promptWithAttempt(input, directAttempt, managedAttempt),
       } satisfies TaskPromptOps
     })
 
@@ -782,8 +831,16 @@ const layer = Layer.effect(
       return { info, parts }
     }, Effect.scoped)
 
-    const promptWork: Interface["prompt"] = Effect.fn("SessionPrompt.prompt")(function* (input: PromptInput) {
+    const promptWork: TaskPromptOps["prompt"] = Effect.fn("SessionPrompt.prompt")(function* (
+      input: PromptInput,
+      directAttempt?: DirectAttemptAuthority,
+      managedAttempt?: ManagedAttemptAuthority,
+    ) {
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+      // Apply settings queued at the next-turn boundary only for a new root
+      // prompt. Attempt-bound child prompts execute inside the parent turn and
+      // must retain its pinned effective configuration.
+      if (shouldApplyPendingFeatures(directAttempt, managedAttempt)) yield* config.applyPendingFeatures()
       yield* revert.cleanup(session)
       const message = yield* createUserMessage(input)
       yield* sessions.touch(input.sessionID)
@@ -798,9 +855,21 @@ const layer = Layer.effect(
       }
 
       if (input.noReply === true) return message
-      return yield* loop({ sessionID: input.sessionID })
+      return yield* loopWithAttempt({ sessionID: input.sessionID }, directAttempt, managedAttempt)
     })
-    const prompt: Interface["prompt"] = (input) => state.withExecutionOwner(input.sessionID, promptWork(input))
+    const promptWithAttempt: TaskPromptOps["prompt"] = (input, directAttempt, managedAttempt) =>
+      state.withExecutionOwner(input.sessionID, promptWork(input, directAttempt, managedAttempt))
+    const prompt: Interface["prompt"] = (input) => promptWithAttempt(input)
+    const promptManaged: Interface["promptManaged"] = (input, authority) => {
+      const scope = authority.currentScope()
+      if (scope.sessionID !== input.sessionID) {
+        return Effect.fail(new SessionSupervisorError({
+          stage: "managed-attempt",
+          reason: "managed Attempt scope is bound to a different Session",
+        }))
+      }
+      return promptWithAttempt(input, undefined, authority)
+    }
 
     const lastAssistant = Effect.fnUntraced(function* (sessionID: SessionID) {
       const match = yield* sessions.findMessage(sessionID, (m) => m.info.role !== "user").pipe(Effect.orDie)
@@ -810,8 +879,19 @@ const layer = Layer.effect(
       throw new Error("Impossible")
     })
 
-    const runLoop: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts, SessionSupervisorError> = Effect.fn("SessionPrompt.run")(
-      function* (sessionID: SessionID) {
+    const runLoop: (
+      sessionID: SessionID,
+      directAttempt?: DirectAttemptAuthority,
+      managedAttempt?: ManagedAttemptAuthority,
+    ) => Effect.Effect<
+      SessionV1.WithParts,
+      SessionSupervisorError
+    > = Effect.fn("SessionPrompt.run")(
+      function* (
+        sessionID: SessionID,
+        directAttempt?: DirectAttemptAuthority,
+        managedAttempt?: ManagedAttemptAuthority,
+      ) {
         const ctx = yield* InstanceState.context
         let structured: unknown
         let step = 0
@@ -899,7 +979,24 @@ const layer = Layer.effect(
             continue
           }
 
-          const agent = yield* agents.get(lastUser.agent)
+          const profilePin = sessionAgentProfilePin(session.metadata)
+          const agent = yield* (profilePin
+            ? agents.getProfile(profilePin.profileID, profilePin.revision)
+            : agents.get(lastUser.agent))
+          if (profilePin) {
+            const projection = agent?.options.horizonAgentProfile
+            if (
+              typeof projection !== "object" ||
+              projection === null ||
+              !("harness" in projection) ||
+              projection.harness !== profilePin.harness
+            ) {
+              return yield* new SessionSupervisorError({
+                stage: "agent-profile",
+                reason: "resumed child Session harness does not match its immutable AgentProfileV2 pin",
+              })
+            }
+          }
           if (!agent) {
             const available = (yield* agents.list()).filter((a) => !a.hidden).map((a) => a.name)
             const hint = available.length ? ` Available agents: ${available.join(", ")}` : ""
@@ -963,6 +1060,8 @@ const layer = Layer.effect(
               bypassAgentCheck,
               messages: msgs,
               promptOps,
+              directAttempt,
+              managedAttempt,
             }).pipe(
               Effect.provideService(Permission.Service, permission),
               Effect.provideService(ToolRegistry.Service, registry),
@@ -1012,6 +1111,8 @@ const layer = Layer.effect(
               permission: session.permission,
               sessionID,
               parentSessionID: session.parentID,
+              directAttempt,
+              managedAttempt,
               system,
               messages: [
                 ...modelMsgs,
@@ -1078,9 +1179,17 @@ const layer = Layer.effect(
       },
     )
 
-    const loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError | SessionSupervisorError> = Effect.fn(
+    const loopWithAttempt: (
+      input: LoopInput,
+      directAttempt?: DirectAttemptAuthority,
+      managedAttempt?: ManagedAttemptAuthority,
+    ) => Effect.Effect<SessionV1.WithParts, Session.BusyError | SessionSupervisorError> = Effect.fn(
       "SessionPrompt.loop",
-    )(function* (input: LoopInput) {
+    )(function* (
+      input: LoopInput,
+      directAttempt?: DirectAttemptAuthority,
+      managedAttempt?: ManagedAttemptAuthority,
+    ) {
       const observedRun = Effect.scoped(
         Effect.gen(function* () {
           const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
@@ -1090,13 +1199,16 @@ const layer = Layer.effect(
             .watchSession(input.sessionID, database.path, session.directory, turnComplete, supervisorReady)
             .pipe(Effect.forkScoped({ startImmediately: true }))
           yield* Deferred.await(supervisorReady)
-          const result = yield* runLoop(input.sessionID).pipe(Effect.onExit(() => Ref.set(turnComplete, true)))
+          const result = yield* runLoop(input.sessionID, directAttempt, managedAttempt).pipe(
+            Effect.onExit(() => Ref.set(turnComplete, true)),
+          )
           yield* Fiber.join(watcher)
           return result
         }),
       )
       return yield* state.ensureRunning(input.sessionID, lastAssistant(input.sessionID), observedRun)
     })
+    const loop: Interface["loop"] = (input) => loopWithAttempt(input)
 
     // Pty is a location-scoped service: resolve it per call through the
     // LocationServiceMap instead of binding it in this global graph.
@@ -1179,6 +1291,12 @@ const layer = Layer.effect(
 
       const shellBlocks = ConfigMarkdown.shell(template)
       if (shellBlocks.length > 0) {
+        if (shellBlocks.length > 1) {
+          return yield* new SessionSupervisorError({
+            stage: "host-kernel",
+            reason: "multiple shell interpolations require atomic Guard admission",
+          })
+        }
         const instance = yield* InstanceState.context
         let rendered = ""
         let offset = 0
@@ -1273,6 +1391,7 @@ const layer = Layer.effect(
     return Service.of({
       cancel,
       prompt,
+      promptManaged,
       loop,
       shell,
       command,

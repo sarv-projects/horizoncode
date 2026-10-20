@@ -26,6 +26,7 @@ const supervisor = LayerNode.make({
       registerHostLocation: () => Effect.die("unexpected host location registration"),
       prepareUserEffect: () => Effect.die("unexpected user effect preparation"),
       replyGuardApproval: () => Effect.die("unexpected guard approval reply"),
+      awaitManagedVerifierApprovals: () => Effect.die("unexpected managed verifier approval"),
       prepareToolBatch: () => Effect.die("unexpected effect preparation"),
       executeWrite: () => Effect.die("unexpected effect execution"),
       executePatch: () => Effect.die("unexpected patch execution"),
@@ -310,7 +311,7 @@ describe("tool.apply_patch Guard preparation", () => {
 
         yield* expectFailure(
           execute("*** Begin Patch\n*** Update File: guarded.txt\n@@\n-unchanged\n+changed\n*** End Patch", ctx),
-          "Patch denied: guarded operation set changed",
+          "Patch denied: guarded operation set or lease changed",
         )
         expect(asks).toBe(0)
         expect(yield* readText(target)).toBe("unchanged\n")

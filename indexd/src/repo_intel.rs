@@ -48,6 +48,15 @@ impl RepoIntelGeneration {
         self.base.digest()
     }
 
+    /// Wrap an already-built immutable base generation without rebuilding or
+    /// re-hashing it.
+    ///
+    /// The transport handler adopts a decoded [`crate::GenerationPack`] this way,
+    /// so a served generation carries exactly the digest the host built.
+    pub fn from_base(base: BaseGeneration) -> Self {
+        Self { base }
+    }
+
     pub fn status(&self) -> GenerationStatus {
         self.base.status()
     }

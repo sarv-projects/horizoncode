@@ -3,10 +3,50 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
+pub mod generation_store;
+pub mod handler;
+pub mod persist;
 pub mod repo_intel;
+pub mod repo_structure;
+pub mod transport;
+pub mod upload;
+pub mod watch;
+pub use generation_store::{
+    GenerationStoreError, GenerationStoreLimits, GenerationStoreStats, PersistentGenerationStore,
+    DEFAULT_MAX_PERSISTED_BYTES, DEFAULT_MAX_PERSISTED_GENERATIONS,
+};
+pub use handler::TransportHandler;
+pub use persist::{GenerationPack, DEFAULT_MAX_PACK_BYTES};
 pub use repo_intel::{
-    RepoIntelGeneration, RepoIntelOperation, RepoIntelQuery, RepoIntelQueryResult,
-    RepoIntelStatus, RepoIntelUnavailableReason,
+    RepoIntelGeneration, RepoIntelOperation, RepoIntelQuery, RepoIntelQueryResult, RepoIntelStatus,
+    RepoIntelUnavailableReason,
+};
+pub use repo_structure::{
+    RepoNodeRefV1, RepoStructureCompletenessV1, RepoStructureCoverageV1, RepoStructureError,
+    RepoStructureFallbackReasonV1, RepoStructureFallbackV1, RepoStructureFreshnessV1,
+    RepoStructurePageV1, RepoStructureProvenanceV1, RepoStructureQueryV1, RepoStructureSelectorV1,
+    RepoStructureSourceKindV1, RepoStructureStatusV1, StructureByteRangeV1, MAX_STRUCTURE_BYTES,
+    MAX_STRUCTURE_CURSOR_BYTES, MAX_STRUCTURE_DEPTH, MAX_STRUCTURE_IDENTIFIER_BYTES,
+    MAX_STRUCTURE_NODES, MAX_STRUCTURE_SYMBOL_BYTES,
+};
+pub use transport::{
+    operation_from_tag, operation_tag, peek_request_frame, peek_response_frame, FrameHeader,
+    QueryResponse, TransportError, TransportRequest, TransportResponse, WireErrorCode,
+    MAX_BUILD_BODY_BYTES, MAX_ERROR_DETAIL_BYTES, MAX_OVERLAY_BODY_BYTES, MAX_QUERY_BODY_BYTES,
+    MAX_QUERY_RESPONSE_BODY_BYTES, MAX_RELEASE_BODY_BYTES, MAX_TRANSPORT_BODY_BYTES,
+    MAX_TRANSPORT_FRAME_BYTES, REQUEST_BUILD, REQUEST_OVERLAY, REQUEST_QUERY,
+    REQUEST_RELEASE_GENERATION, REQUEST_RELEASE_OVERLAY, RESPONSE_BUILD, RESPONSE_ERROR,
+    RESPONSE_OVERLAY, RESPONSE_QUERY, RESPONSE_RELEASED, TRANSPORT_CHECKSUM_BYTES,
+    TRANSPORT_HEADER_BYTES, TRANSPORT_VERSION,
+};
+pub use upload::{
+    GenerationUploadError, GenerationUploadId, GenerationUploadStore, PackDigest, MAX_STAGED_BYTES,
+    MAX_STAGED_UPLOADS, MAX_UPLOAD_CHUNK_BYTES, MAX_UPLOAD_TTL_MS,
+};
+pub use watch::{
+    GenerationLifecycle, LifecycleBuildTicket, LifecycleError, LifecycleState, WatchBatch,
+    WatchBatcher, WatchChange, WatchChangeKind, WatchClassification, WatchDecision,
+    DEFAULT_WATCH_DEBOUNCE_MS, MAX_WATCH_CHANGES, MAX_WATCH_DEBOUNCE_MS,
 };
 
 pub const MAX_BASE_FILES: usize = 4_096;
@@ -38,6 +78,35 @@ pub struct Digest([u8; 32]);
 impl Digest {
     fn from_hasher(hasher: blake3::Hasher) -> Self {
         Self(*hasher.finalize().as_bytes())
+    }
+
+    /// Build a digest from its raw 32 bytes.
+    ///
+    /// The transport bridge uses this to carry an id it decoded from the host
+    /// (for example a hex string from the TypeScript port) into a typed request.
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Parse the canonical `blake3:<64 lowercase hex>` representation produced by
+    /// [`Display`](fmt::Display).
+    ///
+    /// Returns `None` for any other shape; uppercase hex, a different prefix,
+    /// padding or a wrong length are rejected. Parsing a digest never proves that
+    /// the digest was observed: bindings still have to match a served generation.
+    pub fn parse(value: &str) -> Option<Self> {
+        let hex = value.strip_prefix("blake3:")?;
+        let hex = hex.as_bytes();
+        if hex.len() != 64 {
+            return None;
+        }
+        let mut bytes = [0u8; 32];
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            let high = decode_hex_digit(hex[index * 2]).ok()?;
+            let low = decode_hex_digit(hex[index * 2 + 1]).ok()?;
+            *byte = (high << 4) | low;
+        }
+        Some(Self(bytes))
     }
 
     /// Returns the raw 32-byte BLAKE3 digest.
@@ -120,7 +189,7 @@ impl GenerationPins {
 }
 
 /// A bounded caller-provided UTF-8 file snapshot. No filesystem access is performed.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileSnapshot {
     pub path: String,
     pub contents: Vec<u8>,
@@ -136,6 +205,7 @@ impl FileSnapshot {
 }
 
 /// One caller-supplied edit to an immutable buffer overlay.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OverlayChange {
     Replace(FileSnapshot),
     Clear { path: String },
@@ -259,6 +329,15 @@ impl BaseGeneration {
 
     pub fn digest(&self) -> Digest {
         self.generation_digest
+    }
+
+    /// Return the immutable content digest and UTF-8 byte length for one exact
+    /// normalized path in this generation. Structural references use this to
+    /// reject stale or forged file ranges without opening the workspace.
+    pub fn file_observation(&self, path: &str) -> Option<(Digest, usize)> {
+        self.files
+            .get(path)
+            .map(|file| (file.content_digest, file.contents.len()))
     }
 
     pub fn status(&self) -> GenerationStatus {
@@ -451,6 +530,22 @@ impl fmt::Debug for BufferOverlay {
 }
 
 impl BufferOverlay {
+    /// Observe the effective content for a path, preferring this overlay and
+    /// falling back to the exact base generation. No filesystem access occurs.
+    pub fn file_observation(
+        &self,
+        base: &BaseGeneration,
+        path: &str,
+    ) -> Option<(Digest, usize)> {
+        if self.validate_base(base).is_err() {
+            return None;
+        }
+        self.files
+            .get(path)
+            .map(|file| (file.content_digest, file.contents.len()))
+            .or_else(|| base.file_observation(path))
+    }
+
     /// Build an overlay that shadows only paths already present in `base`.
     pub fn build<I>(
         base: &BaseGeneration,
@@ -900,6 +995,11 @@ pub enum IndexError {
     CursorOverlayMismatch,
     CursorAnchorNotFound,
     CursorWorkLimit,
+    PackTooLarge { limit: usize },
+    InvalidPackEncoding,
+    PackChecksumMismatch,
+    TooManyWatchChanges { limit: usize },
+    DuplicateWatchChange(String),
 }
 
 impl fmt::Display for IndexError {
@@ -988,6 +1088,22 @@ impl fmt::Display for IndexError {
             Self::CursorWorkLimit => {
                 formatter.write_str("search work limit was reached before the cursor anchor")
             }
+            Self::PackTooLarge { limit } => {
+                write!(formatter, "generation pack exceeds the {limit}-byte limit")
+            }
+            Self::InvalidPackEncoding => formatter.write_str("generation pack is malformed"),
+            Self::PackChecksumMismatch => {
+                formatter.write_str("generation pack checksum does not match its payload")
+            }
+            Self::TooManyWatchChanges { limit } => {
+                write!(formatter, "watcher batch exceeds the {limit}-change limit")
+            }
+            Self::DuplicateWatchChange(path) => {
+                write!(
+                    formatter,
+                    "watcher batch changes path more than once: {path:?}"
+                )
+            }
         }
     }
 }
@@ -1023,7 +1139,7 @@ pub fn validate_path(path: &str) -> Result<(), IndexError> {
     Ok(())
 }
 
-fn validate_query(query: &str, max_results: usize) -> Result<(), IndexError> {
+pub(crate) fn validate_query(query: &str, max_results: usize) -> Result<(), IndexError> {
     if query.is_empty() {
         return Err(IndexError::EmptyQuery);
     }
@@ -1444,6 +1560,22 @@ mod tests {
         assert_eq!(first.digest(), second.digest());
         assert_eq!(first.digest().to_string().len(), 71);
         assert!(first.digest().to_string().starts_with("blake3:"));
+    }
+
+    #[test]
+    fn digests_round_trip_through_their_canonical_string_and_raw_bytes() {
+        let base = generation(vec![snapshot("src/lib.rs", "same\n")]);
+        let digest = base.digest();
+
+        let tagged = digest.to_tagged_string();
+        assert_eq!(Digest::parse(&tagged), Some(digest));
+        assert_eq!(Digest::from_bytes(*digest.as_bytes()), digest);
+
+        assert_eq!(Digest::parse("blake3:00"), None);
+        assert_eq!(Digest::parse(&tagged[..70]), None);
+        assert_eq!(Digest::parse(&format!("sha256:{}", &tagged[7..])), None);
+        assert_eq!(Digest::parse(&tagged.to_uppercase()), None);
+        assert_eq!(Digest::parse(&format!("{tagged}00")), None);
     }
 
     #[test]

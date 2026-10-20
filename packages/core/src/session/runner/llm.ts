@@ -38,8 +38,9 @@ import { SessionRunnerModel } from "./model"
 import { createLLMEventPublisher } from "./publish-llm-event"
 import { toLLMMessages } from "./to-llm-message"
 import { MAX_STEPS_PROMPT } from "./max-steps"
-import { SessionSupervisor } from "../../session/supervisor"
-import type { EffectAdmission } from "../../session/supervisor"
+import { SessionSupervisor, SessionSupervisorError } from "../../session/supervisor"
+import { TrustedPrincipalContext } from "../../trusted-principal"
+import type { EffectAdmission, EffectLease } from "../../session/supervisor"
 import { Snapshot } from "../../snapshot"
 import { makeLocationNode } from "../../effect/app-node"
 import { llmClient } from "../../effect/app-node-platform"
@@ -112,7 +113,11 @@ const layer = Layer.effect(
     const config = yield* Config.Service
     const snapshots = yield* Snapshot.Service
     const db = (yield* Database.Service).db
-    const compaction = SessionCompaction.make({ events, llm, config: yield* config.entries() })
+    const configEntries = yield* config.entries()
+    const makeTurnCompaction = Effect.fn("SessionRunner.makeTurnCompaction")(function* () {
+      const turnSnapshot = config.turnSnapshot ? yield* config.turnSnapshot() : {}
+      return SessionCompaction.make({ events, llm, config: configEntries, turnSnapshot })
+    })
     const getSession = Effect.fn("SessionRunner.getSession")(function* (sessionID: SessionSchema.ID) {
       const session = yield* store.get(sessionID)
       if (!session) return yield* Effect.die(`Session not found: ${sessionID}`)
@@ -180,9 +185,11 @@ const layer = Layer.effect(
       sessionID: SessionSchema.ID,
       promotion: SessionInput.Delivery | undefined,
       step: number,
+      compaction: ReturnType<typeof SessionCompaction.make>,
       recoverOverflow?: typeof compaction.compactAfterOverflow,
     ) {
       const session = yield* getSession(sessionID)
+      const trustedPrincipal = (yield* TrustedPrincipalContext).principal
       if (session.location.directory !== location.directory || session.location.workspaceID !== location.workspaceID)
         return yield* Effect.interrupt
       const agent = yield* agents.select(session.agent)
@@ -300,6 +307,7 @@ const layer = Layer.effect(
               const validation = yield* Effect.forEach(localToolCalls, (call) => materialization.validate(call))
               const invalid = validation.some((message) => message !== undefined)
               let admission: EffectAdmission | undefined
+              const leasesByCallID = new Map<string, EffectLease>()
               if (!invalid) {
                 const capabilities = localToolCalls.map((call) => materialization.classify(call))
                 const guarded = capabilities.some(
@@ -333,20 +341,76 @@ const layer = Layer.effect(
                       })),
                     })
                     .pipe(
-                      Effect.catch(() =>
-                        Effect.succeed({
+                      Effect.catch((error) => {
+                        const reason =
+                          error instanceof SessionSupervisorError
+                            ? [error.hostCode, error.reason].filter(Boolean).join(": ")
+                            : "Rust Guard is unavailable"
+                        return Effect.succeed({
                           status: "denied" as const,
-                          reason: "Rust Guard is unavailable",
-                        }),
-                      ),
+                          reason: reason.slice(0, 512),
+                        })
+                      }),
                     )
-                  if (localToolCalls.length !== 1 || capabilities[0]?.id !== "files.write") {
-                    admission = { status: "denied", reason: "Rust Guard denied an unsupported local ToolBatch" }
-                  } else if (admission.status !== "prepared" && admission.status !== "denied") {
+                  if (admission.status === "prepared") {
+                    if (
+                      localToolCalls.length !== 1 ||
+                      capabilities[0]?.id !== "files.write" ||
+                      !admission.lease.effectID ||
+                      !/^blake3:[0-9a-f]{64}$/.test(admission.lease.capabilityLeaseDigest)
+                    ) {
+                      admission = { status: "denied", reason: "Rust Guard returned an invalid prepared lease" }
+                    } else {
+                      leasesByCallID.set(localToolCalls[0]!.id, admission.lease)
+                    }
+                  } else if (admission.status === "prepared_batch") {
+                    const expected = new Map<string, string>()
+                    for (const [index, call] of localToolCalls.entries()) {
+                      if (expected.has(call.id)) continue
+                      expected.set(call.id, capabilities[index]!.id)
+                    }
+                    const seenCalls = new Set<string>()
+                    const seenEffects = new Set<string>()
+                    let validBatch =
+                      localToolCalls.length >= 2 &&
+                      expected.size === localToolCalls.length &&
+                      capabilities.every((capability) => capability.effectClass === "effect") &&
+                      admission.calls.length === localToolCalls.length
+                    const serialAttempt = Boolean(admission.leaseNext)
+                    if (serialAttempt && !admission.directAttempt && !admission.managedAttempt) validBatch = false
+                    for (const member of admission.calls) {
+                      const callIndex = localToolCalls.findIndex((item) => item.id === member.callID)
+                      const hasLease = Boolean(member.lease)
+                      if (
+                        !expected.has(member.callID) ||
+                        expected.get(member.callID) !== member.capabilityID ||
+                        seenCalls.has(member.callID) ||
+                        (!hasLease && (!serialAttempt || callIndex === 0)) ||
+                        (hasLease && (!member.lease!.effectID ||
+                          seenEffects.has(member.lease!.effectID) ||
+                          !/^blake3:[0-9a-f]{64}$/.test(member.lease!.capabilityLeaseDigest)))
+                      ) {
+                        validBatch = false
+                        continue
+                      }
+                      seenCalls.add(member.callID)
+                      if (member.lease) {
+                        seenEffects.add(member.lease.effectID)
+                        leasesByCallID.set(member.callID, member.lease)
+                      }
+                    }
+                    if (!validBatch || seenCalls.size !== expected.size ||
+                      (serialAttempt && leasesByCallID.size !== 1) ||
+                      (!serialAttempt && leasesByCallID.size !== expected.size)) {
+                      leasesByCallID.clear()
+                      admission = { status: "denied", reason: "Rust Guard returned a mismatched prepared ToolBatch" }
+                    }
+                  } else if (admission.status !== "denied") {
                     admission = { status: "denied", reason: "Rust Guard returned no prepared lease" }
                   }
                 }
               }
+              let previousEffectID: string | undefined
               for (const [index, call] of localToolCalls.entries()) {
                 const validationError = validation[index]
                 if (invalid) {
@@ -373,14 +437,25 @@ const layer = Layer.effect(
                   continue
                 }
                 const assistantMessageID = yield* publisher.assistantMessageID(call.id)
-                const effect = admission?.status === "prepared" ? admission.lease : undefined
-                yield* Effect.uninterruptibleMask((restore) =>
+                let effect = leasesByCallID.get(call.id)
+                if (!effect && admission?.status === "prepared_batch" && admission.leaseNext) {
+                  if (!previousEffectID) {
+                    yield* Effect.fail(new Error("Attempt ToolBatch has no prior settled effect for next lease"))
+                  }
+                  const next = yield* admission.leaseNext({ callID: call.id, previousEffectID })
+                  if (next.callID !== call.id || !next.lease?.effectID) {
+                    yield* Effect.fail(new Error("Rust Guard returned an out-of-order Attempt lease"))
+                  }
+                  effect = next.lease
+                }
+                const settlementEffect = Effect.uninterruptibleMask((restore) =>
                   restore(
                     materialization.settle({
                       sessionID: session.id,
                       agent: agent.id,
                       assistantMessageID,
                       call,
+                      trustedPrincipal,
                       ...(effect ? { effect } : {}),
                     }),
                   ).pipe(
@@ -396,7 +471,13 @@ const layer = Layer.effect(
                       ),
                     ),
                   ),
-                ).pipe(FiberSet.run(toolFibers))
+                )
+                if (admission?.status === "prepared_batch" && admission.leaseNext) {
+                  yield* settlementEffect
+                  previousEffectID = effect?.effectID
+                } else {
+                  yield* settlementEffect.pipe(FiberSet.run(toolFibers))
+                }
               }
             }
           }
@@ -407,18 +488,18 @@ const layer = Layer.effect(
           }
           if (stream._tag === "Failure" && Cause.hasInterrupts(stream.cause)) yield* FiberSet.clear(toolFibers)
           const settled = yield* restore(awaitToolFibers(toolFibers)).pipe(Effect.exit)
-          if (settled._tag === "Failure" && isUserDeclined(settled.cause)) {
-            yield* FiberSet.clear(toolFibers)
-          }
+          const userDeclined = settled._tag === "Failure" && isUserDeclined(settled.cause)
           if (
             (stream._tag === "Failure" && Cause.hasInterrupts(stream.cause)) ||
-            (settled._tag === "Failure" && Cause.hasInterrupts(settled.cause))
+            (settled._tag === "Failure" && Cause.hasInterrupts(settled.cause)) ||
+            userDeclined
           ) {
             yield* FiberSet.clear(toolFibers)
             yield* withPublication(publisher.failUnsettledTools("Tool execution interrupted"))
             if (publisher.hasActiveAssistant())
               yield* withPublication(publisher.failAssistant("Provider turn interrupted"))
           }
+          if (userDeclined) return yield* Effect.interrupt
           if (settled._tag === "Failure" && !Cause.hasInterrupts(settled.cause)) {
             const failure = Cause.squash(settled.cause)
             const message = failure instanceof Error ? failure.message : String(failure)
@@ -433,14 +514,20 @@ const layer = Layer.effect(
                     .files({ from: startSnapshot, to: endSnapshot })
                     .pipe(Effect.catch(() => Effect.succeed(undefined)))
                 : undefined
+            const assistantMessageID = yield* publisher.startAssistant()
             yield* withPublication(
               events.publish(SessionEvent.Step.Ended, {
                 sessionID: session.id,
                 timestamp: yield* DateTime.now,
-                assistantMessageID: yield* publisher.startAssistant(),
+                assistantMessageID,
                 finish: stepSettlement.finish,
-                cost: 0,
-                tokens: stepSettlement.tokens,
+                usageProvenance: {
+                  providerID: ProviderV2.ID.make(model.provider),
+                  modelID: ModelV2.ID.make(model.id),
+                  operationID: assistantMessageID,
+                  cost: { status: "unknown" },
+                  tokens: stepSettlement.tokens,
+                },
                 snapshot: endSnapshot,
                 files,
               }),
@@ -461,31 +548,32 @@ const layer = Layer.effect(
       sessionID: SessionSchema.ID,
       promotion: SessionInput.Delivery | undefined,
       step: number,
-    ) => Effect.Effect<{ readonly needsContinuation: boolean; readonly step: number }, RunError>
+      compaction: ReturnType<typeof SessionCompaction.make>,
+    ) => Effect.Effect<{ readonly needsContinuation: boolean; readonly step: number }, RunError, TrustedPrincipalContext>
 
-    const runAfterOverflowCompaction: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step) {
-      return yield* runTurnAttempt(sessionID, promotion, step).pipe(
+    const runAfterOverflowCompaction: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step, compaction) {
+      return yield* runTurnAttempt(sessionID, promotion, step, compaction).pipe(
         Effect.catchDefect(
           Effect.fnUntraced(function* (defect) {
             if (!(defect instanceof TurnTransitionError)) return yield* Effect.die(defect)
             if (defect.transition._tag === "ContinueAfterOverflowCompaction")
               return yield* Effect.die("Post-compaction provider attempt cannot recover another overflow")
             yield* Effect.yieldNow
-            return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step)
+            return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step, compaction)
           }),
         ),
       )
     })
 
-    const runTurn: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step) {
-      return yield* runTurnAttempt(sessionID, promotion, step, compaction.compactAfterOverflow).pipe(
+    const runTurn: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step, compaction) {
+      return yield* runTurnAttempt(sessionID, promotion, step, compaction, compaction.compactAfterOverflow).pipe(
         Effect.catchDefect(
           Effect.fnUntraced(function* (defect) {
             if (!(defect instanceof TurnTransitionError)) return yield* Effect.die(defect)
             yield* Effect.yieldNow
             if (defect.transition._tag === "ContinueAfterOverflowCompaction")
-              return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step)
-            return yield* runTurn(sessionID, undefined, defect.transition.step)
+              return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step, compaction)
+            return yield* runTurn(sessionID, undefined, defect.transition.step, compaction)
           }),
         ),
       )
@@ -502,10 +590,11 @@ const layer = Layer.effect(
       let promotion: SessionInput.Delivery | undefined = hasSteer ? "steer" : hasQueue ? "queue" : undefined
       let shouldRun = input.force || hasSteer || hasQueue
       while (shouldRun) {
+        const compaction = yield* makeTurnCompaction()
         let needsContinuation = true
         let step = 1
         while (needsContinuation) {
-          const result = yield* runTurn(input.sessionID, promotion, step)
+          const result = yield* runTurn(input.sessionID, promotion, step, compaction)
           needsContinuation = result.needsContinuation
           step = result.step + 1
           promotion = "steer"

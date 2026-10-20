@@ -17,7 +17,6 @@ import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { iife } from "@/util/iife"
 import { Global } from "@opencode-ai/core/global"
 import path from "path"
-import { pathToFileURL } from "url"
 import { Effect, Layer, Context, Schema, Types } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
@@ -31,6 +30,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
+import { cachedDigitalOceanRouters } from "./digitalocean-catalog"
 
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 300_000
 
@@ -206,6 +206,29 @@ function selectBedrockMantleLanguageModel(sdk: BundledSDK, modelID: string) {
   return sdk.responses?.(modelID) ?? sdk.languageModel(modelID)
 }
 
+function ratesAreZero(rates: {
+  input?: number
+  output?: number
+  cache?: { read?: number; write?: number }
+}) {
+  return (
+    rates.input === 0 &&
+    rates.output === 0 &&
+    (rates.cache?.read === undefined || rates.cache.read === 0) &&
+    (rates.cache?.write === undefined || rates.cache.write === 0)
+  )
+}
+
+// A catalog entry is free only when input and output pricing is explicitly
+// zero and no declared cache, context, or tier rate is non-zero. Missing base
+// prices remain unknown (AN-002: unknown is not free).
+export function isFreeModel(model: Model): boolean {
+  if (!model.cost || !ratesAreZero(model.cost)) return false
+  if (model.cost.tiers?.some((tier) => !ratesAreZero(tier))) return false
+  if (model.cost.experimentalOver200K && !ratesAreZero(model.cost.experimentalOver200K)) return false
+  return true
+}
+
 function custom(dep: CustomDep): Record<string, CustomLoader> {
   return {
     anthropic: () =>
@@ -228,10 +251,18 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         Boolean(yield* dep.auth(input.id)) ||
         Boolean((yield* dep.config()).provider?.["opencode"]?.options?.apiKey)
 
-      // Zen models require explicit configured access (env variable, stored
-      // auth, or a configured key). Zero or omitted pricing must never grant
-      // access or expose models (AN-002: unknown is not free).
-      if (!ok) return { autoload: false, options: {} }
+      // Keyless access mirrors the official OpenCode client: the request
+      // carries the literal anonymous token "public" and only models the
+      // catalog explicitly prices at zero remain exposed, and only active
+      // models are eligible for this restricted offer. Models with absent or
+      // unknown pricing are never treated as free (AN-002).
+      if (!ok) {
+        input.models = Object.fromEntries(
+          Object.entries(input.models).filter(([, model]) => model.status === "active" && isFreeModel(model)),
+        )
+        if (Object.keys(input.models).length === 0) return { autoload: false, options: {} }
+        return { autoload: true, options: { apiKey: "public" } }
+      }
 
       return {
         autoload: Object.keys(input.models).length > 0,
@@ -897,7 +928,8 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
           // and Messages APIs; new OpenAI models reject tools+reasoning_effort on chat completions.
           // The passthrough wrappers inject a CF_TEMP_TOKEN sentinel that the gateway strips before
           // dispatch, so upstream billing stays on the gateway (Unified Billing / stored BYOK).
-          if (modelID.startsWith("openai/")) return aigateway(createOpenAI()(modelID.slice("openai/".length)))
+          if (modelID.startsWith("openai/"))
+            return aigateway(createOpenAI({ baseURL: "https://api.openai.com/v1" })(modelID.slice("openai/".length)))
           // models.dev lists Anthropic ids with dotted versions (claude-haiku-4.5); Anthropic's
           // Messages API expects dashed native slugs (claude-haiku-4-5), so translate before passing.
           // No native Anthropic slug contains a dot, so the blanket replacement is lossless here -
@@ -1091,30 +1123,31 @@ const ProviderCapabilities = Schema.Struct({
 
 // Rates are optional on purpose: a provider that reports no price must record
 // "unknown" (absent), never a fabricated zero (AN-002/AN-003/COST-01).
+const ProviderCostRate = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))
 const ProviderCacheCost = Schema.Struct({
-  read: optional(Schema.Finite),
-  write: optional(Schema.Finite),
+  read: optional(ProviderCostRate),
+  write: optional(ProviderCostRate),
 })
 
 const ProviderCostTier = Schema.Struct({
-  input: Schema.Finite,
-  output: Schema.Finite,
+  input: ProviderCostRate,
+  output: ProviderCostRate,
   cache: ProviderCacheCost,
   tier: Schema.Struct({
     type: Schema.Literal("context"),
-    size: Schema.Finite,
+    size: ProviderCostRate,
   }),
 })
 
 const ProviderCost = Schema.Struct({
-  input: optional(Schema.Finite),
-  output: optional(Schema.Finite),
+  input: optional(ProviderCostRate),
+  output: optional(ProviderCostRate),
   cache: ProviderCacheCost,
   tiers: optional(Schema.Array(ProviderCostTier)),
   experimentalOver200K: optional(
     Schema.Struct({
-      input: Schema.Finite,
-      output: Schema.Finite,
+      input: ProviderCostRate,
+      output: ProviderCostRate,
       cache: ProviderCacheCost,
     }),
   ),
@@ -1306,8 +1339,8 @@ function cost(c: ModelsDev.Model["cost"]): Model["cost"] {
       input: item.input,
       output: item.output,
       cache: {
-        read: item.cache_read ?? 0,
-        write: item.cache_write ?? 0,
+        read: item.cache_read,
+        write: item.cache_write,
       },
       tier: item.tier,
     }))
@@ -1315,8 +1348,8 @@ function cost(c: ModelsDev.Model["cost"]): Model["cost"] {
   if (c?.context_over_200k) {
     result.experimentalOver200K = {
       cache: {
-        read: c.context_over_200k.cache_read ?? 0,
-        write: c.context_over_200k.cache_write ?? 0,
+        read: c.context_over_200k.cache_read,
+        write: c.context_over_200k.cache_write,
       },
       input: c.context_over_200k.input,
       output: c.context_over_200k.output,
@@ -1393,6 +1426,12 @@ function fromModelsDevModel(provider: ModelsDev.Provider, model: ModelsDev.Model
   }
 }
 
+// Display label for the catalog-backed `opencode` provider (free tier + Zen
+// BYOK). It is labeled explicitly because it is distinct from the separate
+// `opencode-go` subscription provider; the bare catalog name "OpenCode" is
+// ambiguous in provider/model lists.
+const providerDisplayName = (id: string, name: string) => (id === "opencode" ? "OpenCode Default" : name)
+
 export function fromModelsDevProvider(provider: ModelsDev.Provider): Info {
   const models: Record<string, Model> = {}
   for (const [key, model] of Object.entries(provider.models)) {
@@ -1413,7 +1452,7 @@ export function fromModelsDevProvider(provider: ModelsDev.Provider): Info {
   return {
     id: ProviderV2.ID.make(provider.id),
     source: "custom",
-    name: provider.name,
+    name: providerDisplayName(provider.id, provider.name),
     env: [...(provider.env ?? [])],
     options: {},
     models,
@@ -1470,6 +1509,7 @@ const layer = Layer.effect(
     const plugin = yield* Plugin.Service
     const modelsDevSvc = yield* ModelsDev.Service
     const runtimeFlags = yield* RuntimeFlags.Service
+    const npm = yield* Npm.Service
 
     const state = yield* InstanceState.make<State>(() =>
       Effect.gen(function* () {
@@ -1550,6 +1590,19 @@ const layer = Layer.effect(
               ]),
             )
           })
+        }
+
+        // Preserve cached routing metadata without enabling the effectful plugin
+        // loader or its automatic OAuth/catalog refresh path.
+        const digitalOceanID = ProviderV2.ID.make("digitalocean")
+        const digitalOcean = database[digitalOceanID]
+        if (digitalOcean && isProviderAllowed(digitalOceanID)) {
+          const credential = yield* auth.get(digitalOceanID).pipe(Effect.orDie)
+          if (credential?.type === "api") {
+            for (const model of cachedDigitalOceanRouters(credential.metadata)) {
+              digitalOcean.models[model.id] ??= model
+            }
+          }
         }
 
         // extend database from config
@@ -1884,27 +1937,9 @@ const layer = Layer.effect(
           return loaded as SDK
         }
 
-        const installedPath = await (async () => {
-          if (model.api.npm.startsWith("file://")) {
-            return model.api.npm
-          }
-          const item = await Npm.add(model.api.npm)
-          if (!item.entrypoint) throw new Error(`Package ${model.api.npm} has no import entrypoint`)
-          return item.entrypoint
-        })()
-
-        // `installedPath` is a local entry path or an existing `file://` URL. Normalize
-        // only path inputs so Node on Windows accepts the dynamic import.
-        const importSpec = installedPath.startsWith("file://") ? installedPath : pathToFileURL(installedPath).href
-        const mod = await import(importSpec)
-
-        const fn = mod[Object.keys(mod).find((key) => key.startsWith("create"))!]
-        const loaded = fn({
-          name: model.providerID,
-          ...options,
-        })
-        s.sdk.set(key, loaded)
-        return loaded as SDK
+        throw new Error(
+          `Provider package ${model.api.npm} is unavailable because external provider code is disabled`,
+        )
       } catch (e) {
         throw new InitError({ providerID: model.providerID, cause: e })
       }
@@ -2111,7 +2146,7 @@ export function parseModel(model: string) {
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [FSUtil.node, Config.node, Auth.node, Env.node, Plugin.node, ModelsDev.node, RuntimeFlags.node],
+  deps: [FSUtil.node, Config.node, Auth.node, Env.node, Plugin.node, ModelsDev.node, RuntimeFlags.node, Npm.node],
 })
 
 export * as Provider from "./provider"

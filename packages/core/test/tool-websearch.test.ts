@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { Effect, Layer, Schema } from "effect"
 import { HttpClient, HttpClientResponse } from "effect/unstable/http"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -10,15 +10,54 @@ import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { WebSearchTool } from "@opencode-ai/core/tool/websearch"
 import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
 import { testEffect } from "./lib/effect"
-import { toolIdentity, executeTool, settleTool, toolDefinitions } from "./lib/tool"
+import { toolIdentity, executeTool, toolDefinitions } from "./lib/tool"
 
 const sessionID = SessionV2.ID.make("ses_websearch_test")
-const payload = (text: string) =>
-  JSON.stringify({
-    jsonrpc: "2.0",
-    id: 1,
-    result: { content: [{ type: "text", text }] },
-  })
+const requests: string[] = []
+const assertions: PermissionV2.AssertInput[] = []
+
+const http = Layer.succeed(
+  HttpClient.HttpClient,
+  HttpClient.make((request) =>
+    Effect.sync(() => requests.push(request.url)).pipe(
+      Effect.andThen(Effect.succeed(new Response("", { status: 200 }))),
+      Effect.map((response) => HttpClientResponse.fromWeb(request, response)),
+    ),
+  ),
+)
+const permission = Layer.succeed(
+  PermissionV2.Service,
+  PermissionV2.Service.of({
+    assert: (input) => Effect.sync(() => assertions.push(input)),
+    ask: () => Effect.die("unused"),
+    reply: () => Effect.die("unused"),
+    get: () => Effect.die("unused"),
+    forSession: () => Effect.die("unused"),
+    list: () => Effect.die("unused"),
+    policySnapshotDigest: () => Effect.succeed(`sha256:${"0".repeat(64)}`),
+  }),
+)
+const websearchConfig = Layer.succeed(
+  WebSearchTool.ConfigService,
+  WebSearchTool.ConfigService.of({
+    provider: undefined,
+    enableExa: false,
+    enableParallel: false,
+    exaApiKey: undefined,
+    parallelApiKey: undefined,
+  }),
+)
+const it = testEffect(
+  AppNodeBuilder.build(
+    LayerNode.group([ToolRegistry.node, ToolRegistry.toolsNode, WebSearchTool.configNode, WebSearchTool.node]),
+    [
+      [PermissionV2.node, permission],
+      [LayerNodePlatform.httpClient, http],
+      [WebSearchTool.configNode, websearchConfig],
+      [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
+    ],
+  ),
+)
 
 describe("WebSearchTool provider selection", () => {
   test("rejects out-of-range numeric controls", () => {
@@ -48,6 +87,13 @@ describe("WebSearchTool provider selection", () => {
 })
 
 describe("WebSearchTool MCP response parser", () => {
+  const payload = (text: string) =>
+    JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      result: { content: [{ type: "text", text }] },
+    })
+
   test("parses plain JSON-RPC responses", async () => {
     expect(await Effect.runPromise(WebSearchTool.parseResponse(payload("search results")))).toBe("search results")
   })
@@ -61,257 +107,47 @@ describe("WebSearchTool MCP response parser", () => {
   })
 })
 
-interface Request {
-  readonly url: string
-  readonly headers: Record<string, string>
-  readonly body: unknown
-}
-
-const requests: Request[] = []
-const assertions: PermissionV2.AssertInput[] = []
-let responseBody = payload("search results")
-let makeResponse = () => new Response(responseBody, { status: 200 })
-let config: WebSearchTool.Config = { enableExa: false, enableParallel: false }
-
-beforeEach(() => {
-  responseBody = payload("search results")
-  makeResponse = () => new Response(responseBody, { status: 200 })
-})
-
-const http = Layer.succeed(
-  HttpClient.HttpClient,
-  HttpClient.make((request) =>
-    Effect.sync(() => {
-      if (request.body._tag !== "Uint8Array") throw new Error(`Unexpected request body: ${request.body._tag}`)
-      requests.push({
-        url: request.url,
-        headers: request.headers,
-        body: JSON.parse(new TextDecoder().decode(request.body.body)),
-      })
-      return HttpClientResponse.fromWeb(request, makeResponse())
-    }),
-  ),
-)
-const permission = Layer.succeed(
-  PermissionV2.Service,
-  PermissionV2.Service.of({
-    assert: (input) => Effect.sync(() => assertions.push(input)),
-    ask: () => Effect.die("unused"),
-    reply: () => Effect.die("unused"),
-    get: () => Effect.die("unused"),
-    forSession: () => Effect.die("unused"),
-    list: () => Effect.die("unused"),
-    policySnapshotDigest: () => Effect.succeed(`sha256:${"0".repeat(64)}`),
-  }),
-)
-const websearchConfig = Layer.succeed(
-  WebSearchTool.ConfigService,
-  WebSearchTool.ConfigService.of({
-    get provider() {
-      return config.provider
-    },
-    get enableExa() {
-      return config.enableExa
-    },
-    get enableParallel() {
-      return config.enableParallel
-    },
-    get exaApiKey() {
-      return config.exaApiKey
-    },
-    get parallelApiKey() {
-      return config.parallelApiKey
-    },
-  }),
-)
-const it = testEffect(
-  AppNodeBuilder.build(
-    LayerNode.group([ToolRegistry.node, ToolRegistry.toolsNode, WebSearchTool.configNode, WebSearchTool.node]),
-    [
-      [PermissionV2.node, permission],
-      [LayerNodePlatform.httpClient, http],
-      [WebSearchTool.configNode, websearchConfig],
-      [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
-    ],
-  ),
-)
-
-describe("WebSearchTool registration", () => {
-  it.effect("registers websearch, asserts query permission, and calls Exa", () =>
+// V1 fail-closed contract (plan 2026-10-11, "ToolRegistry.materialize omits registrations
+// whose capability effectClass is unknown"): the leaf declares no Guard-mediated capability,
+// so it must be absent from model definitions and settlement. These negatives pin zero
+// network traffic and zero permission requests. Re-enabling this origin requires declaring
+// the mediated capability and restoring the removed leaf behavior specs.
+describe("WebSearchTool fail-closed origin", () => {
+  it.effect("is withheld from model definitions without a Guard-mediated capability", () =>
     Effect.gen(function* () {
       requests.length = 0
       assertions.length = 0
-      responseBody = payload("exa results")
-      config = { provider: "exa", enableExa: false, enableParallel: false }
       const registry = yield* ToolRegistry.Service
-
-      expect((yield* toolDefinitions(registry)).map((tool) => tool.name)).toEqual(["websearch"])
-      expect(
-        yield* executeTool(registry, {
-          sessionID,
-          ...toolIdentity,
-          call: {
-            type: "tool-call",
-            id: "call-exa",
-            name: "websearch",
-            input: {
-              query: "effect typescript",
-              numResults: 3,
-              livecrawl: "preferred",
-              type: "fast",
-              contextMaxCharacters: 2500,
-            },
-          },
-        }),
-      ).toEqual({ type: "text", value: "exa results" })
-      expect(assertions).toMatchObject([
-        {
-          sessionID,
-          action: "websearch",
-          resources: ["effect typescript"],
-          save: ["*"],
-          metadata: {
-            query: "effect typescript",
-            numResults: 3,
-            livecrawl: "preferred",
-            type: "fast",
-            contextMaxCharacters: 2500,
-            provider: "exa",
-          },
-        },
-      ])
-      expect(requests).toEqual([
-        {
-          url: WebSearchTool.EXA_URL,
-          headers: expect.any(Object),
-          body: {
-            jsonrpc: "2.0",
-            id: 1,
-            method: "tools/call",
-            params: {
-              name: "web_search_exa",
-              arguments: {
-                query: "effect typescript",
-                type: "fast",
-                numResults: 3,
-                livecrawl: "preferred",
-                contextMaxCharacters: 2500,
-              },
-            },
-          },
-        },
-      ])
+      expect(yield* toolDefinitions(registry)).toEqual([])
+      expect(requests).toEqual([])
+      expect(assertions).toEqual([])
     }),
   )
 
-  it.effect("calls Parallel with session ID and keeps bearer credentials out of output", () =>
+  it.effect("cannot settle, validate, or classify as anything but unknown, with zero network and zero permission", () =>
     Effect.gen(function* () {
       requests.length = 0
       assertions.length = 0
-      responseBody = payload("parallel results")
-      config = { provider: "parallel", enableExa: false, enableParallel: false, parallelApiKey: "parallel-secret" }
       const registry = yield* ToolRegistry.Service
-
-      const settled = yield* settleTool(registry, {
+      const call_ = {
         sessionID,
         ...toolIdentity,
-        call: { type: "tool-call", id: "call-parallel", name: "websearch", input: { query: "effect layers" } },
-      })
-
-      expect(requests[0]).toMatchObject({
-        url: WebSearchTool.PARALLEL_URL,
-        headers: { authorization: "Bearer parallel-secret" },
-        body: {
-          jsonrpc: "2.0",
-          id: 1,
-          method: "tools/call",
-          params: {
-            name: "web_search",
-            arguments: { objective: "effect layers", search_queries: ["effect layers"], session_id: sessionID },
-          },
+        call: {
+          type: "tool-call" as const,
+          id: "call-websearch",
+          name: "websearch",
+          input: { query: "must not reach a provider" },
         },
-      })
-      expect(requests[0]?.body).not.toHaveProperty("params.arguments.model_name")
-      expect(settled).toEqual({
-        result: { type: "text", value: "parallel results" },
-        output: {
-          structured: { provider: "parallel", text: "parallel results" },
-          content: [{ type: "text", text: "parallel results" }],
-        },
-      })
-      expect(JSON.stringify(settled)).not.toContain("parallel-secret")
-    }),
-  )
+      }
 
-  it.effect("keeps an Exa credential in the transport URL and out of model output", () =>
-    Effect.gen(function* () {
-      requests.length = 0
-      assertions.length = 0
-      responseBody = payload("credentialed exa results")
-      config = { provider: "exa", enableExa: false, enableParallel: false, exaApiKey: "exa secret" }
-      const registry = yield* ToolRegistry.Service
+      expect(yield* executeTool(registry, call_)).toEqual({ type: "error", value: "Unknown tool: websearch" })
 
-      const settled = yield* settleTool(registry, {
-        sessionID,
-        ...toolIdentity,
-        call: { type: "tool-call", id: "call-exa-key", name: "websearch", input: { query: "effect schema" } },
-      })
+      const materialized = yield* registry.materialize()
+      expect(yield* materialized.validate(call_.call)).toEqual("Unknown tool: websearch")
+      expect(materialized.classify(call_.call)).toEqual({ id: "websearch", effectClass: "unknown" })
 
-      expect(requests[0]?.url).toBe(`${WebSearchTool.EXA_URL}?exaApiKey=exa+secret`)
-      expect(JSON.stringify(settled)).not.toContain("exa secret")
-    }),
-  )
-
-  it.effect("returns the legacy no-results fallback as concise model text", () =>
-    Effect.gen(function* () {
-      requests.length = 0
-      assertions.length = 0
-      responseBody = ""
-      config = { provider: "exa", enableExa: false, enableParallel: false }
-      const registry = yield* ToolRegistry.Service
-
-      expect(
-        yield* executeTool(registry, {
-          sessionID,
-          ...toolIdentity,
-          call: { type: "tool-call", id: "call-empty", name: "websearch", input: { query: "nothing" } },
-        }),
-      ).toEqual({ type: "text", value: WebSearchTool.NO_RESULTS })
-    }),
-  )
-
-  it.effect("rejects oversized MCP response bodies", () =>
-    Effect.gen(function* () {
-      requests.length = 0
-      assertions.length = 0
-      let chunksRead = 0
-      let cancelled = false
-      makeResponse = () =>
-        new Response(
-          new ReadableStream({
-            pull(controller) {
-              chunksRead++
-              if (chunksRead === 10) throw new Error("response was not stopped at the byte limit")
-              controller.enqueue(new Uint8Array(64 * 1024))
-            },
-            cancel() {
-              cancelled = true
-            },
-          }),
-          { status: 200 },
-        )
-      config = { provider: "exa", enableExa: false, enableParallel: false }
-      const registry = yield* ToolRegistry.Service
-
-      expect(
-        yield* executeTool(registry, {
-          sessionID,
-          ...toolIdentity,
-          call: { type: "tool-call", id: "call-large-response", name: "websearch", input: { query: "too much" } },
-        }),
-      ).toEqual({ type: "error", value: "Unable to search the web for too much" })
-      expect(chunksRead).toBeLessThan(10)
-      expect(cancelled).toBe(true)
+      expect(requests).toEqual([])
+      expect(assertions).toEqual([])
     }),
   )
 })

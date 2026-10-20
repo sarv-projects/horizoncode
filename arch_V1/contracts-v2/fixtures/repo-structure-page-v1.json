@@ -1,0 +1,173 @@
+{
+  "query": {
+    "schemaVersion": 1,
+    "messageType": "query",
+    "queryId": "query-1",
+    "rootRef": ".",
+    "sourceGeneration": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "selector": {
+      "symbols": [
+        "example"
+      ],
+      "nodeRefs": [
+        {
+          "workspaceBinding": "workspace-binding-1",
+          "sourceGeneration": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "sourceRevision": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "pathRef": "src/example.ts",
+          "fileDigest": "blake3:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+          "nodeId": "node-17",
+          "nodeKind": "function",
+          "symbol": "example",
+          "byteRange": {
+            "start": 4,
+            "end": 42
+          },
+          "parserId": "typescript",
+          "parserVersion": "5.9.0"
+        }
+      ],
+      "includeCallers": false
+    },
+    "maxNodes": 40,
+    "maxBytes": 32768,
+    "maxDepth": 8,
+    "deadline": "2026-10-19T12:30:45.123Z"
+  },
+  "page": {
+    "schemaVersion": 1,
+    "messageType": "page",
+    "queryId": "query-1",
+    "workspaceBinding": "workspace-binding-1",
+    "sourceGeneration": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "sourceRevision": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "sourceKind": "parser",
+    "parserId": "typescript",
+    "parserVersion": "5.9.0",
+    "status": "CURRENT",
+    "freshness": "current",
+    "completeness": "complete",
+    "coverage": {
+      "files": 12,
+      "nodes": 40,
+      "bytes": 32768
+    },
+    "nodes": [
+      {
+        "workspaceBinding": "workspace-binding-1",
+        "sourceGeneration": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "sourceRevision": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "pathRef": "src/example.ts",
+        "fileDigest": "blake3:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        "nodeId": "node-17",
+        "nodeKind": "function",
+        "symbol": "example",
+        "byteRange": {
+          "start": 4,
+          "end": 42
+        },
+        "parserId": "typescript",
+        "parserVersion": "5.9.0"
+      }
+    ],
+    "nextCursor": "cursor-owner-query-generation-expiry-bound"
+  },
+  "unavailablePage": {
+    "schemaVersion": 1,
+    "messageType": "page",
+    "queryId": "query-2",
+    "workspaceBinding": "workspace-binding-1",
+    "sourceGeneration": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "sourceRevision": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "sourceKind": "none",
+    "status": "UNAVAILABLE",
+    "freshness": "unknown",
+    "completeness": "unavailable",
+    "coverage": {
+      "files": 0,
+      "nodes": 0,
+      "bytes": 0
+    },
+    "nodes": [],
+    "fallback": {
+      "reason": "parser_unsupported",
+      "sourceKind": "none"
+    }
+  },
+  "overlayQuery": {
+    "schemaVersion": 1,
+    "messageType": "query",
+    "queryId": "query-1",
+    "rootRef": ".",
+    "sourceGeneration": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "selector": {
+      "symbols": [
+        "example"
+      ],
+      "nodeRefs": [
+        {
+          "workspaceBinding": "workspace-binding-1",
+          "sourceGeneration": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "sourceRevision": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "pathRef": "src/example.ts",
+          "fileDigest": "blake3:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+          "nodeId": "node-17",
+          "nodeKind": "function",
+          "symbol": "example",
+          "byteRange": {
+            "start": 4,
+            "end": 42
+          },
+          "parserId": "typescript",
+          "parserVersion": "5.9.0"
+        }
+      ],
+      "includeCallers": false
+    },
+    "maxNodes": 40,
+    "maxBytes": 32768,
+    "maxDepth": 8,
+    "deadline": "2026-10-19T12:30:45.123Z",
+    "overlayRef": "ovl_0123456789abcdef"
+  },
+  "overlayPage": {
+    "schemaVersion": 1,
+    "messageType": "page",
+    "queryId": "query-1",
+    "workspaceBinding": "workspace-binding-1",
+    "sourceGeneration": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "sourceRevision": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "sourceKind": "parser",
+    "parserId": "typescript",
+    "parserVersion": "5.9.0",
+    "status": "CURRENT",
+    "freshness": "current",
+    "completeness": "complete",
+    "coverage": {
+      "files": 12,
+      "nodes": 40,
+      "bytes": 32768
+    },
+    "nodes": [
+      {
+        "workspaceBinding": "workspace-binding-1",
+        "sourceGeneration": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "sourceRevision": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "pathRef": "src/example.ts",
+        "fileDigest": "blake3:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        "nodeId": "node-17",
+        "nodeKind": "function",
+        "symbol": "example",
+        "byteRange": {
+          "start": 4,
+          "end": 42
+        },
+        "parserId": "typescript",
+        "parserVersion": "5.9.0",
+        "overlayDigest": "blake3:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+      }
+    ],
+    "nextCursor": "cursor-owner-query-generation-expiry-bound",
+    "overlayDigest": "blake3:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+  }
+}

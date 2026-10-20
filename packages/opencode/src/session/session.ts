@@ -6,11 +6,14 @@ import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import path from "path"
 import { BackgroundJob } from "@/background/job"
 import { Decimal } from "decimal.js"
+import { createHash } from "node:crypto"
 import type { ProviderMetadata, Usage } from "@opencode-ai/llm"
+import { SessionMessage as SessionMessageSchema } from "@opencode-ai/schema/session-message"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { Database } from "@opencode-ai/core/database/database"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionV2 } from "@opencode-ai/core/session"
+import { SessionSupervisor, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
 import * as SessionExecutionLocal from "@opencode-ai/core/session/execution/local"
 import { locationServiceMapLayer } from "@opencode-ai/core/location-services"
 
@@ -31,7 +34,7 @@ import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { MessageV2 } from "./message-v2"
 import type { InstanceContext } from "../project/instance-context"
 import { InstanceState } from "@/effect/instance-state"
-import { Snapshot } from "@/snapshot"
+import { Info as FileDiffSchema } from "@opencode-ai/schema/file-diff"
 import { ProjectV2 } from "@opencode-ai/core/project"
 import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { SessionID, MessageID, PartID } from "./schema"
@@ -44,6 +47,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { SessionMessage } from "@opencode-ai/schema/session-message"
+import { createPartDeltaCursorV1 } from "./part-delta-cursor"
 
 const parentTitlePrefix = "New session - "
 const childTitlePrefix = "Child session - "
@@ -196,7 +200,7 @@ const Summary = Schema.Struct({
   additions: Schema.Finite,
   deletions: Schema.Finite,
   files: Schema.Finite,
-  diffs: optional(Schema.Array(Snapshot.FileDiff)),
+  diffs: optional(Schema.Array(FileDiffSchema)),
 })
 
 const Tokens = Schema.Struct({
@@ -406,23 +410,100 @@ export const getUsage = (input: { model: Provider.Model; usage: Usage; metadata?
       ? input.model.cost.experimentalOver200K
       : input.model.cost)
   const totalNanoAiu = input.metadata?.["copilot"]?.["totalNanoAiu"]
-  return {
-    cost:
-      typeof totalNanoAiu === "number" && Number.isFinite(totalNanoAiu) && totalNanoAiu >= 0
-        ? new Decimal(totalNanoAiu).div(100_000_000_000).toNumber()
-        : safe(
-            new Decimal(0)
-              .add(new Decimal(tokens.input).mul(finite(costInfo?.input ?? 0)).div(1_000_000))
-              .add(new Decimal(tokens.output).mul(finite(costInfo?.output ?? 0)).div(1_000_000))
-              .add(new Decimal(tokens.cache.read).mul(finite(costInfo?.cache?.read ?? 0)).div(1_000_000))
-              .add(new Decimal(tokens.cache.write).mul(finite(costInfo?.cache?.write ?? 0)).div(1_000_000))
-              // TODO: update models.dev to have better pricing model, for now:
-              // charge reasoning tokens at the same rate as output tokens
-              .add(new Decimal(tokens.reasoning).mul(finite(costInfo?.output ?? 0)).div(1_000_000))
-              .toNumber(),
-          ),
-    tokens,
+  const reportedCost =
+    typeof totalNanoAiu === "number" && Number.isFinite(totalNanoAiu) && totalNanoAiu >= 0
+      ? new Decimal(totalNanoAiu).div(100_000_000_000).toNumber()
+      : undefined
+  const prices = [costInfo?.input, costInfo?.output, costInfo?.cache?.read, costInfo?.cache?.write]
+  const cacheWriteReported =
+    input.usage.cacheWriteInputTokens ??
+    input.metadata?.["anthropic"]?.["cacheCreationInputTokens"] ??
+    input.metadata?.["vertex"]?.["cacheCreationInputTokens"]
+  const validCount = (value: unknown): value is number =>
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+  const completeUsage =
+    validCount(input.usage.inputTokens) &&
+    validCount(input.usage.outputTokens) &&
+    validCount(input.usage.reasoningTokens) &&
+    validCount(input.usage.cacheReadInputTokens) &&
+    validCount(cacheWriteReported)
+      ? {
+          input: safe(input.usage.inputTokens - input.usage.cacheReadInputTokens - cacheWriteReported),
+          output: safe(input.usage.outputTokens - input.usage.reasoningTokens),
+          reasoning: input.usage.reasoningTokens,
+          cacheRead: input.usage.cacheReadInputTokens,
+          cacheWrite: cacheWriteReported,
+        }
+      : undefined
+  const completePrices = prices.every(
+    (value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0,
+  )
+    ? { input: prices[0]!, output: prices[1]!, cacheRead: prices[2]!, cacheWrite: prices[3]! }
+    : undefined
+  const estimatedCost = (() => {
+    if (!completePrices || !completeUsage) return undefined
+    return safe(
+        new Decimal(0)
+          .add(new Decimal(completeUsage.input).mul(completePrices.input).div(1_000_000))
+          .add(new Decimal(completeUsage.output).mul(completePrices.output).div(1_000_000))
+          .add(new Decimal(completeUsage.cacheRead).mul(completePrices.cacheRead).div(1_000_000))
+          .add(new Decimal(completeUsage.cacheWrite).mul(completePrices.cacheWrite).div(1_000_000))
+          .add(new Decimal(completeUsage.reasoning).mul(completePrices.output).div(1_000_000))
+          .toNumber(),
+      )
+  })()
+  const count = (value: number | undefined) =>
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+      ? { status: "provider-reported" as const, value }
+      : { status: "unknown" as const }
+  const costProvenance =
+    reportedCost !== undefined
+      ? { status: "provider-reported" as const, value: reportedCost }
+      : estimatedCost !== undefined
+        ? {
+            status: "estimated" as const,
+            value: estimatedCost,
+            priceSource: "selected-model-catalog",
+            pricingRevision: `sha256:${createHash("sha256").update(JSON.stringify(prices)).digest("hex")}`,
+            pricing: {
+              input: completePrices!.input,
+              output: completePrices!.output,
+              cacheRead: completePrices!.cacheRead,
+              cacheWrite: completePrices!.cacheWrite,
+            },
+            algorithm: "per-million-linear-v1" as const,
+            tokenInputs: {
+              input: completeUsage!.input,
+              output: completeUsage!.output,
+              reasoning: completeUsage!.reasoning,
+              cacheRead: completeUsage!.cacheRead,
+              cacheWrite: completeUsage!.cacheWrite,
+            },
+          }
+        : { status: "unknown" as const }
+  const usageProvenance: SessionMessageSchema.UsageProvenance = {
+    providerID: input.model.providerID,
+    modelID: input.model.id,
+    cost: costProvenance,
+    tokens: {
+      input: count(input.usage.inputTokens),
+      output: count(input.usage.outputTokens),
+      reasoning: count(input.usage.reasoningTokens),
+      cache: {
+        read: count(input.usage.cacheReadInputTokens),
+        write: count(
+          input.usage.cacheWriteInputTokens ??
+            input.metadata?.["anthropic"]?.["cacheCreationInputTokens"] ??
+            input.metadata?.["vertex"]?.["cacheCreationInputTokens"] ??
+            // @ts-expect-error provider-specific extension metadata
+            input.metadata?.["bedrock"]?.["usage"]?.["cacheWriteInputTokens"] ??
+            // @ts-expect-error provider-specific extension metadata
+            input.metadata?.["venice"]?.["usage"]?.["cacheCreationInputTokens"],
+        ),
+      },
+    },
   }
+  return { cost: reportedCost ?? estimatedCost ?? 0, tokens, usageProvenance }
 }
 
 export class BusyError extends Schema.TaggedErrorClass<BusyError>()("SessionBusyError", {
@@ -431,11 +512,45 @@ export class BusyError extends Schema.TaggedErrorClass<BusyError>()("SessionBusy
 
 export type NotFound = NotFoundError
 
+export type ManagedRootSessionLinkProjectionV1 = {
+  readonly sessionID: string
+  readonly sourceStoreID: string
+  readonly sourceInstanceID: string
+  readonly sourceCursor: { readonly ownerKind: "session"; readonly ownerId: string; readonly seq: string; readonly eventDigest: string }
+  readonly sourceEpoch: string
+  /** Present only when replaying the exact immutable Rust-pinned Run link. */
+  readonly ownerEpoch?: string
+  readonly latestObservedMessageID: string | null
+  readonly latestObservedPartID: string | null
+  readonly sourceDigest: string
+  readonly redactionProfile: "horizon.session-link.ids-only.v1"
+  readonly protocolVersion: 1
+  readonly goalID: string
+  readonly projectID: string
+  readonly workspaceID: string
+}
+
+/** Domain-separated SHA-256 over ordered u64-BE-length-prefixed UTF-8 fields. */
+function managedSessionLinkDigest(fields: readonly string[]): string {
+  const hash = createHash("sha256")
+  hash.update("horizoncode.session-link.source.v1\0", "utf8")
+  for (const field of fields) {
+    const bytes = Buffer.from(field, "utf8")
+    const length = Buffer.alloc(8)
+    length.writeBigUInt64BE(BigInt(bytes.byteLength))
+    hash.update(length)
+    hash.update(bytes)
+  }
+  return `sha256:${hash.digest("hex")}`
+}
+
 export interface Interface {
   readonly list: (input?: ListInput) => Effect.Effect<Info[]>
   readonly listGlobal: (input?: GlobalListInput) => Effect.Effect<GlobalInfo[]>
   readonly create: (input?: {
     parentID?: SessionID
+    /** Pre-generated id so a subagent Attempt can bind the child before it exists. */
+    id?: SessionID
     title?: string
     agent?: string
     model?: Schema.Schema.Type<typeof Model>
@@ -446,6 +561,15 @@ export interface Interface {
   readonly fork: (input: { sessionID: SessionID; messageID?: MessageID }) => Effect.Effect<Info, NotFound>
   readonly touch: (sessionID: SessionID) => Effect.Effect<void>
   readonly get: (id: SessionID) => Effect.Effect<Info, NotFound>
+  /** Core-owned durable root-session/Goal binding and exact Rust-projection cursor. */
+  readonly managedRootSessionLink: (input: {
+    readonly sessionID: SessionID
+    readonly principalSubject: string
+    readonly goalID: string
+    readonly runID: string
+    readonly projectID: string
+    readonly workspaceID: string
+  }) => Effect.Effect<ManagedRootSessionLinkProjectionV1, NotFound | SessionSupervisorError>
   readonly setTitle: (input: { sessionID: SessionID; title: string }) => Effect.Effect<void>
   readonly setArchived: (input: { sessionID: SessionID; time?: number }) => Effect.Effect<void>
   readonly setMetadata: (input: typeof SetMetadataInput.Type) => Effect.Effect<void>
@@ -465,7 +589,7 @@ export interface Interface {
   readonly setSummary: (input: { sessionID: SessionID; summary: Info["summary"] }) => Effect.Effect<void>
   readonly setShare: (input: { sessionID: SessionID; share: Info["share"] }) => Effect.Effect<void>
   readonly setWorkspace: (input: { sessionID: SessionID; workspaceID: Info["workspaceID"] }) => Effect.Effect<void>
-  readonly diff: (sessionID: SessionID) => Effect.Effect<Snapshot.FileDiff[]>
+  readonly diff: (sessionID: SessionID) => Effect.Effect<(typeof FileDiffSchema.Type)[]>
   readonly messages: (input: { sessionID: SessionID; limit?: number }) => Effect.Effect<SessionV1.WithParts[], NotFound>
   readonly children: (parentID: SessionID) => Effect.Effect<Info[]>
   readonly remove: (sessionID: SessionID) => Effect.Effect<void, NotFound>
@@ -507,7 +631,7 @@ export type Patch = Omit<Partial<Info>, "time" | "share" | "summary" | "revert" 
 const layer: Layer.Layer<
   Service,
   never,
-  BackgroundJob.Service | RuntimeFlags.Service | Database.Service | EventV2Bridge.Service
+  BackgroundJob.Service | RuntimeFlags.Service | Database.Service | EventV2Bridge.Service | SessionSupervisor.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -515,6 +639,7 @@ const layer: Layer.Layer<
     const database = yield* Database.Service
     const background = yield* BackgroundJob.Service
     const events = yield* EventV2Bridge.Service
+    const supervisor = yield* SessionSupervisor.Service
     const flags = yield* RuntimeFlags.Service
 
     const createNext = Effect.fn("Session.createNext")(function* (input: {
@@ -653,8 +778,17 @@ const layer: Layer.Layer<
         return msg
       }).pipe(Effect.withSpan("Session.updateMessage"))
 
+    // Sequence is owned by the emitter, never reconstructed from UI delivery.
+    const partDeltaCursor = createPartDeltaCursorV1()
+
     const updatePart = <T extends SessionV1.Part>(part: T): Effect.Effect<T> =>
       Effect.gen(function* () {
+        if ((part.type === "text" || part.type === "reasoning") && part.text.length === 0 && part.time?.end === undefined) {
+          partDeltaCursor.begin({ ...part, field: "text" })
+        }
+        if ((part.type === "text" || part.type === "reasoning") && part.time?.end !== undefined) {
+          partDeltaCursor.end({ ...part, field: "text" })
+        }
         yield* events.publish(SessionV1.Event.PartUpdated, {
           sessionID: part.sessionID,
           part: structuredClone(part),
@@ -687,6 +821,7 @@ const layer: Layer.Layer<
 
     const create = Effect.fn("Session.create")(function* (input?: {
       parentID?: SessionID
+      id?: SessionID
       title?: string
       agent?: string
       model?: Schema.Schema.Type<typeof Model>
@@ -697,6 +832,7 @@ const layer: Layer.Layer<
       const ctx = yield* InstanceState.context
       const workspace = yield* InstanceState.workspaceID
       return yield* createNext({
+        id: input?.id,
         parentID: input?.parentID,
         directory: ctx.directory,
         path: sessionPath(ctx.worktree, ctx.directory),
@@ -843,7 +979,7 @@ const layer: Layer.Layer<
 
     const diff = Effect.fn("Session.diff")(function* (sessionID: SessionID) {
       void sessionID
-      return [] as Snapshot.FileDiff[]
+      return [] as (typeof FileDiffSchema.Type)[]
     })
 
     const messages: Interface["messages"] = Effect.fn("Session.messages")(function* (input) {
@@ -887,6 +1023,7 @@ const layer: Layer.Layer<
       messageID: MessageID
       partID: PartID
     }) {
+      partDeltaCursor.end({ ...input, field: "text" })
       yield* events.publish(SessionV1.Event.PartRemoved, {
         sessionID: input.sessionID,
         messageID: input.messageID,
@@ -902,7 +1039,14 @@ const layer: Layer.Layer<
       field: string
       delta: string
     }) {
-      yield* events.publish(MessageV2.Event.PartDelta, input)
+      const cursor = partDeltaCursor.append(input, input.delta)
+      if (!cursor) {
+        return yield* Effect.die(`Message part stream offset exceeded the safe integer range: ${input.partID}`)
+      }
+      yield* events.publish(MessageV2.Event.PartDelta, {
+        ...input,
+        ...cursor,
+      })
     })
 
     /** Finds the first message matching the predicate, searching newest-first. */
@@ -924,6 +1068,97 @@ const layer: Layer.Layer<
       return Option.none<SessionV1.WithParts>()
     })
 
+    const managedRootSessionLink: Interface["managedRootSessionLink"] = Effect.fn("Session.managedRootSessionLink")(function* (input) {
+      const info = yield* get(input.sessionID)
+      if (info.parentID || info.projectID !== input.projectID || info.workspaceID !== input.workspaceID) {
+        return yield* Effect.fail(new SessionSupervisorError({
+          stage: "managed_root_session",
+          reason: "selected Session is not a top-level Session in the authenticated Goal workspace",
+        }))
+      }
+      const owner = info.metadata?.horizonPrincipalOwner
+      if (typeof owner !== "object" || owner === null || Array.isArray(owner) ||
+        owner.kind !== "server_auth" || owner.subject !== input.principalSubject) {
+        return yield* Effect.fail(new SessionSupervisorError({
+          stage: "managed_root_session",
+          reason: "Session is not durably owned by the authenticated ServerAuth principal",
+        }))
+      }
+      const binding = info.metadata?.horizonManagedRoot
+      if (binding !== undefined && (typeof binding !== "object" || binding === null || Array.isArray(binding) ||
+        binding.goalID !== input.goalID || binding.runID !== input.runID || binding.projectID !== input.projectID ||
+        binding.workspaceID !== input.workspaceID)) {
+        return yield* Effect.fail(new SessionSupervisorError({
+          stage: "managed_root_session",
+          reason: "Session is durably bound to another managed Goal or Run",
+        }))
+      }
+      const cursor = yield* supervisor.sessionProjectionCursor(input.sessionID)
+      if (cursor.ownerKind !== "session" || cursor.ownerId !== input.sessionID) {
+        return yield* Effect.fail(new SessionSupervisorError({
+          stage: "managed_root_session",
+          reason: "SessionSupervisor returned a cursor for a different Session owner",
+        }))
+      }
+      const sourceInstance = yield* database.db
+        .select({ sourceInstanceID: ProjectDirectoryTable.source_instance_id })
+        .from(ProjectDirectoryTable)
+        .where(and(
+          eq(ProjectDirectoryTable.project_id, info.projectID),
+          eq(ProjectDirectoryTable.directory, info.directory),
+        ))
+        .get()
+        .pipe(Effect.orDie)
+      const sourceEpochRow = yield* database.db
+        .select({ sourceEpoch: SessionTable.source_epoch })
+        .from(SessionTable)
+        .where(eq(SessionTable.id, input.sessionID))
+        .get()
+        .pipe(Effect.orDie)
+      if (!sourceInstance?.sourceInstanceID || !/^[A-Za-z0-9._-]{1,256}$/.test(sourceInstance.sourceInstanceID) ||
+        !sourceEpochRow || !Number.isSafeInteger(sourceEpochRow.sourceEpoch) || sourceEpochRow.sourceEpoch < 1) {
+        return yield* Effect.fail(new SessionSupervisorError({
+          stage: "managed_root_session",
+          reason: "canonical source-instance or source-epoch identity is missing",
+        }))
+      }
+      const latest = yield* messages({ sessionID: input.sessionID, limit: 1 })
+      const latestMessage = latest.at(-1)
+      const latestPart = latestMessage?.parts.at(-1)
+      const sourceProjection = {
+        sessionID: info.id,
+        sourceStoreID: database.sourceStoreID,
+        sourceInstanceID: sourceInstance.sourceInstanceID,
+        sourceCursor: cursor,
+        sourceEpoch: String(sourceEpochRow.sourceEpoch),
+        latestObservedMessageID: latestMessage?.info.id ?? null,
+        latestObservedPartID: latestPart?.id ?? null,
+        redactionProfile: "horizon.session-link.ids-only.v1" as const,
+        protocolVersion: 1 as const,
+        goalID: input.goalID,
+        projectID: info.projectID,
+        workspaceID: input.workspaceID,
+      }
+      const sourceDigest = managedSessionLinkDigest([
+        sourceProjection.sessionID,
+        sourceProjection.sourceStoreID,
+        sourceProjection.sourceInstanceID,
+        cursor.ownerKind,
+        cursor.ownerId,
+        cursor.seq,
+        cursor.eventDigest,
+        sourceProjection.sourceEpoch,
+        sourceProjection.latestObservedMessageID ?? "",
+        sourceProjection.latestObservedPartID ?? "",
+        sourceProjection.redactionProfile,
+        String(sourceProjection.protocolVersion),
+        sourceProjection.goalID,
+        sourceProjection.projectID,
+        sourceProjection.workspaceID,
+      ])
+      return { ...sourceProjection, sourceDigest }
+    })
+
     return Service.of({
       list,
       listGlobal,
@@ -931,6 +1166,7 @@ const layer: Layer.Layer<
       fork,
       touch,
       get,
+      managedRootSessionLink,
       setTitle,
       setArchived,
       setMetadata,
@@ -1031,7 +1267,7 @@ function listByProject(
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [BackgroundJob.node, RuntimeFlags.node, Database.node, EventV2Bridge.node],
+  deps: [BackgroundJob.node, RuntimeFlags.node, Database.node, EventV2Bridge.node, SessionSupervisor.node],
 })
 
 export * as Session from "./session"

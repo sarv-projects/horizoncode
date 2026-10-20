@@ -9,8 +9,21 @@
  * 2. it collects a bounded, UTF-8, indexd-legal snapshot set (`FileSnapshot`);
  * 3. it derives deterministic generation pins from the observed tree;
  * 4. it reuses a bounded in-memory generation cache keyed by (scope, observation);
- * 5. it relays one bounded text query through the injected `RepoIntelBackend` port;
+ * 5. it relays one bounded query (text, symbol or references) through the injected
+ *    `RepoIntelBackend` port, optionally against one exact-generation unsaved-buffer
+ *    overlay of caller-supplied editor changes;
  * 6. it re-verifies the observation and labels results fresh/partial/stale.
+ *
+ * Symbol and reference operations are relayed truthfully: while the wired backend is
+ * the bounded lexical one, they return typed `UNAVAILABLE` with the backend's reason
+ * and the adapter never fabricates symbol accuracy from lexical data.
+ *
+ * Invalidation lifecycle: `invalidate(scopeId)` fences generation reuse. It removes the
+ * scope's cached generations, defers handle release until every in-flight user has
+ * finished (a handle is never released under a live query), and any operation that
+ * observes the invalidation before completing fails typed `stale_generation` instead
+ * of returning results built from the invalidated observation. Cache-pressure
+ * eviction releases in the same deferred way but does not fail in-flight queries.
  *
  * The backend port mirrors the Rust API one call at a time and is transport-agnostic.
  * `RepoIntelBackendError` codes are the exact `IndexError` variant names, so the real
@@ -35,9 +48,15 @@
  */
 
 import { createHash } from "node:crypto"
+import { constants as fsConstants } from "node:fs"
+import fs from "node:fs/promises"
 import path from "node:path"
-import { Context, Effect, Layer, Option, Schema } from "effect"
+import { Context, Deferred, Effect, Fiber, Layer, Schema } from "effect"
+import { Location as LocationSchema } from "@opencode-ai/schema"
+import * as RepoIntelligenceSchema from "@opencode-ai/schema/repo-intelligence-v1"
+import type { Interface as SessionSupervisorInterface, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { waitForAbort } from "@opencode-ai/core/process"
 
 // indexd/src/lib.rs bounds. Keep these byte-for-byte aligned with the Rust constants.
@@ -57,6 +76,11 @@ export const DEFAULT_MAX_CACHE_ENTRIES = 8
 export const MAX_REPORTED_SKIPS = 64
 export const DEFAULT_IGNORED_DIRECTORIES = [".git", "node_modules"] as const
 
+// indexd overlay bounds (indexd/src/lib.rs). Keep byte-for-byte aligned.
+export const MAX_OVERLAY_CHANGES = 128
+export const MAX_OVERLAY_CONTENT_BYTES = 8_388_608
+export const MAX_EDITOR_VERSION_BYTES = 4_096
+
 export type RepoIntelOperation = "text" | "symbol" | "references" | "impact" | "expand"
 
 export type RepoIntelErrorCode =
@@ -66,6 +90,7 @@ export type RepoIntelErrorCode =
   | "query_too_large"
   | "multiline_query"
   | "invalid_result_limit"
+  | "invalid_overlay"
   | "stale_generation"
   | "invalid_cursor"
   | "cancelled"
@@ -81,6 +106,7 @@ export class RepoIntelError extends Schema.TaggedErrorClass<RepoIntelError>()("R
     "query_too_large",
     "multiline_query",
     "invalid_result_limit",
+    "invalid_overlay",
     "stale_generation",
     "invalid_cursor",
     "cancelled",
@@ -174,6 +200,37 @@ export interface RepoIntelSnapshot {
   readonly contents: Uint8Array
 }
 
+/**
+ * One caller-supplied unsaved-buffer change for a generation-bound overlay.
+ * `contents: null` clears the path back to the base bytes. A path must exist in
+ * the exact collected generation.
+ */
+export interface RepoIntelOverlayChange {
+  readonly path: string
+  readonly contents: string | Uint8Array | null
+}
+
+export interface RepoIntelOverlayInput {
+  /** Opaque editor/buffer version pinned into the overlay identity. */
+  readonly editorVersion: string
+  readonly changes: ReadonlyArray<RepoIntelOverlayChange>
+}
+
+export interface RepoIntelOverlayHandle {
+  readonly overlayDigest: string
+}
+
+/** Transport-shaped overlay change handed to the backend port. */
+export interface RepoIntelBackendOverlayChange {
+  readonly path: string
+  readonly contents: Uint8Array | null
+}
+
+export interface RepoIntelBackendOverlay {
+  readonly editorVersion: string
+  readonly changes: ReadonlyArray<RepoIntelBackendOverlayChange>
+}
+
 export interface RepoIntelGenerationHandle {
   readonly generationId: string
   readonly generationStatus: "PARTIAL"
@@ -184,6 +241,7 @@ export interface RepoIntelBackendQuery {
   readonly query: string
   readonly maxResults: number
   readonly cursor?: string
+  readonly overlay?: RepoIntelOverlayHandle
 }
 
 export interface RepoIntelMatch {
@@ -199,6 +257,7 @@ export interface RepoIntelBackendResult {
   readonly nextCursor?: string
   readonly workUnits?: number
   readonly truncatedBy?: "work_limit" | "result_limit"
+  readonly overlayDigest?: string
   readonly unavailableReason?: { readonly operation: RepoIntelOperation }
 }
 
@@ -212,6 +271,158 @@ export interface RepoIntelBackend {
     request: RepoIntelBackendQuery,
   ) => Effect.Effect<RepoIntelBackendResult, RepoIntelBackendError>
   readonly release?: (handle: RepoIntelGenerationHandle) => Effect.Effect<void>
+  /**
+   * Optional exact-generation overlay construction. A backend that cannot build
+   * overlays must omit this method; the adapter then fails closed with
+   * `backend_unavailable` rather than ignoring the requested overlay.
+   */
+  readonly buildOverlay?: (
+    handle: RepoIntelGenerationHandle,
+    overlay: RepoIntelBackendOverlay,
+  ) => Effect.Effect<RepoIntelOverlayHandle, RepoIntelBackendError>
+  readonly releaseOverlay?: (overlay: RepoIntelOverlayHandle) => Effect.Effect<void>
+}
+
+/**
+ * Typed call boundary for an injected internal HostKernel/indexd implementation.
+ * This is deliberately not the binary frame codec or the JSON/base64 RPC adapter:
+ * Rust remains the single GenerationPack/frame encoder, and callers must not
+ * install this transport as the production default until the bounded HostKernel
+ * bridge is implemented and verified.
+ */
+export type RepoIntelTransportCall =
+  | { readonly operation: "build"; readonly pins: RepoIntelPins; readonly snapshots: ReadonlyArray<RepoIntelSnapshot> }
+  | {
+      readonly operation: "build_overlay"
+      readonly generationId: string
+      readonly overlay: RepoIntelBackendOverlay
+    }
+  | { readonly operation: "query"; readonly generationId: string; readonly request: RepoIntelBackendQuery }
+  | { readonly operation: "release_generation"; readonly generationId: string }
+  | { readonly operation: "release_overlay"; readonly overlayDigest: string }
+
+/**
+ * `exchange` returns an unknown response on purpose: the adapter treats the
+ * HostKernel boundary as hostile and checks the response kind and bindings at
+ * runtime. Interruption of this Effect must cancel the underlying bridge request.
+ */
+export interface RepoIntelTransport {
+  readonly exchange: (call: RepoIntelTransportCall) => Effect.Effect<unknown, RepoIntelBackendError>
+}
+
+/** Out-of-body HostKernel identity references supplied by the trusted Core caller. */
+export interface RepoStructureRequestV1 {
+  readonly sessionID: string
+  readonly locationRef: typeof LocationSchema.Ref.Type
+  readonly query: Omit<RepoIntelligenceSchema.RepoStructureQueryV1, "sourceGeneration">
+}
+
+/** Core's authenticated SessionSupervisor producer for structural RepoIntel pages. */
+export interface RepoStructureTransport<R = never> {
+  /** Core performs ensure_generation→query_structure and cancels on interruption. */
+  readonly query: (input: RepoStructureRequestV1) => Effect.Effect<unknown, RepoIntelBackendError, R>
+}
+
+export interface RepoStructureClient<R = never> {
+  readonly query: (input: RepoStructureRequestV1) => Effect.Effect<RepoIntelligenceSchema.RepoStructurePageV1, RepoIntelBackendError, R>
+}
+
+const structureTransportRejected = (detail: string) =>
+  new RepoIntelBackendError({ code: "rejected", detail })
+
+/**
+ * Strict consumer for `repo-intel.v1/query_structure`. Identity metadata is
+ * passed to the transport out-of-body; only the canonical query DTO is serialized
+ * as the RPC body. The HostKernel remains responsible for validating registered
+ * Session/Location, Guard read scope, current revision, and opaque cursor binding.
+ */
+export const repoStructureClientFromTransport = <R>(transport: RepoStructureTransport<R>): RepoStructureClient<R> => ({
+  query: (input) =>
+    Effect.gen(function* () {
+      if (!/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID)) {
+        return yield* Effect.fail(structureTransportRejected("RepoIntel Session ID is malformed"))
+      }
+
+      const raw = yield* transport.query(input)
+      const page = yield* Effect.try({
+        try: () => Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoStructurePageV1, { onExcessProperty: "error" })(raw),
+        catch: () => structureTransportRejected("HostKernel returned a malformed RepoIntel page"),
+      })
+      if (page.queryId !== input.query.queryId) {
+        return yield* Effect.fail(structureTransportRejected("RepoIntel page queryId does not match request"))
+      }
+      if (input.query.overlayRef === undefined) {
+        if (page.overlayDigest !== undefined || page.nodes.some((node) => node.overlayDigest !== undefined)) {
+          return yield* Effect.fail(structureTransportRejected("base query returned overlay provenance"))
+        }
+      } else if (page.overlayDigest === undefined) {
+        return yield* Effect.fail(
+          structureTransportRejected("overlay query returned no overlay digest; refusing a base-only downgrade"),
+        )
+      }
+      if (
+        page.nodes.length > input.query.maxNodes ||
+        page.coverage.nodes !== page.nodes.length ||
+        page.coverage.bytes > input.query.maxBytes ||
+        Buffer.byteLength(JSON.stringify(page), "utf8") > input.query.maxBytes
+      ) {
+        return yield* Effect.fail(structureTransportRejected("RepoIntel page exceeds or misreports query bounds"))
+      }
+      return page
+    }),
+})
+
+/** Adapt only the trusted Core SessionSupervisor API; this module never sends
+ * identity context or query bodies directly to HostKernel. */
+export const repoStructureClientFromSupervisor = (
+  supervisor: Pick<SessionSupervisorInterface, "queryRepoStructure">,
+): RepoStructureClient<import("@opencode-ai/core/trusted-principal").TrustedPrincipalContext> =>
+  repoStructureClientFromTransport({
+    query: (input) => {
+      if (!supervisor.queryRepoStructure) {
+        return Effect.fail(new RepoIntelBackendError({ code: "unavailable", detail: "Core RepoIntel read API is unavailable" }))
+      }
+      return supervisor.queryRepoStructure(input).pipe(
+        Effect.mapError((error: SessionSupervisorError) =>
+          new RepoIntelBackendError({
+            code:
+              error.hostCode === "stale_repo_generation"
+                ? "generation_mismatch"
+                : error.hostCode === "capability_unavailable" || error.hostCode === "overlay_unavailable" || error.stage === "host-kernel-feature"
+                  ? "unavailable"
+                  : "rejected",
+            detail: error.message,
+          }),
+        ),
+      )
+    },
+  })
+
+export interface RepoIntelSourceStat {
+  readonly type: "File" | "Directory" | "Other"
+  readonly size: number
+  readonly mtimeMs: number
+}
+
+export interface RepoIntelSourceFile {
+  readonly stat: RepoIntelSourceStat
+  readonly contents?: Uint8Array
+  readonly tooLarge?: true
+}
+
+/**
+ * Filesystem access rooted in an open, pinned repository directory. Implementations
+ * must not read source bytes until open-time containment has been verified.
+ */
+export interface RepoIntelSourceRoot {
+  readonly stat: (rel: string) => Effect.Effect<RepoIntelSourceStat | undefined>
+  readonly readDirectoryEntries: (rel: string) => Effect.Effect<ReadonlyArray<FSUtil.DirEntry> | undefined>
+  readonly readFile: (rel: string, maxBytes: number) => Effect.Effect<RepoIntelSourceFile | undefined>
+  readonly close: Effect.Effect<void>
+}
+
+export interface RepoIntelSource {
+  readonly openRoot: (root: string) => Effect.Effect<RepoIntelSourceRoot, RepoIntelError>
 }
 
 export interface ReadScope {
@@ -225,6 +436,20 @@ export interface ReadScope {
   readonly workspaceId?: string
   /** Extra directory names skipped during collection. Defaults to `.git` and `node_modules`. */
   readonly ignoredDirectoryNames?: ReadonlyArray<string>
+}
+
+export type RepoIntelAnalysisProfile = "lightweight" | "adaptive" | "full"
+
+/** Raw requested/effective values from the trusted configuration owner. */
+export interface RepoIntelProfileResolution {
+  readonly requested?: unknown
+  readonly effective?: unknown
+}
+
+/** Validated profile provenance attached to every query result. */
+export interface RepoIntelAnalysisProfileState {
+  readonly requested: RepoIntelAnalysisProfile
+  readonly effective: RepoIntelAnalysisProfile
 }
 
 export interface SearchBudget {
@@ -248,13 +473,22 @@ export interface TextSearchInput {
   readonly maxResults?: number
   readonly cursor?: string
   readonly expectedGenerationId?: string
+  /** Optional exact-generation unsaved-buffer overlay applied to this query only. */
+  readonly overlay?: RepoIntelOverlayInput
   readonly budget?: SearchBudget
   readonly signal?: AbortSignal
 }
 
 export interface RepoIntelTextResult {
-  readonly operation: "text"
+  readonly operation: RepoIntelOperation
+  readonly analysisProfile: RepoIntelAnalysisProfileState
   readonly status: "PARTIAL" | "UNAVAILABLE"
+  /** Truthful indexing mode; lexical matches are never presented as AST symbols. */
+  readonly sourceKind: "lexical" | "structural" | "none" | "unknown"
+  /** Completeness of the collected/indexed source set for this query. */
+  readonly coverage: "complete" | "partial" | "none"
+  /** Why a requested structural query fell back to no result, when applicable. */
+  readonly fallback?: "structural_parser_unavailable"
   readonly freshness: "fresh" | "partial" | "stale"
   readonly staleReason?: "source_changed"
   readonly generationId: string
@@ -273,19 +507,32 @@ export interface RepoIntelTextResult {
   readonly scopeId: string
   readonly subpath: string
   readonly observedAt: number
+  /** Present only when an overlay was applied to this query. */
+  readonly overlay?: { readonly editorVersion: string; readonly digest: string }
+  readonly unavailableReason?: { readonly operation: RepoIntelOperation }
 }
 
 export interface Interface {
   readonly searchText: (input: TextSearchInput) => Effect.Effect<RepoIntelTextResult, RepoIntelError>
+  /**
+   * Symbol query relayed to the RepoIntel backend. The bounded lexical backend
+   * reports typed `UNAVAILABLE`; this adapter never guesses symbol accuracy.
+   */
+  readonly searchSymbols: (input: TextSearchInput) => Effect.Effect<RepoIntelTextResult, RepoIntelError>
+  readonly findReferences: (input: TextSearchInput) => Effect.Effect<RepoIntelTextResult, RepoIntelError>
   readonly invalidate: (scopeId: string) => Effect.Effect<number>
-  readonly stats: () => Effect.Effect<{ readonly entries: number; readonly bytes: number }>
+  readonly stats: () => Effect.Effect<{
+    readonly entries: number
+    readonly bytes: number
+    readonly inFlightBuilds: number
+    readonly buildWaiters: number
+  }>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/RepoIntel") {}
 
 interface CollectedFile {
   readonly rel: string
-  readonly abs: string
   readonly contents: Uint8Array
   readonly size: number
   readonly mtimeMs: number
@@ -293,7 +540,6 @@ interface CollectedFile {
 
 interface CollectedDirectory {
   readonly rel: string
-  readonly abs: string
   readonly mtimeMs: number
 }
 
@@ -316,13 +562,36 @@ interface Limits {
   readonly maxDurationMs: number
 }
 
+type EntryRetirement = "none" | "invalidated" | "evicted"
+
 interface CacheEntry {
   readonly key: string
   readonly scopeId: string
   readonly handle: RepoIntelGenerationHandle
   readonly bytes: number
   lastUsedAt: number
+  inflight: number
+  retired: EntryRetirement
+  releasePending: boolean
+  released: boolean
 }
+
+interface BuildFlight {
+  readonly scopeId: string
+  readonly epoch: number
+  readonly result: Deferred.Deferred<CacheEntry, RepoIntelError>
+  waiters: number
+  done: boolean
+  entry?: CacheEntry
+  fiber?: Fiber.Fiber<void>
+}
+
+// This is resource-lifetime sharing, not generic memoization. Effect.cached runs
+// the first evaluation in its caller's fiber and caches that Exit, so cancelling
+// that caller can publish an Interrupted result to every waiter. A detached
+// worker + Deferred lets each waiter leave independently; the refcount interrupts
+// the worker only when the final waiter leaves. The flight is also epoch-bound,
+// so invalidation cannot hand a fresh caller a build from the retired observation.
 
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/
 
@@ -376,6 +645,135 @@ const isIndexdRelativePath = (value: string) => {
   return value.split("/").every((part) => part !== "" && part !== "." && part !== "..")
 }
 
+const procFdPath = (fd: number) => `/proc/self/fd/${fd}`
+
+const sourceStat = (info: Awaited<ReturnType<fs.FileHandle["stat"]>>): RepoIntelSourceStat => ({
+  type: info.isFile() ? "File" : info.isDirectory() ? "Directory" : "Other",
+  size: Number(info.size),
+  mtimeMs: Number(info.mtimeMs),
+})
+
+/**
+ * Node's FileSystem abstraction intentionally has no descriptor-relative/no-follow
+ * open primitive. On Linux, anchor every descendant lookup to a pinned root FD,
+ * reject any opened FD whose resolved path is not the exact expected descendant,
+ * and read only from that already-verified FD. Other platforms fail closed.
+ */
+export const nodeSource: RepoIntelSource = {
+  openRoot: (rootPath) =>
+    Effect.tryPromise({
+      try: async () => {
+        if (process.platform !== "linux") throw new Error("descriptor-rooted RepoIntel reads require Linux procfs")
+
+        const rootHandle = await fs.open(
+          rootPath,
+          fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+        )
+        try {
+          const actualRoot = await fs.realpath(procFdPath(rootHandle.fd))
+          if (actualRoot !== rootPath || !(await rootHandle.stat()).isDirectory()) {
+            throw new Error("the opened repository root does not match the admitted root")
+          }
+          const rootFdPath = procFdPath(rootHandle.fd)
+
+          const openEntry = async (rel: string, flags: number): Promise<fs.FileHandle | undefined> => {
+            if (!isIndexdRelativePath(rel)) return undefined
+            let handle: fs.FileHandle | undefined
+            try {
+              handle = await fs.open(`${rootFdPath}/${rel}`, flags | fsConstants.O_NOFOLLOW)
+              const actual = await fs.realpath(procFdPath(handle.fd))
+              const expected = path.resolve(rootPath, ...rel.split("/"))
+              if (actual !== expected) {
+                await handle.close()
+                return undefined
+              }
+              return handle
+            } catch {
+              if (handle) await handle.close().catch(() => {})
+              return undefined
+            }
+          }
+
+          const withEntry = async <A>(
+            rel: string,
+            flags: number,
+            use: (handle: fs.FileHandle) => Promise<A | undefined>,
+          ): Promise<A | undefined> => {
+            const handle = rel === "" ? rootHandle : await openEntry(rel, flags)
+            if (!handle) return undefined
+            try {
+              return await use(handle)
+            } catch {
+              return undefined
+            } finally {
+              if (handle !== rootHandle) await handle.close().catch(() => {})
+            }
+          }
+
+          return {
+            stat: (rel) =>
+              Effect.promise(() =>
+                withEntry(rel, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK, async (handle) =>
+                  sourceStat(await handle.stat()),
+                ),
+              ),
+            readDirectoryEntries: (rel) =>
+              Effect.promise(() =>
+                withEntry(rel, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY, async (handle) => {
+                  const entries = await fs.readdir(procFdPath(handle.fd), { withFileTypes: true })
+                  return entries.map((entry) => ({
+                    name: entry.name,
+                    type: entry.isDirectory()
+                      ? ("directory" as const)
+                      : entry.isFile()
+                        ? ("file" as const)
+                        : entry.isSymbolicLink()
+                          ? ("symlink" as const)
+                          : ("other" as const),
+                  }))
+                }),
+              ),
+            readFile: (rel, maxBytes) =>
+              Effect.promise(() =>
+                withEntry(rel, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK, async (handle) => {
+                  const before = await handle.stat()
+                  const stat = sourceStat(before)
+                  if (stat.type !== "File") return undefined
+                  if (stat.size > maxBytes) return { stat, tooLarge: true as const }
+
+                  const buffer = Buffer.allocUnsafe(maxBytes + 1)
+                  let bytesRead = 0
+                  while (bytesRead < buffer.length) {
+                    const read = await handle.read(
+                      buffer,
+                      bytesRead,
+                      Math.min(64 * 1024, buffer.length - bytesRead),
+                      bytesRead,
+                    )
+                    if (read.bytesRead === 0) break
+                    bytesRead += read.bytesRead
+                  }
+                  if (bytesRead > maxBytes) return { stat, tooLarge: true as const }
+                  return { stat, contents: buffer.subarray(0, bytesRead) }
+                }),
+              ),
+            close: Effect.promise(async () => {
+              await rootHandle.close().catch(() => {})
+            }),
+          } satisfies RepoIntelSourceRoot
+        } catch (error) {
+          await rootHandle.close().catch(() => {})
+          throw error
+        }
+      },
+      catch: (cause) =>
+        new RepoIntelError({
+          code: "backend_unavailable",
+          detail: `secure RepoIntel source access unavailable: ${String(cause)}`,
+        }),
+    }),
+}
+
 const clamp = (value: number | undefined, fallback: number, maximum: number) => {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return fallback
   return Math.min(Math.floor(value), maximum)
@@ -401,9 +799,63 @@ const decodeUtf8Strict = (bytes: Uint8Array): string | undefined => {
   }
 }
 
+interface ValidatedOverlay {
+  readonly editorVersion: string
+  readonly changes: ReadonlyArray<RepoIntelBackendOverlayChange>
+  readonly totalBytes: number
+}
+
+/**
+ * Validate caller-supplied overlay changes against one collected generation before
+ * the backend sees them. Mirrors indexd's overlay bounds: a path must be a
+ * normalized relative path present in the base, at most 128 changes, 8 MiB of
+ * replacement bytes, 1 MiB per file, UTF-8 contents, no duplicate paths.
+ */
+const validateOverlayInput = (
+  input: RepoIntelOverlayInput,
+  observed: ReadonlySet<string>,
+): { readonly value: ValidatedOverlay } | { readonly error: RepoIntelError } => {
+  const rejected = (detail: string) => ({ error: new RepoIntelError({ code: "invalid_overlay", detail }) })
+  const editorBytes = Buffer.byteLength(input.editorVersion, "utf-8")
+  if (editorBytes === 0 || editorBytes > MAX_EDITOR_VERSION_BYTES) {
+    return rejected(`editor version must be 1..${MAX_EDITOR_VERSION_BYTES} UTF-8 bytes`)
+  }
+  if (input.changes.length === 0) return rejected("overlay must contain at least one change")
+  if (input.changes.length > MAX_OVERLAY_CHANGES) {
+    return rejected(`overlay exceeds ${MAX_OVERLAY_CHANGES} changes`)
+  }
+  const seen = new Set<string>()
+  const changes: RepoIntelBackendOverlayChange[] = []
+  let totalBytes = 0
+  for (const change of input.changes) {
+    if (!isIndexdRelativePath(change.path) || !observed.has(change.path)) {
+      return rejected(`overlay path is not in the collected generation: ${change.path}`)
+    }
+    if (seen.has(change.path)) return rejected(`duplicate overlay change path: ${change.path}`)
+    seen.add(change.path)
+    if (change.contents === null) {
+      changes.push({ path: change.path, contents: null })
+      continue
+    }
+    const bytes =
+      typeof change.contents === "string" ? new Uint8Array(Buffer.from(change.contents, "utf-8")) : change.contents
+    if (bytes.length > MAX_FILE_BYTES) return rejected(`overlay file exceeds ${MAX_FILE_BYTES} bytes: ${change.path}`)
+    if (decodeUtf8Strict(bytes) === undefined) {
+      return rejected(`overlay contents are not UTF-8 text: ${change.path}`)
+    }
+    totalBytes += bytes.length
+    if (totalBytes > MAX_OVERLAY_CONTENT_BYTES) {
+      return rejected(`overlay exceeds ${MAX_OVERLAY_CONTENT_BYTES} replacement bytes`)
+    }
+    changes.push({ path: change.path, contents: bytes })
+  }
+  return { value: { editorVersion: input.editorVersion, changes, totalBytes } }
+}
+
 const pinDigest = (value: string) => createHash("sha256").update(value, "utf-8").digest("hex")
 
-const cacheKey = (scopeId: string, fingerprint: string) => `${scopeId}\u0000${fingerprint}`
+const cacheKey = (scopeId: string, fingerprint: string, pins: RepoIntelPins) =>
+  `${scopeId}\u0000${fingerprint}\u0000${JSON.stringify(pins)}`
 
 const fingerprintOf = (scopeId: string, subpath: string, observed: Observation) => {
   const hash = createHash("sha256")
@@ -417,7 +869,11 @@ const fingerprintOf = (scopeId: string, subpath: string, observed: Observation) 
   )
   const directories = [...observed.directories].sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0))
   for (const directory of directories) hash.update(`d\u0000${directory.rel}\u0000${directory.mtimeMs}\u0000`)
-  for (const file of observed.files) hash.update(`f\u0000${file.rel}\u0000${file.size}\u0000${file.mtimeMs}\u0000`)
+  for (const file of observed.files) {
+    hash.update(`f\u0000${file.rel}\u0000${file.size}\u0000${file.mtimeMs}\u0000`)
+    hash.update(createHash("sha256").update(file.contents).digest())
+    hash.update("\u0000")
+  }
   return hash.digest("hex")
 }
 
@@ -436,6 +892,7 @@ const mapBackendError = (error: RepoIntelBackendError): RepoIntelError => {
     case "generation_mismatch":
     case "cursor_generation_mismatch":
     case "cursor_overlay_mismatch":
+    case "overlay_generation_mismatch":
       return new RepoIntelError({ code: "stale_generation", detail: `${error.code}: ${error.message}` })
     case "cursor_query_mismatch":
     case "cursor_anchor_not_found":
@@ -457,30 +914,369 @@ const mapBackendError = (error: RepoIntelBackendError): RepoIntelError => {
   }
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+
+const isAnalysisProfile = (value: unknown): value is RepoIntelAnalysisProfile =>
+  value === "lightweight" || value === "adaptive" || value === "full"
+
+const ANALYSIS_PROFILE_RANK: Record<RepoIntelAnalysisProfile, number> = {
+  lightweight: 0,
+  adaptive: 1,
+  full: 2,
+}
+
+const resolveAnalysisProfile = (value: unknown): RepoIntelAnalysisProfileState => {
+  const resolution = isRecord(value) ? value : undefined
+  const requested = isAnalysisProfile(resolution?.requested) ? resolution.requested : "lightweight"
+  const candidate = isAnalysisProfile(resolution?.effective) ? resolution.effective : "lightweight"
+  return {
+    requested,
+    effective: ANALYSIS_PROFILE_RANK[candidate] <= ANALYSIS_PROFILE_RANK[requested] ? candidate : requested,
+  }
+}
+
+const isBlake3Digest = (value: unknown): value is string =>
+  typeof value === "string" && /^blake3:[0-9a-f]{64}$/.test(value)
+
+const isOperation = (value: unknown): value is RepoIntelOperation =>
+  value === "text" || value === "symbol" || value === "references" || value === "impact" || value === "expand"
+
+const bridgeRejected = (detail: string) => new RepoIntelBackendError({ code: "rejected", detail })
+
+const validateTransportPins = (pins: RepoIntelPins): RepoIntelBackendError | undefined => {
+  const values = [
+    pins.repository,
+    ...(pins.workspace === undefined ? [] : [pins.workspace]),
+    pins.revisionSet,
+    pins.readScope,
+    pins.readPolicy,
+    pins.sourceReceipt,
+    pins.parserSet,
+  ]
+  if (
+    values.some(
+      (value) =>
+        typeof value !== "string" ||
+        Buffer.byteLength(value, "utf-8") === 0 ||
+        Buffer.byteLength(value, "utf-8") > 4_096,
+    )
+  ) {
+    return bridgeRejected("opaque pins must contain 1..=4096 UTF-8 bytes")
+  }
+}
+
+const validateTransportSnapshots = (snapshots: ReadonlyArray<RepoIntelSnapshot>): RepoIntelBackendError | undefined => {
+  if (snapshots.length > MAX_BASE_FILES) {
+    return new RepoIntelBackendError({ code: "too_many_base_files", detail: `limit is ${MAX_BASE_FILES}` })
+  }
+  const paths = new Set<string>()
+  let contentBytes = 0
+  let pathBytes = 0
+  for (const snapshot of snapshots) {
+    if (!isIndexdRelativePath(snapshot.path)) {
+      return new RepoIntelBackendError({ code: "invalid_path", detail: snapshot.path })
+    }
+    if (paths.has(snapshot.path)) {
+      return new RepoIntelBackendError({ code: "duplicate_path", detail: snapshot.path })
+    }
+    paths.add(snapshot.path)
+    pathBytes += Buffer.byteLength(snapshot.path, "utf-8")
+    if (pathBytes > MAX_BASE_PATH_BYTES) {
+      return new RepoIntelBackendError({ code: "base_path_limit", detail: `limit is ${MAX_BASE_PATH_BYTES}` })
+    }
+    if (!(snapshot.contents instanceof Uint8Array)) {
+      return bridgeRejected(`snapshot contents must be bytes: ${snapshot.path}`)
+    }
+    if (snapshot.contents.byteLength > MAX_FILE_BYTES) {
+      return new RepoIntelBackendError({ code: "file_too_large", detail: snapshot.path })
+    }
+    if (decodeUtf8Strict(snapshot.contents) === undefined) {
+      return new RepoIntelBackendError({ code: "invalid_utf8", detail: snapshot.path })
+    }
+    contentBytes += snapshot.contents.byteLength
+    if (contentBytes > MAX_BASE_CONTENT_BYTES) {
+      return new RepoIntelBackendError({ code: "base_content_limit", detail: `limit is ${MAX_BASE_CONTENT_BYTES}` })
+    }
+  }
+}
+
+const validateTransportQuery = (request: RepoIntelBackendQuery): RepoIntelBackendError | undefined => {
+  const queryBytes = Buffer.byteLength(request.query, "utf-8")
+  if (queryBytes === 0) return new RepoIntelBackendError({ code: "empty_query" })
+  if (queryBytes > MAX_QUERY_BYTES) {
+    return new RepoIntelBackendError({ code: "query_too_large", detail: `limit is ${MAX_QUERY_BYTES}` })
+  }
+  if (request.query.includes("\n") || request.query.includes("\r")) {
+    return new RepoIntelBackendError({ code: "multiline_query" })
+  }
+  if (!Number.isInteger(request.maxResults) || request.maxResults < 1 || request.maxResults > MAX_QUERY_RESULTS) {
+    return new RepoIntelBackendError({ code: "invalid_result_limit", detail: `limit is 1..=${MAX_QUERY_RESULTS}` })
+  }
+  if (request.cursor !== undefined && Buffer.byteLength(request.cursor, "utf-8") > MAX_SEARCH_CURSOR_BYTES) {
+    return new RepoIntelBackendError({ code: "invalid_search_cursor", detail: "cursor exceeds the byte limit" })
+  }
+  if (request.overlay !== undefined && !isBlake3Digest(request.overlay.overlayDigest)) {
+    return bridgeRejected("overlay digest is not a tagged BLAKE3 digest")
+  }
+}
+
+const validateTransportOverlay = (overlay: RepoIntelBackendOverlay): RepoIntelBackendError | undefined => {
+  const editorBytes = Buffer.byteLength(overlay.editorVersion, "utf-8")
+  if (editorBytes === 0 || editorBytes > MAX_EDITOR_VERSION_BYTES) {
+    return bridgeRejected(`editor version must be 1..=${MAX_EDITOR_VERSION_BYTES} UTF-8 bytes`)
+  }
+  if (overlay.changes.length === 0 || overlay.changes.length > MAX_OVERLAY_CHANGES) {
+    return bridgeRejected(`overlay change count must be 1..=${MAX_OVERLAY_CHANGES}`)
+  }
+  const paths = new Set<string>()
+  let replacementBytes = 0
+  for (const change of overlay.changes) {
+    if (!isIndexdRelativePath(change.path)) {
+      return new RepoIntelBackendError({ code: "invalid_path", detail: change.path })
+    }
+    if (paths.has(change.path)) {
+      return bridgeRejected(`duplicate overlay path: ${change.path}`)
+    }
+    paths.add(change.path)
+    if (change.contents === null) continue
+    if (!(change.contents instanceof Uint8Array)) {
+      return bridgeRejected(`overlay contents must be bytes: ${change.path}`)
+    }
+    if (change.contents.byteLength > MAX_FILE_BYTES) {
+      return new RepoIntelBackendError({ code: "file_too_large", detail: change.path })
+    }
+    if (decodeUtf8Strict(change.contents) === undefined) {
+      return new RepoIntelBackendError({ code: "invalid_utf8", detail: change.path })
+    }
+    replacementBytes += change.contents.byteLength
+    if (replacementBytes > MAX_OVERLAY_CONTENT_BYTES) {
+      return bridgeRejected(`overlay replacement bytes exceed ${MAX_OVERLAY_CONTENT_BYTES}`)
+    }
+  }
+}
+
+const decodeTransportQuery = (
+  response: unknown,
+  generationId: string,
+  request: RepoIntelBackendQuery,
+): Effect.Effect<RepoIntelBackendResult, RepoIntelBackendError> => {
+  if (!isRecord(response) || response.operation !== "query" || !isRecord(response.result)) {
+    return Effect.fail(bridgeRejected("malformed query response envelope"))
+  }
+  const result = response.result
+  if (result.generationId !== generationId) {
+    return Effect.fail(
+      new RepoIntelBackendError({
+        code: "generation_mismatch",
+        detail: "query response generation does not match request",
+      }),
+    )
+  }
+  if (!isBlake3Digest(result.generationId)) {
+    return Effect.fail(bridgeRejected("query response has an invalid generation digest"))
+  }
+  if (result.status !== "PARTIAL" && result.status !== "UNAVAILABLE") {
+    return Effect.fail(bridgeRejected("query response has an invalid status"))
+  }
+  if (!Array.isArray(result.matches) || result.matches.length > MAX_QUERY_RESULTS) {
+    return Effect.fail(bridgeRejected("query response has an invalid match list"))
+  }
+  for (const match of result.matches) {
+    if (
+      !isRecord(match) ||
+      typeof match.path !== "string" ||
+      !isIndexdRelativePath(match.path) ||
+      typeof match.startLine !== "number" ||
+      !Number.isSafeInteger(match.startLine) ||
+      (match.startLine as number) < 1 ||
+      typeof match.endLine !== "number" ||
+      !Number.isSafeInteger(match.endLine) ||
+      (match.endLine as number) < (match.startLine as number)
+    ) {
+      return Effect.fail(bridgeRejected("query response contains a malformed match"))
+    }
+  }
+  if (request.overlay === undefined) {
+    if (result.overlayDigest !== undefined) {
+      return Effect.fail(
+        new RepoIntelBackendError({ code: "overlay_generation_mismatch", detail: "unexpected overlay digest" }),
+      )
+    }
+  } else if (result.overlayDigest !== request.overlay.overlayDigest) {
+    return Effect.fail(
+      new RepoIntelBackendError({
+        code: "overlay_generation_mismatch",
+        detail: "query response overlay does not match request",
+      }),
+    )
+  }
+  if (result.nextCursor !== undefined) {
+    if (
+      typeof result.nextCursor !== "string" ||
+      Buffer.byteLength(result.nextCursor, "utf-8") === 0 ||
+      Buffer.byteLength(result.nextCursor, "utf-8") > MAX_SEARCH_CURSOR_BYTES
+    ) {
+      return Effect.fail(bridgeRejected("query response has an invalid cursor"))
+    }
+  }
+  if (
+    result.workUnits !== undefined &&
+    (typeof result.workUnits !== "number" || !Number.isSafeInteger(result.workUnits) || result.workUnits < 0)
+  ) {
+    return Effect.fail(bridgeRejected("query response has invalid work units"))
+  }
+  if (
+    result.truncatedBy !== undefined &&
+    result.truncatedBy !== "work_limit" &&
+    result.truncatedBy !== "result_limit"
+  ) {
+    return Effect.fail(bridgeRejected("query response has an invalid truncation reason"))
+  }
+  if (result.status === "UNAVAILABLE") {
+    if (
+      result.matches.length !== 0 ||
+      result.nextCursor !== undefined ||
+      !isRecord(result.unavailableReason) ||
+      result.unavailableReason.operation !== request.operation
+    ) {
+      return Effect.fail(bridgeRejected("unavailable response does not match the requested operation"))
+    }
+  } else if (result.unavailableReason !== undefined) {
+    return Effect.fail(bridgeRejected("partial response cannot carry an unavailable reason"))
+  }
+  return Effect.succeed(result as unknown as RepoIntelBackendResult)
+}
+
+/**
+ * Build a RepoIntel backend over a caller-injected typed transport. The adapter
+ * checks the Rust wire contract's value limits and correlation bindings, but does
+ * not encode frames, base64-aggregate snapshots, start a process, or install itself
+ * in `node`/`unavailableLayer`.
+ */
+export const backendFromTransport = (transport: RepoIntelTransport): RepoIntelBackend => {
+  const exchange = <A>(
+    call: RepoIntelTransportCall,
+    decode: (response: unknown) => Effect.Effect<A, RepoIntelBackendError>,
+  ) => Effect.flatMap(transport.exchange(call), decode)
+
+  return {
+    build: (pins, snapshots) => {
+      const invalidPins = validateTransportPins(pins)
+      if (invalidPins) return Effect.fail(invalidPins)
+      const invalidSnapshots = validateTransportSnapshots(snapshots)
+      if (invalidSnapshots) return Effect.fail(invalidSnapshots)
+      return exchange({ operation: "build", pins, snapshots }, (response) => {
+        if (!isRecord(response) || response.operation !== "build" || !isBlake3Digest(response.generationId)) {
+          return Effect.fail(bridgeRejected("malformed build response"))
+        }
+        return Effect.succeed({ generationId: response.generationId, generationStatus: "PARTIAL" as const })
+      })
+    },
+    buildOverlay: (handle, overlay) => {
+      if (!isBlake3Digest(handle.generationId)) {
+        return Effect.fail(bridgeRejected("generation handle is not a tagged BLAKE3 digest"))
+      }
+      const invalid = validateTransportOverlay(overlay)
+      if (invalid) return Effect.fail(invalid)
+      return exchange({ operation: "build_overlay", generationId: handle.generationId, overlay }, (response) => {
+        if (!isRecord(response) || response.operation !== "build_overlay" || !isBlake3Digest(response.overlayDigest)) {
+          return Effect.fail(bridgeRejected("malformed buildOverlay response"))
+        }
+        if (response.generationId !== handle.generationId) {
+          return Effect.fail(
+            new RepoIntelBackendError({
+              code: "generation_mismatch",
+              detail: "overlay response generation does not match request",
+            }),
+          )
+        }
+        return Effect.succeed({ overlayDigest: response.overlayDigest })
+      })
+    },
+    query: (handle, request) => {
+      if (!isBlake3Digest(handle.generationId)) {
+        return Effect.fail(bridgeRejected("generation handle is not a tagged BLAKE3 digest"))
+      }
+      const invalid = validateTransportQuery(request)
+      if (invalid) return Effect.fail(invalid)
+      return exchange({ operation: "query", generationId: handle.generationId, request }, (response) =>
+        decodeTransportQuery(response, handle.generationId, request),
+      )
+    },
+    release: (handle) => {
+      if (!isBlake3Digest(handle.generationId)) return Effect.void
+      return exchange({ operation: "release_generation", generationId: handle.generationId }, (response) =>
+        isRecord(response) && response.operation === "released"
+          ? Effect.void
+          : Effect.fail(bridgeRejected("malformed releaseGeneration response")),
+      ).pipe(Effect.catch(() => Effect.void))
+    },
+    releaseOverlay: (overlay) => {
+      if (!isBlake3Digest(overlay.overlayDigest)) return Effect.void
+      return exchange({ operation: "release_overlay", overlayDigest: overlay.overlayDigest }, (response) =>
+        isRecord(response) && response.operation === "released"
+          ? Effect.void
+          : Effect.fail(bridgeRejected("malformed releaseOverlay response")),
+      ).pipe(Effect.catch(() => Effect.void))
+    },
+  }
+}
+
 export const make = (options: {
   readonly fs: FSUtil.Interface
   readonly backend: RepoIntelBackend
+  readonly source?: RepoIntelSource
+  /**
+   * Trusted, pure configuration snapshot seam only. It must not start optional services or do I/O;
+   * missing/invalid state resolves to Lightweight and profile changes never split the base cache.
+   */
+  readonly resolveProfile?: (scope: ReadScope) => unknown
   readonly maxEntries?: number
+  readonly maxCacheBytes?: number
   readonly now?: () => number
 }): Interface => {
   const fs = options.fs
   const backend = options.backend
+  const source = options.source ?? nodeSource
   const maxEntries = options.maxEntries ?? DEFAULT_MAX_CACHE_ENTRIES
+  const maxCacheBytes =
+    Number.isSafeInteger(options.maxCacheBytes) && options.maxCacheBytes! >= 0
+      ? Math.min(options.maxCacheBytes!, MAX_BASE_CONTENT_BYTES)
+      : MAX_BASE_CONTENT_BYTES
   const now = options.now ?? (() => Date.now())
   const cache = new Map<string, CacheEntry>()
+  const builds = new Map<string, BuildFlight>()
+  const scopeEpoch = new Map<string, number>()
 
-  const statOf = Effect.fnUntraced(function* (target: string) {
-    const info = yield* fs.stat(target).pipe(Effect.catch(() => Effect.succeed(undefined)))
-    if (info === undefined) return undefined
-    return {
-      type: info.type as string,
-      size: Number(info.size),
-      mtimeMs: Option.getOrElse(info.mtime, () => new Date(0)).getTime(),
-    }
-  })
+  const epochOf = (scopeId: string) => scopeEpoch.get(scopeId) ?? 0
+  const flightKeyOf = (key: string, scopeId: string, epoch: number) => JSON.stringify([key, scopeId, epoch])
+
+  const releaseWhenIdle = (entry: CacheEntry): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      if (entry.retired === "none" || entry.inflight > 0 || !entry.releasePending || entry.released) {
+        return Effect.void
+      }
+      entry.released = true
+      return backend.release ? backend.release(entry.handle).pipe(Effect.catch(() => Effect.void)) : Effect.void
+    })
+
+  const retire = (entry: CacheEntry, why: Exclude<EntryRetirement, "none">) => {
+    entry.retired = why
+    entry.releasePending = true
+  }
+
+  const retireLostGeneration = (entry: CacheEntry) =>
+    Effect.gen(function* () {
+      if (entry.retired === "invalidated") return
+      if (cache.get(entry.key) === entry) cache.delete(entry.key)
+      if (entry.retired === "none") retire(entry, "evicted")
+      yield* releaseWhenIdle(entry)
+    })
 
   const collect = Effect.fnUntraced(function* (input: {
     readonly root: string
+    readonly sourceRoot: RepoIntelSourceRoot
     readonly subpath: string
     readonly scope: ReadScope
     readonly limits: Limits
@@ -488,7 +1284,7 @@ export const make = (options: {
     readonly started: number
     readonly deadline: number
   }) {
-    const { root, subpath, limits, signal } = input
+    const { root, sourceRoot, subpath, limits, signal } = input
     const ignored = new Set(input.scope.ignoredDirectoryNames ?? DEFAULT_IGNORED_DIRECTORIES)
     const files: CollectedFile[] = []
     const directories: CollectedDirectory[] = []
@@ -506,7 +1302,7 @@ export const make = (options: {
     const expired = () => now() > input.deadline
 
     const startAbs = subpath === "" ? root : path.join(root, subpath)
-    const startStat = yield* statOf(startAbs)
+    const startStat = yield* sourceRoot.stat(subpath)
     if (subpath !== "" && startStat === undefined) {
       return yield* new RepoIntelError({ code: "not_found", detail: subpath })
     }
@@ -515,10 +1311,9 @@ export const make = (options: {
     if (startStat?.type === "File") {
       candidates.push(subpath)
       const parentRel = subpath.includes("/") ? subpath.slice(0, subpath.lastIndexOf("/")) : ""
-      const parentAbs = parentRel === "" ? root : path.join(root, parentRel)
-      const parentStat = yield* statOf(parentAbs)
+      const parentStat = yield* sourceRoot.stat(parentRel)
       if (parentStat?.type === "Directory") {
-        directories.push({ rel: parentRel, abs: parentAbs, mtimeMs: parentStat.mtimeMs })
+        directories.push({ rel: parentRel, mtimeMs: parentStat.mtimeMs })
       }
     } else {
       const pending: string[] = [subpath]
@@ -537,13 +1332,13 @@ export const make = (options: {
         if (!FSUtil.contains(root, absDir)) {
           return yield* new RepoIntelError({ code: "scope_denied", detail: relDir })
         }
-        const info = yield* statOf(absDir)
+        const info = yield* sourceRoot.stat(relDir)
         if (info?.type !== "Directory") {
           skip(relDir, "unreadable")
           continue
         }
-        directories.push({ rel: relDir, abs: absDir, mtimeMs: info.mtimeMs })
-        const entries = yield* fs.readDirectoryEntries(absDir).pipe(Effect.catch(() => Effect.succeed(undefined)))
+        directories.push({ rel: relDir, mtimeMs: info.mtimeMs })
+        const entries = yield* sourceRoot.readDirectoryEntries(relDir)
         if (entries === undefined) {
           skip(relDir, "unreadable")
           continue
@@ -590,7 +1385,7 @@ export const make = (options: {
         skip(rel, "symlink")
         continue
       }
-      const info = yield* statOf(abs)
+      const info = yield* sourceRoot.stat(rel)
       if (info === undefined || info.type !== "File") {
         skip(rel, "unreadable")
         continue
@@ -603,7 +1398,16 @@ export const make = (options: {
         stoppedBy = "byte_limit"
         break
       }
-      const bytes = yield* fs.readFile(abs).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      const file = yield* sourceRoot.readFile(rel, limits.maxFileBytes)
+      if (file === undefined) {
+        skip(rel, "unreadable")
+        continue
+      }
+      if (file.tooLarge === true) {
+        skip(rel, "too_large")
+        continue
+      }
+      const bytes = file.contents
       if (bytes === undefined) {
         skip(rel, "unreadable")
         continue
@@ -616,7 +1420,7 @@ export const make = (options: {
         skip(rel, "not_utf8")
         continue
       }
-      files.push({ rel, abs, contents: bytes, size: bytes.length, mtimeMs: info.mtimeMs })
+      files.push({ rel, contents: bytes, size: bytes.length, mtimeMs: file.stat.mtimeMs })
       scannedBytes += bytes.length
     }
 
@@ -631,14 +1435,26 @@ export const make = (options: {
     } satisfies Observation
   })
 
-  const observationStillCurrent = Effect.fnUntraced(function* (observed: Observation) {
+  const observationStillCurrent = Effect.fnUntraced(function* (sourceRoot: RepoIntelSourceRoot, observed: Observation) {
     for (const directory of observed.directories) {
-      const info = yield* statOf(directory.abs)
+      const info = yield* sourceRoot.stat(directory.rel)
       if (info === undefined || info.type !== "Directory" || info.mtimeMs !== directory.mtimeMs) return false
     }
     for (const file of observed.files) {
-      const info = yield* statOf(file.abs)
+      const info = yield* sourceRoot.stat(file.rel)
       if (info === undefined || info.type !== "File" || info.size !== file.size || info.mtimeMs !== file.mtimeMs) {
+        return false
+      }
+      const current = yield* sourceRoot.readFile(file.rel, MAX_FILE_BYTES)
+      if (
+        current === undefined ||
+        current.tooLarge === true ||
+        current.stat.type !== "File" ||
+        current.stat.size !== file.size ||
+        current.stat.mtimeMs !== file.mtimeMs ||
+        current.contents === undefined ||
+        Buffer.compare(Buffer.from(current.contents), Buffer.from(file.contents)) !== 0
+      ) {
         return false
       }
     }
@@ -655,16 +1471,129 @@ export const make = (options: {
   }
 
   const evictOverflow = Effect.fnUntraced(function* () {
-    while (cache.size > maxEntries) {
+    const bytes = () => [...cache.values()].reduce((total, entry) => total + entry.bytes, 0)
+    while (cache.size > maxEntries || bytes() > maxCacheBytes) {
       const oldest = cache.keys().next().value as string | undefined
       if (oldest === undefined) return
       const entry = cache.get(oldest)!
       cache.delete(oldest)
-      if (backend.release) yield* backend.release(entry.handle).pipe(Effect.catch(() => Effect.void))
+      retire(entry, "evicted")
+      yield* releaseWhenIdle(entry)
     }
   })
 
-  const searchText = Effect.fn("RepoIntel.searchText")(function* (input: TextSearchInput) {
+  const buildShared = Effect.fnUntraced(function* (input: {
+    readonly key: string
+    readonly scopeId: string
+    readonly epoch: number
+    readonly pins: RepoIntelPins
+    readonly snapshots: ReadonlyArray<RepoIntelSnapshot>
+    readonly bytes: number
+  }) {
+    const flightKey = flightKeyOf(input.key, input.scopeId, input.epoch)
+    let flight = builds.get(flightKey)
+    if (flight === undefined) {
+      flight = {
+        scopeId: input.scopeId,
+        epoch: input.epoch,
+        result: yield* Deferred.make<CacheEntry, RepoIntelError>(),
+        waiters: 0,
+        done: false,
+      }
+      builds.set(flightKey, flight)
+    } else if (flight.scopeId !== input.scopeId || flight.epoch !== input.epoch) {
+      // flightKeyOf makes this unreachable; keep the provenance check local to
+      // the join boundary so a future key change cannot silently cross epochs.
+      return yield* new RepoIntelError({
+        code: "stale_generation",
+        detail: `scope ${input.scopeId} requested a build flight from a different invalidation epoch`,
+      })
+    }
+    const activeFlight = flight
+
+    activeFlight.waiters++
+    // A caller that joins after the shared builder has allocated its entry must
+    // acquire a reference of its own before it can issue a query.
+    if (activeFlight.entry !== undefined) activeFlight.entry.inflight++
+
+    if (activeFlight.fiber === undefined && !activeFlight.done) {
+      const build = Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const handle = yield* restore(
+            backend.build(input.pins, input.snapshots).pipe(Effect.mapError(mapBackendError)),
+          )
+          const built: CacheEntry = {
+            key: input.key,
+            scopeId: input.scopeId,
+            handle,
+            bytes: input.bytes,
+            lastUsedAt: now(),
+            inflight: activeFlight.waiters,
+            retired: "none",
+            releasePending: false,
+            released: false,
+          }
+          activeFlight.entry = built
+
+          if (epochOf(activeFlight.scopeId) !== activeFlight.epoch) {
+            retire(built, "invalidated")
+            yield* releaseWhenIdle(built)
+            return yield* new RepoIntelError({
+              code: "stale_generation",
+              detail: `scope ${activeFlight.scopeId} was invalidated during the generation build`,
+            })
+          }
+
+          if (maxEntries > 0 && built.bytes <= maxCacheBytes) {
+            cache.set(input.key, built)
+            yield* evictOverflow()
+          } else {
+            retire(built, "evicted")
+            yield* releaseWhenIdle(built)
+          }
+          return built
+        }),
+      )
+      const worker = build.pipe(
+        Effect.exit,
+        Effect.flatMap((exit) =>
+          Effect.sync(() => {
+            activeFlight.done = true
+            Deferred.doneUnsafe(activeFlight.result, exit)
+            if (activeFlight.waiters === 0 && builds.get(flightKey) === activeFlight) builds.delete(flightKey)
+          }),
+        ),
+      )
+      activeFlight.fiber = yield* Effect.forkDetach(worker)
+    }
+
+    let handedOff = false
+    return yield* Deferred.await(activeFlight.result).pipe(
+      Effect.tap(() =>
+        Effect.sync(() => {
+          handedOff = true
+        }),
+      ),
+      Effect.ensuring(
+        Effect.gen(function* () {
+          activeFlight.waiters--
+          if (!handedOff && activeFlight.entry !== undefined) {
+            activeFlight.entry.inflight--
+            yield* releaseWhenIdle(activeFlight.entry)
+          }
+          if (activeFlight.waiters === 0) {
+            if (!activeFlight.done && activeFlight.fiber !== undefined) yield* Fiber.interrupt(activeFlight.fiber)
+            if (builds.get(flightKey) === activeFlight) builds.delete(flightKey)
+          }
+        }),
+      ),
+    )
+  })
+
+  const runOperation = (
+    op: RepoIntelOperation,
+    input: TextSearchInput,
+  ): Effect.Effect<RepoIntelTextResult, RepoIntelError> => {
     const operation: Effect.Effect<RepoIntelTextResult, RepoIntelError> = Effect.gen(function* () {
       const queryError = validateQuery(input.query)
       if (queryError) return yield* queryError
@@ -675,6 +1604,7 @@ export const make = (options: {
       const subpath = normalized.value
       const limits = resolveLimits(input.budget)
       const started = now()
+      const epoch = epochOf(input.scope.scopeId)
       const root = yield* fs
         .resolve(input.scope.root)
         .pipe(
@@ -682,100 +1612,232 @@ export const make = (options: {
             (cause) => new RepoIntelError({ code: "failed", detail: `scope root ${input.scope.root}: ${cause}` }),
           ),
         )
-      const observed = yield* collect({
-        root,
-        subpath,
-        scope: input.scope,
-        limits,
-        ...(input.signal !== undefined ? { signal: input.signal } : {}),
-        started,
-        deadline: started + limits.maxDurationMs,
-      })
-      const fingerprint = fingerprintOf(input.scope.scopeId, subpath, observed)
-      const pins = derivePins(input.scope, subpath, fingerprint)
-      const key = cacheKey(input.scope.scopeId, fingerprint)
-
-      let entry = promote(key)
-      if (entry === undefined) {
-        const handle = yield* backend
-          .build(
-            pins,
-            observed.files.map((file) => ({ path: file.rel, contents: file.contents })),
-          )
-          .pipe(Effect.mapError(mapBackendError))
-        entry = { key, scopeId: input.scope.scopeId, handle, bytes: observed.scannedBytes, lastUsedAt: now() }
-        cache.set(key, entry)
-        yield* evictOverflow()
+      let profileResolution: unknown
+      try {
+        profileResolution = options.resolveProfile?.(input.scope)
+      } catch {
+        profileResolution = undefined
       }
-
-      if (input.expectedGenerationId !== undefined && entry.handle.generationId !== input.expectedGenerationId) {
-        return yield* new RepoIntelError({
-          code: "stale_generation",
-          detail: `expected ${input.expectedGenerationId}, current ${entry.handle.generationId}`,
+      const analysisProfile = resolveAnalysisProfile(profileResolution)
+      const sourceRoot = yield* source.openRoot(root)
+      return yield* Effect.gen(function* () {
+        const observed = yield* collect({
+          root,
+          sourceRoot,
+          subpath,
+          scope: input.scope,
+          limits,
+          ...(input.signal !== undefined ? { signal: input.signal } : {}),
+          started,
+          deadline: started + limits.maxDurationMs,
         })
-      }
+        const fingerprint = fingerprintOf(input.scope.scopeId, subpath, observed)
+        const pins = derivePins(input.scope, subpath, fingerprint)
+        const key = cacheKey(input.scope.scopeId, fingerprint, pins)
+        const observedPaths = new Set(observed.files.map((file) => file.rel))
 
-      const request: RepoIntelBackendQuery = {
-        operation: "text",
-        query: input.query,
-        maxResults: input.maxResults ?? DEFAULT_MAX_RESULTS,
-        ...(input.cursor !== undefined ? { cursor: input.cursor } : {}),
-      }
-      const response = yield* backend.query(entry.handle, request).pipe(Effect.mapError(mapBackendError))
-      const stillCurrent = yield* observationStillCurrent(observed)
+        let entry = promote(key)
+        let countedByBuild = false
+        if (entry === undefined) {
+          entry = yield* buildShared({
+            key,
+            scopeId: input.scope.scopeId,
+            epoch,
+            pins,
+            snapshots: observed.files.map((file) => ({ path: file.rel, contents: file.contents })),
+            bytes: observed.scannedBytes,
+          })
+          countedByBuild = true
+        }
+        const active = entry
+        if (!countedByBuild) active.inflight += 1
 
-      const truncation: TruncationReason[] = []
-      if (response.truncatedBy !== undefined) truncation.push(response.truncatedBy)
-      if (response.status === "UNAVAILABLE") truncation.push("unavailable")
-      if (observed.stoppedBy !== undefined) truncation.push(observed.stoppedBy)
-      if (observed.skippedCount > 0) truncation.push("skipped_files")
+        const useEntry = Effect.gen(function* () {
+          if (input.expectedGenerationId !== undefined && active.handle.generationId !== input.expectedGenerationId) {
+            return yield* new RepoIntelError({
+              code: "stale_generation",
+              detail: `expected ${input.expectedGenerationId}, current ${active.handle.generationId}`,
+            })
+          }
 
-      const freshness: RepoIntelTextResult["freshness"] = !stillCurrent
-        ? "stale"
-        : truncation.length === 0
-          ? "fresh"
-          : "partial"
+          let overlay: RepoIntelOverlayHandle | undefined
+          if (input.overlay !== undefined) {
+            if (backend.buildOverlay === undefined) {
+              return yield* new RepoIntelError({
+                code: "backend_unavailable",
+                detail: "the wired RepoIntel backend cannot build exact-generation overlays",
+              })
+            }
+            const validated = validateOverlayInput(input.overlay, observedPaths)
+            if ("error" in validated) return yield* validated.error
+            overlay = yield* backend
+              .buildOverlay(active.handle, validated.value)
+              .pipe(
+                Effect.catch((error) =>
+                  error.code === "generation_mismatch"
+                    ? retireLostGeneration(active).pipe(Effect.andThen(Effect.fail(mapBackendError(error))))
+                    : Effect.fail(mapBackendError(error)),
+                ),
+              )
+          }
 
-      return {
-        operation: "text",
-        status: response.status,
-        freshness,
-        ...(freshness === "stale" ? { staleReason: "source_changed" as const } : {}),
-        generationId: response.generationId,
-        matches: response.matches,
-        ...(response.nextCursor !== undefined ? { nextCursor: response.nextCursor } : {}),
-        ...(response.workUnits !== undefined ? { workUnits: response.workUnits } : {}),
-        truncation,
-        skipped: observed.skipped,
-        skippedCount: observed.skippedCount,
-        scanned: {
-          files: observed.files.length,
-          bytes: observed.scannedBytes,
-          directories: observed.directories.length,
-          durationMs: now() - started,
-        },
-        scopeId: input.scope.scopeId,
-        subpath,
-        observedAt: observed.observedAt,
-      } satisfies RepoIntelTextResult
+          const request: RepoIntelBackendQuery = {
+            operation: op,
+            query: input.query,
+            maxResults: input.maxResults ?? DEFAULT_MAX_RESULTS,
+            ...(input.cursor !== undefined ? { cursor: input.cursor } : {}),
+            ...(overlay !== undefined ? { overlay } : {}),
+          }
+          const useQuery = Effect.gen(function* () {
+            const response = yield* backend
+              .query(active.handle, request)
+              .pipe(
+                Effect.catch((error) =>
+                  error.code === "generation_mismatch"
+                    ? retireLostGeneration(active).pipe(Effect.andThen(Effect.fail(mapBackendError(error))))
+                    : Effect.fail(mapBackendError(error)),
+                ),
+              )
+            if (response.generationId !== active.handle.generationId) {
+              return yield* new RepoIntelError({
+                code: "backend_rejected",
+                detail: `query returned a different generation than the requested handle: ${response.generationId}`,
+              })
+            }
+            if (
+              (request.overlay === undefined && response.overlayDigest !== undefined) ||
+              (request.overlay !== undefined && response.overlayDigest !== request.overlay.overlayDigest)
+            ) {
+              return yield* new RepoIntelError({
+                code: "backend_rejected",
+                detail:
+                  request.overlay === undefined
+                    ? "query returned an unexpected overlay digest"
+                    : "query returned a different overlay digest than the requested overlay",
+              })
+            }
+            const outOfGeneration = response.matches.find((match) => !observedPaths.has(match.path))
+            if (outOfGeneration !== undefined) {
+              return yield* new RepoIntelError({
+                code: "backend_rejected",
+                detail: `query returned a path outside the collected generation: ${outOfGeneration.path}`,
+              })
+            }
+            const stillCurrent = yield* observationStillCurrent(sourceRoot, observed)
+
+            if (active.retired === "invalidated") {
+              return yield* new RepoIntelError({
+                code: "stale_generation",
+                detail: `generation ${active.handle.generationId} was invalidated during the query`,
+              })
+            }
+
+            const truncation: TruncationReason[] = []
+            if (response.truncatedBy !== undefined) truncation.push(response.truncatedBy)
+            if (response.status === "UNAVAILABLE") truncation.push("unavailable")
+            if (observed.stoppedBy !== undefined) truncation.push(observed.stoppedBy)
+            if (observed.skippedCount > 0) truncation.push("skipped_files")
+
+            const freshness: RepoIntelTextResult["freshness"] = !stillCurrent
+              ? "stale"
+              : truncation.length === 0
+                ? "fresh"
+                : "partial"
+
+            return {
+              operation: op,
+              analysisProfile,
+              status: response.status,
+              sourceKind:
+                response.status === "UNAVAILABLE" ? "none" : op === "text" ? "lexical" : "unknown",
+              coverage:
+                response.status === "UNAVAILABLE"
+                  ? "none"
+                  : truncation.length > 0 || !stillCurrent || op !== "text"
+                    ? "partial"
+                    : "complete",
+              ...(response.status === "UNAVAILABLE" && op !== "text"
+                ? { fallback: "structural_parser_unavailable" as const }
+                : {}),
+              freshness,
+              ...(freshness === "stale" ? { staleReason: "source_changed" as const } : {}),
+              generationId: response.generationId,
+              matches: response.matches,
+              ...(response.nextCursor !== undefined ? { nextCursor: response.nextCursor } : {}),
+              ...(response.workUnits !== undefined ? { workUnits: response.workUnits } : {}),
+              ...(response.unavailableReason !== undefined ? { unavailableReason: response.unavailableReason } : {}),
+              truncation,
+              skipped: observed.skipped,
+              skippedCount: observed.skippedCount,
+              scanned: {
+                files: observed.files.length,
+                bytes: observed.scannedBytes,
+                directories: observed.directories.length,
+                durationMs: now() - started,
+              },
+              ...(overlay !== undefined
+                ? {
+                    overlay: {
+                      editorVersion: input.overlay!.editorVersion,
+                      digest: response.overlayDigest ?? overlay.overlayDigest,
+                    },
+                  }
+                : {}),
+              scopeId: input.scope.scopeId,
+              subpath,
+              observedAt: observed.observedAt,
+            } satisfies RepoIntelTextResult
+          })
+          if (overlay !== undefined && backend.releaseOverlay) {
+            const built = overlay
+            return yield* useQuery.pipe(
+              Effect.ensuring(backend.releaseOverlay(built).pipe(Effect.catch(() => Effect.void))),
+            )
+          }
+          return yield* useQuery
+        })
+
+        return yield* useEntry.pipe(
+          Effect.ensuring(
+            Effect.suspend(() => {
+              active.inflight -= 1
+              return releaseWhenIdle(active)
+            }),
+          ),
+        )
+      }).pipe(Effect.ensuring(sourceRoot.close))
     })
 
-    if (input.signal === undefined) return yield* operation
-    return yield* operation.pipe(
+    if (input.signal === undefined) return operation
+    return operation.pipe(
       Effect.raceFirst(waitForAbort(input.signal)),
       Effect.mapError((error) =>
         error instanceof RepoIntelError ? error : new RepoIntelError({ code: "cancelled", detail: String(error) }),
       ),
     )
+  }
+
+  const searchText = Effect.fn("RepoIntel.searchText")(function* (input: TextSearchInput) {
+    return yield* runOperation("text", input)
+  })
+
+  const searchSymbols = Effect.fn("RepoIntel.searchSymbols")(function* (input: TextSearchInput) {
+    return yield* runOperation("symbol", input)
+  })
+
+  const findReferences = Effect.fn("RepoIntel.findReferences")(function* (input: TextSearchInput) {
+    return yield* runOperation("references", input)
   })
 
   const invalidate = Effect.fn("RepoIntel.invalidate")(function* (scopeId: string) {
+    scopeEpoch.set(scopeId, epochOf(scopeId) + 1)
     let removed = 0
     for (const [key, entry] of [...cache.entries()]) {
       if (entry.scopeId !== scopeId) continue
       cache.delete(key)
       removed++
-      if (backend.release) yield* backend.release(entry.handle).pipe(Effect.catch(() => Effect.void))
+      retire(entry, "invalidated")
+      yield* releaseWhenIdle(entry)
     }
     return removed
   })
@@ -783,10 +1845,16 @@ export const make = (options: {
   const stats = Effect.fn("RepoIntel.stats")(function* () {
     let bytes = 0
     for (const entry of cache.values()) bytes += entry.bytes
-    return { entries: cache.size, bytes }
+    let inFlightBuilds = 0
+    let buildWaiters = 0
+    for (const flight of builds.values()) {
+      if (!flight.done) inFlightBuilds++
+      buildWaiters += flight.waiters
+    }
+    return { entries: cache.size, bytes, inFlightBuilds, buildWaiters }
   })
 
-  return { searchText, invalidate, stats }
+  return { searchText, searchSymbols, findReferences, invalidate, stats }
 }
 
 /** Backend that fails closed until a real indexd transport is wired. */
@@ -795,12 +1863,42 @@ export const unavailableBackend: RepoIntelBackend = {
   query: () => Effect.fail(new RepoIntelBackendError({ code: "unavailable", detail: "no RepoIntel backend is wired" })),
 }
 
-export const layer = (backend: RepoIntelBackend, options?: { readonly maxEntries?: number }) =>
+export const layer = (
+  backend: RepoIntelBackend,
+  options?: {
+    readonly maxEntries?: number
+    readonly resolveProfile?: (scope: ReadScope) => unknown
+  },
+) =>
   Layer.effect(
     Service,
     Effect.map(FSUtil.Service, (fs) => make({ fs, backend, ...options })),
   )
 
-export const unavailableLayer = layer(unavailableBackend)
+const unavailableServiceError = () =>
+  new RepoIntelError({ code: "backend_unavailable", detail: "no authenticated HostKernel RepoIntel backend is wired" })
+
+/**
+ * The product default is unavailable at the service boundary, before it resolves
+ * a caller-supplied root or collects any source bytes. Tests may still inject a
+ * backend into `make`; that seam never becomes the production default by itself.
+ */
+export const unavailableLayer = Layer.succeed(
+  Service,
+  Service.of({
+    searchText: () => Effect.fail(unavailableServiceError()),
+    searchSymbols: () => Effect.fail(unavailableServiceError()),
+    findReferences: () => Effect.fail(unavailableServiceError()),
+    invalidate: () => Effect.succeed(0),
+    stats: () => Effect.succeed({ entries: 0, bytes: 0, inFlightBuilds: 0, buildWaiters: 0 }),
+  }),
+)
+
+/** Service node for graphs that need RepoIntel while no real backend transport is wired. */
+export const node = LayerNode.make({
+  service: Service,
+  layer: unavailableLayer,
+  deps: [FSUtil.node],
+})
 
 export * as RepoIntel from "./repo-intel"

@@ -7,6 +7,8 @@
 //! [`PressureState::evaluate`] is a derived control hint with the same
 //! boundary: it never authorizes or performs termination, eviction or launch.
 
+use std::collections::{BTreeMap, HashMap};
+
 /// Mirrors the single §11.20 reservation lifecycle; no ACTIVE/UNKNOWN aliases.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReservationState {
@@ -156,6 +158,997 @@ pub struct PressureObservation {
     pub sustained_calm: bool,
 }
 
+/// Authenticated identity copied from a trusted Rust ingress after principal,
+/// workspace, Session, Run, Task, Attempt, and owner epoch validation. It is
+/// deliberately opaque to callers; constructing it is not an authentication API.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct AuthenticatedOwnerContext {
+    principal_ref: String,
+    workspace_binding: String,
+    session_id: String,
+    run_id: String,
+    task_id: String,
+    attempt_id: String,
+    owner_epoch: u64,
+}
+
+impl AuthenticatedOwnerContext {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_verified_ingress(
+        principal_ref: String,
+        workspace_binding: String,
+        session_id: String,
+        run_id: String,
+        task_id: String,
+        attempt_id: String,
+        owner_epoch: u64,
+    ) -> Result<Self, ResourceOwnerError> {
+        let identity = Self {
+            principal_ref,
+            workspace_binding,
+            session_id,
+            run_id,
+            task_id,
+            attempt_id,
+            owner_epoch,
+        };
+        identity.validate()?;
+        Ok(identity)
+    }
+
+    /// Rebuilds one owner scope from an authenticated durable OwnerLog record
+    /// during replay. The persisted record was written by trusted ingress after
+    /// its original identity check; this constructor is not an ingress
+    /// authentication API and must not be called with caller-supplied strings.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn rehydrate_from_durable_scope(
+        principal_ref: String,
+        workspace_binding: String,
+        session_id: String,
+        run_id: String,
+        task_id: String,
+        attempt_id: String,
+        owner_epoch: u64,
+    ) -> Result<Self, ResourceOwnerError> {
+        Self::from_verified_ingress(
+            principal_ref,
+            workspace_binding,
+            session_id,
+            run_id,
+            task_id,
+            attempt_id,
+            owner_epoch,
+        )
+    }
+
+    fn validate(&self) -> Result<(), ResourceOwnerError> {
+        let values = [
+            self.principal_ref.as_str(),
+            self.workspace_binding.as_str(),
+            self.session_id.as_str(),
+            self.run_id.as_str(),
+            self.task_id.as_str(),
+            self.attempt_id.as_str(),
+        ];
+        if self.owner_epoch == 0
+            || values
+                .into_iter()
+                .any(|value| value.is_empty() || value.len() > 256)
+        {
+            return Err(ResourceOwnerError::InvalidIdentity);
+        }
+        Ok(())
+    }
+
+    pub fn principal_ref(&self) -> &str {
+        &self.principal_ref
+    }
+
+    pub fn workspace_binding(&self) -> &str {
+        &self.workspace_binding
+    }
+
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
+    pub fn task_id(&self) -> &str {
+        &self.task_id
+    }
+
+    pub fn attempt_id(&self) -> &str {
+        &self.attempt_id
+    }
+
+    pub fn owner_epoch(&self) -> u64 {
+        self.owner_epoch
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_fixture(
+        principal_ref: &str,
+        workspace_binding: &str,
+        session_id: &str,
+        run_id: &str,
+        task_id: &str,
+        attempt_id: &str,
+        owner_epoch: u64,
+    ) -> Self {
+        Self::from_verified_ingress(
+            principal_ref.to_owned(),
+            workspace_binding.to_owned(),
+            session_id.to_owned(),
+            run_id.to_owned(),
+            task_id.to_owned(),
+            attempt_id.to_owned(),
+            owner_epoch,
+        )
+        .expect("test identity must be valid")
+    }
+}
+
+/// §18.18 quota dimension. Each dimension uses its own exact integer unit.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum BudgetDimension {
+    MemoryBytes,
+    CpuMillicores,
+    Processes,
+    FileDescriptors,
+    DiskBytes,
+    ToolOutputBytes,
+    ActiveWorkers,
+    Tokens,
+    ProviderCostMicros,
+}
+
+impl BudgetDimension {
+    pub const WIRE_NAMES: [&'static str; 9] = [
+        "MEMORY_BYTES",
+        "CPU_MILLICORES",
+        "PROCESSES",
+        "FILE_DESCRIPTORS",
+        "DISK_BYTES",
+        "TOOL_OUTPUT_BYTES",
+        "ACTIVE_WORKERS",
+        "TOKENS",
+        "PROVIDER_COST_MICROS",
+    ];
+
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::MemoryBytes => "MEMORY_BYTES",
+            Self::CpuMillicores => "CPU_MILLICORES",
+            Self::Processes => "PROCESSES",
+            Self::FileDescriptors => "FILE_DESCRIPTORS",
+            Self::DiskBytes => "DISK_BYTES",
+            Self::ToolOutputBytes => "TOOL_OUTPUT_BYTES",
+            Self::ActiveWorkers => "ACTIVE_WORKERS",
+            Self::Tokens => "TOKENS",
+            Self::ProviderCostMicros => "PROVIDER_COST_MICROS",
+        }
+    }
+
+    pub fn parse_wire(value: &str) -> Result<Self, ResourceWireError> {
+        match value {
+            "MEMORY_BYTES" => Ok(Self::MemoryBytes),
+            "CPU_MILLICORES" => Ok(Self::CpuMillicores),
+            "PROCESSES" => Ok(Self::Processes),
+            "FILE_DESCRIPTORS" => Ok(Self::FileDescriptors),
+            "DISK_BYTES" => Ok(Self::DiskBytes),
+            "TOOL_OUTPUT_BYTES" => Ok(Self::ToolOutputBytes),
+            "ACTIVE_WORKERS" => Ok(Self::ActiveWorkers),
+            "TOKENS" => Ok(Self::Tokens),
+            "PROVIDER_COST_MICROS" => Ok(Self::ProviderCostMicros),
+            _ => Err(ResourceWireError::UnknownDimension),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ResourceOwnerError {
+    InvalidConfiguration,
+    InvalidIdentity,
+    InvalidRequest,
+    StaleRevision,
+    StaleOwnerEpoch,
+    ScopeMismatch,
+    IdempotencyConflict,
+    CapacityUnknown,
+    UnknownCapacity,
+    InsufficientCapacity,
+    ReservationLimitReached,
+    ReservationNotFound,
+    InvalidTransition,
+    MissingProof,
+    ProcessIdentityMismatch,
+    StaleSample,
+    NotExpired,
+    WorkerIdentityConflict,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReservationRequest {
+    pub reservation_id: String,
+    pub idempotency_key: String,
+    pub dimension: BudgetDimension,
+    pub amount: u64,
+    pub expires_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnedReservation {
+    pub reservation_id: String,
+    pub idempotency_key: String,
+    pub owner: AuthenticatedOwnerContext,
+    pub dimension: BudgetDimension,
+    pub amount: u64,
+    pub state: ReservationState,
+    pub expires_at_ms: u64,
+    pub worker_execution_id: Option<String>,
+    pub process_identity: Option<crate::resource_sampler::ProcessIdentity>,
+    pub already_counted_units: Option<u64>,
+    pub usage_sample_sequence: Option<u64>,
+}
+
+impl OwnedReservation {
+    fn budget_reservation(&self) -> Reservation {
+        Reservation {
+            state: self.state,
+            reserved_units: self.amount,
+            already_counted_units: self.already_counted_units,
+        }
+    }
+
+    pub fn outstanding_units(&self) -> u64 {
+        self.budget_reservation().outstanding_units()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DimensionCapacity {
+    hard_limit: Option<u64>,
+    measured_total: Option<u64>,
+    safety_reserve: u64,
+    sample_sequence: u64,
+}
+
+/// Process-local, bounded model of the canonical reservation owner. This is
+/// not yet attached to OwnerLog; production dispatch must persist every
+/// revision/transition before using a lease. Its API keeps the authorization,
+/// CAS, quota, idempotency and settlement rules executable for the eventual
+/// durable adapter without enabling worker fan-out.
+#[derive(Clone, Debug)]
+pub struct ResourceReservationOwner {
+    owner_epoch: u64,
+    revision: u64,
+    max_reservations: usize,
+    capacity: BTreeMap<BudgetDimension, DimensionCapacity>,
+    reservations: BTreeMap<String, OwnedReservation>,
+    idempotency: HashMap<(String, String), String>,
+}
+
+impl ResourceReservationOwner {
+    pub fn new(owner_epoch: u64, max_reservations: usize) -> Result<Self, ResourceOwnerError> {
+        if owner_epoch == 0 || max_reservations == 0 || max_reservations > 4096 {
+            return Err(ResourceOwnerError::InvalidConfiguration);
+        }
+        Ok(Self {
+            owner_epoch,
+            revision: 0,
+            max_reservations,
+            capacity: BTreeMap::new(),
+            reservations: BTreeMap::new(),
+            idempotency: HashMap::new(),
+        })
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// The epoch this owner was created with. Inner pools keep the epoch of
+    /// their creation: the worker pool advances its own fence and passes the
+    /// record's original scope for settlement, so persisted reservations are
+    /// never reinterpreted under a newer epoch.
+    #[allow(dead_code)]
+    pub(crate) fn owner_epoch(&self) -> u64 {
+        self.owner_epoch
+    }
+
+    pub fn update_capacity(
+        &mut self,
+        dimension: BudgetDimension,
+        hard_limit: Option<u64>,
+        measured_total: Option<u64>,
+        safety_reserve: u64,
+        owner_epoch: u64,
+        sample_sequence: u64,
+        expected_revision: u64,
+    ) -> Result<u64, ResourceOwnerError> {
+        self.check_epoch(owner_epoch)?;
+        self.check_revision(expected_revision)?;
+        let previous_sequence = self
+            .capacity
+            .get(&dimension)
+            .map_or(0, |current| current.sample_sequence);
+        if sample_sequence == 0 || sample_sequence <= previous_sequence {
+            return Err(ResourceOwnerError::StaleSample);
+        }
+        let next_revision = self.next_revision()?;
+        self.capacity.insert(
+            dimension,
+            DimensionCapacity {
+                hard_limit,
+                measured_total,
+                safety_reserve,
+                sample_sequence,
+            },
+        );
+        for reservation in self.reservations.values_mut().filter(|reservation| {
+            reservation.dimension == dimension && is_capacity_holding(reservation.state)
+        }) {
+            // A new global sample invalidates worker-specific usage attribution until
+            // this exact process generation is sampled in the same sequence.
+            reservation.already_counted_units = None;
+            reservation.usage_sample_sequence = None;
+        }
+        self.revision = next_revision;
+        Ok(next_revision)
+    }
+
+    pub fn capacity(&self, dimension: BudgetDimension) -> Capacity {
+        let Some(snapshot) = self.capacity.get(&dimension) else {
+            return Capacity::UnknownCapacity;
+        };
+        let (Some(hard_limit), Some(measured_total)) =
+            (snapshot.hard_limit, snapshot.measured_total)
+        else {
+            return Capacity::UnknownCapacity;
+        };
+        let reservations: Vec<_> = self
+            .reservations
+            .values()
+            .filter(|reservation| reservation.dimension == dimension)
+            .map(OwnedReservation::budget_reservation)
+            .collect();
+        remaining_capacity(
+            Some(hard_limit),
+            measured_total,
+            snapshot.safety_reserve,
+            &reservations,
+        )
+    }
+
+    pub fn propose(
+        &mut self,
+        request: ReservationRequest,
+        owner: AuthenticatedOwnerContext,
+        expected_revision: u64,
+    ) -> Result<OwnedReservation, ResourceOwnerError> {
+        self.check_owner(&owner)?;
+        validate_request(&request)?;
+        let key = (owner.attempt_id.clone(), request.idempotency_key.clone());
+        if let Some(existing_id) = self.idempotency.get(&key) {
+            let existing = self
+                .reservations
+                .get(existing_id)
+                .ok_or(ResourceOwnerError::ReservationNotFound)?;
+            if existing.owner == owner
+                && existing.reservation_id == request.reservation_id
+                && existing.dimension == request.dimension
+                && existing.amount == request.amount
+                && existing.expires_at_ms == request.expires_at_ms
+            {
+                return Ok(existing.clone());
+            }
+            return Err(ResourceOwnerError::IdempotencyConflict);
+        }
+        self.check_revision(expected_revision)?;
+        if self.reservations.contains_key(&request.reservation_id) {
+            return Err(ResourceOwnerError::IdempotencyConflict);
+        }
+        if self.reservations.len() >= self.max_reservations {
+            return Err(ResourceOwnerError::ReservationLimitReached);
+        }
+        let reservation = OwnedReservation {
+            reservation_id: request.reservation_id.clone(),
+            idempotency_key: request.idempotency_key.clone(),
+            owner,
+            dimension: request.dimension,
+            amount: request.amount,
+            state: ReservationState::Proposed,
+            expires_at_ms: request.expires_at_ms,
+            worker_execution_id: None,
+            process_identity: None,
+            already_counted_units: None,
+            usage_sample_sequence: None,
+        };
+        let next_revision = self.next_revision()?;
+        self.idempotency.insert(key, request.reservation_id.clone());
+        self.reservations
+            .insert(request.reservation_id, reservation.clone());
+        self.revision = next_revision;
+        Ok(reservation)
+    }
+
+    pub fn reserve(
+        &mut self,
+        reservation_id: &str,
+        owner: &AuthenticatedOwnerContext,
+        expected_revision: u64,
+    ) -> Result<OwnedReservation, ResourceOwnerError> {
+        self.check_owner(owner)?;
+        let existing = self
+            .reservations
+            .get(reservation_id)
+            .ok_or(ResourceOwnerError::ReservationNotFound)?;
+        self.check_reservation_owner(existing, owner)?;
+        if existing.state == ReservationState::Reserved {
+            return Ok(existing.clone());
+        }
+        if existing.state != ReservationState::Proposed {
+            return Err(ResourceOwnerError::InvalidTransition);
+        }
+        self.check_revision(expected_revision)?;
+        match self.capacity(existing.dimension) {
+            Capacity::UnknownCapacity => return Err(ResourceOwnerError::UnknownCapacity),
+            Capacity::Remaining(remaining) if remaining < existing.amount => {
+                return Err(ResourceOwnerError::InsufficientCapacity);
+            }
+            Capacity::Remaining(_) => {}
+        }
+        existing
+            .state
+            .validate_transition(ReservationState::Reserved, ReservationProof::default())
+            .map_err(map_transition_error)?;
+        let next_revision = self.next_revision()?;
+        let current = self
+            .reservations
+            .get_mut(reservation_id)
+            .expect("checked reservation");
+        current.state = ReservationState::Reserved;
+        let result = current.clone();
+        self.revision = next_revision;
+        Ok(result)
+    }
+
+    /// Replay-only: re-applies an already-committed `PROPOSED → RESERVED`
+    /// transition without re-evaluating live capacity, which was validated
+    /// before the durable append. Owner, scope, state and revision fences still
+    /// apply. This is never a live admission path: derived telemetry must not
+    /// be able to rewrite committed history.
+    #[allow(dead_code)]
+    pub(crate) fn reserve_replayed(
+        &mut self,
+        reservation_id: &str,
+        owner: &AuthenticatedOwnerContext,
+        expected_revision: u64,
+    ) -> Result<OwnedReservation, ResourceOwnerError> {
+        self.check_owner(owner)?;
+        let existing = self
+            .reservations
+            .get(reservation_id)
+            .ok_or(ResourceOwnerError::ReservationNotFound)?;
+        self.check_reservation_owner(existing, owner)?;
+        if existing.state == ReservationState::Reserved {
+            return Ok(existing.clone());
+        }
+        if existing.state != ReservationState::Proposed {
+            return Err(ResourceOwnerError::InvalidTransition);
+        }
+        self.check_revision(expected_revision)?;
+        existing
+            .state
+            .validate_transition(ReservationState::Reserved, ReservationProof::default())
+            .map_err(map_transition_error)?;
+        let next_revision = self.next_revision()?;
+        let current = self
+            .reservations
+            .get_mut(reservation_id)
+            .expect("checked reservation");
+        current.state = ReservationState::Reserved;
+        let result = current.clone();
+        self.revision = next_revision;
+        Ok(result)
+    }
+
+    pub fn claim(
+        &mut self,
+        reservation_id: &str,
+        owner: &AuthenticatedOwnerContext,
+        worker_execution_id: &str,
+        expected_revision: u64,
+    ) -> Result<OwnedReservation, ResourceOwnerError> {
+        self.check_owner(owner)?;
+        if worker_execution_id.is_empty() || worker_execution_id.len() > 256 {
+            return Err(ResourceOwnerError::InvalidRequest);
+        }
+        let existing = self
+            .reservations
+            .get(reservation_id)
+            .ok_or(ResourceOwnerError::ReservationNotFound)?;
+        self.check_reservation_owner(existing, owner)?;
+        if existing.state == ReservationState::Claimed {
+            if existing.worker_execution_id.as_deref() == Some(worker_execution_id) {
+                return Ok(existing.clone());
+            }
+            return Err(ResourceOwnerError::WorkerIdentityConflict);
+        }
+        self.check_revision(expected_revision)?;
+        existing
+            .state
+            .validate_transition(ReservationState::Claimed, ReservationProof::default())
+            .map_err(map_transition_error)?;
+        let next_revision = self.next_revision()?;
+        let current = self
+            .reservations
+            .get_mut(reservation_id)
+            .expect("checked reservation");
+        current.state = ReservationState::Claimed;
+        current.worker_execution_id = Some(worker_execution_id.to_owned());
+        let result = current.clone();
+        self.revision = next_revision;
+        Ok(result)
+    }
+
+    pub fn bind_process(
+        &mut self,
+        reservation_id: &str,
+        owner: &AuthenticatedOwnerContext,
+        process_identity: crate::resource_sampler::ProcessIdentity,
+        expected_revision: u64,
+    ) -> Result<u64, ResourceOwnerError> {
+        self.check_owner(owner)?;
+        let current = self
+            .reservations
+            .get(reservation_id)
+            .ok_or(ResourceOwnerError::ReservationNotFound)?;
+        self.check_reservation_owner(current, owner)?;
+        if process_identity.pid == 0 || process_identity.start_identity == 0 {
+            return Err(ResourceOwnerError::InvalidRequest);
+        }
+        if current.state != ReservationState::Claimed {
+            return Err(ResourceOwnerError::InvalidTransition);
+        }
+        if let Some(existing) = &current.process_identity {
+            return if *existing == process_identity {
+                Ok(self.revision)
+            } else {
+                Err(ResourceOwnerError::ProcessIdentityMismatch)
+            };
+        }
+        self.check_revision(expected_revision)?;
+        let next_revision = self.next_revision()?;
+        self.reservations
+            .get_mut(reservation_id)
+            .expect("checked reservation")
+            .process_identity = Some(process_identity);
+        self.revision = next_revision;
+        Ok(next_revision)
+    }
+
+    pub fn record_process_usage(
+        &mut self,
+        reservation_id: &str,
+        owner: &AuthenticatedOwnerContext,
+        process_identity: &crate::resource_sampler::ProcessIdentity,
+        measured_units: u64,
+        sample_sequence: u64,
+        expected_revision: u64,
+    ) -> Result<u64, ResourceOwnerError> {
+        self.check_owner(owner)?;
+        let reservation = self
+            .reservations
+            .get(reservation_id)
+            .ok_or(ResourceOwnerError::ReservationNotFound)?;
+        self.check_reservation_owner(reservation, owner)?;
+        if !is_capacity_holding(reservation.state) {
+            return Err(ResourceOwnerError::InvalidTransition);
+        }
+        if reservation.process_identity.as_ref() != Some(process_identity) {
+            return Err(ResourceOwnerError::ProcessIdentityMismatch);
+        }
+        let capacity = self
+            .capacity
+            .get(&reservation.dimension)
+            .ok_or(ResourceOwnerError::UnknownCapacity)?;
+        if capacity.sample_sequence != sample_sequence
+            || capacity.measured_total.is_none()
+            || capacity
+                .measured_total
+                .is_some_and(|total| measured_units > total)
+        {
+            return Err(ResourceOwnerError::StaleSample);
+        }
+        if reservation.usage_sample_sequence == Some(sample_sequence) {
+            return if reservation.already_counted_units == Some(measured_units) {
+                Ok(self.revision)
+            } else {
+                Err(ResourceOwnerError::StaleSample)
+            };
+        }
+        self.check_revision(expected_revision)?;
+        let next_revision = self.next_revision()?;
+        let current = self
+            .reservations
+            .get_mut(reservation_id)
+            .expect("checked reservation");
+        current.already_counted_units = Some(measured_units);
+        current.usage_sample_sequence = Some(sample_sequence);
+        self.revision = next_revision;
+        Ok(next_revision)
+    }
+
+    pub fn expire_unlaunched(
+        &mut self,
+        reservation_id: &str,
+        owner: &AuthenticatedOwnerContext,
+        now_ms: u64,
+        proof: ReservationProof,
+        expected_revision: u64,
+    ) -> Result<u64, ResourceOwnerError> {
+        self.check_owner(owner)?;
+        let existing = self
+            .reservations
+            .get(reservation_id)
+            .ok_or(ResourceOwnerError::ReservationNotFound)?;
+        self.check_reservation_owner(existing, owner)?;
+        match existing.state {
+            ReservationState::Expired => return Ok(self.revision),
+            ReservationState::Reserved => {}
+            _ => return Err(ResourceOwnerError::InvalidTransition),
+        }
+        if now_ms < existing.expires_at_ms {
+            return Err(ResourceOwnerError::NotExpired);
+        }
+        self.check_revision(expected_revision)?;
+        existing
+            .state
+            .validate_transition(ReservationState::Expired, proof)
+            .map_err(map_transition_error)?;
+        let next_revision = self.next_revision()?;
+        let current = self
+            .reservations
+            .get_mut(reservation_id)
+            .expect("checked reservation");
+        current.state = ReservationState::Expired;
+        self.revision = next_revision;
+        Ok(next_revision)
+    }
+
+    pub(crate) fn expire_unlaunched_reconciled(
+        &mut self,
+        reservation_id: &str,
+        owner: &AuthenticatedOwnerContext,
+        proof: ReservationProof,
+        expected_revision: u64,
+    ) -> Result<u64, ResourceOwnerError> {
+        self.check_owner(owner)?;
+        let existing = self.reservations.get(reservation_id)
+            .ok_or(ResourceOwnerError::ReservationNotFound)?;
+        self.check_reservation_owner(existing, owner)?;
+        if existing.state == ReservationState::Expired { return Ok(self.revision); }
+        if existing.state != ReservationState::Reserved
+            || !proof.no_launch_or_dispatch || !proof.reconciliation_complete
+        {
+            return Err(ResourceOwnerError::InvalidTransition);
+        }
+        self.check_revision(expected_revision)?;
+        existing.state.validate_transition(ReservationState::Expired, proof)
+            .map_err(map_transition_error)?;
+        let next_revision = self.next_revision()?;
+        self.reservations.get_mut(reservation_id).expect("checked reservation").state = ReservationState::Expired;
+        self.revision = next_revision;
+        Ok(next_revision)
+    }
+
+    pub fn quarantine(
+        &mut self,
+        reservation_id: &str,
+        owner: &AuthenticatedOwnerContext,
+        expected_revision: u64,
+    ) -> Result<u64, ResourceOwnerError> {
+        self.transition(
+            reservation_id,
+            owner,
+            ReservationState::Quarantined,
+            ReservationProof::default(),
+            expected_revision,
+        )
+    }
+
+    pub fn begin_release(
+        &mut self,
+        reservation_id: &str,
+        owner: &AuthenticatedOwnerContext,
+        proof: ReservationProof,
+        expected_revision: u64,
+    ) -> Result<u64, ResourceOwnerError> {
+        self.transition(
+            reservation_id,
+            owner,
+            ReservationState::ReleasePending,
+            proof,
+            expected_revision,
+        )
+    }
+
+    pub fn release(
+        &mut self,
+        reservation_id: &str,
+        owner: &AuthenticatedOwnerContext,
+        proof: ReservationProof,
+        expected_revision: u64,
+    ) -> Result<u64, ResourceOwnerError> {
+        self.check_owner(owner)?;
+        let existing = self
+            .reservations
+            .get(reservation_id)
+            .ok_or(ResourceOwnerError::ReservationNotFound)?;
+        self.check_reservation_owner(existing, owner)?;
+        if existing.process_identity.is_none() {
+            return Err(ResourceOwnerError::MissingProof);
+        }
+        if existing.state == ReservationState::Released {
+            return if proof.owned_process_exited && proof.effects_settled {
+                Ok(self.revision)
+            } else {
+                Err(ResourceOwnerError::MissingProof)
+            };
+        }
+        self.check_revision(expected_revision)?;
+        existing
+            .state
+            .validate_transition(ReservationState::Released, proof)
+            .map_err(map_transition_error)?;
+        let next_revision = self.next_revision()?;
+        let current = self
+            .reservations
+            .get_mut(reservation_id)
+            .expect("checked reservation");
+        current.state = ReservationState::Released;
+        current.already_counted_units = None;
+        current.usage_sample_sequence = None;
+        self.revision = next_revision;
+        Ok(next_revision)
+    }
+
+    /// Release a logical managed-session worker's ActiveWorkers lease after
+    /// WorkerPoolControl has consumed the opaque P1/P2 terminal proof. Logical
+    /// sessions share Core's PID, so this path intentionally requires no child
+    /// process identity and accepts no process-exit flag.
+    pub(crate) fn release_logical_managed_worker(
+        &mut self,
+        reservation_id: &str,
+        owner: &AuthenticatedOwnerContext,
+        expected_revision: u64,
+    ) -> Result<u64, ResourceOwnerError> {
+        self.check_owner(owner)?;
+        let existing = self.reservations.get(reservation_id)
+            .ok_or(ResourceOwnerError::ReservationNotFound)?;
+        self.check_reservation_owner(existing, owner)?;
+        if existing.dimension != BudgetDimension::ActiveWorkers
+            || existing.worker_execution_id.is_none()
+            || existing.process_identity.is_some()
+            || !matches!(existing.state, ReservationState::Claimed | ReservationState::Quarantined | ReservationState::ReleasePending)
+        {
+            return Err(ResourceOwnerError::InvalidTransition);
+        }
+        if existing.state != ReservationState::ReleasePending {
+            self.check_revision(expected_revision)?;
+            existing.state.validate_transition(
+                ReservationState::ReleasePending,
+                ReservationProof::default(),
+            ).map_err(map_transition_error)?;
+            let next = self.next_revision()?;
+            self.reservations.get_mut(reservation_id).expect("checked reservation").state =
+                ReservationState::ReleasePending;
+            self.revision = next;
+        }
+        self.check_revision(self.revision)?;
+        let next = self.next_revision()?;
+        let current = self.reservations.get_mut(reservation_id).expect("checked reservation");
+        current.state = ReservationState::Released;
+        current.already_counted_units = None;
+        current.usage_sample_sequence = None;
+        self.revision = next;
+        Ok(next)
+    }
+
+    pub(crate) fn release_logical_managed_worker_reconciled(
+        &mut self,
+        reservation_id: &str,
+        recorded_owner: &AuthenticatedOwnerContext,
+        current_owner_epoch: u64,
+        expected_revision: u64,
+    ) -> Result<u64, ResourceOwnerError> {
+        let existing = self.reservations.get(reservation_id)
+            .ok_or(ResourceOwnerError::ReservationNotFound)?;
+        if &existing.owner != recorded_owner
+            || current_owner_epoch != self.owner_epoch
+            || current_owner_epoch < recorded_owner.owner_epoch()
+            || existing.dimension != BudgetDimension::ActiveWorkers
+            || existing.worker_execution_id.is_none()
+            || existing.process_identity.is_some()
+            || !matches!(existing.state, ReservationState::Quarantined | ReservationState::ReleasePending)
+        {
+            return Err(ResourceOwnerError::InvalidTransition);
+        }
+        if existing.state != ReservationState::ReleasePending {
+            self.check_revision(expected_revision)?;
+            existing.state.validate_transition(ReservationState::ReleasePending, ReservationProof {
+                reconciliation_complete: true, ..ReservationProof::default()
+            }).map_err(map_transition_error)?;
+            let next = self.next_revision()?;
+            self.reservations.get_mut(reservation_id).expect("checked reservation").state =
+                ReservationState::ReleasePending;
+            self.revision = next;
+        }
+        let next = self.next_revision()?;
+        let current = self.reservations.get_mut(reservation_id).expect("checked reservation");
+        current.state = ReservationState::Released;
+        current.already_counted_units = None;
+        current.usage_sample_sequence = None;
+        self.revision = next;
+        Ok(next)
+    }
+
+    /// Reconciliation-only release for a quarantined reservation whose OS
+    /// process generation was never bound (for example a crash between the
+    /// durable claim and the process bind). The trusted reconciler must have
+    /// obtained target-side evidence for `owned_process_exited` and
+    /// `effects_settled`; absent that evidence the reservation keeps its
+    /// conservative budget. Never a live success path.
+    #[allow(dead_code)]
+    pub fn release_reconciled(
+        &mut self,
+        reservation_id: &str,
+        owner: &AuthenticatedOwnerContext,
+        proof: ReservationProof,
+        expected_revision: u64,
+    ) -> Result<u64, ResourceOwnerError> {
+        self.check_owner(owner)?;
+        let existing = self
+            .reservations
+            .get(reservation_id)
+            .ok_or(ResourceOwnerError::ReservationNotFound)?;
+        self.check_reservation_owner(existing, owner)?;
+        if !proof.owned_process_exited || !proof.effects_settled {
+            return Err(ResourceOwnerError::MissingProof);
+        }
+        if existing.state == ReservationState::Released {
+            return Ok(self.revision);
+        }
+        self.check_revision(expected_revision)?;
+        existing
+            .state
+            .validate_transition(ReservationState::Released, proof)
+            .map_err(map_transition_error)?;
+        let next_revision = self.next_revision()?;
+        let current = self
+            .reservations
+            .get_mut(reservation_id)
+            .expect("checked reservation");
+        current.state = ReservationState::Released;
+        current.already_counted_units = None;
+        current.usage_sample_sequence = None;
+        self.revision = next_revision;
+        Ok(next_revision)
+    }
+
+    pub fn reservation(&self, reservation_id: &str) -> Option<&OwnedReservation> {
+        self.reservations.get(reservation_id)
+    }
+
+    fn transition(
+        &mut self,
+        reservation_id: &str,
+        owner: &AuthenticatedOwnerContext,
+        next: ReservationState,
+        proof: ReservationProof,
+        expected_revision: u64,
+    ) -> Result<u64, ResourceOwnerError> {
+        self.check_owner(owner)?;
+        let existing = self
+            .reservations
+            .get(reservation_id)
+            .ok_or(ResourceOwnerError::ReservationNotFound)?;
+        self.check_reservation_owner(existing, owner)?;
+        if existing.state == next {
+            return Ok(self.revision);
+        }
+        self.check_revision(expected_revision)?;
+        existing
+            .state
+            .validate_transition(next, proof)
+            .map_err(map_transition_error)?;
+        let next_revision = self.next_revision()?;
+        let current = self
+            .reservations
+            .get_mut(reservation_id)
+            .expect("checked reservation");
+        current.state = next;
+        if next == ReservationState::Quarantined {
+            current.already_counted_units = None;
+            current.usage_sample_sequence = None;
+        }
+        self.revision = next_revision;
+        Ok(next_revision)
+    }
+
+    fn check_owner(&self, owner: &AuthenticatedOwnerContext) -> Result<(), ResourceOwnerError> {
+        owner.validate()?;
+        self.check_epoch(owner.owner_epoch)
+    }
+
+    fn check_epoch(&self, owner_epoch: u64) -> Result<(), ResourceOwnerError> {
+        if owner_epoch != self.owner_epoch {
+            return Err(ResourceOwnerError::StaleOwnerEpoch);
+        }
+        Ok(())
+    }
+
+    fn check_reservation_owner(
+        &self,
+        reservation: &OwnedReservation,
+        owner: &AuthenticatedOwnerContext,
+    ) -> Result<(), ResourceOwnerError> {
+        if &reservation.owner == owner {
+            Ok(())
+        } else {
+            Err(ResourceOwnerError::ScopeMismatch)
+        }
+    }
+
+    fn check_revision(&self, expected_revision: u64) -> Result<(), ResourceOwnerError> {
+        if expected_revision == self.revision {
+            Ok(())
+        } else {
+            Err(ResourceOwnerError::StaleRevision)
+        }
+    }
+
+    fn next_revision(&self) -> Result<u64, ResourceOwnerError> {
+        self.revision
+            .checked_add(1)
+            .ok_or(ResourceOwnerError::InvalidConfiguration)
+    }
+}
+
+fn validate_request(request: &ReservationRequest) -> Result<(), ResourceOwnerError> {
+    if request.reservation_id.is_empty()
+        || request.reservation_id.len() > 128
+        || request.idempotency_key.is_empty()
+        || request.idempotency_key.len() > 128
+        || request.amount == 0
+        || request.expires_at_ms == 0
+    {
+        return Err(ResourceOwnerError::InvalidRequest);
+    }
+    Ok(())
+}
+
+fn is_capacity_holding(state: ReservationState) -> bool {
+    matches!(
+        state,
+        ReservationState::Reserved
+            | ReservationState::Claimed
+            | ReservationState::ReleasePending
+            | ReservationState::Quarantined
+    )
+}
+
+fn map_transition_error(error: ReservationTransitionError) -> ResourceOwnerError {
+    match error {
+        ReservationTransitionError::ForbiddenTransition => ResourceOwnerError::InvalidTransition,
+        ReservationTransitionError::MissingProof => ResourceOwnerError::MissingProof,
+    }
+}
+
 impl PressureState {
     /// Pure transition for the §18.18/§11.20 controller. Escalation is immediate, including
     /// `NORMAL → HARD_PRESSURE` on an OS quota alarm. De-escalation requires `sustained_calm`
@@ -193,6 +1186,81 @@ impl PressureState {
     }
 }
 
+/// Strict §11.20/§18.18 wire vocabulary rejection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResourceWireError {
+    UnknownReservationStatus,
+    UnknownPressureState,
+    UnknownDimension,
+}
+
+impl ReservationState {
+    /// The exact `WorkerResourceReservationV1.status` names. `ACTIVE` and
+    /// `UNKNOWN` are not reservation states and never appear on the wire.
+    pub const WIRE_NAMES: [&'static str; 7] = [
+        "PROPOSED",
+        "RESERVED",
+        "CLAIMED",
+        "RELEASE_PENDING",
+        "QUARANTINED",
+        "RELEASED",
+        "EXPIRED",
+    ];
+
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Proposed => "PROPOSED",
+            Self::Reserved => "RESERVED",
+            Self::Claimed => "CLAIMED",
+            Self::ReleasePending => "RELEASE_PENDING",
+            Self::Quarantined => "QUARANTINED",
+            Self::Released => "RELEASED",
+            Self::Expired => "EXPIRED",
+        }
+    }
+
+    /// Strict decoder: exact upper-case §11.20 names only. Obsolete `ACTIVE`,
+    /// `UNKNOWN`, lower-case or otherwise aliased values fail closed.
+    pub fn parse_wire(value: &str) -> Result<Self, ResourceWireError> {
+        match value {
+            "PROPOSED" => Ok(Self::Proposed),
+            "RESERVED" => Ok(Self::Reserved),
+            "CLAIMED" => Ok(Self::Claimed),
+            "RELEASE_PENDING" => Ok(Self::ReleasePending),
+            "QUARANTINED" => Ok(Self::Quarantined),
+            "RELEASED" => Ok(Self::Released),
+            "EXPIRED" => Ok(Self::Expired),
+            _ => Err(ResourceWireError::UnknownReservationStatus),
+        }
+    }
+}
+
+impl PressureState {
+    /// The exact §18.18 pressure names; `SOFT`/`HARD` aliases are not defined.
+    pub const WIRE_NAMES: [&'static str; 4] =
+        ["NORMAL", "SOFT_PRESSURE", "HARD_PRESSURE", "RECOVERING"];
+
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Normal => "NORMAL",
+            Self::SoftPressure => "SOFT_PRESSURE",
+            Self::HardPressure => "HARD_PRESSURE",
+            Self::Recovering => "RECOVERING",
+        }
+    }
+
+    /// Strict decoder: exact §18.18 names only; `SOFT`/`HARD` fail closed.
+    pub fn parse_wire(value: &str) -> Result<Self, ResourceWireError> {
+        match value {
+            "NORMAL" => Ok(Self::Normal),
+            "SOFT_PRESSURE" => Ok(Self::SoftPressure),
+            "HARD_PRESSURE" => Ok(Self::HardPressure),
+            "RECOVERING" => Ok(Self::Recovering),
+            _ => Err(ResourceWireError::UnknownPressureState),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,6 +1275,792 @@ mod tests {
             reserved_units,
             already_counted_units: counted,
         }
+    }
+
+    fn authenticated_owner(epoch: u64, attempt: &str) -> AuthenticatedOwnerContext {
+        AuthenticatedOwnerContext::test_fixture(
+            "principal-a",
+            "workspace-a",
+            "session-a",
+            "run-a",
+            "task-a",
+            attempt,
+            epoch,
+        )
+    }
+
+    fn reservation_owner(epoch: u64) -> ResourceReservationOwner {
+        ResourceReservationOwner::new(epoch, 8).expect("valid reservation owner")
+    }
+
+    fn set_memory_capacity(
+        owner: &mut ResourceReservationOwner,
+        epoch: u64,
+        hard_limit: Option<u64>,
+        measured_total: Option<u64>,
+        safety_reserve: u64,
+        sample_sequence: u64,
+    ) -> u64 {
+        owner
+            .update_capacity(
+                BudgetDimension::MemoryBytes,
+                hard_limit,
+                measured_total,
+                safety_reserve,
+                epoch,
+                sample_sequence,
+                owner.revision(),
+            )
+            .expect("valid same-epoch capacity sample")
+    }
+
+    fn request(id: &str, idempotency_key: &str, amount: u64) -> ReservationRequest {
+        ReservationRequest {
+            reservation_id: id.to_owned(),
+            idempotency_key: idempotency_key.to_owned(),
+            dimension: BudgetDimension::MemoryBytes,
+            amount,
+            expires_at_ms: 10_000,
+        }
+    }
+
+    type OwnerDump = (
+        u64,
+        u64,
+        usize,
+        Vec<(BudgetDimension, Option<u64>, Option<u64>, u64, u64)>,
+        BTreeMap<String, OwnedReservation>,
+        HashMap<(String, String), String>,
+    );
+
+    /// Full deterministic owner state used to prove a failed operation did not
+    /// partially mutate capacity, reservations or the idempotency index.
+    fn owner_dump(owner: &ResourceReservationOwner) -> OwnerDump {
+        (
+            owner.owner_epoch,
+            owner.revision,
+            owner.max_reservations,
+            owner
+                .capacity
+                .iter()
+                .map(|(dimension, capacity)| {
+                    (
+                        *dimension,
+                        capacity.hard_limit,
+                        capacity.measured_total,
+                        capacity.safety_reserve,
+                        capacity.sample_sequence,
+                    )
+                })
+                .collect(),
+            owner.reservations.clone(),
+            owner.idempotency.clone(),
+        )
+    }
+
+    #[test]
+    fn capacity_update_rejects_stale_owner_epoch_without_mutation() {
+        let mut owner = reservation_owner(7);
+        assert_eq!(
+            owner.update_capacity(
+                BudgetDimension::MemoryBytes,
+                Some(1_000),
+                Some(0),
+                0,
+                6,
+                1,
+                owner.revision(),
+            ),
+            Err(ResourceOwnerError::StaleOwnerEpoch)
+        );
+        assert_eq!(owner.revision(), 0);
+        assert_eq!(
+            owner.capacity(BudgetDimension::MemoryBytes),
+            Capacity::UnknownCapacity
+        );
+    }
+
+    #[test]
+    fn revision_overflow_does_not_partially_apply_transition() {
+        let mut owner = reservation_owner(7);
+        set_memory_capacity(&mut owner, 7, Some(1_000), Some(200), 100, 1);
+        let attempt = authenticated_owner(7, "attempt-a");
+        owner
+            .propose(
+                request("lease-a", "request-a", 300),
+                attempt.clone(),
+                owner.revision(),
+            )
+            .expect("proposal");
+        owner
+            .reserve("lease-a", &attempt, owner.revision())
+            .expect("reserve");
+        owner
+            .claim("lease-a", &attempt, "worker-a", owner.revision())
+            .expect("claim");
+        let process = crate::resource_sampler::ProcessIdentity::new(101, 4_001);
+        owner
+            .bind_process("lease-a", &attempt, process.clone(), owner.revision())
+            .expect("bind process identity");
+        set_memory_capacity(&mut owner, 7, Some(1_000), Some(450), 100, 2);
+        owner
+            .record_process_usage("lease-a", &attempt, &process, 250, 2, owner.revision())
+            .expect("record attributed process usage");
+
+        owner.revision = u64::MAX;
+        let before = owner_dump(&owner);
+        assert_eq!(
+            owner.quarantine("lease-a", &attempt, u64::MAX),
+            Err(ResourceOwnerError::InvalidConfiguration)
+        );
+        assert_eq!(
+            owner_dump(&owner),
+            before,
+            "overflow must not partially mutate owner state"
+        );
+    }
+
+    #[test]
+    fn revision_overflow_is_fail_closed_for_every_mutating_entry_point() {
+        let attempt = authenticated_owner(7, "attempt-a");
+        let process = crate::resource_sampler::ProcessIdentity::new(101, 4_001);
+        let propose = |owner: &mut ResourceReservationOwner| {
+            owner
+                .propose(
+                    request("lease-a", "request-a", 300),
+                    attempt.clone(),
+                    owner.revision(),
+                )
+                .expect("proposal");
+        };
+        let reserve = |owner: &mut ResourceReservationOwner| {
+            owner
+                .reserve("lease-a", &attempt, owner.revision())
+                .expect("reserve");
+        };
+        let claim = |owner: &mut ResourceReservationOwner| {
+            owner
+                .claim("lease-a", &attempt, "worker-a", owner.revision())
+                .expect("claim");
+        };
+        let bind = |owner: &mut ResourceReservationOwner| {
+            owner
+                .bind_process("lease-a", &attempt, process.clone(), owner.revision())
+                .expect("bind");
+        };
+
+        // propose fails before the idempotency row or reservation record is inserted.
+        let mut owner = reservation_owner(7);
+        set_memory_capacity(&mut owner, 7, Some(1_000), Some(200), 100, 1);
+        owner.revision = u64::MAX;
+        let before = owner_dump(&owner);
+        assert_eq!(
+            owner.propose(
+                request("lease-a", "request-a", 300),
+                attempt.clone(),
+                u64::MAX
+            ),
+            Err(ResourceOwnerError::InvalidConfiguration)
+        );
+        assert_eq!(owner_dump(&owner), before);
+
+        // reserve fails before Proposed -> Reserved is persisted.
+        let mut owner = reservation_owner(7);
+        set_memory_capacity(&mut owner, 7, Some(1_000), Some(200), 100, 1);
+        propose(&mut owner);
+        owner.revision = u64::MAX;
+        let before = owner_dump(&owner);
+        assert_eq!(
+            owner.reserve("lease-a", &attempt, u64::MAX),
+            Err(ResourceOwnerError::InvalidConfiguration)
+        );
+        assert_eq!(owner_dump(&owner), before);
+        assert_eq!(
+            owner.reservation("lease-a").expect("retained").state,
+            ReservationState::Proposed
+        );
+
+        // claim fails before Reserved -> Claimed is persisted.
+        let mut owner = reservation_owner(7);
+        set_memory_capacity(&mut owner, 7, Some(1_000), Some(200), 100, 1);
+        propose(&mut owner);
+        reserve(&mut owner);
+        owner.revision = u64::MAX;
+        let before = owner_dump(&owner);
+        assert_eq!(
+            owner.claim("lease-a", &attempt, "worker-a", u64::MAX),
+            Err(ResourceOwnerError::InvalidConfiguration)
+        );
+        assert_eq!(owner_dump(&owner), before);
+
+        // bind_process fails before the process generation is attached.
+        let mut owner = reservation_owner(7);
+        set_memory_capacity(&mut owner, 7, Some(1_000), Some(200), 100, 1);
+        propose(&mut owner);
+        reserve(&mut owner);
+        claim(&mut owner);
+        owner.revision = u64::MAX;
+        let before = owner_dump(&owner);
+        assert_eq!(
+            owner.bind_process("lease-a", &attempt, process.clone(), u64::MAX),
+            Err(ResourceOwnerError::InvalidConfiguration)
+        );
+        assert_eq!(owner_dump(&owner), before);
+        assert_eq!(
+            owner
+                .reservation("lease-a")
+                .expect("retained")
+                .process_identity,
+            None
+        );
+
+        // record_process_usage fails before attributed usage is stored.
+        let mut owner = reservation_owner(7);
+        set_memory_capacity(&mut owner, 7, Some(1_000), Some(200), 100, 1);
+        propose(&mut owner);
+        reserve(&mut owner);
+        claim(&mut owner);
+        bind(&mut owner);
+        owner.revision = u64::MAX;
+        let before = owner_dump(&owner);
+        assert_eq!(
+            owner.record_process_usage("lease-a", &attempt, &process, 150, 1, u64::MAX),
+            Err(ResourceOwnerError::InvalidConfiguration)
+        );
+        assert_eq!(owner_dump(&owner), before);
+
+        // update_capacity fails before the new sample epoch is adopted.
+        let mut owner = reservation_owner(7);
+        set_memory_capacity(&mut owner, 7, Some(1_000), Some(200), 100, 1);
+        owner.revision = u64::MAX;
+        let before = owner_dump(&owner);
+        assert_eq!(
+            owner.update_capacity(
+                BudgetDimension::MemoryBytes,
+                Some(1_000),
+                Some(300),
+                100,
+                7,
+                2,
+                u64::MAX,
+            ),
+            Err(ResourceOwnerError::InvalidConfiguration)
+        );
+        assert_eq!(owner_dump(&owner), before);
+
+        // expire_unlaunched fails before the terminal EXPIRED state is persisted.
+        let mut owner = reservation_owner(7);
+        set_memory_capacity(&mut owner, 7, Some(1_000), Some(200), 100, 1);
+        propose(&mut owner);
+        reserve(&mut owner);
+        owner.revision = u64::MAX;
+        let before = owner_dump(&owner);
+        assert_eq!(
+            owner.expire_unlaunched(
+                "lease-a",
+                &attempt,
+                10_000,
+                ReservationProof {
+                    no_launch_or_dispatch: true,
+                    ..ReservationProof::default()
+                },
+                u64::MAX,
+            ),
+            Err(ResourceOwnerError::InvalidConfiguration)
+        );
+        assert_eq!(owner_dump(&owner), before);
+
+        // begin_release fails before Claimed -> ReleasePending is persisted.
+        let mut owner = reservation_owner(7);
+        set_memory_capacity(&mut owner, 7, Some(1_000), Some(200), 100, 1);
+        propose(&mut owner);
+        reserve(&mut owner);
+        claim(&mut owner);
+        owner.revision = u64::MAX;
+        let before = owner_dump(&owner);
+        assert_eq!(
+            owner.begin_release("lease-a", &attempt, ReservationProof::default(), u64::MAX),
+            Err(ResourceOwnerError::InvalidConfiguration)
+        );
+        assert_eq!(owner_dump(&owner), before);
+
+        // release fails before settling frees reserved capacity.
+        let mut owner = reservation_owner(7);
+        set_memory_capacity(&mut owner, 7, Some(1_000), Some(200), 100, 1);
+        propose(&mut owner);
+        reserve(&mut owner);
+        claim(&mut owner);
+        bind(&mut owner);
+        owner
+            .begin_release(
+                "lease-a",
+                &attempt,
+                ReservationProof::default(),
+                owner.revision(),
+            )
+            .expect("begin release");
+        owner.revision = u64::MAX;
+        let before = owner_dump(&owner);
+        assert_eq!(
+            owner.release(
+                "lease-a",
+                &attempt,
+                ReservationProof {
+                    owned_process_exited: true,
+                    effects_settled: true,
+                    ..ReservationProof::default()
+                },
+                u64::MAX,
+            ),
+            Err(ResourceOwnerError::InvalidConfiguration)
+        );
+        assert_eq!(owner_dump(&owner), before);
+        assert_eq!(
+            owner.capacity(BudgetDimension::MemoryBytes),
+            Capacity::Remaining(400),
+            "a failed release must not free reserved capacity"
+        );
+    }
+
+    #[test]
+    fn competing_release_and_claim_admits_exactly_one_winner() {
+        let mut owner = reservation_owner(7);
+        set_memory_capacity(&mut owner, 7, Some(1_000), Some(200), 100, 1);
+        let attempt = authenticated_owner(7, "attempt-a");
+        let other_attempt = authenticated_owner(7, "attempt-b");
+        owner
+            .propose(
+                request("lease-a", "request-a", 300),
+                attempt.clone(),
+                owner.revision(),
+            )
+            .expect("proposal");
+        // A never-claimed reservation cannot skip CLAIMED into release.
+        assert_eq!(
+            owner.begin_release(
+                "lease-a",
+                &attempt,
+                ReservationProof::default(),
+                owner.revision()
+            ),
+            Err(ResourceOwnerError::InvalidTransition)
+        );
+        owner
+            .reserve("lease-a", &attempt, owner.revision())
+            .expect("reserve");
+        owner
+            .claim("lease-a", &attempt, "worker-a", owner.revision())
+            .expect("claim");
+        owner
+            .bind_process(
+                "lease-a",
+                &attempt,
+                crate::resource_sampler::ProcessIdentity::new(101, 4_001),
+                owner.revision(),
+            )
+            .expect("bind");
+        owner
+            .begin_release(
+                "lease-a",
+                &attempt,
+                ReservationProof::default(),
+                owner.revision(),
+            )
+            .expect("release pending");
+        // The release wins: no competing claim can steal a release-pending lease.
+        assert_eq!(
+            owner.claim("lease-a", &attempt, "worker-b", owner.revision()),
+            Err(ResourceOwnerError::InvalidTransition)
+        );
+        assert_eq!(
+            owner.claim("lease-a", &other_attempt, "worker-b", owner.revision()),
+            Err(ResourceOwnerError::ScopeMismatch)
+        );
+        assert_eq!(
+            owner.release(
+                "lease-a",
+                &attempt,
+                ReservationProof::default(),
+                owner.revision()
+            ),
+            Err(ResourceOwnerError::MissingProof)
+        );
+        let released_revision = owner
+            .release(
+                "lease-a",
+                &attempt,
+                ReservationProof {
+                    owned_process_exited: true,
+                    effects_settled: true,
+                    ..ReservationProof::default()
+                },
+                owner.revision(),
+            )
+            .expect("settle release");
+        // Terminal RELEASED records reject late transitions and replay idempotently.
+        assert_eq!(
+            owner.claim("lease-a", &attempt, "worker-a", released_revision),
+            Err(ResourceOwnerError::InvalidTransition)
+        );
+        assert_eq!(
+            owner.release(
+                "lease-a",
+                &attempt,
+                ReservationProof {
+                    owned_process_exited: true,
+                    effects_settled: true,
+                    ..ReservationProof::default()
+                },
+                released_revision,
+            ),
+            Ok(released_revision)
+        );
+        assert_eq!(
+            owner.capacity(BudgetDimension::MemoryBytes),
+            Capacity::Remaining(700)
+        );
+    }
+
+    #[test]
+    fn duplicate_expiry_delivery_is_an_idempotent_no_op() {
+        let mut owner = reservation_owner(7);
+        set_memory_capacity(&mut owner, 7, Some(1_000), Some(200), 100, 1);
+        let attempt = authenticated_owner(7, "attempt-a");
+        owner
+            .propose(
+                request("lease-a", "request-a", 300),
+                attempt.clone(),
+                owner.revision(),
+            )
+            .expect("proposal");
+        owner
+            .reserve("lease-a", &attempt, owner.revision())
+            .expect("reserve");
+        let proof = ReservationProof {
+            no_launch_or_dispatch: true,
+            ..ReservationProof::default()
+        };
+        let expired_revision = owner
+            .expire_unlaunched("lease-a", &attempt, 10_000, proof, owner.revision())
+            .expect("proven unlaunched expiry");
+        let before = owner_dump(&owner);
+        assert_eq!(
+            owner.expire_unlaunched("lease-a", &attempt, 10_000, proof, expired_revision - 1),
+            Ok(expired_revision),
+            "duplicate expiry delivery is an idempotent no-op"
+        );
+        assert_eq!(owner_dump(&owner), before);
+        // A staged record that was never reserved is still rejected.
+        owner
+            .propose(
+                request("lease-b", "request-b", 300),
+                attempt.clone(),
+                owner.revision(),
+            )
+            .expect("proposal b");
+        assert_eq!(
+            owner.expire_unlaunched("lease-b", &attempt, 10_000, proof, owner.revision()),
+            Err(ResourceOwnerError::InvalidTransition)
+        );
+    }
+
+    #[test]
+    fn reservation_owner_blocks_unknown_capacity_and_overcommit() {
+        let mut owner = reservation_owner(7);
+        set_memory_capacity(&mut owner, 7, None, Some(0), 0, 1);
+        let attempt = authenticated_owner(7, "attempt-a");
+        owner
+            .propose(
+                request("unknown", "request-unknown", 1),
+                attempt.clone(),
+                owner.revision(),
+            )
+            .expect("proposal itself reserves no capacity");
+        assert_eq!(
+            owner.reserve("unknown", &attempt, owner.revision()),
+            Err(ResourceOwnerError::UnknownCapacity)
+        );
+
+        set_memory_capacity(&mut owner, 7, Some(1_000), Some(200), 100, 2);
+        owner
+            .propose(
+                request("first", "request-first", 300),
+                attempt.clone(),
+                owner.revision(),
+            )
+            .expect("first proposal");
+        let first = owner
+            .reserve("first", &attempt, owner.revision())
+            .expect("first reserve");
+        assert_eq!(first.state, ReservationState::Reserved);
+        assert_eq!(
+            owner.capacity(BudgetDimension::MemoryBytes),
+            Capacity::Remaining(400)
+        );
+
+        owner
+            .propose(
+                request("second", "request-second", 401),
+                attempt.clone(),
+                owner.revision(),
+            )
+            .expect("second proposal");
+        assert_eq!(
+            owner.reserve("second", &attempt, owner.revision()),
+            Err(ResourceOwnerError::InsufficientCapacity)
+        );
+        assert_eq!(
+            owner.capacity(BudgetDimension::MemoryBytes),
+            Capacity::Remaining(400)
+        );
+    }
+
+    #[test]
+    fn reservation_idempotency_scope_and_revision_fences_prevent_double_debit() {
+        let mut owner = reservation_owner(7);
+        set_memory_capacity(&mut owner, 7, Some(1_000), Some(200), 100, 1);
+        let attempt = authenticated_owner(7, "attempt-a");
+        let reservation_request = request("lease-a", "request-a", 300);
+        let proposed = owner
+            .propose(
+                reservation_request.clone(),
+                attempt.clone(),
+                owner.revision(),
+            )
+            .expect("proposal");
+        let replay = owner
+            .propose(reservation_request, attempt.clone(), 0)
+            .expect("lost-response replay is idempotent");
+        assert_eq!(proposed.reservation_id, replay.reservation_id);
+        assert_eq!(
+            owner.capacity(BudgetDimension::MemoryBytes),
+            Capacity::Remaining(700)
+        );
+
+        assert_eq!(
+            owner.propose(
+                request("lease-b", "request-a", 301),
+                attempt.clone(),
+                owner.revision()
+            ),
+            Err(ResourceOwnerError::IdempotencyConflict)
+        );
+        let reserved = owner
+            .reserve("lease-a", &attempt, owner.revision())
+            .expect("reserve");
+        let replayed_reserve = owner
+            .reserve("lease-a", &attempt, 0)
+            .expect("reserve replay");
+        assert_eq!(reserved.state, ReservationState::Reserved);
+        assert_eq!(replayed_reserve.state, ReservationState::Reserved);
+        assert_eq!(
+            owner.capacity(BudgetDimension::MemoryBytes),
+            Capacity::Remaining(400)
+        );
+
+        let other_attempt = authenticated_owner(7, "attempt-b");
+        assert_eq!(
+            owner.reserve("lease-a", &other_attempt, owner.revision()),
+            Err(ResourceOwnerError::ScopeMismatch)
+        );
+        assert_eq!(
+            owner.claim(
+                "lease-a",
+                &attempt,
+                "worker-a",
+                owner.revision().saturating_sub(1),
+            ),
+            Err(ResourceOwnerError::StaleRevision)
+        );
+        assert_eq!(
+            owner.reservation("lease-a").unwrap().state,
+            ReservationState::Reserved
+        );
+        let stale_epoch = authenticated_owner(6, "attempt-a");
+        assert_eq!(
+            owner.reserve("lease-a", &stale_epoch, owner.revision()),
+            Err(ResourceOwnerError::StaleOwnerEpoch)
+        );
+    }
+
+    #[test]
+    fn measured_active_usage_debits_only_unconsumed_reservation_headroom() {
+        let mut owner = reservation_owner(7);
+        set_memory_capacity(&mut owner, 7, Some(1_000), Some(200), 100, 1);
+        let attempt = authenticated_owner(7, "attempt-a");
+        owner
+            .propose(
+                request("lease-a", "request-a", 300),
+                attempt.clone(),
+                owner.revision(),
+            )
+            .expect("proposal");
+        owner
+            .reserve("lease-a", &attempt, owner.revision())
+            .expect("reserve");
+        owner
+            .claim("lease-a", &attempt, "worker-a", owner.revision())
+            .expect("authenticated worker claim");
+        assert_eq!(
+            owner.bind_process(
+                "lease-a",
+                &attempt,
+                crate::resource_sampler::ProcessIdentity::new(0, 0),
+                owner.revision(),
+            ),
+            Err(ResourceOwnerError::InvalidRequest)
+        );
+        let identity = crate::resource_sampler::ProcessIdentity::new(101, 4_001);
+        owner
+            .bind_process("lease-a", &attempt, identity.clone(), owner.revision())
+            .expect("bind exact worker process generation");
+        set_memory_capacity(&mut owner, 7, Some(1_000), Some(450), 100, 2);
+        owner
+            .record_process_usage("lease-a", &attempt, &identity, 250, 2, owner.revision())
+            .expect("same-epoch measured process usage");
+        assert_eq!(
+            owner.capacity(BudgetDimension::MemoryBytes),
+            Capacity::Remaining(400)
+        );
+
+        let reused_pid = crate::resource_sampler::ProcessIdentity::new(101, 9_999);
+        assert_eq!(
+            owner.record_process_usage("lease-a", &attempt, &reused_pid, 250, 2, owner.revision()),
+            Err(ResourceOwnerError::ProcessIdentityMismatch)
+        );
+        set_memory_capacity(&mut owner, 7, Some(1_000), None, 100, 3);
+        assert_eq!(
+            owner.capacity(BudgetDimension::MemoryBytes),
+            Capacity::UnknownCapacity
+        );
+        assert_eq!(
+            owner
+                .reservation("lease-a")
+                .expect("retained reservation")
+                .outstanding_units(),
+            300
+        );
+    }
+
+    #[test]
+    fn expiry_and_quarantine_cannot_free_launched_unsettled_capacity() {
+        let mut owner = reservation_owner(7);
+        set_memory_capacity(&mut owner, 7, Some(1_000), Some(200), 100, 1);
+        let attempt = authenticated_owner(7, "attempt-a");
+        owner
+            .propose(
+                request("lease-a", "request-a", 300),
+                attempt.clone(),
+                owner.revision(),
+            )
+            .expect("proposal");
+        owner
+            .reserve("lease-a", &attempt, owner.revision())
+            .expect("reserve");
+        owner
+            .claim("lease-a", &attempt, "worker-a", owner.revision())
+            .expect("claim");
+        owner
+            .bind_process(
+                "lease-a",
+                &attempt,
+                crate::resource_sampler::ProcessIdentity::new(101, 4_001),
+                owner.revision(),
+            )
+            .expect("bind process generation before settlement");
+        assert_eq!(
+            owner.expire_unlaunched(
+                "lease-a",
+                &attempt,
+                20_000,
+                ReservationProof {
+                    no_launch_or_dispatch: true,
+                    ..ReservationProof::default()
+                },
+                owner.revision(),
+            ),
+            Err(ResourceOwnerError::InvalidTransition)
+        );
+        owner
+            .quarantine("lease-a", &attempt, owner.revision())
+            .expect("uncertain launched worker is quarantined");
+        assert_eq!(
+            owner.capacity(BudgetDimension::MemoryBytes),
+            Capacity::Remaining(400)
+        );
+        assert_eq!(
+            owner.begin_release(
+                "lease-a",
+                &attempt,
+                ReservationProof::default(),
+                owner.revision(),
+            ),
+            Err(ResourceOwnerError::MissingProof)
+        );
+        owner
+            .begin_release(
+                "lease-a",
+                &attempt,
+                ReservationProof {
+                    reconciliation_complete: true,
+                    ..ReservationProof::default()
+                },
+                owner.revision(),
+            )
+            .expect("reconciled quarantine may enter release-pending");
+        assert_eq!(
+            owner.release(
+                "lease-a",
+                &attempt,
+                ReservationProof {
+                    owned_process_exited: true,
+                    effects_settled: false,
+                    ..ReservationProof::default()
+                },
+                owner.revision(),
+            ),
+            Err(ResourceOwnerError::MissingProof)
+        );
+        owner
+            .release(
+                "lease-a",
+                &attempt,
+                ReservationProof {
+                    owned_process_exited: true,
+                    effects_settled: true,
+                    ..ReservationProof::default()
+                },
+                owner.revision(),
+            )
+            .expect("settled worker releases capacity");
+        let released_revision = owner.revision();
+        assert_eq!(
+            owner.release(
+                "lease-a",
+                &attempt,
+                ReservationProof::default(),
+                released_revision - 1,
+            ),
+            Err(ResourceOwnerError::MissingProof)
+        );
+        assert_eq!(
+            owner.release(
+                "lease-a",
+                &attempt,
+                ReservationProof {
+                    owned_process_exited: true,
+                    effects_settled: true,
+                    ..ReservationProof::default()
+                },
+                released_revision - 1,
+            ),
+            Ok(released_revision),
+            "duplicate settlement delivery is an idempotent no-op"
+        );
+        assert_eq!(
+            owner.capacity(BudgetDimension::MemoryBytes),
+            Capacity::Remaining(700)
+        );
     }
 
     #[test]

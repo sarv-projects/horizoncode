@@ -8,6 +8,7 @@ import { SessionStore } from "../store"
 import { SessionExecution } from "../execution"
 import { Database } from "../../database/database"
 import { SessionSupervisor, SessionSupervisorError } from "../supervisor"
+import { sameTrustedPrincipal, TrustedPrincipalContext, type TrustedPrincipal } from "../../trusted-principal"
 
 /** Current-process routing for implicit-local Locations. Future remote placement belongs here. */
 const layer = Layer.effect(
@@ -17,8 +18,9 @@ const layer = Layer.effect(
     const locations = yield* LocationServiceMap.Service
     const supervisor = yield* SessionSupervisor.Service
     const database = yield* Database.Service
-    const coordinator = yield* SessionRunCoordinator.make<SessionSchema.ID, SessionExecution.Error>({
-      drain: Effect.fnUntraced(function* (sessionID: SessionSchema.ID, force) {
+    const coordinator = yield* SessionRunCoordinator.make<SessionSchema.ID, SessionExecution.Error, TrustedPrincipal>({
+      sameAuthority: sameTrustedPrincipal,
+      drain: Effect.fnUntraced(function* (sessionID: SessionSchema.ID, force, principal) {
         const session = yield* store.get(sessionID)
         if (!session) return yield* Effect.die(`Session not found: ${sessionID}`)
         return yield* Effect.scoped(
@@ -32,6 +34,7 @@ const layer = Layer.effect(
             yield* Deferred.await(supervisorReady)
             const result = yield* SessionRunner.Service.use((runner) => runner.run({ sessionID, force })).pipe(
               Effect.provide(locations.get(session.location)),
+              Effect.provideService(TrustedPrincipalContext, { principal }),
               Effect.tapCause((cause) =>
                 Cause.hasInterruptsOnly(cause)
                   ? Effect.void
@@ -46,11 +49,22 @@ const layer = Layer.effect(
       }),
     })
 
+    const rejectStaleOwner = () =>
+      new SessionSupervisorError({ stage: "authorization", reason: "Session execution owner changed" })
+    const resume: SessionExecution.Interface["resume"] = (sessionID, principal) =>
+      coordinator.run(sessionID, principal).pipe(
+        Effect.flatMap((accepted) => accepted ? Effect.void : Effect.fail(rejectStaleOwner())),
+      )
+    const wake: SessionExecution.Interface["wake"] = (sessionID, principal) =>
+      coordinator.wake(sessionID, principal).pipe(
+        Effect.flatMap((accepted) => accepted ? Effect.void : Effect.fail(rejectStaleOwner())),
+      )
+
     return SessionExecution.Service.of({
       active: coordinator.active,
       interrupt: coordinator.interrupt,
-      resume: coordinator.run,
-      wake: coordinator.wake,
+      resume,
+      wake,
     })
   }),
 )

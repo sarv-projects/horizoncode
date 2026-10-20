@@ -46,7 +46,7 @@ impl Fixture {
                 value_map([("canonicalRoot", string(workspace.to_str().unwrap()))]),
                 1,
             ),
-            PRINCIPAL,
+            "server_auth:effect-host-location-owner",
             &fence,
         );
         assert_eq!(response.outcome, RpcOutcomeV1::Ok);

@@ -9,10 +9,16 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const PRINCIPAL: &str = "host_os_uid:1000";
 const INCARNATION: &str = "inc_host_terminal";
+/// Prefix of the unique `argv[0]` riders use to resolve the C22 escapee. Terminal
+/// commands run inside the sandbox's fresh PID namespace, so a pid announced by the
+/// escapee is namespace-local and cannot be probed from the test's (outer) namespace;
+/// the escapee is instead located here by a per-run argv0, exactly like the
+/// supervisor's outer-namespace `/proc` sweep that must find and kill it.
+const ESCAPEE_ARGV0_PREFIX: &str = "hz_c22_escapee";
 
 struct Fixture {
     base: PathBuf,
@@ -22,6 +28,7 @@ struct Fixture {
     shell_profile_id: String,
     executable: String,
     fence: FrameFence,
+    escapee_argv0: String,
 }
 
 impl Fixture {
@@ -51,7 +58,7 @@ impl Fixture {
                 map([("canonicalRoot", string(workspace.to_str().unwrap()))]),
                 1,
             ),
-            PRINCIPAL,
+            "server_auth:host-terminal-location-owner",
             &fence,
         );
         assert_eq!(response.outcome, RpcOutcomeV1::Ok, "{:?}", response.error);
@@ -94,6 +101,7 @@ impl Fixture {
             shell_profile_id: profile_id,
             executable,
             fence,
+            escapee_argv0: format!("{ESCAPEE_ARGV0_PREFIX}_{nonce}"),
         }
     }
 
@@ -104,9 +112,12 @@ impl Fixture {
 
     fn start_arguments(&self, marker: &str) -> Value {
         let marker_path = self.workspace.join("interactive-start-marker");
+        let escapee_path = self.workspace.join("interactive-escapee-pid");
         let command = format!(
-            "printf '{marker}'; touch '{}'; exec /bin/bash",
-            marker_path.display()
+            "printf '{marker}'; /usr/bin/setsid /bin/bash -c 'echo $$ > \"{}\"; touch \"{}\"; exec -a {} /usr/bin/sleep 600' & exec /bin/bash",
+            escapee_path.display(),
+            marker_path.display(),
+            self.escapee_argv0
         );
         map([
             ("terminalID", string("pty_host_terminal_1")),
@@ -132,13 +143,24 @@ impl Fixture {
         body: Value,
         id: u64,
     ) -> horizoncode_kernel::protocol::RpcResponseV1 {
+        self.request_as(service, operation, body, id, PRINCIPAL)
+    }
+
+    fn request_as(
+        &mut self,
+        service: &str,
+        operation: &str,
+        body: Value,
+        id: u64,
+        principal: &str,
+    ) -> horizoncode_kernel::protocol::RpcResponseV1 {
         let mut request = request(service, operation, body, id);
         request.owner_epoch = self.fence.owner_epoch();
         request.process_incarnation = self.fence.process_incarnation().to_owned();
         self.host
             .as_mut()
             .unwrap()
-            .handle_request(&request, PRINCIPAL, &self.fence)
+            .handle_request(&request, principal, &self.fence)
     }
 }
 
@@ -183,6 +205,58 @@ fn text<'a>(value: &'a Value, key: &str) -> &'a str {
     };
     value
 }
+
+fn unsigned(value: &Value, key: &str) -> u64 {
+    let Value::Map(fields) = value else {
+        panic!("expected map")
+    };
+    let Some(Value::Unsigned(value)) = fields.get(key) else {
+        panic!("missing {key}")
+    };
+    *value
+}
+
+fn process_alive(pid: i32) -> bool {
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// Outer-namespace pids of this test's C22 escapee(s), located by the per-run
+/// `argv[0]` marker. Zombies are excluded: the supervisor must fully terminate and
+/// reap the escaped descendant, not merely leave a zombie in its tree.
+fn escapee_outer_pids(marker: &str) -> Vec<u32> {
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let mut pids = Vec::new();
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue;
+        };
+        let Some((_, fields)) = stat.rsplit_once(") ") else {
+            continue;
+        };
+        if matches!(fields.split_whitespace().next(), Some("Z" | "X")) {
+            continue;
+        }
+        let matched = fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|cmdline| {
+            cmdline
+                .split(|byte| *byte == 0)
+                .any(|argument| argument == marker.as_bytes())
+        });
+        if matched {
+            pids.push(pid);
+        }
+    }
+    pids
+}
+
 fn terminal_event_cursor_matches(event: &RpcEventV1) -> bool {
     let Value::Map(fields) = &event.payload else {
         return false;
@@ -255,10 +329,113 @@ fn unapproved_start_never_launches_a_process() {
 }
 
 #[test]
+fn ticket_requests_require_bound_origin_principal_and_terminal() {
+    let mut fixture = Fixture::new();
+    // A renderer origin outside the host allowlist fails before any terminal lookup.
+    let bad_origin = fixture.request(
+        TERMINAL_SERVICE_ID,
+        "ticket_acquire",
+        map([
+            ("terminalID", string("pty_host_terminal_1")),
+            ("locationID", string(&fixture.location_id)),
+            ("origin", string("https://evil.example")),
+            ("protocol", string("horizon.terminal.v1")),
+            ("principal", map([("source", string("host_os"))])),
+        ]),
+        200,
+    );
+    assert_eq!(bad_origin.outcome, RpcOutcomeV1::Error);
+    assert_eq!(
+        bad_origin.error.as_ref().map(|error| error.code.as_str()),
+        Some("BAD_FRAME")
+    );
+    // Declaring a `server_auth` subject the transport session did not authenticate is denied.
+    let unattested_principal = fixture.request(
+        TERMINAL_SERVICE_ID,
+        "ticket_acquire",
+        map([
+            ("terminalID", string("pty_host_terminal_1")),
+            ("locationID", string(&fixture.location_id)),
+            ("origin", string("oc://renderer")),
+            ("protocol", string("horizon.terminal.v1")),
+            ("principal", map([("source", string("server_auth")), ("username", string("intruder"))])),
+        ]),
+        201,
+    );
+    assert_eq!(unattested_principal.outcome, RpcOutcomeV1::Error);
+    assert_eq!(
+        unattested_principal
+            .error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("DENIED")
+    );
+    // Only the V2 ticket protocol is accepted.
+    let legacy_protocol = fixture.request(
+        TERMINAL_SERVICE_ID,
+        "ticket_acquire",
+        map([
+            ("terminalID", string("pty_host_terminal_1")),
+            ("locationID", string(&fixture.location_id)),
+            ("origin", string("oc://renderer")),
+            ("protocol", string("legacy")),
+            ("principal", map([("source", string("host_os"))])),
+        ]),
+        202,
+    );
+    assert_eq!(legacy_protocol.outcome, RpcOutcomeV1::Error);
+    assert_eq!(
+        legacy_protocol
+            .error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("BAD_FRAME")
+    );
+    // Consumption of an unknown token is denied without revealing whether it existed.
+    let unknown_token = fixture.request(
+        TERMINAL_SERVICE_ID,
+        "ticket_consume",
+        map([
+            ("ticket", string(&"y".repeat(64))),
+            ("terminalID", string("pty_host_terminal_1")),
+            ("locationID", string(&fixture.location_id)),
+            ("origin", string("oc://renderer")),
+            ("protocol", string("horizon.terminal.v1")),
+            ("principal", map([("source", string("host_os"))])),
+        ]),
+        203,
+    );
+    assert_eq!(unknown_token.outcome, RpcOutcomeV1::Error);
+    assert_eq!(
+        unknown_token.error.as_ref().map(|error| error.code.as_str()),
+        Some("DENIED")
+    );
+    // Revocation against an unknown terminal reports a typed not-found.
+    let unknown_terminal = fixture.request(
+        TERMINAL_SERVICE_ID,
+        "ticket_revoke",
+        map([
+            ("ticketID", string("ticket_never_issued")),
+            ("terminalID", string("pty_host_terminal_missing")),
+        ]),
+        204,
+    );
+    assert_eq!(unknown_terminal.outcome, RpcOutcomeV1::Error);
+    assert_eq!(
+        unknown_terminal
+            .error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("effect_not_found")
+    );
+    fixture.cleanup();
+}
+
+#[test]
 fn interactive_lifecycle_requires_approved_guard_lease() {
     let mut fixture = Fixture::new();
-    let profile_id = fixture.shell_profile_id.clone();
     let arguments = fixture.start_arguments("host-terminal-output");
+    let marker_path = fixture.workspace.join("interactive-start-marker");
     let prepare = fixture.request(
         EFFECTS_SERVICE_ID,
         "prepare_user_effect",
@@ -266,7 +443,7 @@ fn interactive_lifecycle_requires_approved_guard_lease() {
             ("locationID", string(&fixture.location_id)),
             ("userActionID", string("act_host_terminal")),
             ("capabilityID", string("terminal.start")),
-            ("arguments", arguments),
+            ("arguments", arguments.clone()),
         ]),
         4,
     );
@@ -286,27 +463,13 @@ fn interactive_lifecycle_requires_approved_guard_lease() {
     );
     assert_eq!(approved.outcome, RpcOutcomeV1::Ok, "{:?}", approved.error);
     let lease = text(approved.body.as_ref().unwrap(), "capabilityLeaseDigest").to_owned();
-    let marker_path = fixture.workspace.join("interactive-start-marker");
-    let shell_command = format!(
-        "/usr/bin/setsid /bin/sh -c 'touch \"{}\"; sleep 60'; exec /bin/bash",
-        marker_path.display()
-    );
-    let start_body = map([
-        ("effectID", string(&effect)),
-        ("capabilityLeaseDigest", string(&lease)),
-        ("locationID", string(&fixture.location_id)),
-        ("terminalID", string("pty_host_terminal_1")),
-        ("shellProfileID", string(&profile_id)),
-        ("command", string(&fixture.executable)),
-        (
-            "args",
-            Value::Array(vec![string("-c"), string(&shell_command)]),
-        ),
-        ("cwd", string(fixture.workspace.to_str().unwrap())),
-        ("cols", Value::Unsigned(80)),
-        ("rows", Value::Unsigned(24)),
-        ("env", map([])),
-    ]);
+    let Value::Map(mut start_body) = arguments else {
+        panic!("expected approved terminal argument map");
+    };
+    start_body.insert("effectID".to_owned(), string(&effect));
+    start_body.insert("capabilityLeaseDigest".to_owned(), string(&lease));
+    start_body.insert("locationID".to_owned(), string(&fixture.location_id));
+    let start_body = Value::Map(start_body);
     let started = fixture.request(TERMINAL_SERVICE_ID, "start", start_body.clone(), 6);
     if !horizoncode_kernel::terminal_process::TerminalProcess::owner_loss_tree_cleanup_supported() {
         assert_eq!(started.outcome, RpcOutcomeV1::Error);
@@ -350,13 +513,38 @@ fn interactive_lifecycle_requires_approved_guard_lease() {
     }
     assert_eq!(started.outcome, RpcOutcomeV1::Ok, "{:?}", started.error);
     let started_body = started.body.as_ref().unwrap();
-    let generation = match started_body {
-        Value::Map(fields) => match fields.get("generation") {
-            Some(Value::Unsigned(value)) => *value,
-            _ => panic!("missing generation"),
-        },
-        _ => panic!("expected start result"),
+    assert_eq!(text(started_body, "status"), "running");
+    assert_eq!(text(started_body, "backend"), "linux_pty");
+    let generation = unsigned(started_body, "generation");
+    let leader = unsigned(started_body, "pid") as i32;
+
+    // C22 acceptance: a session descendant that escapes the PTY session (setsid)
+    // must announce its pid and must be terminated by the terminal supervisor
+    // once the terminal is cancelled.
+    let escapee_path = fixture.workspace.join("interactive-escapee-pid");
+    let announce_deadline = Instant::now() + Duration::from_secs(10);
+    let escapee = loop {
+        if marker_path.exists()
+            && let Ok(raw) = fs::read_to_string(&escapee_path)
+            && let Ok(pid) = raw.trim().parse::<i32>()
+        {
+            break pid;
+        }
+        assert!(
+            Instant::now() < announce_deadline,
+            "escaped session descendant must announce its pid"
+        );
+        std::thread::sleep(Duration::from_millis(20));
     };
+    // The announced pid is namespace-local (the command runs under the sandbox's
+    // fresh PID namespace); resolve the live escapee from this outer namespace via
+    // its unique argv0, which is also what the supervisor's sweep operates on.
+    let outer_escapees = escapee_outer_pids(&fixture.escapee_argv0);
+    assert!(process_alive(leader), "PTY leader must be alive while running");
+    assert!(
+        !outer_escapees.is_empty(),
+        "escaped session descendant must be alive before cancellation (announced namespace-local pid {escapee})"
+    );
     let grant = text(started_body, "grantID").to_owned();
     let after = CursorV1 {
         owner_kind: "terminal".to_owned(),
@@ -461,6 +649,67 @@ fn interactive_lifecycle_requires_approved_guard_lease() {
     let ticket_body = ticket.body.as_ref().unwrap();
     let ticket_id = text(ticket_body, "ticketID").to_owned();
     let token = text(ticket_body, "ticket").to_owned();
+    // A valid token is bound to the acquiring origin, principal and terminal; consuming
+    // it from a different renderer origin, with an unknown token, or under a different
+    // transport principal must all be denied, and none of the attempts may consume it.
+    let foreign_origin = fixture.request(
+        TERMINAL_SERVICE_ID,
+        "ticket_consume",
+        map([
+            ("ticket", string(&token)),
+            ("terminalID", string("pty_host_terminal_1")),
+            ("locationID", string(&fixture.location_id)),
+            ("origin", string("http://tauri.localhost")),
+            ("protocol", string("horizon.terminal.v1")),
+            ("principal", map([("source", string("host_os"))])),
+        ]),
+        190,
+    );
+    assert_eq!(foreign_origin.outcome, RpcOutcomeV1::Error);
+    assert_eq!(
+        foreign_origin.error.as_ref().map(|error| error.code.as_str()),
+        Some("DENIED")
+    );
+    let unknown_token = fixture.request(
+        TERMINAL_SERVICE_ID,
+        "ticket_consume",
+        map([
+            ("ticket", string(&"x".repeat(64))),
+            ("terminalID", string("pty_host_terminal_1")),
+            ("locationID", string(&fixture.location_id)),
+            ("origin", string(origin)),
+            ("protocol", string("horizon.terminal.v1")),
+            ("principal", map([("source", string("host_os"))])),
+        ]),
+        191,
+    );
+    assert_eq!(unknown_token.outcome, RpcOutcomeV1::Error);
+    assert_eq!(
+        unknown_token.error.as_ref().map(|error| error.code.as_str()),
+        Some("DENIED")
+    );
+    let foreign_principal = fixture.request_as(
+        TERMINAL_SERVICE_ID,
+        "ticket_consume",
+        map([
+            ("ticket", string(&token)),
+            ("terminalID", string("pty_host_terminal_1")),
+            ("locationID", string(&fixture.location_id)),
+            ("origin", string(origin)),
+            ("protocol", string("horizon.terminal.v1")),
+            ("principal", map([("source", string("server_auth")), ("username", string("intruder"))])),
+        ]),
+        192,
+        "server_auth:intruder",
+    );
+    assert_eq!(foreign_principal.outcome, RpcOutcomeV1::Error);
+    assert_eq!(
+        foreign_principal
+            .error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("DENIED")
+    );
     let consume = fixture.request(
         TERMINAL_SERVICE_ID,
         "ticket_consume",
@@ -507,7 +756,7 @@ fn interactive_lifecycle_requires_approved_guard_lease() {
         10,
     );
     assert_eq!(bad_grant.outcome, RpcOutcomeV1::Error);
-    let bytes = b"echo terminal-input-marker\\n";
+    let bytes = b"echo terminal-input-marker\n";
     let input = fixture.request(
         TERMINAL_SERVICE_ID,
         "input",
@@ -587,35 +836,83 @@ fn interactive_lifecycle_requires_approved_guard_lease() {
         "{:?}",
         overflow_input.error
     );
-    let mut saw_gap = false;
+    // Keep pumping the original live subscriber while the process writes enough
+    // output to evict the beginning of the replay ring. A live subscription has
+    // already been offered its events, so its cursor may advance without requiring
+    // a resnapshot when older bytes are evicted.
     for _ in 0..200 {
-        let messages = fixture
+        let _messages = fixture
             .host
             .as_mut()
             .unwrap()
             .poll_terminal_events(&fixture.fence);
-        saw_gap |= messages.iter().any(|message| {
-            matches!(
-                message,
-                RpcMessageV1::Control(control)
-                    if matches!(control.as_ref(), RpcControlV1::ResnapshotRequired {
-                        subscription_id,
-                        requested,
-                        latest,
-                        ..
-                    } if subscription_id == "sub_host_terminal_output"
-                        && requested.owner_kind == "terminal"
-                        && latest.owner_id == "pty_host_terminal_1")
-            )
-        });
-        if saw_gap {
-            break;
-        }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
+    let replay_state = fixture.request(
+        TERMINAL_SERVICE_ID,
+        "status",
+        map([
+            ("terminalID", string("pty_host_terminal_1")),
+            ("generation", Value::Unsigned(generation)),
+            ("afterSequence", Value::Unsigned(0)),
+            ("afterByteCursor", Value::Unsigned(0)),
+            ("maxBytes", Value::Unsigned(64 * 1024)),
+        ]),
+        181,
+    );
+    let retained_cursor = replay_state
+        .body
+        .as_ref()
+        .and_then(|body| match body {
+            Value::Map(fields) => fields.get("byteCursor"),
+            _ => None,
+        })
+        .and_then(|value| match value {
+            Value::Unsigned(value) => Some(*value),
+            _ => None,
+        })
+        .unwrap_or(0);
     assert!(
-        saw_gap,
-        "terminal replay overflow must explicitly require a resnapshot"
+        retained_cursor > horizoncode_kernel::terminal::REPLAY_CAPACITY as u64,
+        "overflow fixture must produce more than the 2 MiB replay cap; observed byteCursor={retained_cursor}"
+    );
+    let reconnect = RpcControlV1::Subscribe {
+        owner_epoch: fixture.fence.owner_epoch(),
+        process_incarnation: fixture.fence.process_incarnation().to_owned(),
+        subscription_id: "sub_host_terminal_reconnect".to_owned(),
+        owner_kind: "terminal".to_owned(),
+        owner_id: "pty_host_terminal_1".to_owned(),
+        after: Some(CursorV1 {
+            owner_kind: "terminal".to_owned(),
+            owner_id: "pty_host_terminal_1".to_owned(),
+            seq: "0".to_owned(),
+            event_digest: format!("blake3:{}", "0".repeat(64)),
+        }),
+    };
+    let reconnect_messages = fixture
+        .host
+        .as_mut()
+        .unwrap()
+        .handle_terminal_control(&reconnect, &fixture.fence);
+    let reconnect_requires_snapshot = reconnect_messages.iter().any(|message| {
+        matches!(
+            message,
+            RpcMessageV1::Control(control)
+                if matches!(control.as_ref(), RpcControlV1::ResnapshotRequired {
+                    subscription_id,
+                    requested,
+                    latest,
+                    ..
+                } if subscription_id == "sub_host_terminal_reconnect"
+                    && requested.owner_kind == "terminal"
+                    && requested.owner_id == "pty_host_terminal_1"
+                    && latest.owner_id == "pty_host_terminal_1")
+        )
+    });
+    assert!(
+        reconnect_requires_snapshot,
+        "a reconnect from the evicted zero cursor must require a resnapshot; observed cursor={retained_cursor}, retained limit={} bytes",
+        horizoncode_kernel::terminal::REPLAY_CAPACITY,
     );
 
     let cancelled = fixture.request(
@@ -627,9 +924,49 @@ fn interactive_lifecycle_requires_approved_guard_lease() {
             ("generation", Value::Unsigned(generation)),
             ("reason", string("user_removed")),
         ]),
-        15,
+        40,
     );
     assert_eq!(cancelled.outcome, RpcOutcomeV1::Ok, "{:?}", cancelled.error);
+    let death_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let remaining = escapee_outer_pids(&fixture.escapee_argv0);
+        if remaining.is_empty() {
+            break;
+        }
+        assert!(
+            Instant::now() < death_deadline,
+            "cancelled terminal must terminate the escaped session descendant (announced namespace-local pid {escapee}, outer pids {remaining:?})"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let mut observed_cancelled = false;
+    for id in 50..80 {
+        let status = fixture.request(
+            TERMINAL_SERVICE_ID,
+            "status",
+            map([
+                ("terminalID", string("pty_host_terminal_1")),
+                ("generation", Value::Unsigned(generation)),
+            ]),
+            id,
+        );
+        assert_eq!(status.outcome, RpcOutcomeV1::Ok, "{:?}", status.error);
+        if let Some(body) = status.body.as_ref()
+            && text(body, "status") == "cancelled"
+        {
+            observed_cancelled = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        observed_cancelled,
+        "cancellation must settle into the cancelled terminal status"
+    );
+    assert!(
+        !process_alive(leader),
+        "PTY leader must be reaped after cancellation"
+    );
     let revoked = fixture.request(
         TERMINAL_SERVICE_ID,
         "ticket_revoke",
@@ -638,7 +975,7 @@ fn interactive_lifecycle_requires_approved_guard_lease() {
             ("terminalID", string("pty_host_terminal_1")),
             ("attachmentID", string(&attachment)),
         ]),
-        16,
+        41,
     );
     assert_eq!(revoked.outcome, RpcOutcomeV1::Ok, "{:?}", revoked.error);
     let revoked_again = fixture.request(
@@ -649,7 +986,7 @@ fn interactive_lifecycle_requires_approved_guard_lease() {
             ("terminalID", string("pty_host_terminal_1")),
             ("attachmentID", string(&attachment)),
         ]),
-        17,
+        42,
     );
     assert_eq!(
         revoked_again.outcome,
@@ -667,7 +1004,7 @@ fn interactive_lifecycle_requires_approved_guard_lease() {
             ("afterSequence", Value::Unsigned(0)),
             ("afterByteCursor", Value::Unsigned(0)),
         ]),
-        18,
+        43,
     );
     assert_eq!(
         after_restart.outcome,

@@ -2,14 +2,17 @@
 
 use horizoncode_kernel::messagepack::Value;
 use horizoncode_kernel::protocol::{
-    CursorV1, FEATURE_EFFECTS_V2, KernelHelloV1, KernelStartupStatusV1, RpcControlV1, RpcMessageV1,
-    RpcOutcomeV1, RpcRequestV1, RpcResponseV1, read_message, write_message,
+    AuthenticatedPrincipalV1, CursorV1, FEATURE_EFFECTS_V2, KernelHelloV1,
+    KernelStartupStatusV1, RpcControlV1, RpcMessageV1, RpcOutcomeV1, RpcRequestV1,
+    RpcResponseV1, read_message, write_message,
 };
-use horizoncode_kernel::unix_peer::{AuthenticatedUnixStream, UnixPeerPolicy, connect_authenticated};
+use horizoncode_kernel::unix_peer::{
+    AuthenticatedUnixStream, UnixPeerPolicy, connect_authenticated,
+};
 use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -86,10 +89,15 @@ impl HostProcess {
                 .unwrap(),
         );
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !socket.exists() {
+        while !matches!(
+            fs::symlink_metadata(&socket),
+            Ok(metadata)
+                if metadata.file_type().is_socket()
+                    && metadata.permissions().mode() & 0o777 == 0o600
+        ) {
             assert!(
                 Instant::now() < deadline,
-                "hz-kernel did not create its private socket"
+                "hz-kernel did not create its owner-only private socket"
             );
             thread::sleep(Duration::from_millis(5));
         }
@@ -176,11 +184,51 @@ impl HostProcess {
         }
     }
 
+    fn request_server_auth(
+        &mut self,
+        service: &str,
+        operation: &str,
+        body: Value,
+        subject: &str,
+    ) -> RpcResponseV1 {
+        self.next_request += 1;
+        let id = self.next_request;
+        let request = RpcRequestV1 {
+            owner_epoch: self.epoch,
+            process_incarnation: INCARNATION.into(),
+            request_id: format!("req_effect_{id}"),
+            service_id: service.into(),
+            operation: operation.into(),
+            delivery_id: None,
+            expected_cursor: None,
+            deadline_unix_ms: now_ms() + 30_000,
+            trace_id: format!("trace_effect_{id}"),
+            body,
+        };
+        let request_id = request.request_id.clone();
+        write_message(
+            &mut self.stream,
+            &RpcMessageV1::AuthenticatedRequest {
+                request: Box::new(request),
+                principal: AuthenticatedPrincipalV1::ServerAuth {
+                    subject: subject.to_owned(),
+                },
+                context: None,
+            },
+        )
+        .unwrap();
+        match read_message(&mut self.stream).unwrap() {
+            Some(RpcMessageV1::Response(response)) => *response,
+            other => panic!("expected host RPC response for {request_id}, got {other:?}"),
+        }
+    }
+
     fn register_location(&mut self, root: &std::path::Path) -> String {
-        let response = self.request(
+        let response = self.request_server_auth(
             FEATURE_EFFECTS_V2,
             "register_location",
             value_map([("canonicalRoot", string(root.to_str().unwrap()))]),
+            "effects-process-user",
         );
         assert_eq!(response.outcome, RpcOutcomeV1::Ok, "{:?}", response.error);
         value_string(response.body.as_ref().unwrap(), "locationID").to_owned()
@@ -399,6 +447,114 @@ fn hz_kernel_process_effects_require_guard_approval_and_settle_one_use_write_and
     );
     assert_eq!(fs::read(workspace.join("patched.txt")).unwrap(), b"patched");
 }
+
+#[test]
+fn hz_kernel_cancel_keeps_prepared_effect_for_unknown_reconciliation() {
+    let directory = TestDir::new();
+    let state = directory.0.join("state");
+    let workspace = directory.0.join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
+    let workspace = fs::canonicalize(workspace).unwrap();
+    let mut host = HostProcess::launch(&state, "prepared_cancel_one", INCARNATION, true);
+    let location = host.register_location(&workspace);
+    let target = workspace.join("prepared-cancelled.txt");
+    let (challenge, effect) = prepare_write(
+        &mut host,
+        &location,
+        "batch_prepared_cancel",
+        "prepared-cancelled.txt",
+        "must-not-be-replayed",
+    );
+    assert!(!target.exists());
+    let approved = host.approve(&challenge, "allow_once");
+    assert_eq!(approved.outcome, RpcOutcomeV1::Ok, "{:?}", approved.error);
+    let lease = value_string(approved.body.as_ref().unwrap(), "capabilityLeaseDigest").to_owned();
+
+    // Model the durable crash window after PREPARED is recorded and before the
+    // filesystem result is observed. Cancellation must leave this row alone so
+    // startup reconciliation, not cancel_batch, determines its final outcome.
+    let effect_db = state
+        .join("effect-locations")
+        .join(&location)
+        .join("effects.sqlite");
+    let db = Connection::open(&effect_db).unwrap();
+    let content_digest: String = db
+        .query_row(
+            "SELECT content_digest FROM effect_challenges WHERE challenge_id=?1",
+            [&challenge],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        db.execute(
+            "UPDATE effect_challenges SET status='PREPARED', after_digest=?2, receipt_digest=NULL WHERE challenge_id=?1 AND status='APPROVED'",
+            rusqlite::params![challenge, content_digest],
+        )
+        .unwrap(),
+        1,
+    );
+    drop(db);
+
+    let cancelled = host.request(
+        FEATURE_EFFECTS_V2,
+        "cancel_batch",
+        value_map([
+            ("sessionID", string(SESSION)),
+            ("locationID", string(&location)),
+            ("batchID", string("batch_prepared_cancel")),
+        ]),
+    );
+    assert_eq!(cancelled.outcome, RpcOutcomeV1::Ok, "{:?}", cancelled.error);
+    let body = cancelled.body.as_ref().unwrap();
+    assert_eq!(value_string(body, "status"), "cancelled");
+    let Value::Map(fields) = body else {
+        panic!("expected cancellation response map");
+    };
+    assert_eq!(fields.get("cancelled"), Some(&Value::Unsigned(0)));
+    assert_eq!(fields.get("prepared"), Some(&Value::Unsigned(1)));
+    let still_prepared: String = Connection::open(&effect_db)
+        .unwrap()
+        .query_row(
+            "SELECT status FROM effect_challenges WHERE challenge_id=?1",
+            [&challenge],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(still_prepared, "PREPARED");
+    assert!(!target.exists());
+    drop(host);
+
+    let mut restarted = HostProcess::launch(&state, "prepared_cancel_two", INCARNATION, true);
+    assert_eq!(restarted.register_location(&workspace), location);
+    let reconciled = restarted.request(
+        FEATURE_EFFECTS_V2,
+        "reconcile_effect",
+        value_map([
+            ("effectID", string(&effect)),
+            ("locationID", string(&location)),
+            ("sessionID", string(SESSION)),
+        ]),
+    );
+    assert_eq!(reconciled.outcome, RpcOutcomeV1::Error);
+    assert_eq!(
+        reconciled.error.as_ref().map(|error| error.code.as_str()),
+        Some("effect_outcome_unknown")
+    );
+    let after_restart: String = Connection::open(&effect_db)
+        .unwrap()
+        .query_row(
+            "SELECT status FROM effect_challenges WHERE challenge_id=?1",
+            [&challenge],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(after_restart, "UNKNOWN");
+    let late_execute = restarted.execute_write(&location, &effect, &lease, "must-not-be-replayed");
+    assert_eq!(late_execute.outcome, RpcOutcomeV1::Error);
+    assert!(!target.exists());
+}
+
 #[test]
 fn hz_kernel_process_patch_prevalidates_every_target_and_applies_approved_operations_atomically() {
     let directory = TestDir::new();
@@ -439,7 +595,12 @@ fn hz_kernel_process_patch_prevalidates_every_target_and_applies_approved_operat
         } else {
             fields[0] = ("operation", string("delete"));
         }
-        Value::Map(fields.into_iter().map(|(key, value)| (key.to_owned(), value)).collect())
+        Value::Map(
+            fields
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), value))
+                .collect(),
+        )
     };
     let prepare_patch = |host: &mut HostProcess, batch: &str, operations: Value| {
         host.prepare(
@@ -508,10 +669,10 @@ fn hz_kernel_process_patch_prevalidates_every_target_and_applies_approved_operat
             Some(&"A".repeat(2_796_204)),
         )]),
     );
-    assert_eq!(
-        value_string(oversized.body.as_ref().unwrap(), "status"),
-        "denied"
-    );
+    // This exceeds the canonical per-call admission bound before it reaches the
+    // patch planner, so the host returns a typed request error with no body.
+    assert_eq!(oversized.outcome, RpcOutcomeV1::Error);
+    assert!(oversized.error.is_some());
     assert!(!workspace.join("oversized.txt").exists());
 
     for (batch, path) in [

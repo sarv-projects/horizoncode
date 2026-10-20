@@ -39,11 +39,16 @@ fn query(generation: &RepoIntelGeneration, operation: RepoIntelOperation) -> Rep
 fn text_query_returns_generation_bound_partial_matches() {
     let generation = RepoIntelGeneration::build(
         pins("rev-1", "policy-1"),
-        vec![snapshot("src/a.rs", "let needle = 1;\n"), snapshot("src/b.rs", "none\n")],
+        vec![
+            snapshot("src/a.rs", "let needle = 1;\n"),
+            snapshot("src/b.rs", "none\n"),
+        ],
     )
     .unwrap();
 
-    let result = generation.query(query(&generation, RepoIntelOperation::Text)).unwrap();
+    let result = generation
+        .query(query(&generation, RepoIntelOperation::Text))
+        .unwrap();
     assert_eq!(result.status, RepoIntelStatus::Partial);
     assert_eq!(result.generation_id, generation.id());
     let search = result.text.unwrap();

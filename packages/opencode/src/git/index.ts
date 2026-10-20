@@ -4,6 +4,7 @@ import { Effect, Layer, Context } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 
 const cfg = [
+  "--no-pager",
   "--no-optional-locks",
   "-c",
   "core.autocrlf=false",
@@ -15,6 +16,10 @@ const cfg = [
   "core.symlinks=true",
   "-c",
   "core.quotepath=false",
+  "-c",
+  "core.pager=cat",
+  "-c",
+  "diff.external=",
 ] as const
 
 const out = (result: { text(): string }) => result.text().trim()
@@ -73,7 +78,6 @@ export interface Options {
 }
 
 export interface Interface {
-  readonly run: (args: string[], opts: Options) => Effect.Effect<Result>
   readonly branch: (cwd: string) => Effect.Effect<string | undefined>
   readonly prefix: (cwd: string) => Effect.Effect<string>
   readonly defaultBranch: (cwd: string) => Effect.Effect<Base | undefined>
@@ -224,7 +228,7 @@ const layer = Layer.effect(
 
     const diff = Effect.fn("Git.diff")(function* (cwd: string, ref: string) {
       const list = nuls(
-        yield* text(["diff", "--no-ext-diff", "--no-renames", "--name-status", "-z", ref, "--", "."], { cwd }),
+        yield* text(["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-status", "-z", ref, "--", "."], { cwd }),
       )
       return list.flatMap((code, idx) => {
         if (idx % 2 !== 0) return []
@@ -236,7 +240,7 @@ const layer = Layer.effect(
 
     const stats = Effect.fn("Git.stats")(function* (cwd: string, ref: string) {
       return nuls(
-        yield* text(["diff", "--no-ext-diff", "--no-renames", "--numstat", "-z", ref, "--", "."], { cwd }),
+        yield* text(["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--numstat", "-z", ref, "--", "."], { cwd }),
       ).flatMap((item) => {
         const a = item.indexOf("\t")
         const b = item.indexOf("\t", a + 1)
@@ -259,7 +263,7 @@ const layer = Layer.effect(
 
     const patch = Effect.fn("Git.patch")(function* (cwd: string, ref: string, file: string, options?: PatchOptions) {
       const result = yield* run(
-        ["diff", "--patch", "--no-ext-diff", "--no-renames", `--unified=${options?.context ?? 3}`, ref, "--", file],
+        ["diff", "--patch", "--no-ext-diff", "--no-textconv", "--no-renames", `--unified=${options?.context ?? 3}`, ref, "--", file],
         { cwd, maxOutputBytes: options?.maxOutputBytes },
       )
       return { text: result.truncated ? "" : result.text(), truncated: result.truncated } satisfies Patch
@@ -267,7 +271,7 @@ const layer = Layer.effect(
 
     const patchAll = Effect.fn("Git.patchAll")(function* (cwd: string, ref: string, options?: PatchOptions) {
       const result = yield* run(
-        ["diff", "--patch", "--no-ext-diff", "--no-renames", `--unified=${options?.context ?? 3}`, ref, "--", "."],
+        ["diff", "--patch", "--no-ext-diff", "--no-textconv", "--no-renames", `--unified=${options?.context ?? 3}`, ref, "--", "."],
         { cwd, maxOutputBytes: options?.maxOutputBytes },
       )
       return { text: result.text(), truncated: result.truncated } satisfies Patch
@@ -284,6 +288,7 @@ const layer = Layer.effect(
           "--no-index",
           "--patch",
           "--no-ext-diff",
+          "--no-textconv",
           "--no-renames",
           `--unified=${options?.context ?? 3}`,
           "--",
@@ -296,7 +301,7 @@ const layer = Layer.effect(
     })
 
     const statUntracked = Effect.fn("Git.statUntracked")(function* (cwd: string, file: string) {
-      const result = yield* run(["diff", "--no-index", "--numstat", "--", "/dev/null", file], {
+      const result = yield* run(["diff", "--no-index", "--no-ext-diff", "--no-textconv", "--numstat", "--", "/dev/null", file], {
         cwd,
         maxOutputBytes: 4096,
       })
@@ -317,7 +322,6 @@ const layer = Layer.effect(
     })
 
     return Service.of({
-      run,
       branch,
       prefix,
       defaultBranch,

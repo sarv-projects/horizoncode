@@ -5,6 +5,7 @@ import type { JSONSchema7 } from "@ai-sdk/provider"
 import type { MessageV2 } from "../session/message-v2"
 import type { Permission } from "../permission"
 import type { SessionID, MessageID } from "../session/schema"
+import type { TrustedPrincipal } from "@opencode-ai/core/trusted-principal"
 import * as Truncate from "./truncate"
 import { Agent } from "@/agent/agent"
 
@@ -47,6 +48,8 @@ export type Context<M extends Metadata = Metadata> = {
   callID?: string
   extra?: { [key: string]: unknown }
   effect?: EffectChallenge
+  /** Private identity captured from the authenticated runtime context; never model input. */
+  trustedPrincipal?: TrustedPrincipal
   messages: SessionV1.WithParts[]
   metadata(input: { title?: string; metadata?: M }): Effect.Effect<void>
   ask(input: Omit<PermissionV1.Request, "id" | "sessionID" | "tool">): Effect.Effect<void>

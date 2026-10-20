@@ -77,6 +77,98 @@ describe("FeatureExposure derived Settings projection", () => {
     }
   })
 
+  test("projects the winning value source and policy lock instead of inventing either", () => {
+    const [auto, prune] = FeatureExposure.list(
+      {
+        compaction: { auto: true, prune: false },
+        origins: {
+          auto: { valueSource: "project", policyLock: "unlocked" },
+          prune: { valueSource: "user", policyLock: "locked", blockedReason: "Managed by administrator" },
+        },
+      },
+      { compaction: { auto: true, prune: false } },
+    )
+
+    expect(auto?.state.valueSource).toBe("project")
+    expect(auto?.state.policyLock).toBe("unlocked")
+    expect(prune?.state.valueSource).toBe("user")
+    expect(prune?.state.policyLock).toBe("locked")
+    expect(prune?.state.blockedReason).toBe("Managed by administrator")
+  })
+
+  test("projects an apply boundary as pending until the effective runtime catches up", () => {
+    const [auto] = FeatureExposure.list(
+      {
+        compaction: { auto: false },
+        origins: { auto: { valueSource: "project", pendingApplyAt: "next_turn" } },
+      },
+      { compaction: { auto: true } },
+    )
+
+    expect(auto?.state).toMatchObject({
+      requestedEnabled: false,
+      effectiveEnabled: true,
+      effectiveState: "pending_apply",
+      pendingApplyAt: "next_turn",
+      valueSource: "project",
+    })
+  })
+
+  test("reports a requested-on update as pending instead of runtime-blocked before its apply boundary", () => {
+    const [auto] = FeatureExposure.list(
+      {
+        compaction: { auto: true },
+        origins: { auto: { valueSource: "project", policyLock: "unlocked", pendingApplyAt: "next_turn" } },
+      },
+      { compaction: { auto: false } },
+    )
+
+    expect(auto?.state).toMatchObject({
+      requestedEnabled: true,
+      effectiveEnabled: false,
+      effectiveState: "pending_apply",
+      pendingApplyAt: "next_turn",
+      valueSource: "project",
+      policyLock: "unlocked",
+    })
+    expect(auto?.state.blockedReason).toBeUndefined()
+  })
+
+  test("clears pending state once the next-turn runtime applies the requested value", () => {
+    const source = {
+      compaction: { auto: false },
+      origins: {
+        auto: { valueSource: "project" as const, policyLock: "unlocked" as const, pendingApplyAt: "next_turn" as const },
+      },
+    }
+    const [pending] = FeatureExposure.list(source, { compaction: { auto: true } })
+    expect(pending?.state).toMatchObject({
+      requestedEnabled: false,
+      effectiveEnabled: true,
+      effectiveState: "pending_apply",
+      pendingApplyAt: "next_turn",
+    })
+
+    const [applied] = FeatureExposure.list(source, { compaction: { auto: false } })
+    expect(applied?.state).toMatchObject({
+      requestedEnabled: false,
+      effectiveEnabled: false,
+      effectiveState: "off",
+      valueSource: "project",
+      policyLock: "unlocked",
+    })
+    expect(applied?.state.pendingApplyAt).toBeUndefined()
+  })
+
+  test("policy denial takes precedence over a pending requested-on change", () => {
+    const [auto] = FeatureExposure.list({
+      compaction: { auto: true },
+      origins: { auto: { valueSource: "system_policy", policyLock: "locked", pendingApplyAt: "next_turn", blockedReason: "Disabled by policy" } },
+    }, { compaction: { auto: false } })
+    expect(auto?.state).toMatchObject({ effectiveEnabled: false, effectiveState: "blocked", blockedReason: "Disabled by policy" })
+    expect(auto?.state.pendingApplyAt).toBeUndefined()
+  })
+
 
   test("planned experiments are disabled and do not become executable", () => {
     const all = FeatureExposure.list({})
@@ -96,6 +188,30 @@ describe("FeatureExposure derived Settings projection", () => {
     }
   })
 
+  test("legacy experimental config cannot enable Horizon experiments without their owning config path", () => {
+    const legacyConfig = {
+      experimental: { native_search: true, hashline_edit: true, cow_worktrees: true },
+      compaction: { auto: true, prune: false },
+    } as FeatureExposure.SourceConfig
+
+    const previous = process.env.OPENCODE_EXPERIMENTAL
+    process.env.OPENCODE_EXPERIMENTAL = "true"
+    try {
+      for (const feature of FeatureExposure.list(legacyConfig).filter((item) => item.releaseClass === "experimental")) {
+        expect(feature.state).toMatchObject({
+          requestedEnabled: null,
+          effectiveEnabled: false,
+          effectiveState: "unavailable",
+          implementationStatus: "designed",
+        })
+        expect(FeatureExposure.updateCompaction(legacyConfig, feature.featureId, true)).toBeUndefined()
+      }
+    } finally {
+      if (previous === undefined) delete process.env.OPENCODE_EXPERIMENTAL
+      else process.env.OPENCODE_EXPERIMENTAL = previous
+    }
+  })
+
   test("compaction update is bounded and preserves the other value", () => {
     const source = { compaction: { auto: false, prune: false } }
     expect(FeatureExposure.updateCompaction(source, "compaction.prune", true)).toEqual({
@@ -109,5 +225,31 @@ describe("FeatureExposure derived Settings projection", () => {
     const list = FeatureExposure.list({})
     expect(new Set(list.map((x) => x.featureId)).size).toBe(list.length)
     expect(new Set(list.map((x) => x.settingKey)).size).toBe(list.length)
+  })
+
+  test("catalog validation catches duplicate settings, unknown capabilities, and effective code that is not wired", () => {
+    const descriptor = FeatureExposure.list({})[0]!
+    const invalid = [
+      descriptor,
+      { ...descriptor, featureId: "compaction.prune" as const, capabilityIds: ["missing.capability"] },
+    ]
+    expect(FeatureExposure.validateCatalog(invalid, new Set(["known.capability"]))).toEqual([
+      { code: "duplicate_setting_key", featureId: "compaction.prune", settingKey: descriptor.settingKey },
+      { code: "unknown_capability", featureId: "compaction.prune", capabilityId: "missing.capability" },
+    ])
+    expect(() => FeatureExposure.decodeCatalog(invalid, new Set(["known.capability"]))).toThrow()
+  })
+
+  test("catalog validation rejects duplicate capability refs and unimplemented effective settings", () => {
+    const descriptor = FeatureExposure.list({})[0]!
+    const invalid = [{
+      ...descriptor,
+      capabilityIds: ["known.capability", "known.capability"],
+      state: { ...descriptor.state, implementationStatus: "code_present" as const, effectiveEnabled: true, effectiveState: "on" as const },
+    }]
+    expect(FeatureExposure.validateCatalog(invalid, new Set(["known.capability"]))).toEqual([
+      { code: "duplicate_capability_ref", featureId: descriptor.featureId, capabilityId: "known.capability" },
+      { code: "unwired_feature_enabled", featureId: descriptor.featureId },
+    ])
   })
 })

@@ -78,7 +78,7 @@ const layer = Layer.mergeAll(
       all: () => Effect.succeed([]),
       named: () => Effect.die("unused"),
       tools: () =>
-        Effect.succeed([
+        Effect.succeed<Tool.Def[]>([
           {
             id: "timing",
             capability: { id: "diagnostic.timing", effectClass: "read_only" },
@@ -98,12 +98,74 @@ const layer = Layer.mergeAll(
             parameters: Schema.Struct({}),
             execute: () => Effect.succeed({ title: "", metadata: {}, output: "must not execute" }),
           } satisfies Tool.Def,
+          {
+            id: "question",
+            capability: { id: "question.ask", effectClass: "control" },
+            description: "asks the user a clarification question",
+            parameters: Schema.Struct({ questions: Schema.Array(Schema.String) }),
+            jsonSchema: { type: "object", properties: { questions: { type: "array" } } },
+            execute: () => Effect.succeed({ title: "Asked 1 question", metadata: {}, output: "answered" }),
+          } satisfies Tool.Def,
         ]),
     }),
   ),
 )
 
 const it = testEffect(layer)
+
+it.instance("projects the canonical question control without granting effect authority", () =>
+  Effect.gen(function* () {
+    const processor = {
+      message: {
+        id: messageID,
+        sessionID,
+        role: "assistant",
+        parentID: MessageID.ascending(),
+        agent: "build",
+        mode: "build",
+        path: { cwd: "/tmp", root: "/tmp" },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: ModelV2.ID.make("test-model"),
+        providerID: ProviderV2.ID.make("test"),
+        time: { created: 1 },
+      } satisfies SessionV1.Assistant,
+      updateToolCall: () => Effect.succeed({} as SessionV1.ToolPart),
+      completeToolCall: () => Effect.void,
+    } satisfies Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "completeToolCall">
+
+    const resolved = yield* SessionTools.resolve({
+      agent,
+      model,
+      session: { id: sessionID, permission: [] } as unknown as Session.Info,
+      processor,
+      bypassAgentCheck: false,
+      messages: [],
+      promptOps: {} as never,
+    })
+
+    expect(resolved.tools.question).toBeDefined()
+    expect(resolved.definitions.question?.capability).toEqual({ id: "question.ask", effectClass: "control" })
+    expect(resolved.definitions.question?.internal).toBeUndefined()
+
+    const batch = createToolBatchContext()
+    batch.outcomes.set(callID, { status: "allowed", capabilityID: "question.ask" })
+    const execute = resolved.tools.question?.execute
+    if (!execute) throw new Error("question tool is missing execute")
+    const result = yield* Effect.promise(() =>
+      execute(
+        { questions: ["Where should we look?"] },
+        {
+          toolCallId: callID,
+          abortSignal: new AbortController().signal,
+          messages: [],
+          experimental_context: batch,
+        },
+      ),
+    )
+    expect(result).toMatchObject({ output: "answered" })
+  }),
+)
 
 it.instance(
   "preserves running tool start time across metadata updates",

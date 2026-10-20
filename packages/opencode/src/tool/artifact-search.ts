@@ -10,7 +10,7 @@
  * Contract:
  * - Lines are zero-based; ranges are half-open `[lineStart, lineEndExclusive)`.
  *   Matches report the line number plus the line's byte offset in the artifact.
- * - Every operation binds a generation derived from (id, size, mtime, inode).
+ * - Every operation binds a generation derived from (id, size, mtime, ctime, inode).
  *   Rotation, truncation or replacement advances the generation. A caller that
  *   supplies `expectedGeneration` is rejected with `stale_generation` (the
  *   TM-002 "log rotates while the model holds a range ref" case) instead of
@@ -24,8 +24,10 @@
  */
 
 import { createHash } from "node:crypto"
+import { constants as fsConstants } from "node:fs"
+import nodeFs, { type FileHandle } from "node:fs/promises"
 import path from "node:path"
-import { Context, Effect, FileSystem, Layer, Option, Schema } from "effect"
+import { Context, Effect, Layer, Schema, Scope, Semaphore } from "effect"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { waitForAbort } from "@opencode-ai/core/process"
 import { TRUNCATION_DIR } from "./truncation-dir"
@@ -40,6 +42,8 @@ export const MAX_EXCERPT_BYTES = 8_192
 export const DEFAULT_MAX_SCAN_BYTES = 134_217_728
 export const MAX_SCAN_BYTES = 268_435_456
 export const DEFAULT_MAX_DURATION_MS = 5_000
+/** Keep duration inputs within reliable host timer semantics and hard-bounded. */
+export const MAX_DURATION_MS = 60_000
 export const CHUNK_BYTES = 262_144
 export const MAX_LINE_BYTES = 65_536
 export const EXCERPT_CONTEXT_BYTES = 16
@@ -146,11 +150,27 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ArtifactSearch") {}
 
-interface ArtifactStat {
+export interface ArtifactStat {
   readonly type: string
   readonly size: number
   readonly mtimeMs: number
+  readonly ctimeMs: number
   readonly ino: number
+}
+
+export interface ArtifactSearchFile {
+  readonly stat: ArtifactStat
+  readonly read: (size: number, position: number) => Effect.Effect<Uint8Array, ArtifactSearchError>
+  readonly close: Effect.Effect<void>
+}
+
+export interface ArtifactSearchRoot {
+  readonly openArtifact: (artifactId: string) => Effect.Effect<ArtifactSearchFile | undefined, ArtifactSearchError>
+  readonly close: Effect.Effect<void>
+}
+
+export interface ArtifactSearchSource {
+  readonly openRoot: (root: string) => Effect.Effect<ArtifactSearchRoot, ArtifactSearchError>
 }
 
 interface ScanLine {
@@ -213,30 +233,246 @@ const clampPositive = (value: number | undefined, fallback: number, maximum: num
 }
 
 const generationOf = (artifactId: string, stat: ArtifactStat) =>
-  `a1:${createHash("sha256")
-    .update(`artifact\u0000${artifactId}\u0000${stat.size}\u0000${stat.mtimeMs}\u0000${stat.ino}`)
+  `a2:${createHash("sha256")
+    .update(`artifact\u0000${artifactId}\u0000${stat.size}\u0000${stat.mtimeMs}\u0000${stat.ctimeMs}\u0000${stat.ino}`)
     .digest("hex")}`
 
-type Matcher = { readonly index: (line: Buffer) => number | undefined }
+const procFdPath = (fd: number) => `/proc/self/fd/${fd}`
+
+const statFromHandle = async (handle: FileHandle): Promise<ArtifactStat> => {
+  const info = await handle.stat()
+  return {
+    type: info.isFile() ? "File" : info.isDirectory() ? "Directory" : "Other",
+    size: Number(info.size),
+    mtimeMs: Number(info.mtimeMs),
+    ctimeMs: Number(info.ctimeMs),
+    ino: Number(info.ino),
+  }
+}
+
+/**
+ * The Effect FileSystem API does not expose descriptor-relative O_NOFOLLOW opens.
+ * On Linux, keep the managed artifact directory pinned and open each single-segment
+ * artifact beneath that descriptor. Verify the opened descriptor's resolved path
+ * before inspecting metadata or reading bytes; other platforms fail closed.
+ */
+export const nodeSource: ArtifactSearchSource = {
+  openRoot: (rootPath) =>
+    Effect.tryPromise({
+      try: async () => {
+        if (process.platform !== "linux") throw new Error("descriptor-rooted artifact reads require Linux procfs")
+
+        const rootHandle = await nodeFs.open(
+          rootPath,
+          fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+        )
+        try {
+          const actualRoot = await nodeFs.realpath(procFdPath(rootHandle.fd))
+          if (actualRoot !== rootPath || !(await rootHandle.stat()).isDirectory()) {
+            throw new Error("the opened artifact root does not match the configured root")
+          }
+
+          const rootFdPath = procFdPath(rootHandle.fd)
+          return {
+            openArtifact: (artifactId) =>
+              Effect.tryPromise({
+                try: async () => {
+                  if (validateArtifactId(artifactId)) return undefined
+                  let handle: FileHandle | undefined
+                  try {
+                    handle = await nodeFs.open(
+                      `${rootFdPath}/${artifactId}`,
+                      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+                    )
+                    const actual = await nodeFs.realpath(procFdPath(handle.fd))
+                    const expected = path.resolve(rootPath, artifactId)
+                    if (actual !== expected) {
+                      await handle.close()
+                      return undefined
+                    }
+                    const stat = await statFromHandle(handle)
+                    if (stat.type !== "File") {
+                      await handle.close()
+                      return undefined
+                    }
+
+                    const sourceHandle = handle
+                    return {
+                      stat,
+                      read: (size, position) =>
+                        Effect.tryPromise({
+                          try: async () => {
+                            if (!Number.isSafeInteger(size) || size < 0 || size > CHUNK_BYTES) {
+                              throw new Error(`invalid artifact read size: ${size}`)
+                            }
+                            const buffer = Buffer.allocUnsafe(size)
+                            const result = await sourceHandle.read(buffer, 0, size, position)
+                            return buffer.subarray(0, result.bytesRead)
+                          },
+                          catch: (cause) =>
+                            new ArtifactSearchError({
+                              code: "failed",
+                              detail: `cannot read artifact ${artifactId}: ${String(cause)}`,
+                            }),
+                        }),
+                      close: Effect.promise(async () => {
+                        await sourceHandle.close().catch(() => {})
+                      }),
+                    } satisfies ArtifactSearchFile
+                  } catch {
+                    if (handle) await handle.close().catch(() => {})
+                    return undefined
+                  }
+                },
+                catch: (cause) =>
+                  new ArtifactSearchError({
+                    code: "failed",
+                    detail: `cannot open artifact ${artifactId}: ${String(cause)}`,
+                  }),
+              }),
+            close: Effect.promise(async () => {
+              await rootHandle.close().catch(() => {})
+            }),
+          } satisfies ArtifactSearchRoot
+        } catch (cause) {
+          await rootHandle.close().catch(() => {})
+          throw cause
+        }
+      },
+      catch: (cause) =>
+        new ArtifactSearchError({
+          code: "failed",
+          detail: `secure artifact access unavailable: ${String(cause)}`,
+        }),
+    }),
+}
+
+type MatcherIndex = { readonly kind: "match"; readonly index?: number } | { readonly kind: "deadline" }
+
+type Matcher = { readonly index: (line: Buffer) => Effect.Effect<MatcherIndex, ArtifactSearchError> }
+
+const regexWorkers = Semaphore.makeUnsafe(1)
+
+const REGEX_WORKER_SOURCE = `
+self.onmessage = (event) => {
+  const { pattern, flags, line } = event.data
+  try {
+    const match = new RegExp(pattern, flags).exec(line)
+    self.postMessage({ index: match === null ? null : match.index })
+  } catch (error) {
+    self.postMessage({ error: String(error) })
+  }
+}
+`
 
 const literalMatcher = (query: string): Matcher => {
   const needle = Buffer.from(query, "utf-8")
   return {
-    index: (line) => {
-      const at = line.indexOf(needle)
-      return at === -1 ? undefined : at
-    },
+    index: (line) =>
+      Effect.sync(() => {
+        const at = line.indexOf(needle)
+        return at === -1 ? { kind: "match" } : { kind: "match", index: at }
+      }),
   }
 }
 
-const regexMatcher = (pattern: RegExp): Matcher => ({
-  index: (line) => {
-    const text = line.toString("utf-8")
-    const match = pattern.exec(text)
-    if (match === null) return undefined
-    return Buffer.byteLength(text.slice(0, match.index), "utf-8")
-  },
-})
+const regexMatcher = (
+  pattern: string,
+  flags: string,
+  deadline: number,
+  now: () => number,
+): Effect.Effect<Matcher, ArtifactSearchError, Scope.Scope> =>
+  Effect.gen(function* () {
+    let workerUrl: string | undefined
+    const worker = yield* Effect.acquireRelease(
+      Effect.try({
+        try: () => {
+          workerUrl = URL.createObjectURL(new Blob([REGEX_WORKER_SOURCE], { type: "text/javascript" }))
+          try {
+            return new Worker(workerUrl)
+          } catch (cause) {
+            URL.revokeObjectURL(workerUrl)
+            throw cause
+          }
+        },
+        catch: (cause) => new ArtifactSearchError({ code: "failed", detail: `cannot start isolated regex worker: ${String(cause)}` }),
+      }),
+      (worker) =>
+        Effect.sync(() => {
+          worker.terminate()
+          if (workerUrl !== undefined) URL.revokeObjectURL(workerUrl)
+        }),
+    )
+
+    const index: Matcher["index"] = (line) =>
+      Effect.tryPromise({
+        try: (signal) =>
+          new Promise<MatcherIndex>((resolve, reject) => {
+            let settled = false
+            const remainingMs = Math.max(0, deadline - now())
+            let timer: ReturnType<typeof setTimeout> | undefined
+            const finish = (result: MatcherIndex) => {
+              if (settled) return
+              settled = true
+              if (timer !== undefined) clearTimeout(timer)
+              signal.removeEventListener("abort", onAbort)
+              resolve(result)
+            }
+            const fail = (cause: unknown) => {
+              if (settled) return
+              settled = true
+              if (timer !== undefined) clearTimeout(timer)
+              signal.removeEventListener("abort", onAbort)
+              reject(cause)
+            }
+            const onAbort = () => {
+              worker.terminate()
+              fail(new Error("regex evaluation was interrupted"))
+            }
+
+            if (signal.aborted) {
+              onAbort()
+              return
+            }
+            signal.addEventListener("abort", onAbort, { once: true })
+            if (remainingMs === 0) {
+              finish({ kind: "deadline" })
+              return
+            }
+            timer = setTimeout(() => {
+              worker.terminate()
+              finish({ kind: "deadline" })
+            }, remainingMs)
+            worker.onmessage = (event: MessageEvent<{ index?: number | null; error?: string }>) => {
+              if (event.data.error !== undefined) {
+                fail(new Error(event.data.error))
+                return
+              }
+              const match = event.data.index
+              finish(match === null || match === undefined ? { kind: "match" } : { kind: "match", index: match })
+            }
+            worker.onerror = (event: ErrorEvent) => fail(event.error ?? new Error(event.message))
+            try {
+              worker.postMessage({ pattern, flags, line: line.toString("utf-8") })
+            } catch (cause) {
+              fail(cause)
+            }
+          }),
+        catch: (cause) =>
+          cause instanceof ArtifactSearchError
+            ? cause
+            : new ArtifactSearchError({ code: "failed", detail: `isolated regex evaluation failed: ${String(cause)}` }),
+      })
+
+    return {
+      index: (line) =>
+        Effect.map(index(line), (result) => {
+          if (result.kind === "deadline" || result.index === undefined) return result
+          const text = line.toString("utf-8")
+          return { kind: "match", index: Buffer.byteLength(text.slice(0, result.index), "utf-8") }
+        }),
+    } satisfies Matcher
+  })
 
 const excerptOf = (line: Buffer, matchIndex: number, maxExcerptBytes: number) => {
   const start = Math.max(0, matchIndex - EXCERPT_CONTEXT_BYTES)
@@ -250,50 +486,66 @@ const excerptOf = (line: Buffer, matchIndex: number, maxExcerptBytes: number) =>
 export const make = (options: {
   readonly fs: FSUtil.Interface
   readonly root: string
+  readonly source?: ArtifactSearchSource
   readonly now?: () => number
 }): Interface => {
   const fs = options.fs
+  const source = options.source ?? nodeSource
   const now = options.now ?? (() => Date.now())
 
-  const statOf = Effect.fnUntraced(function* (target: string) {
-    const info = yield* fs.stat(target).pipe(Effect.catch(() => Effect.succeed(undefined)))
-    if (info === undefined) return undefined
-    return {
-      type: info.type as string,
-      size: Number(info.size),
-      mtimeMs: Option.getOrElse(info.mtime, () => new Date(0)).getTime(),
-      ino: Option.getOrElse(info.ino, () => 0),
-    }
-  })
+  const withArtifact = <A>(input: {
+    readonly artifactId: string
+    readonly expectedGeneration?: string
+    readonly use: (value: {
+      readonly root: ArtifactSearchRoot
+      readonly file: ArtifactSearchFile
+      readonly generation: string
+    }) => Effect.Effect<A, ArtifactSearchError, Scope.Scope>
+  }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const rootPath = yield* fs
+          .resolve(options.root)
+          .pipe(
+            Effect.mapError(
+              () => new ArtifactSearchError({ code: "failed", detail: `artifact root ${options.root} is unavailable` }),
+            ),
+          )
+        const root = yield* Effect.acquireRelease(source.openRoot(rootPath), (opened) => opened.close)
+        const file = yield* Effect.acquireRelease(
+          root.openArtifact(input.artifactId),
+          (opened) => opened?.close ?? Effect.void,
+        )
+        if (file === undefined) return yield* new ArtifactSearchError({ code: "not_found", detail: input.artifactId })
 
-  const resolveArtifact = Effect.fnUntraced(function* (artifactId: string) {
-    const root = yield* fs
-      .resolve(options.root)
-      .pipe(
-        Effect.mapError(
-          () => new ArtifactSearchError({ code: "failed", detail: `artifact root ${options.root} is unavailable` }),
-        ),
-      )
-    const target = path.join(root, artifactId)
-    if (!FSUtil.contains(root, target)) return yield* invalidArtifactId(artifactId)
-    const resolved = yield* fs.resolve(target).pipe(Effect.catch(() => Effect.succeed(undefined)))
-    if (resolved === undefined || !FSUtil.contains(root, resolved)) return yield* invalidArtifactId(artifactId)
-    const stat = yield* statOf(resolved)
-    if (stat === undefined || stat.type !== "File") {
-      return yield* new ArtifactSearchError({ code: "not_found", detail: artifactId })
-    }
-    return { abs: resolved, stat }
+        const generation = generationOf(input.artifactId, file.stat)
+        if (input.expectedGeneration !== undefined && input.expectedGeneration !== generation) {
+          return yield* new ArtifactSearchError({
+            code: "stale_generation",
+            detail: `expected ${input.expectedGeneration}, current ${generation}`,
+          })
+        }
+        return yield* input.use({ root, file, generation })
+      }),
+    )
+
+  const sourceChanged = Effect.fnUntraced(function* (root: ArtifactSearchRoot, artifactId: string, generation: string) {
+    const current = yield* Effect.acquireRelease(
+      root.openArtifact(artifactId),
+      (opened) => opened?.close ?? Effect.void,
+    )
+    return current === undefined || generationOf(artifactId, current.stat) !== generation
   })
 
   const scanLines = (input: {
-    readonly handle: FileSystem.File
+    readonly handle: ArtifactSearchFile
     readonly size: number
     readonly maxScanBytes: number
     readonly deadline: number
     readonly signal?: AbortSignal
-    readonly onLine: (line: ScanLine) => boolean
+    readonly onLine: (line: ScanLine) => Effect.Effect<boolean, ArtifactSearchError>
     readonly onLongLine: () => void
-  }): Effect.Effect<ScanResult, never> =>
+  }): Effect.Effect<ScanResult, ArtifactSearchError> =>
     Effect.gen(function* () {
       const limited = input.size > input.maxScanBytes
       const limit = Math.min(input.size, input.maxScanBytes)
@@ -314,10 +566,7 @@ export const make = (options: {
           break
         }
         const take = Math.min(CHUNK_BYTES, limit - position)
-        const chunk = Option.getOrElse(
-          yield* input.handle.readAlloc(take).pipe(Effect.catch(() => Effect.succeed(Option.none<Uint8Array>()))),
-          () => new Uint8Array(),
-        )
+        const chunk = yield* input.handle.read(take, position)
         if (chunk.length === 0) break
         position += chunk.length
         pending = pending.length === 0 ? Buffer.from(chunk) : Buffer.concat([pending, Buffer.from(chunk)])
@@ -334,7 +583,7 @@ export const make = (options: {
             if (buffer.length > MAX_LINE_BYTES) {
               input.onLongLine()
             } else if (
-              !input.onLine({ number: lineNumber, byteOffset: pendingStart + cursor, buffer, terminated: true })
+              !(yield* input.onLine({ number: lineNumber, byteOffset: pendingStart + cursor, buffer, terminated: true }))
             ) {
               outcome = "early"
               stopped = true
@@ -362,7 +611,7 @@ export const make = (options: {
         if (lineIsLong || pending.length > MAX_LINE_BYTES) {
           input.onLongLine()
         } else {
-          input.onLine({ number: lineNumber, byteOffset: pendingStart, buffer: pending, terminated: false })
+          yield* input.onLine({ number: lineNumber, byteOffset: pendingStart, buffer: pending, terminated: false })
         }
       }
       if (outcome === "eof" && limited && !reachedEnd) outcome = "scan_limit"
@@ -395,75 +644,76 @@ export const make = (options: {
         const maxResults = clampPositive(input.maxResults, DEFAULT_MAX_RESULTS, MAX_RESULTS)
         const maxExcerpt = clampPositive(input.maxBytesPerExcerpt, DEFAULT_MAX_EXCERPT_BYTES, MAX_EXCERPT_BYTES)
         const maxScanBytes = clampPositive(input.maxScanBytes, DEFAULT_MAX_SCAN_BYTES, MAX_SCAN_BYTES)
-        const maxDurationMs = clampPositive(input.maxDurationMs, DEFAULT_MAX_DURATION_MS, Number.MAX_SAFE_INTEGER)
-        const matcher = (() => {
-          if (mode === "literal") return literalMatcher(input.query)
+        const maxDurationMs = clampPositive(input.maxDurationMs, DEFAULT_MAX_DURATION_MS, MAX_DURATION_MS)
+        if (mode === "regex") {
           const compiled = compileRegex(input.query, input.flags ?? "")
-          if ("error" in compiled) return compiled
-          return regexMatcher(compiled.value)
-        })()
-        if ("error" in matcher) return yield* matcher.error
-        const resolved = yield* resolveArtifact(input.artifactId)
-        const generation = generationOf(input.artifactId, resolved.stat)
-        if (input.expectedGeneration !== undefined && input.expectedGeneration !== generation) {
-          return yield* new ArtifactSearchError({
-            code: "stale_generation",
-            detail: `expected ${input.expectedGeneration}, current ${generation}`,
-          })
+          if ("error" in compiled) return yield* compiled.error
         }
         const deadline = now() + maxDurationMs
-        const matches: Match[] = []
-        let longLinesSkipped = 0
-        const scan = yield* Effect.scoped(
-          Effect.gen(function* () {
-            const handle = yield* fs
-              .open(resolved.abs, { flag: "r" })
-              .pipe(
-                Effect.mapError(
-                  () => new ArtifactSearchError({ code: "failed", detail: `cannot open artifact ${input.artifactId}` }),
-                ),
-              )
-            return yield* scanLines({
-              handle,
-              size: resolved.stat.size,
-              maxScanBytes,
-              deadline,
-              ...(input.signal !== undefined ? { signal: input.signal } : {}),
-              onLine: (line) => {
-                const index = matcher.index(line.buffer)
-                if (index === undefined) return true
-                const excerpt = excerptOf(line.buffer, index, maxExcerpt)
-                matches.push({ line: line.number, byteOffset: line.byteOffset, ...excerpt })
-                return matches.length < maxResults
-              },
-              onLongLine: () => {
-                longLinesSkipped++
-              },
-            })
-          }),
-        )
-        if (scan.outcome === "cancelled") return yield* cancelled()
-
-        const after = yield* statOf(resolved.abs)
-        const changed = after === undefined || generationOf(input.artifactId, after) !== generation
-        const truncation: SearchTruncation[] = []
-        if (scan.outcome === "early") truncation.push("result_limit")
-        if (scan.outcome === "scan_limit") truncation.push("scan_limit")
-        if (scan.outcome === "deadline") truncation.push("deadline")
-        if (longLinesSkipped > 0) truncation.push("long_lines")
-        const freshness: SearchResult["freshness"] = changed ? "stale" : truncation.length === 0 ? "fresh" : "partial"
-
-        return {
+        const operation = withArtifact({
           artifactId: input.artifactId,
-          generation,
-          freshness,
-          ...(freshness === "stale" ? { staleReason: "source_changed" as const } : {}),
-          matches,
-          scannedBytes: scan.scannedBytes,
-          totalBytes: resolved.stat.size,
-          truncation,
-          longLinesSkipped,
-        } satisfies SearchResult
+          ...(input.expectedGeneration !== undefined ? { expectedGeneration: input.expectedGeneration } : {}),
+          use: ({ root, file, generation }) =>
+            Effect.scoped(
+              Effect.gen(function* () {
+                const matcher =
+                  mode === "literal"
+                    ? literalMatcher(input.query)
+                    : yield* regexMatcher(input.query, input.flags ?? "", deadline, now)
+              const matches: Match[] = []
+              let longLinesSkipped = 0
+              let regexTimedOut = false
+              const scan = yield* scanLines({
+                handle: file,
+                size: file.stat.size,
+                maxScanBytes,
+                deadline,
+                ...(input.signal !== undefined ? { signal: input.signal } : {}),
+                onLine: (line) =>
+                  Effect.gen(function* () {
+                    const found = yield* matcher.index(line.buffer)
+                    if (found.kind === "deadline") {
+                      regexTimedOut = true
+                      return false
+                    }
+                    if (found.index === undefined) return true
+                    const excerpt = excerptOf(line.buffer, found.index, maxExcerpt)
+                    matches.push({ line: line.number, byteOffset: line.byteOffset, ...excerpt })
+                    return matches.length < maxResults
+                  }),
+                onLongLine: () => {
+                  longLinesSkipped++
+                },
+              })
+              if (scan.outcome === "cancelled") return yield* cancelled()
+
+              const changed = yield* sourceChanged(root, input.artifactId, generation)
+              const truncation: SearchTruncation[] = []
+              if (regexTimedOut || scan.outcome === "deadline") truncation.push("deadline")
+              if (scan.outcome === "early" && !regexTimedOut) truncation.push("result_limit")
+              if (scan.outcome === "scan_limit") truncation.push("scan_limit")
+              if (longLinesSkipped > 0) truncation.push("long_lines")
+              const freshness: SearchResult["freshness"] = changed
+                ? "stale"
+                : truncation.length === 0
+                  ? "fresh"
+                  : "partial"
+
+              return {
+                artifactId: input.artifactId,
+                generation,
+                freshness,
+                ...(freshness === "stale" ? { staleReason: "source_changed" as const } : {}),
+                matches,
+                scannedBytes: scan.scannedBytes,
+                totalBytes: file.stat.size,
+                truncation,
+                longLinesSkipped,
+              } satisfies SearchResult
+              }),
+            ),
+        })
+        return yield* (mode === "regex" ? regexWorkers.withPermits(1)(operation) : operation)
       }),
       input.signal,
     )
@@ -487,72 +737,67 @@ export const make = (options: {
         }
         const maxBytes = clampPositive(input.maxBytes, DEFAULT_RANGE_BYTES, MAX_RANGE_BYTES)
         const maxScanBytes = clampPositive(input.maxScanBytes, DEFAULT_MAX_SCAN_BYTES, MAX_SCAN_BYTES)
-        const maxDurationMs = clampPositive(input.maxDurationMs, DEFAULT_MAX_DURATION_MS, Number.MAX_SAFE_INTEGER)
-        const resolved = yield* resolveArtifact(input.artifactId)
-        const generation = generationOf(input.artifactId, resolved.stat)
-        if (input.expectedGeneration !== undefined && input.expectedGeneration !== generation) {
-          return yield* new ArtifactSearchError({
-            code: "stale_generation",
-            detail: `expected ${input.expectedGeneration}, current ${generation}`,
-          })
-        }
-        const deadline = now() + maxDurationMs
-        const parts: string[] = []
-        let bytes = 0
-        let effectiveEnd = input.lineStart
-        let truncatedByBytes = false
-        const scan = yield* Effect.scoped(
-          Effect.gen(function* () {
-            const handle = yield* fs
-              .open(resolved.abs, { flag: "r" })
-              .pipe(
-                Effect.mapError(
-                  () => new ArtifactSearchError({ code: "failed", detail: `cannot open artifact ${input.artifactId}` }),
-                ),
-              )
-            return yield* scanLines({
-              handle,
-              size: resolved.stat.size,
-              maxScanBytes,
-              deadline,
-              ...(input.signal !== undefined ? { signal: input.signal } : {}),
-              onLine: (line) => {
-                if (line.number < input.lineStart) return true
-                if (line.number >= input.lineEndExclusive) return false
-                const piece = line.buffer.toString("utf-8") + (line.terminated ? "\n" : "")
-                const size = Buffer.byteLength(piece, "utf-8")
-                if (bytes + size > maxBytes) {
-                  truncatedByBytes = true
-                  return false
-                }
-                parts.push(piece)
-                bytes += size
-                effectiveEnd = line.number + 1
-                return line.number + 1 < input.lineEndExclusive
-              },
-              onLongLine: () => {},
-            })
-          }),
-        )
-        if (scan.outcome === "cancelled") return yield* cancelled()
-
-        const truncationReason: ReadRangeResult["truncationReason"] = truncatedByBytes
-          ? "bytes"
-          : scan.outcome === "scan_limit"
-            ? "scan_limit"
-            : scan.outcome === "deadline"
-              ? "deadline"
-              : undefined
-        return {
+        const maxDurationMs = clampPositive(input.maxDurationMs, DEFAULT_MAX_DURATION_MS, MAX_DURATION_MS)
+        return yield* withArtifact({
           artifactId: input.artifactId,
-          generation,
-          lineStart: input.lineStart,
-          lineEndExclusive: effectiveEnd,
-          text: parts.join(""),
-          truncated: truncationReason !== undefined,
-          ...(truncationReason !== undefined ? { truncationReason } : {}),
-          bytes,
-        } satisfies ReadRangeResult
+          ...(input.expectedGeneration !== undefined ? { expectedGeneration: input.expectedGeneration } : {}),
+          use: ({ root, file, generation }) =>
+            Effect.gen(function* () {
+              const deadline = now() + maxDurationMs
+              const parts: string[] = []
+              let bytes = 0
+              let effectiveEnd = input.lineStart
+              let truncatedByBytes = false
+              const scan = yield* scanLines({
+                handle: file,
+                size: file.stat.size,
+                maxScanBytes,
+                deadline,
+                ...(input.signal !== undefined ? { signal: input.signal } : {}),
+                onLine: (line) =>
+                  Effect.sync(() => {
+                    if (line.number < input.lineStart) return true
+                    if (line.number >= input.lineEndExclusive) return false
+                    const piece = line.buffer.toString("utf-8") + (line.terminated ? "\n" : "")
+                    const size = Buffer.byteLength(piece, "utf-8")
+                    if (bytes + size > maxBytes) {
+                      truncatedByBytes = true
+                      return false
+                    }
+                    parts.push(piece)
+                    bytes += size
+                    effectiveEnd = line.number + 1
+                    return line.number + 1 < input.lineEndExclusive
+                  }),
+                onLongLine: () => {},
+              })
+              if (scan.outcome === "cancelled") return yield* cancelled()
+              const changed = yield* sourceChanged(root, input.artifactId, generation)
+              if (changed) {
+                return yield* new ArtifactSearchError({
+                  code: "stale_generation",
+                  detail: `artifact ${input.artifactId} changed during range read`,
+                })
+              }
+              const truncationReason: ReadRangeResult["truncationReason"] = truncatedByBytes
+                ? "bytes"
+                : scan.outcome === "scan_limit"
+                  ? "scan_limit"
+                  : scan.outcome === "deadline"
+                    ? "deadline"
+                    : undefined
+              return {
+                artifactId: input.artifactId,
+                generation,
+                lineStart: input.lineStart,
+                lineEndExclusive: effectiveEnd,
+                text: parts.join(""),
+                truncated: truncationReason !== undefined,
+                ...(truncationReason !== undefined ? { truncationReason } : {}),
+                bytes,
+              } satisfies ReadRangeResult
+            }),
+        })
       }),
       input.signal,
     )

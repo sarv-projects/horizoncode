@@ -64,6 +64,10 @@ function mcpErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
 
+function mcpEffectRouteAvailable(): boolean {
+  return false
+}
+
 function listState() {
   return Effect.gen(function* () {
     const cfg = yield* Config.Service
@@ -109,6 +113,7 @@ export const McpListCommand = effectCmd({
   command: "list",
   aliases: ["ls"],
   describe: "list MCP servers and their status",
+  instance: false,
   handler: Effect.fn("Cli.mcp.list")(function* () {
     UI.empty()
     prompts.intro("MCP Servers")
@@ -176,7 +181,11 @@ export const McpAuthCommand = effectCmd({
         type: "string",
       })
       .command(McpAuthListCommand),
+  instance: false,
   handler: Effect.fn("Cli.mcp.auth")(function* (args) {
+    if (!mcpEffectRouteAvailable())
+      return yield* fail("MCP authentication is unavailable until guarded execution is implemented")
+
     UI.empty()
     prompts.intro("MCP OAuth Authentication")
 
@@ -303,6 +312,7 @@ export const McpAuthListCommand = effectCmd({
   command: "list",
   aliases: ["ls"],
   describe: "list OAuth-capable MCP servers and their auth status",
+  instance: false,
   handler: Effect.fn("Cli.mcp.auth.list")(function* () {
     UI.empty()
     prompts.intro("MCP OAuth Status")
@@ -337,7 +347,11 @@ export const McpLogoutCommand = effectCmd({
       describe: "name of the MCP server",
       type: "string",
     }),
+  instance: false,
   handler: Effect.fn("Cli.mcp.logout")(function* (args) {
+    if (!mcpEffectRouteAvailable())
+      return yield* fail("MCP logout is unavailable until guarded execution is implemented")
+
     UI.empty()
     prompts.intro("MCP OAuth Logout")
 
@@ -449,7 +463,12 @@ export const McpAddCommand = effectCmd({
         type: "string",
         array: true,
       }),
+  instance: false,
   handler: Effect.fn("Cli.mcp.add")(function* (args) {
+    if (!mcpEffectRouteAvailable()) {
+      return yield* fail("MCP configuration is unavailable until guarded execution is implemented")
+    }
+
     const maybeCtx = yield* InstanceRef
     if (!maybeCtx) return yield* Effect.die("InstanceRef not provided")
     const ctx = maybeCtx
@@ -665,7 +684,11 @@ export const McpDebugCommand = effectCmd({
       type: "string",
       demandOption: true,
     }),
+  instance: false,
   handler: Effect.fn("Cli.mcp.debug")(function* (args) {
+    if (!mcpEffectRouteAvailable())
+      return yield* fail("MCP debugging is unavailable until guarded execution is implemented")
+
     const config = yield* Config.Service.use((cfg) => cfg.get())
     const serverConfig = config.mcp?.[args.name]
     if (!serverConfig) return yield* fail(`MCP server not found: ${args.name}`)

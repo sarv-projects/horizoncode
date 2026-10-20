@@ -28,6 +28,7 @@ const it = testEffect(
     [RuntimeFlags.node, RuntimeFlags.layer({ disableDefaultPlugins: true })],
   ]),
 )
+const guardedHooks = testEffect(LayerNode.compile(Plugin.node))
 const systemHook = "experimental.chat.system.transform"
 
 function withProject<A, E, R>(source: string, self: Effect.Effect<A, E, R>) {
@@ -91,6 +92,25 @@ describe("plugin imports", () => {
           expect(existsSync(marker)).toBe(false)
         }),
       )
+    }),
+  )
+
+  guardedHooks.effect("built-in plugin hooks are unavailable before Guard mediation", () =>
+    Effect.gen(function* () {
+      const plugin = yield* Plugin.Service
+      expect(yield* plugin.list()).toEqual([])
+      const output = { system: [] as string[] }
+      yield* plugin.trigger(
+        systemHook,
+        {
+          model: {
+            providerID: ProviderV2.ID.anthropic,
+            modelID: ModelV2.ID.make("claude-sonnet-4-6"),
+          },
+        },
+        output,
+      )
+      expect(output.system).toEqual([])
     }),
   )
 })

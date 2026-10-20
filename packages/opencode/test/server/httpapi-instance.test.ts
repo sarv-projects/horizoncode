@@ -156,6 +156,81 @@ describe("instance HttpApi", () => {
     }),
   )
 
+  it.live("rejects unsupported Goal proposal schema versions before managed dispatch", () =>
+    Effect.gen(function* () {
+      const originalWorkspaceID = Flag.OPENCODE_WORKSPACE_ID
+      Flag.OPENCODE_WORKSPACE_ID = WorkspaceV2.ID.ascending()
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          Flag.OPENCODE_WORKSPACE_ID = originalWorkspaceID
+        }),
+      )
+
+      const dir = yield* tmpdirScoped({ git: true })
+      const response = yield* HttpClientRequest.post("/experimental/control-plane/goal-proposals").pipe(
+        directoryHeader(dir),
+        HttpClientRequest.bodyJson({ schemaVersion: 2 }),
+        Effect.flatMap(HttpClient.execute),
+      )
+
+      expect(response.status).toBe(400)
+    }),
+    { timeout: 20_000 },
+  )
+
+  it.live("rejects unsupported Goal verification schema versions before managed dispatch", () =>
+    Effect.gen(function* () {
+      const originalWorkspaceID = Flag.OPENCODE_WORKSPACE_ID
+      Flag.OPENCODE_WORKSPACE_ID = WorkspaceV2.ID.ascending()
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          Flag.OPENCODE_WORKSPACE_ID = originalWorkspaceID
+        }),
+      )
+
+      const dir = yield* tmpdirScoped({ git: true })
+      const response = yield* HttpClientRequest.post("/experimental/control-plane/goal-verification").pipe(
+        directoryHeader(dir),
+        HttpClientRequest.bodyJson({ schemaVersion: 2, goalID: "goal-1", runID: "run-1" }),
+        Effect.flatMap(HttpClient.execute),
+      )
+
+      expect(response.status).toBe(400)
+    }),
+    { timeout: 20_000 },
+  )
+
+  it.live("rejects host_os Goal verification before managed snapshot dispatch", () =>
+    Effect.gen(function* () {
+      const originalWorkspaceID = Flag.OPENCODE_WORKSPACE_ID
+      Flag.OPENCODE_WORKSPACE_ID = WorkspaceV2.ID.ascending()
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          Flag.OPENCODE_WORKSPACE_ID = originalWorkspaceID
+        }),
+      )
+
+      const dir = yield* tmpdirScoped({ git: true })
+      const response = yield* HttpClientRequest.post("/experimental/control-plane/goal-verification").pipe(
+        directoryHeader(dir),
+        HttpClientRequest.bodyJson({
+          schemaVersion: 1,
+          goalID: "goal-1",
+          runID: "run-1",
+          principal: { kind: "server_auth", subject: "forged-reviewer" },
+        }),
+        Effect.flatMap(HttpClient.execute),
+      )
+
+      expect(response.status).toBe(403)
+      expect(yield* response.json).toMatchObject({
+        name: "GoalReviewForbiddenError",
+        data: { code: "independent_verifier_required" },
+      })
+    }),
+    { timeout: 20_000 },
+  )
+
   it.live("returns typed not found bodies for missing permission and question requests", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped({ git: true })

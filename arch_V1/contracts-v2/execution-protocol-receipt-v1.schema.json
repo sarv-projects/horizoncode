@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://horizoncode.dev/contracts/execution-protocol-receipt-v1.schema.json",
+  "title": "HorizonCode ExecutionHost protocol dispatch receipt v1",
+  "description": "Private durable ACK for one Guarded LSP/DAP protocol write. It confirms a complete framed write and persisted target receipt; it is not process, workspace, or capability authority by itself.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "hostProcessRef",
+    "requestSequence",
+    "processIOSequence",
+    "operationDigest",
+    "dispatchReceiptDigest",
+    "status"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "hostProcessRef": {
+      "$ref": "execution-launch-profile-v1.schema.json#/$defs/HostProcessRefV1"
+    },
+    "requestSequence": {
+      "allOf": [
+        { "$ref": "execution-launch-profile-v1.schema.json#/$defs/DecimalU64" },
+        { "not": { "const": "0" } }
+      ],
+      "description": "Positive per-process Core-to-HostKernel sequence shared by protocol_op and protocol_reply."
+    },
+    "processIOSequence": {
+      "allOf": [
+        { "$ref": "execution-launch-profile-v1.schema.json#/$defs/DecimalU64" },
+        { "not": { "const": "0" } }
+      ],
+      "description": "Positive HostKernel-to-process stdin-frame sequence, distinct from requestSequence and inbound eventSequence."
+    },
+    "operationDigest": {
+      "$ref": "execution-launch-profile-v1.schema.json#/$defs/Digest",
+      "description": "BLAKE3 over canonical MessagePack [ExecutionProtocolOperationV1, protocol, requestSequence, operation], where protocol is lsp or dap and operation is the strict typed operation value."
+    },
+    "dispatchReceiptDigest": {
+      "$ref": "execution-launch-profile-v1.schema.json#/$defs/Digest",
+      "description": "BLAKE3 over canonical MessagePack [ExecutionProtocolDispatchReceiptV1.dispatch, hostProcessRef, effectID, challengeID, capabilityID, capabilityLeaseDigest, requestSequence, processIOSequence, operationDigest, acceptedFrameBytes]. HostProcessRef carries owner/profile/executable pins."
+    },
+    "status": { "const": "DISPATCHED" }
+  }
+}

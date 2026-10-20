@@ -7,6 +7,7 @@ import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 import { SessionV2 } from "@opencode-ai/core/session"
+import { QuestionV2 } from "@opencode-ai/core/question"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Command } from "@/command"
 import { Permission } from "@/permission"
@@ -46,6 +47,7 @@ import {
 } from "../groups/session"
 import {
   ConflictError,
+  ApiNotFoundError,
   ForbiddenError,
   PermissionNotFoundError,
   ServiceUnavailableError,
@@ -122,6 +124,21 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           ),
         ),
       )
+    })
+    const withLocationQuestions = Effect.fnUntraced(function* <A, E, R>(effect: Effect.Effect<A, E, R>) {
+      return yield* effect.pipe(
+        Effect.provide(
+          locations.get(
+            Location.Ref.make({ directory: AbsolutePath.make((yield* InstanceState.context).directory) }),
+          ),
+        ),
+      )
+    })
+    const requireQuestionPrincipal = Effect.fn("SessionHttpApi.requireQuestionPrincipal")(function* () {
+      const principal = yield* Effect.serviceOption(TrustedPrincipalContext)
+      if (Option.isNone(principal)) {
+        return yield* new ForbiddenError({ message: "Question access requires an authenticated session principal" })
+      }
     })
     const scope = yield* Scope.Scope
     const list = Effect.fn("SessionHttpApi.list")(function* (ctx: { query: typeof ListQuery.Type }) {
@@ -216,7 +233,23 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     })
 
     const create = Effect.fn("SessionHttpApi.create")(function* (ctx: { payload?: Session.CreateInput }) {
-      return yield* shareSvc.create(ctx.payload)
+      const authenticated = yield* Effect.serviceOption(TrustedPrincipalContext)
+      const owner = Option.isSome(authenticated)
+        ? authenticated.value.principal.kind === "server_auth"
+          ? { kind: "server_auth", subject: authenticated.value.principal.subject }
+          : { kind: "host_os" }
+        : undefined
+      const metadata: Record<string, unknown> = { ...(ctx.payload?.metadata ?? {}) }
+      // This reserved field is derived from trusted middleware and always wins
+      // over caller metadata; old Sessions without it remain ineligible for
+      // managed Run start.
+      delete metadata.horizonPrincipalOwner
+      delete metadata.horizonManagedRoot
+      if (owner) metadata.horizonPrincipalOwner = owner
+      return yield* shareSvc.create({
+        ...ctx.payload,
+        metadata: Object.keys(metadata).length ? metadata : undefined,
+      })
     })
 
     const createRaw = Effect.fn("SessionHttpApi.createRaw")(function* (ctx: {
@@ -252,7 +285,16 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         yield* session.setTitle({ sessionID: ctx.params.sessionID, title: ctx.payload.title })
       }
       if (ctx.payload.metadata !== undefined) {
-        yield* session.setMetadata({ sessionID: ctx.params.sessionID, metadata: ctx.payload.metadata })
+        const metadata = { ...ctx.payload.metadata }
+        for (const key of ["horizonPrincipalOwner", "horizonManagedRoot"] as const) {
+          const before = current.metadata?.[key]
+          const after = metadata[key]
+          if (after !== undefined && JSON.stringify(before) !== JSON.stringify(after)) {
+            return yield* new ForbiddenError({ message: `Session metadata field ${key} is server-owned` })
+          }
+          if (before !== undefined) metadata[key] = before
+        }
+        yield* session.setMetadata({ sessionID: ctx.params.sessionID, metadata })
       }
       if (ctx.payload.permission !== undefined) {
         yield* session.setPermission({
@@ -495,6 +537,45 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       )
       return true
     })
+    const questions = Effect.fn("SessionHttpApi.questions")(function* (ctx: { params: { sessionID: SessionV2.ID } }) {
+      yield* requireQuestionPrincipal()
+      yield* requireSession(ctx.params.sessionID as SessionID)
+      return yield* withLocationQuestions(
+        QuestionV2.Service.use((service) => service.list(ctx.params.sessionID)),
+      )
+    })
+    const questionReply = Effect.fn("SessionHttpApi.questionReply")(function* (ctx: {
+      params: { sessionID: SessionV2.ID; requestID: QuestionV2.ID }
+      payload: QuestionV2.Reply
+    }) {
+      yield* requireQuestionPrincipal()
+      yield* requireSession(ctx.params.sessionID as SessionID)
+      yield* withLocationQuestions(
+        QuestionV2.Service.use((service) =>
+          service.reply({ sessionID: ctx.params.sessionID, requestID: ctx.params.requestID, answers: ctx.payload.answers }),
+        ),
+      ).pipe(
+        Effect.catchTag("QuestionV2.NotFoundError", () =>
+          Effect.fail(new ApiNotFoundError({ name: "NotFoundError", data: { message: "Question request not found" } })),
+        ),
+        Effect.catchTag("QuestionV2.InvalidReplyError", () => Effect.fail(new HttpApiError.BadRequest({}))),
+      )
+    })
+    const questionReject = Effect.fn("SessionHttpApi.questionReject")(function* (ctx: {
+      params: { sessionID: SessionV2.ID; requestID: QuestionV2.ID }
+    }) {
+      yield* requireQuestionPrincipal()
+      yield* requireSession(ctx.params.sessionID as SessionID)
+      yield* withLocationQuestions(
+        QuestionV2.Service.use((service) =>
+          service.reject({ sessionID: ctx.params.sessionID, requestID: ctx.params.requestID }),
+        ),
+      ).pipe(
+        Effect.catchTag("QuestionV2.NotFoundError", () =>
+          Effect.fail(new ApiNotFoundError({ name: "NotFoundError", data: { message: "Question request not found" } })),
+        ),
+      )
+    })
     const guardApproval = Effect.fn("SessionHttpApi.guardApproval")(function* (ctx: {
       params: { approvalID: string }
       payload: typeof GuardApprovalPayload.Type
@@ -552,6 +633,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("get", get)
       .handle("children", children)
       .handle("todo", todo)
+      .handle("questions", questions)
+      .handle("questionReply", questionReply)
+      .handle("questionReject", questionReject)
       .handle("diff", diff)
       .handle("messages", messages)
       .handle("message", message)

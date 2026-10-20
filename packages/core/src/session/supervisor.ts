@@ -25,9 +25,15 @@ import { createConnection, type Socket } from "node:net"
 import { dirname, join } from "node:path"
 import { pack, unpack } from "msgpackr"
 import { Event as EventSchema, Location as LocationSchema } from "@opencode-ai/schema"
+import {
+  RepoGenerationRequestV1,
+  RepoGenerationPinV1,
+  RepoStructurePageV1,
+  RepoStructureQueryV1,
+} from "@opencode-ai/schema/repo-intelligence-v1"
 import { AbsolutePath } from "../schema"
 import { EventV2 } from "../event"
-import { Context, Deferred, Effect, Fiber, Layer, Queue, Ref, Schema, Stream } from "effect"
+import { Cause, Context, Deferred, Effect, Fiber, Layer, Option, Queue, Ref, Schema, Stream } from "effect"
 import type * as Scope from "effect/Scope"
 import * as ChildProcess from "effect/unstable/process/ChildProcess"
 import type { ChildProcessHandle } from "effect/unstable/process/ChildProcessSpawner"
@@ -36,6 +42,7 @@ import { LayerNode } from "../effect/layer-node"
 import { Database } from "../database/database"
 import { Global } from "../global"
 import { TrustedPrincipalContext, type TrustedPrincipal } from "../trusted-principal"
+import { withRepoIntelOverlayGate } from "./repo-intel-overlay"
 
 import { AppProcess } from "../process"
 
@@ -48,11 +55,24 @@ const PROTOCOL = 1
 const MAX_FRAME_BYTES = 8 * 1024 * 1024
 // Mirrors `MAX_IDENTIFIER_BYTES` in kernel/src/protocol.rs.
 const MAX_IDENTIFIER_BYTES = 256
+const MAX_TOOL_BATCH_CALLS = 32
+const MAX_TOOL_CALL_ARGUMENT_BYTES = 256 * 1024
+const MAX_TOOL_BATCH_ARGUMENT_BYTES = 512 * 1024
 const MAX_PENDING_BYTES = MAX_FRAME_BYTES * 2 + 8
 const MAX_PENDING_MESSAGES = 128
 // Replay loss recovers in one retry; a host refusal must not spin forever.
 const RESNAPSHOT_ATTEMPT_LIMIT = 4
 const PAGE_CONTROL_FEATURE = "session.events.page-control.v1"
+/**
+ * Optional host feature that advertises complete multi-call ToolBatch challenges: the
+ * `prepare_tool_batch` response may carry a per-call `calls[]` array and the host routes
+ * `cancel_batch`. Until the host negotiates it, a multi-call batch fails closed in the
+ * Core and the single-call path is unchanged. Contract for the Rust owner: advertise
+ * exactly this string in the hello `enabledFeatures` when HostKernel/EffectHost multi-call
+ * admission, cancellation and receipt wiring is accepted.
+ */
+export const MULTI_CALL_BATCH_FEATURE = "effects.v2.multi-call"
+export const REPO_INTEL_READ_CONTEXT_FEATURE = "repo-intel.read-context-v1"
 export const GuardApprovalRequested = EventSchema.define({
   type: "guard.approval.requested",
   schema: {
@@ -66,6 +86,17 @@ export const GuardApprovalRequested = EventSchema.define({
     normalizedTargets: Schema.Array(Schema.Unknown),
     expiresAtUnixMs: Schema.Finite,
     policySummary: Schema.String,
+    origin: Schema.Literals(["session_batch", "user_action", "managed_run"]),
+    source: Schema.Literals(["core.tool_batch", "authenticated.user_action", "host.managed_verifier"]),
+    policyID: Schema.String,
+    policyDigest: Schema.String,
+    normalizedAction: Schema.String,
+    argumentSummary: Schema.Unknown,
+    requestedGuarantees: Schema.Array(Schema.String),
+    guaranteeAssessment: Schema.Unknown,
+    runID: Schema.optional(Schema.String),
+    noResponse: Schema.Literal("deny_and_expire"),
+    allowEnabled: Schema.Boolean,
   },
 })
 export const GuardApprovalResolved = EventSchema.define({
@@ -76,7 +107,11 @@ export const GuardApprovalResolved = EventSchema.define({
   },
 })
 const REQUIRED_FEATURES = ["session.events.v1", PAGE_CONTROL_FEATURE] as const
-const REQUIRED_HOST_FEATURES = ["effects.v2"] as const
+// The host advertises these only after Guard/ExecutionHost preflight is ready.
+// A missing optional feature leaves effectful origins unavailable without making
+// the authenticated read-only host channel unhealthy.
+const REQUIRED_HOST_FEATURES = [] as const
+export const OPTIONAL_HOST_FEATURES = ["effects.v2", "effects.v2.multi-call", "repo-intel.read-context-v1"] as const
 const BASE_DIGEST = `blake3:${"0".repeat(64)}`
 
 export type Cursor = {
@@ -114,6 +149,246 @@ export type GuardedToolCall = {
   readonly arguments: unknown
 }
 
+/** Exact HostKernel envelope for one authenticated Goal-less child Attempt. */
+export type DirectAttemptScopeV1 = {
+  readonly attemptID: string
+  readonly parentSessionID: string
+  readonly childSessionID: string
+  readonly profileID: string
+  readonly profileRevision: string
+  readonly profileDigest: string
+  readonly ownerEpoch: string
+  readonly expectedRevision: string
+  readonly locationID: string
+  readonly workspaceID: string
+  readonly workspaceRevision: string
+  readonly capabilityDigest: string
+  readonly permissionsDigest: string
+  readonly budgetDigest: string
+  readonly scopeDigest: string
+}
+
+export type DirectAttemptScopeWireV1 = Omit<DirectAttemptScopeV1, "ownerEpoch" | "expectedRevision"> & {
+  readonly ownerEpoch: bigint
+  readonly expectedRevision: bigint
+}
+
+/** Exact HostKernel-minted scope for one live managed Goal/Run/Task/Attempt. */
+export type ManagedAttemptScopeV1 = {
+  readonly goalID: string
+  readonly runID: string
+  readonly taskID: string
+  readonly attemptID: string
+  readonly ownerEpoch: string
+  readonly expectedManagedRevision: string
+  readonly locationID: string
+  readonly sessionID: string
+  readonly workspaceRevision: string
+  readonly delegationBindingDigest: string
+}
+
+export function managedAttemptScopeToWire(scope: ManagedAttemptScopeV1): ManagedAttemptScopeV1 {
+  const keys = [
+    "goalID", "runID", "taskID", "attemptID", "ownerEpoch", "expectedManagedRevision",
+    "locationID", "sessionID", "workspaceRevision", "delegationBindingDigest",
+  ]
+  if (
+    typeof scope !== "object" || scope === null ||
+    Object.keys(scope).toSorted().join("\0") !== [...keys].sort().join("\0")
+  ) throw fail("protocol", "managed Attempt scope has an invalid shape")
+  for (const name of ["goalID", "runID", "taskID", "attemptID", "locationID", "sessionID"] as const) {
+    if (typeof scope[name] !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(scope[name])) {
+      throw fail("protocol", `managed Attempt scope ${name} is invalid`)
+    }
+  }
+  for (const name of ["ownerEpoch", "expectedManagedRevision"] as const) {
+    const value = scope[name]
+    if (typeof value !== "string" || !/^[1-9][0-9]{0,19}$/.test(value) || BigInt(value) > 0xffff_ffff_ffff_ffffn) {
+      throw fail("protocol", `managed Attempt scope ${name} is invalid`)
+    }
+  }
+  for (const name of ["workspaceRevision", "delegationBindingDigest"] as const) {
+    if (typeof scope[name] !== "string" || !/^blake3:[0-9a-f]{64}$/.test(scope[name])) {
+      throw fail("protocol", `managed Attempt scope ${name} is invalid`)
+    }
+  }
+  return { ...scope }
+}
+
+export function managedAttemptScopeFromWire(value: unknown): ManagedAttemptScopeV1 {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw fail("protocol", "host managed Attempt scope is malformed")
+  }
+  return managedAttemptScopeToWire(value as ManagedAttemptScopeV1)
+}
+
+function hostU64String(value: unknown, field: string): string {
+  let parsed: bigint
+  if (typeof value === "bigint") parsed = value
+  else if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) parsed = BigInt(value)
+  else if (typeof value === "string" && /^(0|[1-9][0-9]{0,19})$/.test(value)) parsed = BigInt(value)
+  else throw fail("protocol", `host ${field} is not an unsigned integer`)
+  if (parsed > 0xffff_ffff_ffff_ffffn) throw fail("protocol", `host ${field} exceeds u64`)
+  return parsed.toString()
+}
+
+export function directAttemptScopeFromWire(value: unknown): DirectAttemptScopeV1 {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw fail("protocol", "host direct Attempt scope is malformed")
+  }
+  const raw = value as Record<string, unknown>
+  return directAttemptScopeToWire({
+    ...raw,
+    ownerEpoch: hostU64String(raw.ownerEpoch, "direct Attempt ownerEpoch"),
+    expectedRevision: hostU64String(raw.expectedRevision, "direct Attempt expectedRevision"),
+  } as DirectAttemptScopeV1)
+}
+
+export function isNextDirectAttemptScopeCore(
+  previous: DirectAttemptScopeV1,
+  next: DirectAttemptScopeV1,
+): boolean {
+  const left = directAttemptScopeToWire(previous)
+  const right = directAttemptScopeToWire(next)
+  return left.attemptID === right.attemptID && left.parentSessionID === right.parentSessionID &&
+    left.childSessionID === right.childSessionID && left.profileID === right.profileID &&
+    left.profileRevision === right.profileRevision && left.profileDigest === right.profileDigest &&
+    left.ownerEpoch === right.ownerEpoch && left.locationID === right.locationID &&
+    left.workspaceID === right.workspaceID && left.workspaceRevision === right.workspaceRevision &&
+    left.capabilityDigest === right.capabilityDigest && left.permissionsDigest === right.permissionsDigest &&
+    left.budgetDigest === right.budgetDigest && left.scopeDigest === right.scopeDigest &&
+    right.expectedRevision === left.expectedRevision + 1n
+}
+
+export function isReceiptAdvancedDirectAttemptScopeCore(
+  previous: DirectAttemptScopeV1,
+  next: DirectAttemptScopeV1,
+): boolean {
+  const left = directAttemptScopeToWire(previous)
+  const right = directAttemptScopeToWire(next)
+  return left.attemptID === right.attemptID && left.parentSessionID === right.parentSessionID &&
+    left.childSessionID === right.childSessionID && left.profileID === right.profileID &&
+    left.profileRevision === right.profileRevision && left.profileDigest === right.profileDigest &&
+    left.ownerEpoch === right.ownerEpoch && left.locationID === right.locationID &&
+    left.workspaceID === right.workspaceID && left.capabilityDigest === right.capabilityDigest &&
+    left.permissionsDigest === right.permissionsDigest && left.budgetDigest === right.budgetDigest &&
+    left.scopeDigest === right.scopeDigest && left.workspaceRevision !== right.workspaceRevision &&
+    right.expectedRevision > left.expectedRevision
+}
+
+export function sameManagedAttemptIdentityCore(
+  left: ManagedAttemptScopeV1,
+  right: ManagedAttemptScopeV1,
+): boolean {
+  const a = managedAttemptScopeToWire(left)
+  const b = managedAttemptScopeToWire(right)
+  return a.goalID === b.goalID && a.runID === b.runID && a.taskID === b.taskID &&
+    a.attemptID === b.attemptID && a.ownerEpoch === b.ownerEpoch && a.locationID === b.locationID &&
+    a.sessionID === b.sessionID && a.delegationBindingDigest === b.delegationBindingDigest
+}
+
+export function isNextManagedAttemptScopeCore(
+  previous: ManagedAttemptScopeV1,
+  next: ManagedAttemptScopeV1,
+): boolean {
+  return sameManagedAttemptIdentityCore(previous, next) &&
+    previous.workspaceRevision === next.workspaceRevision &&
+    BigInt(next.expectedManagedRevision) === BigInt(previous.expectedManagedRevision) + 1n
+}
+
+export function isReceiptAdvancedManagedAttemptScopeCore(
+  previous: ManagedAttemptScopeV1,
+  next: ManagedAttemptScopeV1,
+): boolean {
+  return sameManagedAttemptIdentityCore(previous, next) &&
+    BigInt(next.expectedManagedRevision) > BigInt(previous.expectedManagedRevision)
+}
+
+/**
+ * The OpenCode managed-control projection uses decimal strings for u64 revisions,
+ * but HostKernel's canonical MessagePack envelope requires unsigned integers.
+ * Validate and convert at the Core RPC boundary so the wire form matches Rust's
+ * strict `DirectAttemptScopeV1::from_value` parser.
+ */
+export function directAttemptScopeToWire(scope: DirectAttemptScopeV1): DirectAttemptScopeWireV1 {
+  const keys = [
+    "attemptID",
+    "parentSessionID",
+    "childSessionID",
+    "profileID",
+    "profileRevision",
+    "profileDigest",
+    "ownerEpoch",
+    "expectedRevision",
+    "locationID",
+    "workspaceID",
+    "workspaceRevision",
+    "capabilityDigest",
+    "permissionsDigest",
+    "budgetDigest",
+    "scopeDigest",
+  ]
+  if (
+    typeof scope !== "object" ||
+    scope === null ||
+    Object.keys(scope).toSorted().join("\0") !== [...keys].sort().join("\0")
+  ) {
+    throw fail("protocol", "direct Attempt scope has an invalid shape")
+  }
+  const identifier = (name: keyof DirectAttemptScopeV1) => {
+    const value = scope[name]
+    if (typeof value !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(value)) {
+      throw fail("protocol", `direct Attempt scope ${name} is invalid`)
+    }
+    return value
+  }
+  const u64 = (name: "ownerEpoch" | "expectedRevision") => {
+    const value = scope[name]
+    if (typeof value !== "string" || !/^[1-9][0-9]{0,19}$/.test(value)) {
+      throw fail("protocol", `direct Attempt scope ${name} is invalid`)
+    }
+    const parsed = BigInt(value)
+    if (parsed > 0xffff_ffff_ffff_ffffn) {
+      throw fail("protocol", `direct Attempt scope ${name} exceeds u64`)
+    }
+    return parsed
+  }
+  const profileRevision = () => {
+    const value = scope.profileRevision
+    if (typeof value !== "string" || !/^[1-9][0-9]{0,19}$/.test(value)) {
+      throw fail("protocol", "direct Attempt scope profileRevision is invalid")
+    }
+    if (BigInt(value) > 0xffff_ffff_ffff_ffffn) {
+      throw fail("protocol", "direct Attempt scope profileRevision exceeds u64")
+    }
+    return value
+  }
+  const digest = (name: "profileDigest" | "workspaceRevision" | "capabilityDigest" | "permissionsDigest" | "budgetDigest" | "scopeDigest", algorithm: "blake3" | "sha256") => {
+    const value = scope[name]
+    if (typeof value !== "string" || !new RegExp(`^${algorithm}:[0-9a-f]{64}$`).test(value)) {
+      throw fail("protocol", `direct Attempt scope ${name} is invalid`)
+    }
+    return value
+  }
+  return {
+    attemptID: identifier("attemptID"),
+    parentSessionID: identifier("parentSessionID"),
+    childSessionID: identifier("childSessionID"),
+    profileID: identifier("profileID"),
+    profileRevision: profileRevision(),
+    profileDigest: digest("profileDigest", "blake3"),
+    ownerEpoch: u64("ownerEpoch"),
+    expectedRevision: u64("expectedRevision"),
+    locationID: identifier("locationID"),
+    workspaceID: identifier("workspaceID"),
+    workspaceRevision: digest("workspaceRevision", "blake3"),
+    capabilityDigest: digest("capabilityDigest", "sha256"),
+    permissionsDigest: digest("permissionsDigest", "sha256"),
+    budgetDigest: digest("budgetDigest", "sha256"),
+    scopeDigest: digest("scopeDigest", "sha256"),
+  }
+}
+
 export type EffectTarget = {
   readonly target: string
   readonly resource: string
@@ -129,6 +404,10 @@ export type GuardApprovalDetails = {
   readonly normalizedTargets: ReadonlyArray<unknown>
   readonly expiresAtUnixMs: number
   readonly policySummary: string
+  readonly consent: Omit<
+    GuardApprovalRequest,
+    "approvalID" | "challengeID" | "effectID" | "capabilityID" | "locationID" | "sessionID" | "inputDigest" | "normalizedTargets" | "expiresAtUnixMs" | "policySummary"
+  >
 }
 
 export type EffectChallenge = {
@@ -158,11 +437,68 @@ export type PatchReceipt = {
 export type EffectLease = {
   readonly effectID: string
   readonly capabilityLeaseDigest: string
+  /** HostKernel-minted scope carried only inside the local call path, never model JSON. */
+  readonly directAttempt?: DirectAttemptScopeV1
+  readonly managedAttempt?: ManagedAttemptScopeV1
+}
+
+/**
+ * One member of a complete multi-call ToolBatch admission: the member's own durable
+ * challenge resolved to its own one-use lease. Only the host may issue these; the Core
+ * never manufactures a lease.
+ */
+export type ToolBatchCallLease = {
+  readonly callID: string
+  readonly capabilityID: string
+  readonly lease?: EffectLease
+}
+
+/**
+ * The canonical boundary operations the multi-call relay needs. Production binds these to
+ * the host kernel (`awaitGuardApproval`, `resolve_approval`, `cancel_batch`); tests bind a
+ * stub, so the orchestration is verifiable without a transport.
+ */
+export type ToolBatchRelayPort = {
+  readonly requestApproval: (request: GuardApprovalRequest) => Effect.Effect<GuardApprovalDecision, SessionSupervisorError>
+  readonly resolveApprovalSet: (request: {
+    readonly sessionID: string
+    readonly locationID: string
+    readonly batchID: string
+    readonly challengeIDs: ReadonlyArray<string>
+  }) => Effect.Effect<{
+    readonly leases: ReadonlyArray<{ readonly challengeID: string; readonly lease: EffectLease }>
+    readonly directAttempt?: DirectAttemptScopeV1
+    readonly managedAttempt?: ManagedAttemptScopeV1
+    readonly nextLeaseRequired?: boolean
+  }, SessionSupervisorError>
+  readonly leaseNextEffect?: (request: {
+    readonly sessionID: string
+    readonly locationID: string
+    readonly batchID: string
+    readonly previousEffectID: string
+  }) => Effect.Effect<{
+    readonly challengeID: string
+    readonly lease: EffectLease
+    readonly directAttempt?: DirectAttemptScopeV1
+    readonly managedAttempt?: ManagedAttemptScopeV1
+  }, SessionSupervisorError>
+  readonly cancelBatch: (input: {
+    readonly sessionID: string
+    readonly batchID: string
+  }) => Effect.Effect<void, SessionSupervisorError>
 }
 
 export type EffectAdmission =
   | { readonly status: "prepared"; readonly lease: EffectLease }
   | { readonly status: "admitted"; readonly challenge: EffectChallenge }
+  | {
+      readonly status: "prepared_batch"
+      readonly calls: ReadonlyArray<ToolBatchCallLease>
+      readonly leaseNext?: (request: { readonly callID: string; readonly previousEffectID: string }) => Effect.Effect<ToolBatchCallLease, SessionSupervisorError>
+      readonly directAttempt?: DirectAttemptScopeV1
+      readonly managedAttempt?: ManagedAttemptScopeV1
+      readonly attemptScopeTransition?: "batch_bind"
+    }
   | { readonly status: "denied"; readonly reason: string }
 export type EffectReceipt = {
   readonly effectID: string
@@ -184,7 +520,95 @@ export type GuardApprovalRequest = {
   readonly normalizedTargets: ReadonlyArray<unknown>
   readonly expiresAtUnixMs: number
   readonly policySummary: string
+  readonly origin: GuardApprovalOriginV1
+  readonly source: GuardApprovalSourceV1
+  readonly policyID: string
+  readonly policyDigest: string
+  readonly normalizedAction: string
+  readonly argumentSummary: GuardArgumentSummaryV1
+  readonly requestedGuarantees: ReadonlyArray<string>
+  readonly guaranteeAssessment: GuardGuaranteeAssessmentV1
+  readonly runID?: string
+  readonly noResponse: "deny_and_expire"
+  readonly allowEnabled: boolean
 }
+export type GuardApprovalOriginV1 = "session_batch" | "user_action" | "managed_run"
+export type GuardApprovalSourceV1 = "core.tool_batch" | "authenticated.user_action" | "host.managed_verifier"
+export type GuardArgumentSummaryV1 =
+  | { readonly status: "available"; readonly text: string }
+  | { readonly status: "unavailable"; readonly reason: string }
+export type GuardGuaranteeAssessmentV1 =
+  | { readonly status: "assessed"; readonly residual: ReadonlyArray<string> }
+  | { readonly status: "not_assessed"; readonly residual: null }
+export type ManagedVerifierGuardChallengeV1 = {
+  readonly challengeID: string
+  readonly effectID: string
+  readonly capabilityID: "builtin.verifier"
+  readonly locationID: string
+  readonly inputDigest: string
+  readonly normalizedTargets: ReadonlyArray<unknown>
+  readonly expiresAtUnixMs: number
+  readonly policySummary: string
+  readonly origin: "managed_run"
+  readonly source: "host.managed_verifier"
+  readonly policyID: string
+  readonly policyDigest: string
+  readonly normalizedAction: "builtin.verifier"
+  readonly argumentSummary: GuardArgumentSummaryV1
+  readonly requestedGuarantees: ReadonlyArray<string>
+  readonly guaranteeAssessment: GuardGuaranteeAssessmentV1
+  readonly runID: string
+  readonly noResponse: "deny_and_expire"
+  readonly allowEnabled: boolean
+}
+export type ManagedVerifierApprovalDecisionV1 = {
+  readonly challengeID: string
+  readonly decision: GuardApprovalDecision
+}
+export type ManagedVerifierApprovalAbortReasonV1 =
+  | "reviewer_denied"
+  | "cancelled"
+  | "expired"
+  | "transport_lost"
+export type ManagedVerifierApprovalCollectionV1 =
+  | { readonly kind: "decisions"; readonly decisions: ReadonlyArray<ManagedVerifierApprovalDecisionV1> }
+  | {
+      readonly kind: "abort"
+      readonly reason: ManagedVerifierApprovalAbortReasonV1
+      /** Only responses actually received from the reviewer are included. */
+      readonly decisions: ReadonlyArray<ManagedVerifierApprovalDecisionV1>
+    }
+
+/**
+ * Collect the bounded reviewer set without losing genuine earlier decisions if a
+ * later prompt expires, is interrupted, or loses transport. The sequential waits
+ * keep the UI queue below its 16-entry limit while preserving the host's all-or-none
+ * lease resolution contract.
+ */
+export const collectManagedVerifierApprovalDecisions = (
+  challenges: ReadonlyArray<ManagedVerifierGuardChallengeV1>,
+  awaitDecision: (
+    challenge: ManagedVerifierGuardChallengeV1,
+  ) => Effect.Effect<GuardApprovalDecision, unknown>,
+): Effect.Effect<ManagedVerifierApprovalCollectionV1> =>
+  Effect.gen(function* () {
+    const decisions: ManagedVerifierApprovalDecisionV1[] = []
+    for (const challenge of challenges) {
+      const exit = yield* Effect.exit(awaitDecision(challenge))
+      if (exit._tag === "Failure") {
+        const error = Option.getOrUndefined(Cause.findErrorOption(exit.cause))
+        const reason: ManagedVerifierApprovalAbortReasonV1 = Cause.hasInterruptsOnly(exit.cause)
+          ? "cancelled"
+          : error instanceof SessionSupervisorError && /expired/i.test(error.reason)
+            ? "expired"
+            : "transport_lost"
+        return { kind: "abort", reason, decisions }
+      }
+      decisions.push({ challengeID: challenge.challengeID, decision: exit.value })
+      if (exit.value === "deny") return { kind: "abort", reason: "reviewer_denied", decisions }
+    }
+    return { kind: "decisions", decisions }
+  })
 type PendingGuardApproval = {
   readonly request: GuardApprovalRequest
   readonly principal?: TrustedPrincipal
@@ -210,6 +634,13 @@ export type HostKernelResnapshot = {
   readonly latest: Cursor
 }
 export type HostKernelStreamMessage = HostKernelEvent | HostKernelResnapshot
+
+/** Out-of-body metadata tied to the current authenticated Core principal. */
+export type AuthenticatedRequestContextV1 = {
+  readonly kind: "repo_read"
+  readonly sessionID: string
+  readonly locationID: string
+}
 
 /**
  * A terminal event carries a free-form `kind` from the host, so the control message is
@@ -291,6 +722,8 @@ export class SessionSupervisorError extends Schema.TaggedErrorClass<SessionSuper
     stage: Schema.String,
     reason: Schema.String,
     approvalCode: Schema.optional(Schema.Literals(["approval-not-found", "approval-conflict", "approval-invalid"])),
+    /** Typed kernel error code (`managed_conflict`, `managed_not_found`, ...) when the host refused an RPC. */
+    hostCode: Schema.optional(Schema.String),
   },
 ) {
   override get message() {
@@ -320,7 +753,7 @@ export interface Interface {
     source: string,
     workspaceRoot?: string,
   ) => Effect.Effect<SessionSupervisorStart, SessionSupervisorError, Scope.Scope>
-  readonly registerHostLocation: (locationRef: typeof LocationSchema.Ref.Type) => Effect.Effect<string, SessionSupervisorError>
+  readonly registerHostLocation: (locationRef: typeof LocationSchema.Ref.Type) => Effect.Effect<string, SessionSupervisorError, TrustedPrincipalContext>
   readonly prepareUserEffect: (input: {
     readonly locationRef: typeof LocationSchema.Ref.Type
     readonly sessionID?: string
@@ -331,38 +764,75 @@ export interface Interface {
     readonly approvalID: string
     readonly decision: GuardApprovalDecision
   }) => Effect.Effect<void, SessionSupervisorError, TrustedPrincipalContext>
+  /**
+   * Publishes and waits for a bounded complete set of HostKernel-minted verifier
+   * challenges. It returns decisions only; leases are issued later by the single
+   * atomic HostKernel resolve_approvals operation after the complete set is allowed.
+   */
+  readonly awaitManagedVerifierApprovals: (input: {
+    readonly locationRef: typeof LocationSchema.Ref.Type
+    readonly sessionID?: string
+    readonly challenges: ReadonlyArray<ManagedVerifierGuardChallengeV1>
+  }) => Effect.Effect<ManagedVerifierApprovalCollectionV1, SessionSupervisorError, TrustedPrincipalContext>
   readonly prepareToolBatch: (input: {
     readonly sessionID: string
     readonly locationRef: typeof LocationSchema.Ref.Type
     readonly batchID: string
     readonly turnContextDigest: string
     readonly calls: ReadonlyArray<GuardedToolCall>
-  }) => Effect.Effect<EffectAdmission, SessionSupervisorError>
+    readonly directAttempt?: DirectAttemptScopeV1
+    readonly managedAttempt?: ManagedAttemptScopeV1
+  }) => Effect.Effect<EffectAdmission, SessionSupervisorError, TrustedPrincipalContext>
   readonly executeWrite: (input: {
     readonly sessionID: string
     readonly locationRef: typeof LocationSchema.Ref.Type
     readonly lease: EffectLease
     readonly content: string
+    readonly directAttempt?: DirectAttemptScopeV1
+    readonly managedAttempt?: ManagedAttemptScopeV1
+    readonly trustedPrincipal: TrustedPrincipal
   }) => Effect.Effect<EffectReceipt, SessionSupervisorError>
   readonly executePatch: (input: {
     readonly sessionID: string
     readonly locationRef: typeof LocationSchema.Ref.Type
     readonly lease: EffectLease
     readonly operations: ReadonlyArray<PatchOperation>
+    readonly directAttempt?: DirectAttemptScopeV1
+    readonly managedAttempt?: ManagedAttemptScopeV1
+    readonly trustedPrincipal: TrustedPrincipal
   }) => Effect.Effect<PatchReceipt, SessionSupervisorError>
   readonly runPatch: (input: {
     readonly sessionID: string
     readonly workspaceRoot: string
     readonly turnContextDigest: string
     readonly operations: ReadonlyArray<PatchOperation>
-  }) => Effect.Effect<PatchReceipt, SessionSupervisorError>
-  /** Host-only authenticated RPC; never routes through a Session projection worker. */
+  }) => Effect.Effect<PatchReceipt, SessionSupervisorError, TrustedPrincipalContext>
+  /**
+   * Host-only authenticated RPC; never routes through a Session projection worker.
+   * A refusal rejects with the host's typed code preserved on `SessionSupervisorError.hostCode`.
+   */
   readonly requestHostKernel: (
     serviceID: string,
     operation: string,
     body: Readonly<Record<string, unknown>>,
+    options?: {
+      readonly cancelOnInterrupt?: boolean
+      readonly deliveryID?: string
+      /** Delegated identity captured from TrustedPrincipalContext middleware. */
+      readonly trustedPrincipal?: TrustedPrincipal
+      /** Private authenticated envelope context; only RepoIntel generation/read operations are allowed. */
+      readonly authenticatedContext?: AuthenticatedRequestContextV1
+    },
   ) => Effect.Effect<Readonly<Record<string, unknown>>, SessionSupervisorError>
+  /** Generation-pinned RepoIntel read through the authenticated Rust boundary. */
+  readonly queryRepoStructure?: (input: {
+    readonly sessionID: string
+    readonly locationRef: typeof LocationSchema.Ref.Type
+    readonly query: Omit<typeof RepoStructureQueryV1.Type, "sourceGeneration">
+  }) => Effect.Effect<typeof RepoStructurePageV1.Type, SessionSupervisorError, TrustedPrincipalContext>
   readonly hostOwnerEpoch: () => Effect.Effect<number, SessionSupervisorError>
+  /** Current exact Rust SessionProjection cursor last durably acknowledged by Core. */
+  readonly sessionProjectionCursor: (sessionID: string) => Effect.Effect<Cursor, SessionSupervisorError>
   /** Subscribe to terminal events over the host connection with bounded backpressure. */
   readonly subscribeHostKernelEvents: (input: {
     readonly terminalID: string
@@ -382,8 +852,260 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionSupervisor") {}
 
-function fail(stage: string, reason: string, approvalCode?: GuardApprovalErrorCode) {
-  return new SessionSupervisorError({ stage, reason, ...(approvalCode === undefined ? {} : { approvalCode }) })
+function fail(stage: string, reason: string, approvalCode?: GuardApprovalErrorCode, hostCode?: string) {
+  return new SessionSupervisorError({
+    stage,
+    reason,
+    ...(approvalCode === undefined ? {} : { approvalCode }),
+    ...(hostCode === undefined ? {} : { hostCode }),
+  })
+}
+
+const MAX_MANAGED_VERIFIER_APPROVALS = 16
+const MAX_MANAGED_VERIFIER_CHALLENGES = 32
+const MAX_GUARD_SUMMARY_BYTES = 512
+const MAX_GUARD_METADATA_BYTES = 128 * 1024
+const MAX_GUARD_GUARANTEES = 16
+const MANAGED_VERIFIER_CHALLENGE_KEYS = [
+  "allowEnabled",
+  "argumentSummary",
+  "capabilityID",
+  "challengeID",
+  "effectID",
+  "expiresAtUnixMs",
+  "guaranteeAssessment",
+  "inputDigest",
+  "locationID",
+  "noResponse",
+  "normalizedAction",
+  "normalizedTargets",
+  "origin",
+  "policyDigest",
+  "policyID",
+  "policySummary",
+  "requestedGuarantees",
+  "runID",
+  "source",
+] as const
+
+/** Parse only host-generated, bounded consent context. Never infer a missing assessment. */
+type ValidatedGuardConsentProjection<
+  Origin extends GuardApprovalOriginV1,
+  Source extends GuardApprovalSourceV1,
+  RunID extends string | undefined,
+  CapabilityID extends string,
+> = Omit<
+  Pick<
+    GuardApprovalRequest,
+    | "origin"
+    | "source"
+    | "policyID"
+    | "policyDigest"
+    | "normalizedAction"
+    | "argumentSummary"
+    | "requestedGuarantees"
+    | "guaranteeAssessment"
+    | "runID"
+    | "noResponse"
+    | "allowEnabled"
+  >,
+  "origin" | "source" | "runID" | "normalizedAction"
+> & {
+  readonly origin: Origin
+  readonly source: Source
+  readonly normalizedAction: CapabilityID
+} & (RunID extends string ? { readonly runID: RunID } : { readonly runID?: undefined })
+
+function validateGuardConsentProjection<
+  const Origin extends GuardApprovalOriginV1,
+  const Source extends GuardApprovalSourceV1,
+  const RunID extends string | undefined = undefined,
+  const CapabilityID extends string = string,
+>(
+  value: Record<string, unknown>,
+  input: {
+    readonly capabilityID: CapabilityID
+    readonly origin: Origin
+    readonly source: Source
+    readonly runID?: RunID
+  },
+): ValidatedGuardConsentProjection<Origin, Source, RunID, CapabilityID> {
+  const policyID = stringField(value, "policyID", 128)
+  const policyDigest = stringField(value, "policyDigest")
+  const normalizedAction = stringField(value, "normalizedAction", 128)
+  if (value.argumentSummary === undefined) throw fail("protocol", "Guard argument summary is missing")
+  if (value.guaranteeAssessment === undefined) throw fail("protocol", "Guard guarantee assessment is missing")
+  const rawSummary = record(value.argumentSummary)
+  const rawAssessment = record(value.guaranteeAssessment)
+  const requested = value.requestedGuarantees
+  const runID = value.runID
+  let argumentSummary: GuardArgumentSummaryV1
+  if (rawSummary.status === "available") {
+    if (Object.keys(rawSummary).toSorted().join("\0") !== "status\0text") {
+      throw fail("protocol", "Guard argument summary has an invalid shape")
+    }
+    const summary = stringField(rawSummary, "text", MAX_GUARD_SUMMARY_BYTES)
+    if (summary.trim().length === 0) throw fail("protocol", "Guard argument summary is empty")
+    argumentSummary = { status: "available", text: summary }
+  } else if (rawSummary.status === "unavailable") {
+    if (Object.keys(rawSummary).toSorted().join("\0") !== "reason\0status") {
+      throw fail("protocol", "Guard argument summary has an invalid shape")
+    }
+    argumentSummary = { status: "unavailable", reason: stringField(rawSummary, "reason", 256) }
+  } else {
+    throw fail("protocol", "Guard argument summary is missing")
+  }
+  let guaranteeAssessment: GuardGuaranteeAssessmentV1
+  if (rawAssessment.status === "assessed") {
+    if (Object.keys(rawAssessment).toSorted().join("\0") !== "residual\0status") {
+      throw fail("protocol", "Guard guarantee assessment has an invalid shape")
+    }
+    const residual = rawAssessment.residual
+    if (!Array.isArray(residual) || residual.length > MAX_GUARD_GUARANTEES) {
+      throw fail("protocol", "Guard residual guarantees exceed their bound")
+    }
+    const residualIDs = residual.map((id) => {
+      if (typeof id !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(id)) {
+        throw fail("protocol", "Guard residual guarantee is invalid")
+      }
+      return id
+    })
+    guaranteeAssessment = { status: "assessed", residual: residualIDs }
+  } else if (rawAssessment.status === "not_assessed") {
+    if (
+      Object.keys(rawAssessment).toSorted().join("\0") !== "residual\0status" ||
+      rawAssessment.residual !== null
+    ) {
+      throw fail("protocol", "Unassessed Guard guarantees must have a null residual")
+    }
+    guaranteeAssessment = { status: "not_assessed", residual: null }
+  } else {
+    throw fail("protocol", "Guard guarantee assessment is missing")
+  }
+  if (
+    !/^[a-z][a-z0-9._-]{0,127}$/.test(policyID) ||
+    !/^blake3:[0-9a-f]{64}$/.test(policyDigest) ||
+    normalizedAction !== input.capabilityID ||
+    value.origin !== input.origin ||
+    value.source !== input.source ||
+    !Array.isArray(requested) ||
+    requested.length === 0 ||
+    requested.length > MAX_GUARD_GUARANTEES ||
+    value.noResponse !== "deny_and_expire" ||
+    typeof value.allowEnabled !== "boolean" ||
+    (input.runID === undefined ? runID !== undefined : runID !== input.runID)
+  ) {
+    throw fail("protocol", "Guard consent projection is incomplete or mismatched")
+  }
+  const requestedIDs = requested.map((id) => {
+    if (typeof id !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(id)) {
+      throw fail("protocol", "Guard requested guarantee is invalid")
+    }
+    return id
+  })
+  if (new Set(requestedIDs).size !== requestedIDs.length) {
+    throw fail("protocol", "Guard requested guarantees contain duplicates")
+  }
+  if (
+    guaranteeAssessment.status === "assessed" &&
+    (new Set(guaranteeAssessment.residual).size !== guaranteeAssessment.residual.length ||
+      guaranteeAssessment.residual.some((id) => !requestedIDs.includes(id)))
+  ) {
+    throw fail("protocol", "Guard residual guarantee assessment does not match its request")
+  }
+  const allowEligible =
+    guaranteeAssessment.status === "assessed" && argumentSummary.status === "available"
+  if (value.allowEnabled !== allowEligible) {
+    throw fail("protocol", "Guard allow availability does not match its assessed context")
+  }
+  const encoded = JSON.stringify(value, (_key, child) => (typeof child === "bigint" ? child.toString() : child))
+  if (encoded === undefined || Buffer.byteLength(encoded, "utf8") > MAX_GUARD_METADATA_BYTES) {
+    throw fail("protocol", "Guard approval projection exceeds its payload bound")
+  }
+  return {
+    origin: input.origin,
+    source: input.source,
+    policyID,
+    policyDigest,
+    normalizedAction,
+    argumentSummary,
+    requestedGuarantees: requestedIDs,
+    guaranteeAssessment,
+    ...(input.runID === undefined ? {} : { runID: input.runID }),
+    noResponse: "deny_and_expire",
+    allowEnabled: value.allowEnabled,
+  } as unknown as ValidatedGuardConsentProjection<Origin, Source, RunID, CapabilityID>
+}
+
+/** Validate the complete challenge set before any approval event becomes visible. */
+export function validateManagedVerifierChallenges(
+  registeredLocationID: string,
+  challenges: ReadonlyArray<ManagedVerifierGuardChallengeV1>,
+): ReadonlyArray<ManagedVerifierGuardChallengeV1> {
+  if (!/^loc_[0-9a-f]{64}$/.test(registeredLocationID)) {
+    throw fail("protocol", "registered Location ID is invalid")
+  }
+  if (!Array.isArray(challenges) || challenges.length === 0 || challenges.length > MAX_MANAGED_VERIFIER_CHALLENGES) {
+    throw fail("protocol", "verifier challenge set exceeds the managed criteria bound")
+  }
+  const challengeIDs = new Set<string>()
+  const effectIDs = new Set<string>()
+  const now = Date.now()
+  const validated = challenges.map((candidate) => {
+    const value = record(candidate)
+    if (Object.keys(value).toSorted().join("\0") !== [...MANAGED_VERIFIER_CHALLENGE_KEYS].sort().join("\0")) {
+      throw fail("protocol", "verifier challenge has an invalid shape")
+    }
+    const challengeID = stringField(value, "challengeID")
+    const effectID = stringField(value, "effectID")
+    const locationID = stringField(value, "locationID")
+    const policySummary = stringField(value, "policySummary", 1024)
+    const inputDigest = stringField(value, "inputDigest")
+    const targets = value.normalizedTargets
+    const runID = stringField(value, "runID", MAX_IDENTIFIER_BYTES)
+    const consent = validateGuardConsentProjection(value, {
+      capabilityID: "builtin.verifier",
+      origin: "managed_run",
+      source: "host.managed_verifier",
+      runID,
+    })
+    if (locationID !== registeredLocationID) {
+      throw fail("protocol", "verifier challenge is not bound to the registered Location")
+    }
+    if (
+      !/^[A-Za-z0-9._-]{1,256}$/.test(challengeID) ||
+      !/^[A-Za-z0-9._-]{1,256}$/.test(effectID) ||
+      value.capabilityID !== "builtin.verifier" ||
+      !/^blake3:[0-9a-f]{64}$/.test(inputDigest) ||
+      !Array.isArray(targets) ||
+      targets.length === 0 ||
+      targets.length > 64 ||
+      !Number.isSafeInteger(value.expiresAtUnixMs) ||
+      (value.expiresAtUnixMs as number) <= now ||
+      (value.expiresAtUnixMs as number) > now + 5 * 60 * 1000 ||
+      Buffer.byteLength(JSON.stringify(targets), "utf8") > 64 * 1024 ||
+      policySummary.trim().length === 0
+    ) {
+      throw fail("protocol", "verifier challenge is invalid or exceeds bounds")
+    }
+    if (challengeIDs.has(challengeID) || effectIDs.has(effectID)) {
+      throw fail("protocol", "verifier challenge set contains a duplicate challenge or effect")
+    }
+    challengeIDs.add(challengeID)
+    effectIDs.add(effectID)
+    return {
+      challengeID,
+      effectID,
+      capabilityID: "builtin.verifier" as const,
+      locationID,
+      inputDigest,
+      normalizedTargets: targets,
+      expiresAtUnixMs: value.expiresAtUnixMs as number,
+      policySummary,
+      ...consent,
+    }
+  })
+  return validated
 }
 
 // Nested scopes from one backend share a lease; a second backend fails closed.
@@ -698,6 +1420,353 @@ function canonicalBase64Length(value: string) {
   return decoded.byteLength
 }
 
+type ParsedBatchMember = {
+  readonly callID: string
+  readonly capabilityID: string
+  readonly challengeID: string
+  readonly effectID: string
+  readonly challenge: EffectChallenge
+  readonly request: GuardApprovalRequest
+}
+
+/**
+ * Read one member field that the host may spell with either the request-style or the
+ * response-style identifier (`callID`/`callId`, `capabilityID`/`capabilityId`). The single
+ * spelling is not yet frozen across the host boundary, so both are accepted while the
+ * value itself stays strictly validated.
+ */
+function batchField(
+  entry: Record<string, unknown>,
+  primary: string,
+  alias: string,
+  maxBytes = 256,
+): string {
+  return primary in entry ? stringField(entry, primary, maxBytes) : stringField(entry, alias, maxBytes)
+}
+
+function validBatchIdentity(value: string) {
+  return /^[A-Za-z0-9._-]{1,256}$/.test(value)
+}
+
+/** Apply the Rust EffectHost ToolBatch envelope limits before packing or sending IPC. */
+function validateToolBatchCalls(calls: ReadonlyArray<GuardedToolCall>): void {
+  if (calls.length === 0 || calls.length > MAX_TOOL_BATCH_CALLS) {
+    throw fail("protocol", "ToolBatch call count is outside the supported bound")
+  }
+  const callIDs = new Set<string>()
+  let totalBytes = 0
+  for (const call of calls) {
+    if (
+      typeof call !== "object" ||
+      call === null ||
+      !validBatchIdentity(call.callID) ||
+      !validBatchIdentity(call.capabilityID) ||
+      callIDs.has(call.callID)
+    ) {
+      throw fail("protocol", "ToolBatch contains an invalid or duplicate call identity")
+    }
+    callIDs.add(call.callID)
+    let encodedBytes: number
+    try {
+      // Match EffectHost's encoded_len(call): include the call/capability identity map,
+      // not only the arguments, and use the same MessagePack codec as the host request.
+      encodedBytes = pack({
+        callId: call.callID,
+        capabilityId: call.capabilityID,
+        arguments: call.arguments,
+      }).byteLength
+    } catch {
+      throw fail("protocol", "ToolBatch arguments cannot be encoded")
+    }
+    if (encodedBytes > MAX_TOOL_CALL_ARGUMENT_BYTES) {
+      throw fail("protocol", "ToolBatch member exceeds the encoded argument bound")
+    }
+    if (encodedBytes > MAX_TOOL_BATCH_ARGUMENT_BYTES - totalBytes) {
+      throw fail("protocol", "ToolBatch exceeds the aggregate encoded argument bound")
+    }
+    totalBytes += encodedBytes
+  }
+}
+
+/**
+ * Parse the guard owner's complete multi-call `calls[]` challenge response. Every member
+ * must map one-to-one onto the requested calls: a missing, duplicated, reordered into an
+ * unknown call, capability-swapped or malformed member refuses the complete batch. The
+ * parse is side-effect free; callers cancel defensively because a mismatch may still mean
+ * the host prepared durable members.
+ */
+function parseMultiCallChallenges(input: {
+  readonly sessionID: string
+  readonly batchID: string
+  readonly locationID: string
+  readonly calls: ReadonlyArray<GuardedToolCall>
+  readonly response: Readonly<Record<string, unknown>>
+}): ParsedBatchMember[] {
+  if (input.calls.length < 2 || input.calls.length > MAX_TOOL_BATCH_CALLS) {
+    throw fail("protocol", "multi-call Guard relay call count is outside the supported bound")
+  }
+  const rawCalls = input.response.calls
+  if (!Array.isArray(rawCalls) || rawCalls.length !== input.calls.length) {
+    throw fail("protocol", "Rust returned a mismatched multi-call Guard challenge")
+  }
+  const requested = new Map(input.calls.map((member) => [member.callID, member]))
+  if (
+    requested.size !== input.calls.length ||
+    input.calls.some((member) => !validBatchIdentity(member.callID) || !validBatchIdentity(member.capabilityID))
+  ) {
+    throw fail("protocol", "requested multi-call Guard batch has invalid identities")
+  }
+  const now = Date.now()
+  const members: ParsedBatchMember[] = []
+  const seen = new Set<string>()
+  const seenChallengeIDs = new Set<string>()
+  const seenEffectIDs = new Set<string>()
+  for (const raw of rawCalls) {
+    const entry = record(raw)
+    const callID = batchField(entry, "callId", "callID", MAX_IDENTIFIER_BYTES)
+    if (!validBatchIdentity(callID)) {
+      throw fail("protocol", "Rust returned an invalid multi-call identity")
+    }
+    const call = requested.get(callID)
+    if (!call || seen.has(callID)) {
+      throw fail("protocol", "Rust returned a mismatched multi-call Guard challenge")
+    }
+    seen.add(callID)
+    const capabilityID = batchField(entry, "capabilityId", "capabilityID", MAX_IDENTIFIER_BYTES)
+    if (
+      !validBatchIdentity(capabilityID) ||
+      capabilityID !== call.capabilityID ||
+      entry.locationID !== input.locationID
+    ) {
+      throw fail("protocol", "Rust returned a mismatched multi-call Guard challenge")
+    }
+    const challengeID = batchField(entry, "challengeId", "challengeID", MAX_IDENTIFIER_BYTES)
+    const effectID = batchField(entry, "effectId", "effectID", MAX_IDENTIFIER_BYTES)
+    if (
+      !validBatchIdentity(challengeID) ||
+      !validBatchIdentity(effectID) ||
+      seenChallengeIDs.has(challengeID) ||
+      seenEffectIDs.has(effectID)
+    ) {
+      throw fail("protocol", "Rust returned duplicate or invalid multi-call effect identities")
+    }
+    seenChallengeIDs.add(challengeID)
+    seenEffectIDs.add(effectID)
+    const inputDigest = batchField(entry, "inputDigest", "inputDigest")
+    const challengeLocationID = batchField(entry, "locationID", "locationId", 4096)
+    const expiresAtUnixMs = wireUnixMs(entry.expiresAtUnixMs)
+    const normalizedTargets = entry.normalizedTargets
+    const policySummary = batchField(entry, "policySummary", "policySummary", 1024)
+    const consent = validateGuardConsentProjection(entry, {
+      capabilityID,
+      origin: "session_batch",
+      source: "core.tool_batch",
+    })
+    if (
+      challengeID.length === 0 ||
+      effectID.length === 0 ||
+      !/^blake3:[0-9a-f]{64}$/.test(inputDigest) ||
+      challengeLocationID !== input.locationID ||
+      expiresAtUnixMs === undefined ||
+      expiresAtUnixMs <= now ||
+      expiresAtUnixMs > now + 5 * 60 * 1000 ||
+      !Array.isArray(normalizedTargets) ||
+      normalizedTargets.length === 0 ||
+      normalizedTargets.length > 64
+    ) {
+      throw fail("protocol", "Rust returned incomplete multi-call Guard approval metadata")
+    }
+    const targets = Array.isArray(entry.targets)
+      ? parseEffectTargets(entry.targets, call.capabilityID === "files.patch")
+      : typeof entry.existed === "boolean"
+        ? [
+            {
+              target: stringField(entry, "target", 4096),
+              resource: stringField(entry, "resource", 4096),
+              operation: "write" as const,
+              existed: entry.existed,
+            },
+          ]
+        : []
+    if (targets.length === 0) {
+      throw fail("protocol", "Rust returned incomplete multi-call Guard approval metadata")
+    }
+    const challenge: EffectChallenge = {
+      challengeID,
+      effectID,
+      target: targets[0]!.target,
+      resource: targets[0]!.resource,
+      existed: targets[0]!.existed,
+      targets,
+      approval: {
+        capabilityID,
+        locationID: input.locationID,
+        inputDigest,
+        normalizedTargets,
+        expiresAtUnixMs,
+        policySummary,
+        consent,
+      },
+    }
+    members.push({
+      callID,
+      capabilityID,
+      challengeID,
+      effectID,
+      challenge,
+      request: {
+        approvalID: `approval_${randomUUID().replaceAll("-", "")}`,
+        challengeID,
+        effectID,
+        capabilityID,
+        locationID: input.locationID,
+        sessionID: input.sessionID,
+        inputDigest,
+        normalizedTargets,
+        expiresAtUnixMs,
+        policySummary,
+        ...consent,
+      },
+    })
+  }
+  // The member count already equals the requested count, so an unclaimed request would mean
+  // a duplicate that replaced a real member; refuse rather than admit a partial batch.
+  if (seen.size !== requested.size) {
+    throw fail("protocol", "Rust returned a mismatched multi-call Guard challenge")
+  }
+  return members
+}
+
+/**
+ * Relay one complete multi-call ToolBatch admission: ask one explicit approval per member,
+ * resolve every approved member to its own one-use lease and cancel the complete batch
+ * whenever anything denies, expires, mismatches or fails. Nothing is executed here, and no
+ * lease is returned unless every member was approved and resolved.
+ */
+export function relayMultiCallToolBatch(
+  input: {
+    readonly sessionID: string
+    readonly batchID: string
+    readonly locationID: string
+    readonly calls: ReadonlyArray<GuardedToolCall>
+    readonly response: Readonly<Record<string, unknown>>
+  },
+  port: ToolBatchRelayPort,
+): Effect.Effect<EffectAdmission, SessionSupervisorError> {
+  return Effect.gen(function* () {
+    // Cancellation is best-effort and lazy: it is invoked only when the batch actually
+    // needs cancelling, so a host that cannot cancel yet never masks the original typed
+    // failure, and the un-executed members expire on their own durable TTL.
+    const cancel = Effect.suspend(() =>
+      port.cancelBatch({ sessionID: input.sessionID, batchID: input.batchID }),
+    ).pipe(Effect.catch(() => Effect.void))
+    const members = yield* Effect.try({
+      try: () => parseMultiCallChallenges(input),
+      catch: (error) =>
+        error instanceof SessionSupervisorError
+          ? error
+          : fail("protocol", "Rust returned an invalid multi-call Guard challenge"),
+    }).pipe(Effect.tapError(() => cancel))
+    const decisions = yield* Effect.forEach(members, (member) => port.requestApproval(member.request), {
+      concurrency: "unbounded",
+    }).pipe(Effect.tapError(() => cancel))
+    if (decisions.some((decision) => decision !== "allow_once") || members.some((member) => !member.request.allowEnabled)) {
+      yield* cancel
+      return { status: "denied" as const, reason: "Guard approval was denied" }
+    }
+    const approvalSet = yield* port.resolveApprovalSet({
+      sessionID: input.sessionID,
+      locationID: input.locationID,
+      batchID: input.batchID,
+      challengeIDs: members.map((member) => member.challengeID),
+    }).pipe(Effect.tapError(() => cancel))
+    const serializedAttempt = approvalSet.nextLeaseRequired === true
+    if (serializedAttempt && (!approvalSet.directAttempt && !approvalSet.managedAttempt)) {
+      yield* cancel
+      return yield* Effect.fail(fail("protocol", "HostKernel requested serial leases without an Attempt scope"))
+    }
+    const leasesByChallenge = new Map<string, EffectLease>()
+    for (const item of approvalSet.leases) {
+      if (
+        !validBatchIdentity(item.challengeID) ||
+        leasesByChallenge.has(item.challengeID) ||
+        !item.lease ||
+        !validBatchIdentity(item.lease.effectID) ||
+        !/^blake3:[0-9a-f]{64}$/.test(item.lease.capabilityLeaseDigest)
+      ) {
+        yield* cancel
+        return yield* Effect.fail(fail("protocol", "approval set returned an invalid or duplicate lease"))
+      }
+      leasesByChallenge.set(item.challengeID, item.lease)
+    }
+    if (leasesByChallenge.size !== (serializedAttempt ? 1 : members.length)) {
+      yield* cancel
+      return yield* Effect.fail(fail("protocol", "approval set returned an incomplete or over-issued lease set"))
+    }
+    const calls: ToolBatchCallLease[] = []
+    const seenEffectIDs = new Set<string>()
+    const seenLeaseDigests = new Set<string>()
+    for (const [index, member] of members.entries()) {
+      const lease = leasesByChallenge.get(member.challengeID)
+      if (!lease && (!serializedAttempt || index === 0)) {
+        yield* cancel
+        return yield* Effect.fail(fail("protocol", "approval set omitted a challenged effect"))
+      }
+      if (lease && (
+        typeof lease !== "object" ||
+        lease === null ||
+        !validBatchIdentity(lease.effectID) ||
+        !/^blake3:[0-9a-f]{64}$/.test(lease.capabilityLeaseDigest) ||
+        lease.effectID !== member.effectID ||
+        seenEffectIDs.has(lease.effectID) ||
+        seenLeaseDigests.has(lease.capabilityLeaseDigest)
+      )) {
+        yield* cancel
+        return yield* Effect.fail(fail("protocol", "approval lease is invalid, duplicate, or mismatched"))
+      }
+      if (lease) {
+        seenEffectIDs.add(lease.effectID)
+        seenLeaseDigests.add(lease.capabilityLeaseDigest)
+      }
+      calls.push({ callID: member.callID, capabilityID: member.capabilityID, ...(lease ? { lease } : {}) })
+    }
+    let nextIndex = 1
+    const leaseNext = serializedAttempt
+      ? (request: { readonly callID: string; readonly previousEffectID: string }) => Effect.gen(function* () {
+          const member = members[nextIndex]
+          if (!member || member.callID !== request.callID || !validBatchIdentity(request.previousEffectID) || !port.leaseNextEffect) {
+            yield* cancel
+            return yield* Effect.fail(fail("protocol", "Attempt batch next-lease order is invalid"))
+          }
+          const response = yield* port.leaseNextEffect({
+            sessionID: input.sessionID,
+            locationID: input.locationID,
+            batchID: input.batchID,
+            previousEffectID: request.previousEffectID,
+          }).pipe(Effect.tapError(() => cancel))
+          if (response.challengeID !== member.challengeID || response.lease.effectID !== member.effectID ||
+              !/^blake3:[0-9a-f]{64}$/.test(response.lease.capabilityLeaseDigest)) {
+            yield* cancel
+            return yield* Effect.fail(fail("protocol", "HostKernel returned a lease outside the ordered Attempt batch"))
+          }
+          nextIndex += 1
+          return { callID: member.callID, capabilityID: member.capabilityID, lease: response.lease }
+        })
+      : undefined
+    return {
+      status: "prepared_batch" as const,
+      calls,
+      ...(leaseNext ? { leaseNext } : {}),
+      ...(approvalSet.directAttempt ? { directAttempt: approvalSet.directAttempt } : {}),
+      ...(approvalSet.managedAttempt ? { managedAttempt: approvalSet.managedAttempt } : {}),
+    }
+  }).pipe(
+    Effect.onInterrupt(() =>
+      port.cancelBatch({ sessionID: input.sessionID, batchID: input.batchID }).pipe(Effect.catch(() => Effect.void)),
+    ),
+  )
+}
+
 function validatePatchOperations(value: unknown): asserts value is ReadonlyArray<PatchOperation> {
   if (!Array.isArray(value) || value.length === 0 || value.length > 64) {
     throw fail("effect", "files.patch operation count is invalid")
@@ -833,7 +1902,12 @@ function writeCheckpoint(path: string, value: Cursor) {
 
 type DecodedRpcResponse =
   | { readonly requestID: string; readonly outcome: "ok"; readonly body: Record<string, unknown> }
-  | { readonly requestID: string; readonly outcome: "error"; readonly message: string }
+  | {
+      readonly requestID: string
+      readonly outcome: "error"
+      readonly message: string
+      readonly code?: string
+    }
 
 function decodeRpcResponse(input: unknown): DecodedRpcResponse {
   const response = record(input)
@@ -842,7 +1916,13 @@ function decodeRpcResponse(input: unknown): DecodedRpcResponse {
   const requestID = stringField(response, "requestId")
   if (response.outcome === "error") {
     const error = record(response.error)
-    return { requestID, outcome: "error", message: stringField(error, "message") }
+    // The host's typed error code is preserved so managed-control callers can map a
+    // refusal (`managed_conflict`, `managed_not_found`, ...) without parsing prose.
+    const code =
+      typeof error.code === "string" && error.code.length > 0 && Buffer.byteLength(error.code, "utf8") <= 128
+        ? error.code
+        : undefined
+    return { requestID, outcome: "error", message: stringField(error, "message"), ...(code === undefined ? {} : { code }) }
   }
   if (response.outcome !== "ok") throw fail("protocol", "RPC response has an invalid outcome")
   return { requestID, outcome: "ok", body: record(response.body) }
@@ -880,8 +1960,8 @@ function decodeServerMessage(input: unknown): ServerMessage {
     const latest = cursor(message.latest)
     const subscriptionId = stringField(message, "subscriptionId")
     if (
-      requested.ownerKind !== "terminal" ||
-      latest.ownerKind !== "terminal" ||
+      requested.ownerKind !== "session" ||
+      latest.ownerKind !== "session" ||
       requested.ownerId !== latest.ownerId ||
       !/^(0|[1-9]\d*)$/.test(requested.seq) ||
       !/^(0|[1-9]\d*)$/.test(latest.seq) ||
@@ -1187,27 +2267,43 @@ export function sessionSupervisorArgs(input: {
   ]
 }
 
-function waitForSocket(path: string, child: ChildProcessHandle, signal: AbortSignal, timeoutMs: number) {
+const SOCKET_PERMISSION_SETTLE_MS = 200
+const SOCKET_POLL_INTERVAL_MS = 10
+
+export function waitForSocket(path: string, child: ChildProcessHandle, signal: AbortSignal, timeoutMs: number) {
   const deadline = Date.now() + timeoutMs
   return new Promise<void>((resolve, reject) => {
+    let permissionMismatchSince: number | undefined
+    let pendingSocketIdentity: string | undefined
     const inspect = async () => {
       if (signal.aborted) return reject(signal.reason ?? new Error("aborted"))
       if (Date.now() >= deadline) return reject(fail("startup", "timed out waiting for the supervisor socket"))
       try {
         const stat = lstatSync(path)
-        if (
-          !stat.isSocket() ||
-          stat.isSymbolicLink() ||
-          (stat.mode & 0o777) !== 0o600 ||
-          (process.getuid && stat.uid !== process.getuid())
-        ) {
+        if (!stat.isSocket() || stat.isSymbolicLink() || (process.getuid && stat.uid !== process.getuid())) {
           return reject(fail("authentication", "supervisor socket permissions or owner are invalid"))
+        }
+        const identity = `${stat.dev}:${stat.ino}`
+        if (pendingSocketIdentity && pendingSocketIdentity !== identity)
+          return reject(fail("authentication", "supervisor socket changed during startup"))
+        if ((stat.mode & 0o777) !== 0o600) {
+          // UnixPeerListener binds and then applies 0600. The inode becomes visible
+          // during that small interval. Wait briefly for that exact owner-owned inode
+          // to be hardened; a persistent insecure socket still fails closed.
+          pendingSocketIdentity ??= identity
+          permissionMismatchSince ??= Date.now()
+          if (Date.now() - permissionMismatchSince >= SOCKET_PERMISSION_SETTLE_MS)
+            return reject(fail("authentication", "supervisor socket permissions or owner are invalid"))
+          const running = await Effect.runPromise(child.isRunning).catch(() => false)
+          if (!running) return reject(fail("startup", `supervisor exited before securing its socket (${path})`))
+          setTimeout(inspect, SOCKET_POLL_INTERVAL_MS)
+          return
         }
         return resolve()
       } catch {
         const running = await Effect.runPromise(child.isRunning).catch(() => false)
         if (!running) return reject(fail("startup", `supervisor exited before binding its socket (${path})`))
-        setTimeout(inspect, 20)
+        setTimeout(inspect, SOCKET_POLL_INTERVAL_MS)
       }
     }
     inspect()
@@ -1242,7 +2338,7 @@ function validateHelloResult(
   nonce: string,
   incarnation: string,
   requiredFeatures: ReadonlyArray<string>,
-): number {
+): { readonly ownerEpoch: number; readonly enabledFeatures: ReadonlyArray<string> } {
   const message = record(input)
   if (message.kind !== "hello_result" || message.protocol !== PROTOCOL) {
     throw fail("handshake", "kernel returned an incompatible Hello result")
@@ -1254,10 +2350,15 @@ function validateHelloResult(
   if (!Array.isArray(enabledFeatures) || !requiredFeatures.every((feature) => enabledFeatures.includes(feature))) {
     throw fail("handshake", "kernel did not negotiate required features")
   }
+  if (
+    enabledFeatures.some((feature) => typeof feature !== "string" || feature.length === 0 || feature.length > 128)
+  ) {
+    throw fail("handshake", "kernel returned an invalid enabled feature list")
+  }
   if (!Number.isSafeInteger(message.ownerEpoch) || (message.ownerEpoch as number) < 1) {
     throw fail("handshake", "kernel returned an invalid durable owner epoch")
   }
-  return message.ownerEpoch as number
+  return { ownerEpoch: message.ownerEpoch as number, enabledFeatures: enabledFeatures as string[] }
 }
 
 function readOwnerEpoch(path: string): number {
@@ -1359,7 +2460,7 @@ async function establishChannel(
   })
   const reply = record(await channel.receive())
   if (reply.kind === "hello_rejected") throw fail("handshake", "kernel rejected protocol or required features")
-  const ownerEpoch = validateHelloResult(reply, nonce, incarnation, REQUIRED_FEATURES)
+  const { ownerEpoch } = validateHelloResult(reply, nonce, incarnation, REQUIRED_FEATURES)
   channel.setFrameFence(ownerEpoch, incarnation)
   for (let count = 0; count < 16; count++) {
     const status = startupStatus(await channel.receive())
@@ -1400,11 +2501,11 @@ async function establishHostChannel(
     processIncarnation: incarnation,
     supervisorNonce: nonce,
     requiredFeatures: [...REQUIRED_HOST_FEATURES],
-    optionalFeatures: [],
+    optionalFeatures: [...OPTIONAL_HOST_FEATURES],
   })
   const reply = record(await channel.receive())
   if (reply.kind === "hello_rejected") throw fail("handshake", "host kernel rejected protocol or required features")
-  const ownerEpoch = validateHelloResult(reply, nonce, incarnation, REQUIRED_HOST_FEATURES)
+  const { ownerEpoch, enabledFeatures } = validateHelloResult(reply, nonce, incarnation, REQUIRED_HOST_FEATURES)
   channel.setFrameFence(ownerEpoch, incarnation)
   const epochPath = join(stateDirectory, "owner-epoch")
   const previousEpoch = readOwnerEpoch(epochPath)
@@ -1419,7 +2520,7 @@ async function establishHostChannel(
   if (canonicalState !== stateDirectory || !canonicalBinary.startsWith("/")) {
     throw fail("configuration", "host-kernel paths are not canonical")
   }
-  return new HostKernelClientImpl(channel, child, ownerEpoch)
+  return new HostKernelClientImpl(channel, child, ownerEpoch, enabledFeatures)
 }
 
 function openHostKernel(input: {
@@ -1630,19 +2731,60 @@ class HostKernelClientImpl {
   #pump: Promise<void>
   #stopPromise: Promise<void> | undefined
   readonly ownerEpoch: number
+  /** Features the host negotiated in its hello, including optional ones it advertised. */
+  readonly enabledFeatures: ReadonlyArray<string>
 
-  constructor(channel: MessageChannel, child: ChildProcessHandle, ownerEpoch: number) {
+  constructor(
+    channel: MessageChannel,
+    child: ChildProcessHandle,
+    ownerEpoch: number,
+    enabledFeatures: ReadonlyArray<string> = [],
+  ) {
     this.#channel = channel
     this.#child = child
     this.ownerEpoch = ownerEpoch
+    this.enabledFeatures = [...enabledFeatures]
     this.#pump = this.#receive()
     void this.#pump.catch(() => undefined)
   }
 
-  async request(serviceID: string, operation: string, body: Readonly<Record<string, unknown>>) {
+  async request(
+    serviceID: string,
+    operation: string,
+    body: Readonly<Record<string, unknown>>,
+    signal?: AbortSignal,
+    deliveryID?: string,
+    trustedPrincipal?: TrustedPrincipal,
+    authenticatedContext?: AuthenticatedRequestContextV1,
+  ) {
     if (this.#closed) throw fail("effect", "host kernel channel is closed")
     if (!serviceID || serviceID.length > 128 || !operation || operation.length > 128)
       throw fail("effect", "RPC service or operation is invalid")
+    // `managed.v1` mutating operations are one-use-keyed. The key is the caller's
+    // idempotency fence: an exact retry of the same logical operation is safe, while
+    // reuse for a different command fails closed in the kernel.
+    if (deliveryID !== undefined && !/^[A-Za-z0-9._-]{1,200}$/.test(deliveryID))
+      throw fail("protocol", "RPC delivery id is invalid")
+    if (
+      trustedPrincipal?.kind === "server_auth" &&
+      (!trustedPrincipal.subject || trustedPrincipal.subject.length > 256 || /[\x00-\x1f\x7f]/u.test(trustedPrincipal.subject))
+    ) {
+      throw fail("protocol", "authenticated ServerAuth subject is invalid")
+    }
+    const isRepoIntelRead =
+      serviceID === "repo-intel.v1" && (operation === "query_structure" || operation === "ensure_generation")
+    if (isRepoIntelRead || authenticatedContext) {
+      if (
+        !isRepoIntelRead ||
+        !authenticatedContext ||
+        trustedPrincipal?.kind !== "server_auth" ||
+        !this.enabledFeatures.includes(REPO_INTEL_READ_CONTEXT_FEATURE) ||
+        !/^ses_[A-Za-z0-9_-]{1,128}$/.test(authenticatedContext.sessionID) ||
+        !/^loc_[0-9a-f]{64}$/.test(authenticatedContext.locationID)
+      ) {
+        throw fail("protocol", "authenticated RepoIntel context is unavailable or invalid")
+      }
+    }
     if (this.#pendingRequests.size >= 16) throw fail("effect", "too many pending host requests")
     const requestID = `req_${randomUUID().replaceAll("-", "")}`
     let resolve!: (value: Record<string, unknown>) => void
@@ -1652,13 +2794,38 @@ class HostKernelClientImpl {
       reject = rejectPromise
     })
     void response.catch(() => undefined)
+    // `terminal.run` owns a separate process deadline. Keep one generic RPC window
+    // afterward for ExecutionHost to observe termination and durably settle UNKNOWN;
+    // the 30-second wire deadline still fences request admission.
+    const terminalRunTimeoutMs =
+      serviceID === "terminal.v1" &&
+      operation === "run" &&
+      typeof body.timeoutMs === "number" &&
+      Number.isSafeInteger(body.timeoutMs) &&
+      body.timeoutMs > 0 &&
+      body.timeoutMs <= 600_000
+        ? Math.max(30_000, body.timeoutMs + 30_000)
+        : 30_000
     const timer = setTimeout(() => {
       this.#pendingRequests.delete(requestID)
       this.#expiredRequestIDs.push(requestID)
       if (this.#expiredRequestIDs.length > 64) this.#expiredRequestIDs.shift()
       reject(fail("effect", "host kernel request timed out"))
-    }, 30_000)
+    }, terminalRunTimeoutMs)
     this.#pendingRequests.set(requestID, { resolve, reject, timer })
+    let requestSent = false
+    let cancellationPending = false
+    let cancellationSent = false
+    const cancelRequest = () => {
+      if (!signal?.aborted || cancellationSent) return
+      if (!requestSent) {
+        cancellationPending = true
+        return
+      }
+      cancellationSent = true
+      void this.#channel.send({ kind: "cancel_request", requestId: requestID }).catch(() => undefined)
+    }
+    signal?.addEventListener("abort", cancelRequest, { once: true })
     try {
       await this.#channel.send({
         protocol: PROTOCOL,
@@ -1666,16 +2833,34 @@ class HostKernelClientImpl {
         requestId: requestID,
         serviceId: serviceID,
         operation,
+        ...(deliveryID === undefined ? {} : { deliveryId: deliveryID }),
         deadlineUnixMs: BigInt(Date.now() + 30_000),
         traceId: randomUUID(),
+        ...(trustedPrincipal?.kind === "server_auth"
+          ? { authenticatedPrincipal: { kind: "server_auth", subject: trustedPrincipal.subject } }
+          : {}),
+        ...(authenticatedContext === undefined
+          ? {}
+          : {
+              authenticatedContext: {
+                kind: "repo_read",
+                sessionID: authenticatedContext.sessionID,
+                locationID: authenticatedContext.locationID,
+              },
+            }),
         body,
       })
+      requestSent = true
+      if (cancellationPending || signal?.aborted) cancelRequest()
     } catch {
+      signal?.removeEventListener("abort", cancelRequest)
       clearTimeout(timer)
       this.#pendingRequests.delete(requestID)
       reject(fail("transport", "could not send host kernel request"))
     }
-    return response
+    const result = response.finally(() => signal?.removeEventListener("abort", cancelRequest))
+    void result.catch(() => undefined)
+    return result
   }
 
   async subscribe(
@@ -1739,7 +2924,7 @@ class HostKernelClientImpl {
           }
           clearTimeout(pending.timer)
           this.#pendingRequests.delete(response.requestID)
-          if (response.outcome === "error") pending.reject(fail("effect", response.message))
+          if (response.outcome === "error") pending.reject(fail("effect", response.message, undefined, response.code))
           else pending.resolve(response.body)
           continue
         }
@@ -2084,10 +3269,49 @@ const layer = Layer.effect(
       serviceID: string,
       operation: string,
       body: Readonly<Record<string, unknown>>,
+      options?: {
+        readonly cancelOnInterrupt?: boolean
+        readonly deliveryID?: string
+        readonly trustedPrincipal?: TrustedPrincipal
+        readonly authenticatedContext?: AuthenticatedRequestContextV1
+      },
     ) {
       if (!hostKernelClient) return yield* Effect.fail(fail("host-kernel", "host kernel is unavailable"))
+      if (
+        options?.cancelOnInterrupt &&
+        !(
+          (serviceID === "terminal.v1" && operation === "run") ||
+          (serviceID === "repo-intel.v1" && (operation === "query_structure" || operation === "ensure_generation"))
+        )
+      ) {
+        return yield* Effect.fail(fail("protocol", "host request cancellation is unavailable for this operation"))
+      }
+      if (options?.deliveryID !== undefined && !/^[A-Za-z0-9._-]{1,200}$/.test(options.deliveryID)) {
+        return yield* Effect.fail(fail("protocol", "host request delivery id is invalid"))
+      }
+      const isRepoIntelRead =
+        serviceID === "repo-intel.v1" && (operation === "query_structure" || operation === "ensure_generation")
+      if (isRepoIntelRead || options?.authenticatedContext) {
+        if (
+          !isRepoIntelRead ||
+          !options?.authenticatedContext ||
+          options.trustedPrincipal?.kind !== "server_auth" ||
+          !hostKernelClient.enabledFeatures.includes(REPO_INTEL_READ_CONTEXT_FEATURE)
+        ) {
+          return yield* Effect.fail(fail("protocol", "authenticated RepoIntel context is unavailable"))
+        }
+      }
       return yield* Effect.tryPromise({
-        try: () => hostKernelClient!.request(serviceID, operation, body),
+        try: (signal) =>
+          hostKernelClient!.request(
+            serviceID,
+            operation,
+            body,
+            options?.cancelOnInterrupt ? signal : undefined,
+            options?.deliveryID,
+            options?.trustedPrincipal,
+            options?.authenticatedContext,
+          ),
         catch: (error) =>
           error instanceof SessionSupervisorError ? error : fail("host-kernel", "host kernel request failed"),
       })
@@ -2246,6 +3470,11 @@ const layer = Layer.effect(
       if (!validPrincipal || !samePrincipal) {
         return yield* Effect.fail(fail("approval-not-found", "Guard approval was not found", "approval-not-found"))
       }
+      if (input.decision === "allow_once" && !pending.request.allowEnabled) {
+        return yield* Effect.fail(
+          fail("approval-invalid", "Guard allow is unavailable until consent guarantees are assessed", "approval-invalid"),
+        )
+      }
       if (Date.now() >= pending.request.expiresAtUnixMs) {
         pendingApprovals.delete(input.approvalID)
         closedApprovals.set(input.approvalID, Date.now())
@@ -2266,22 +3495,26 @@ const layer = Layer.effect(
     })
     const registeredLocations = new Map<string, string>()
     const locationBySession = new Map<string, string>()
-    const registerHostLocation = Effect.fn("SessionSupervisor.registerHostLocation")(function* (
+    const registerHostLocationFor = Effect.fn("SessionSupervisor.registerHostLocationFor")(function* (
       locationRef: typeof LocationSchema.Ref.Type,
+      principal: TrustedPrincipal,
     ) {
       if (!hostKernelClient) return yield* Effect.fail(fail("host-kernel", "host kernel is unavailable"))
+      if (principal.kind !== "server_auth" || !principal.subject) {
+        return yield* Effect.fail(fail("authorization", "Location registration requires authenticated ServerAuth context"))
+      }
       const root = locationRef?.directory
       const workspaceID = locationRef?.workspaceID
       if (typeof root !== "string" || root.length === 0 || Buffer.byteLength(root, "utf8") > 4096) {
         return yield* Effect.fail(fail("location", "Location root is invalid"))
       }
-      const key = `${root}\0${workspaceID ?? ""}`
+      const key = `${principal.subject}\0${root}\0${workspaceID ?? ""}`
       const registered = registeredLocations.get(key)
       if (registered) return registered
       const response = yield* requestHostKernel("effects.v2", "register_location", {
         canonicalRoot: root,
         ...(workspaceID === undefined ? {} : { workspaceID }),
-      })
+      }, { trustedPrincipal: principal })
       if (
         response.status !== "registered" ||
         typeof response.locationID !== "string" ||
@@ -2291,6 +3524,105 @@ const layer = Layer.effect(
       }
       registeredLocations.set(key, response.locationID)
       return response.locationID
+    })
+    const registerHostLocation = Effect.fn("SessionSupervisor.registerHostLocation")(function* (
+      locationRef: typeof LocationSchema.Ref.Type,
+    ) {
+      const trusted = yield* TrustedPrincipalContext
+      return yield* registerHostLocationFor(locationRef, trusted.principal)
+    })
+    const queryRepoStructure = Effect.fn("SessionSupervisor.queryRepoStructure")(function* (input: {
+      readonly sessionID: string
+      readonly locationRef: typeof LocationSchema.Ref.Type
+      readonly query: Omit<typeof RepoStructureQueryV1.Type, "sourceGeneration">
+    }) {
+      if (!/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID)) {
+        return yield* Effect.fail(fail("protocol", "RepoIntel Session ID is invalid"))
+      }
+      // An overlay reference has no Core snapshot owner. The gate runs before
+      // Location registration or generation acquisition can collect workspace files.
+      return yield* withRepoIntelOverlayGate({
+        overlayRef: input.query.overlayRef,
+        unavailable: () => fail("host-kernel", "RepoIntel overlays are unavailable", undefined, "capability_unavailable"),
+        dispatch: () => Effect.gen(function* () {
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject) {
+        return yield* Effect.fail(fail("authorization", "RepoIntel requires authenticated ServerAuth context"))
+      }
+      if (!hostKernelClient?.enabledFeatures.includes(REPO_INTEL_READ_CONTEXT_FEATURE)) {
+        return yield* Effect.fail(fail("host-kernel-feature", "authenticated RepoIntel reads are unavailable"))
+      }
+      const requestId = input.query.queryId
+      const ensureRequest = yield* Effect.try({
+        try: () => Schema.encodeSync(RepoGenerationRequestV1)({
+          schemaVersion: 1,
+          messageType: "ensure_generation",
+          requestId,
+          rootRef: input.query.rootRef,
+          maxFiles: 4096,
+          maxBytes: 67_108_864,
+          maxFileBytes: 1_048_576,
+          deadline: input.query.deadline,
+        }),
+        catch: () => fail("protocol", "RepoIntel generation request does not match the strict schema"),
+      })
+      const locationID = yield* registerHostLocation(input.locationRef)
+      const authenticatedContext = { kind: "repo_read" as const, sessionID: input.sessionID, locationID }
+      const generationResponse = yield* requestHostKernel("repo-intel.v1", "ensure_generation", ensureRequest, {
+        cancelOnInterrupt: true,
+        trustedPrincipal: trusted.principal,
+        authenticatedContext,
+      })
+      const generationPin = yield* Effect.try({
+        try: () => Schema.decodeUnknownSync(RepoGenerationPinV1, { onExcessProperty: "error" })(generationResponse),
+        catch: () => fail("protocol", "HostKernel returned an invalid RepoIntel generation pin"),
+      })
+      const now = Date.now()
+      const pinExpiresAt = Date.parse(generationPin.expiresAt)
+      const deadlineAt = Date.parse(input.query.deadline)
+      if (
+        generationPin.requestId !== requestId ||
+        !Number.isFinite(pinExpiresAt) ||
+        pinExpiresAt <= now ||
+        pinExpiresAt > now + 5 * 60_000 ||
+        !Number.isFinite(deadlineAt) ||
+        deadlineAt <= now ||
+        deadlineAt > now + 5 * 60_000 ||
+        pinExpiresAt > deadlineAt ||
+        generationPin.coverage.files > 4096 ||
+        generationPin.coverage.bytes > 67_108_864
+      ) {
+        return yield* Effect.fail(fail("stale-generation", "RepoIntel generation pin or deadline expired", undefined, "stale_generation"))
+      }
+      const query = yield* Effect.try({
+        try: () => Schema.encodeSync(RepoStructureQueryV1)({
+          ...input.query,
+          sourceGeneration: generationPin.sourceGeneration,
+        }),
+        catch: () => fail("protocol", "RepoIntel query does not match the strict query schema"),
+      })
+      const response = yield* requestHostKernel("repo-intel.v1", "query_structure", query, {
+        cancelOnInterrupt: true,
+        trustedPrincipal: trusted.principal,
+        authenticatedContext,
+      })
+      const page = yield* Effect.try({
+        try: () => Schema.decodeUnknownSync(RepoStructurePageV1, { onExcessProperty: "error" })(response),
+        catch: () => fail("protocol", "HostKernel returned an invalid RepoIntel page"),
+      })
+      if (
+        page.status === "STALE" ||
+        page.freshness === "stale" ||
+        page.queryId !== requestId ||
+        page.workspaceBinding !== generationPin.workspaceBinding ||
+        page.sourceGeneration !== generationPin.sourceGeneration ||
+        page.sourceRevision !== generationPin.sourceRevision
+      ) {
+        return yield* Effect.fail(fail("stale-generation", "RepoIntel source changed after generation acquisition", undefined, "stale_generation"))
+      }
+      return page
+        }),
+      })
     })
     const awaitGuardApproval = Effect.fn("SessionSupervisor.awaitGuardApproval")(function* (
       request: GuardApprovalRequest,
@@ -2347,7 +3679,7 @@ const layer = Layer.effect(
         userActionID: `action_${randomUUID().replaceAll("-", "")}`,
         capabilityID: input.capabilityID,
         arguments: input.arguments,
-      })
+      }, { trustedPrincipal: trusted.principal })
       if (response.status === "prepared") {
         const lease = yield* Effect.try({
           try: () => parseCapabilityLease(response),
@@ -2370,6 +3702,11 @@ const layer = Layer.effect(
           const expiresAtUnixMs = wireUnixMs(response.expiresAtUnixMs)
           const normalizedTargets = response.normalizedTargets
           const policySummary = stringField(response, "policySummary", 1024)
+          const consent = validateGuardConsentProjection(response, {
+            capabilityID,
+            origin: "user_action",
+            source: "authenticated.user_action",
+          })
           if (
             capabilityID !== input.capabilityID ||
             responseLocationID !== locationID ||
@@ -2394,16 +3731,20 @@ const layer = Layer.effect(
             normalizedTargets,
             expiresAtUnixMs,
             policySummary,
+            ...consent,
           }
         },
         catch: (error) =>
           error instanceof SessionSupervisorError ? error : fail("protocol", "host returned an invalid approval challenge"),
       })
       const decision = yield* awaitGuardApproval(challenge, trusted.principal, input.locationRef)
+      if (decision === "allow_once" && !challenge.allowEnabled) {
+        return yield* Effect.fail(fail("authorization", "Guard allow is unavailable without assessed guarantees"))
+      }
       const resolved = yield* requestHostKernel("effects.v2", "resolve_approval", {
         challengeID: challenge.challengeID,
         decision,
-      })
+      }, { trustedPrincipal: trusted.principal })
       if (decision !== "allow_once") return yield* Effect.fail(fail("authorization", "Guard approval was denied"))
       if (resolved.status !== "approved") {
         return yield* Effect.fail(fail("authorization", "host rejected Guard approval"))
@@ -2418,13 +3759,88 @@ const layer = Layer.effect(
       }
       return { ...lease, locationID }
     })
+    const awaitManagedVerifierApprovals = Effect.fn("SessionSupervisor.awaitManagedVerifierApprovals")(function* (input: {
+      readonly locationRef: typeof LocationSchema.Ref.Type
+      readonly sessionID?: string
+      readonly challenges: ReadonlyArray<ManagedVerifierGuardChallengeV1>
+    }) {
+      const trusted = yield* TrustedPrincipalContext
+      const locationID = yield* registerHostLocation(input.locationRef)
+      const challenges = yield* Effect.try({
+        try: () => validateManagedVerifierChallenges(locationID, input.challenges),
+        catch: (error) =>
+          error instanceof SessionSupervisorError
+            ? error
+            : fail("protocol", "managed verifier challenge set is invalid"),
+      })
+      if (input.sessionID !== undefined && !/^[A-Za-z0-9._-]{1,256}$/.test(input.sessionID)) {
+        return yield* Effect.fail(fail("protocol", "managed verifier Session ID is invalid"))
+      }
+      const requests = challenges.map((challenge): GuardApprovalRequest => ({
+        approvalID: `approval_${randomUUID().replaceAll("-", "")}`,
+        challengeID: challenge.challengeID,
+        effectID: challenge.effectID,
+        capabilityID: challenge.capabilityID,
+        locationID,
+        ...(input.sessionID === undefined ? {} : { sessionID: input.sessionID }),
+        inputDigest: challenge.inputDigest,
+        normalizedTargets: challenge.normalizedTargets,
+        expiresAtUnixMs: challenge.expiresAtUnixMs,
+        policySummary: challenge.policySummary,
+        origin: challenge.origin,
+        source: challenge.source,
+        policyID: challenge.policyID,
+        policyDigest: challenge.policyDigest,
+        normalizedAction: challenge.normalizedAction,
+        argumentSummary: challenge.argumentSummary,
+        requestedGuarantees: challenge.requestedGuarantees,
+        guaranteeAssessment: challenge.guaranteeAssessment,
+        runID: challenge.runID,
+        noResponse: challenge.noResponse,
+        allowEnabled: challenge.allowEnabled,
+      }))
+      const retirePending = Effect.forEach(
+        requests,
+        (request) =>
+          Effect.gen(function* () {
+            const pending = pendingApprovals.get(request.approvalID)
+            if (!pending) return
+            pendingApprovals.delete(request.approvalID)
+            closedApprovals.set(request.approvalID, Date.now())
+            yield* Deferred.fail(pending.decision, fail("approval-conflict", "verifier challenge set was interrupted"))
+            yield* events.publish(
+              GuardApprovalResolved,
+              { approvalID: request.approvalID, decision: "expired" },
+              { location: input.locationRef },
+            ).pipe(Effect.ignore)
+          }),
+        { concurrency: "unbounded" },
+      ).pipe(Effect.asVoid)
+      const collectDecisions = collectManagedVerifierApprovalDecisions(challenges, (challenge) => {
+        const request = requests.find((candidate) => candidate.challengeID === challenge.challengeID)!
+        return awaitGuardApproval(request, trusted.principal, input.locationRef).pipe(
+          Effect.filterOrFail(
+            (decision) => decision !== "allow_once" || request.allowEnabled,
+            () => fail("authorization", "Guard allow is unavailable without assessed guarantees"),
+          ),
+        )
+      })
+      return yield* Effect.ensuring(collectDecisions, retirePending)
+    })
     const prepareToolBatch = Effect.fn("SessionSupervisor.prepareToolBatch")(function* (input: {
       readonly sessionID: string
       readonly locationRef: typeof LocationSchema.Ref.Type
       readonly batchID: string
       readonly turnContextDigest: string
       readonly calls: ReadonlyArray<GuardedToolCall>
+      readonly directAttempt?: DirectAttemptScopeV1
+      readonly managedAttempt?: ManagedAttemptScopeV1
     }) {
+      if (input.directAttempt && input.managedAttempt) {
+        return yield* Effect.fail(fail("protocol", "ToolBatch cannot carry both Attempt lanes"))
+      }
+      yield* Effect.try({ try: () => validateToolBatchCalls(input.calls), catch: (error) =>
+        error instanceof SessionSupervisorError ? error : fail("protocol", "ToolBatch is invalid") })
       for (const call of input.calls) {
         if (call.capabilityID !== "files.patch") continue
         yield* Effect.try({
@@ -2441,17 +3857,24 @@ const layer = Layer.effect(
       }
       const locationID = yield* registerHostLocation(input.locationRef)
       locationBySession.set(input.sessionID, locationID)
-      const response = yield* requestHostKernel("effects.v2", "prepare_tool_batch", {
-        sessionID: input.sessionID,
-        locationID,
-        batchID: input.batchID,
-        turnContextDigest: input.turnContextDigest,
-        calls: input.calls.map((call) => ({
-          callID: call.callID,
-          capabilityID: call.capabilityID,
-          arguments: call.arguments,
-        })),
-      })
+      // Preserve request ordering against cancel_batch. If the prompt is interrupted while
+      // this RPC is in flight, wait for its durable PREPARE result before the caller sends
+      // cancellation; the following approval wait remains interruptible.
+      const response = yield* Effect.uninterruptible(
+        requestHostKernel("effects.v2", "prepare_tool_batch", {
+          sessionID: input.sessionID,
+          locationID,
+          batchID: input.batchID,
+          turnContextDigest: input.turnContextDigest,
+          ...(input.directAttempt ? { directAttempt: directAttemptScopeToWire(input.directAttempt) } : {}),
+          ...(input.managedAttempt ? { managedAttempt: managedAttemptScopeToWire(input.managedAttempt) } : {}),
+          calls: input.calls.map((call) => ({
+            callID: call.callID,
+            capabilityID: call.capabilityID,
+            arguments: call.arguments,
+          })),
+        }),
+      )
       if (response.status === "denied") {
         const reason = response.reason
         return {
@@ -2462,6 +3885,34 @@ const layer = Layer.effect(
               : "Guard denied the complete tool batch",
         }
       }
+      const refreshedDirectAttempt = response.status === "prepared" && input.directAttempt
+        ? yield* Effect.try({
+            try: () => {
+              const refreshed = directAttemptScopeFromWire(response.directAttempt)
+              if (response.attemptScopeTransition !== "batch_bind" ||
+                !isNextDirectAttemptScopeCore(input.directAttempt!, refreshed)) {
+                throw fail("protocol", "HostKernel returned a stale direct Attempt batch scope")
+              }
+              return refreshed
+            },
+            catch: (error) => error instanceof SessionSupervisorError
+              ? error : fail("protocol", "HostKernel returned an invalid direct Attempt scope"),
+          })
+        : undefined
+      const refreshedManagedAttempt = response.status === "prepared" && input.managedAttempt
+        ? yield* Effect.try({
+            try: () => {
+              const refreshed = managedAttemptScopeFromWire(response.managedAttempt)
+              if (response.attemptScopeTransition !== "batch_bind" ||
+                !isNextManagedAttemptScopeCore(input.managedAttempt!, refreshed)) {
+                throw fail("protocol", "HostKernel returned a stale managed Attempt batch scope")
+              }
+              return refreshed
+            },
+            catch: (error) => error instanceof SessionSupervisorError
+              ? error : fail("protocol", "HostKernel returned an invalid managed Attempt scope"),
+          })
+        : undefined
       if (response.status === "prepared") {
         const lease = yield* Effect.try({
           try: () => {
@@ -2475,10 +3926,209 @@ const layer = Layer.effect(
           catch: (error) =>
             error instanceof SessionSupervisorError ? error : fail("protocol", "host returned an invalid Guard lease"),
         })
-        return { status: "prepared" as const, lease }
+        return {
+          status: "prepared" as const,
+          lease,
+          ...(refreshedDirectAttempt ? { directAttempt: refreshedDirectAttempt } : {}),
+          ...(refreshedManagedAttempt ? { managedAttempt: refreshedManagedAttempt } : {}),
+        }
       }
       if (response.status !== "needs_approval") {
         return yield* Effect.fail(fail("protocol", "Rust returned an invalid effect challenge"))
+      }
+      if (Array.isArray(response.calls)) {
+        // Complete multi-call admission. It is only reachable once the host negotiates
+        // `effects.v2.multi-call`: the Rust HostKernel/EffectHost multi-call contract,
+        // cancellation routing and receipt reconciliation must be accepted first.
+        if (input.calls.length < 2) {
+          return yield* Effect.fail(fail("protocol", "host returned a multi-call challenge for a single call"))
+        }
+        if (!(hostKernelClient?.enabledFeatures ?? []).includes(MULTI_CALL_BATCH_FEATURE)) {
+          return yield* Effect.fail(fail("capability", "host did not negotiate multi-call tool batches"))
+        }
+        const currentAttempt: {
+          direct?: DirectAttemptScopeV1
+          managed?: ManagedAttemptScopeV1
+        } = {
+          ...(input.directAttempt ? { direct: input.directAttempt } : {}),
+          ...(input.managedAttempt ? { managed: input.managedAttempt } : {}),
+        }
+        const resolveApprovedSet = (request: {
+          readonly sessionID: string
+          readonly locationID: string
+          readonly batchID: string
+          readonly challengeIDs: ReadonlyArray<string>
+        }) =>
+          Effect.gen(function* () {
+            const resolved = yield* requestHostKernel("effects.v2", "resolve_approval_set", {
+              sessionID: request.sessionID,
+              locationID: request.locationID,
+              batchID: request.batchID,
+              challengeIDs: request.challengeIDs,
+            })
+            const serialAttempt = resolved.nextLeaseRequired === true
+            if (resolved.status !== "approved_set" || resolved.batchID !== request.batchID ||
+              !Array.isArray(resolved.leases) ||
+              resolved.leases.length !== (serialAttempt ? 1 : request.challengeIDs.length)) {
+              return yield* Effect.fail(fail("authorization", "HostKernel rejected the complete Guard approval set"))
+            }
+            const leases = yield* Effect.try({
+              try: () => resolved.leases.map((raw) => {
+                const item = record(raw)
+                const challengeID = stringField(item, "challengeID")
+                if (!request.challengeIDs.includes(challengeID)) throw fail("protocol", "HostKernel returned an unknown challenge")
+                return { challengeID, lease: parseCapabilityLease(item) }
+              }),
+              catch: (error) => error instanceof SessionSupervisorError
+                ? error : fail("protocol", "HostKernel returned an invalid approval lease set"),
+            })
+            const byChallenge = new Map(leases.map((item) => [item.challengeID, item.lease]))
+            if (byChallenge.size !== (serialAttempt ? 1 : request.challengeIDs.length) ||
+              [...byChallenge.keys()].some((id) => !request.challengeIDs.includes(id)) ||
+              (!serialAttempt && request.challengeIDs.some((id) => !byChallenge.has(id)))) {
+              return yield* Effect.fail(fail("protocol", "HostKernel returned a mismatched approval lease set"))
+            }
+            const refreshedDirectAttempt = input.directAttempt
+              ? yield* Effect.try({
+                  try: () => {
+                    const refreshed = directAttemptScopeFromWire(resolved.directAttempt)
+                    if (resolved.attemptScopeTransition !== "batch_bind" ||
+                      !isNextDirectAttemptScopeCore(input.directAttempt!, refreshed)) {
+                      throw fail("protocol", "HostKernel returned a stale direct Attempt batch scope")
+                    }
+                    return refreshed
+                  },
+                  catch: (error) => error instanceof SessionSupervisorError
+                    ? error : fail("protocol", "HostKernel returned an invalid direct Attempt scope"),
+                })
+              : undefined
+            const refreshedManagedAttempt = input.managedAttempt
+              ? yield* Effect.try({
+                  try: () => {
+                    const refreshed = managedAttemptScopeFromWire(resolved.managedAttempt)
+                    if (resolved.attemptScopeTransition !== "batch_bind" ||
+                      !isNextManagedAttemptScopeCore(input.managedAttempt!, refreshed)) {
+                      throw fail("protocol", "HostKernel returned a stale managed Attempt batch scope")
+                    }
+                    return refreshed
+                  },
+                  catch: (error) => error instanceof SessionSupervisorError
+                    ? error : fail("protocol", "HostKernel returned an invalid managed Attempt scope"),
+                })
+              : undefined
+            if (serialAttempt && !refreshedDirectAttempt && !refreshedManagedAttempt) {
+              return yield* Effect.fail(fail("protocol", "HostKernel requested serial Attempt leases without a refreshed scope"))
+            }
+            if (refreshedDirectAttempt) currentAttempt.direct = refreshedDirectAttempt
+            if (refreshedManagedAttempt) currentAttempt.managed = refreshedManagedAttempt
+            const scopedLeases = leases.map((item) => ({
+              ...item,
+              lease: {
+                ...item.lease,
+                ...(refreshedDirectAttempt ? { directAttempt: refreshedDirectAttempt } : {}),
+                ...(refreshedManagedAttempt ? { managedAttempt: refreshedManagedAttempt } : {}),
+              },
+            }))
+            return {
+              leases: scopedLeases,
+              ...(refreshedDirectAttempt ? { directAttempt: refreshedDirectAttempt } : {}),
+              ...(refreshedManagedAttempt ? { managedAttempt: refreshedManagedAttempt } : {}),
+              ...(serialAttempt ? { nextLeaseRequired: true } : {}),
+            }
+          })
+        const leaseNextEffect = (request: {
+          readonly sessionID: string
+          readonly locationID: string
+          readonly batchID: string
+          readonly previousEffectID: string
+        }) => Effect.gen(function* () {
+          const response = yield* requestHostKernel("effects.v2", "lease_next_batch_effect", {
+            sessionID: request.sessionID,
+            locationID: request.locationID,
+            batchID: request.batchID,
+            previousEffectID: request.previousEffectID,
+          })
+          if (response.status !== "approved_next" || response.batchID !== request.batchID) {
+            return yield* Effect.fail(fail("authorization", "HostKernel rejected the next serialized Attempt lease"))
+          }
+          const lease = yield* Effect.try({
+            try: () => parseCapabilityLease(record(response)),
+            catch: (error) => error instanceof SessionSupervisorError
+              ? error : fail("protocol", "HostKernel returned an invalid next Attempt lease"),
+          })
+          const directAttempt = currentAttempt.direct
+            ? yield* Effect.try({
+                try: () => {
+                  const next = directAttemptScopeFromWire(response.directAttempt)
+                  if (response.attemptScopeTransition !== "effect_receipt" ||
+                    !isReceiptAdvancedDirectAttemptScopeCore(currentAttempt.direct!, next)) {
+                    throw fail("protocol", "HostKernel returned a stale direct Attempt receipt scope")
+                  }
+                  return next
+                },
+                catch: (error) => error instanceof SessionSupervisorError
+                  ? error : fail("protocol", "HostKernel returned an invalid direct Attempt receipt scope"),
+              })
+            : undefined
+          const managedAttempt = currentAttempt.managed
+            ? yield* Effect.try({
+                try: () => {
+                  const next = managedAttemptScopeFromWire(response.managedAttempt)
+                  if (response.attemptScopeTransition !== "effect_receipt" ||
+                    !isReceiptAdvancedManagedAttemptScopeCore(currentAttempt.managed!, next)) {
+                    throw fail("protocol", "HostKernel returned a stale managed Attempt receipt scope")
+                  }
+                  return next
+                },
+                catch: (error) => error instanceof SessionSupervisorError
+                  ? error : fail("protocol", "HostKernel returned an invalid managed Attempt receipt scope"),
+              })
+            : undefined
+          if ((!directAttempt && !managedAttempt) || lease.effectID !== response.effectID) {
+            return yield* Effect.fail(fail("protocol", "HostKernel omitted the refreshed scope for a serialized lease"))
+          }
+          if (directAttempt) currentAttempt.direct = directAttempt
+          if (managedAttempt) currentAttempt.managed = managedAttempt
+          return {
+            challengeID: stringField(response, "challengeID"),
+            lease: {
+              ...lease,
+              ...(directAttempt ? { directAttempt } : {}),
+              ...(managedAttempt ? { managedAttempt } : {}),
+            },
+            ...(directAttempt ? { directAttempt } : {}),
+            ...(managedAttempt ? { managedAttempt } : {}),
+          }
+        })
+        const relayed = yield* relayMultiCallToolBatch(
+          {
+            sessionID: input.sessionID,
+            batchID: input.batchID,
+            locationID,
+            calls: input.calls,
+            response,
+          },
+          {
+            requestApproval: (request) => awaitGuardApproval(request, undefined, input.locationRef),
+            resolveApprovalSet: resolveApprovedSet,
+            leaseNextEffect,
+            cancelBatch: (value) =>
+              requestHostKernel("effects.v2", "cancel_batch", {
+                locationID,
+                sessionID: value.sessionID,
+                batchID: value.batchID,
+              }).pipe(Effect.asVoid),
+          },
+        )
+        return {
+          ...relayed,
+          ...(relayed.directAttempt ? { directAttempt: relayed.directAttempt } : {}),
+          ...(relayed.managedAttempt ? { managedAttempt: relayed.managedAttempt } : {}),
+          ...(relayed.directAttempt || relayed.managedAttempt ? { attemptScopeTransition: "batch_bind" as const } : {}),
+        }
+      }
+      if (input.calls.length !== 1) {
+        return yield* Effect.fail(fail("protocol", "host returned a single-call challenge for a multi-call batch"))
       }
       const challenge = yield* Effect.try({
         try: () => {
@@ -2503,6 +4153,11 @@ const layer = Layer.effect(
           const expiresAtUnixMs = wireUnixMs(response.expiresAtUnixMs)
           const normalizedTargets = response.normalizedTargets
           const policySummary = stringField(response, "policySummary", 1024)
+          const consent = validateGuardConsentProjection(response, {
+            capabilityID,
+            origin: "session_batch",
+            source: "core.tool_batch",
+          })
           if (
             targets.length === 0 ||
             challengeLocationID !== locationID ||
@@ -2531,6 +4186,7 @@ const layer = Layer.effect(
               normalizedTargets,
               expiresAtUnixMs,
               policySummary,
+              consent,
             },
           }
         },
@@ -2551,8 +4207,12 @@ const layer = Layer.effect(
         normalizedTargets: details.normalizedTargets,
         expiresAtUnixMs: details.expiresAtUnixMs,
         policySummary: details.policySummary,
+        ...details.consent,
       }
       const decision = yield* awaitGuardApproval(request, undefined, input.locationRef)
+      if (decision === "allow_once" && !request.allowEnabled) {
+        return yield* Effect.fail(fail("authorization", "Guard allow is unavailable without assessed guarantees"))
+      }
       const resolved = yield* requestHostKernel("effects.v2", "resolve_approval", {
         challengeID: challenge.challengeID,
         decision,
@@ -2571,15 +4231,52 @@ const layer = Layer.effect(
       if (lease.effectID !== challenge.effectID) {
         return yield* Effect.fail(fail("protocol", "approval lease does not match its challenge"))
       }
-      return { status: "prepared" as const, lease }
+      const approvedDirectAttempt = input.directAttempt
+        ? yield* Effect.try({
+            try: () => {
+              const refreshed = directAttemptScopeFromWire(resolved.directAttempt)
+              if (resolved.attemptScopeTransition !== "batch_bind" ||
+                !isNextDirectAttemptScopeCore(input.directAttempt!, refreshed)) {
+                throw fail("protocol", "HostKernel returned a stale direct Attempt scope after approval")
+              }
+              return refreshed
+            },
+            catch: (error) => error instanceof SessionSupervisorError
+              ? error : fail("protocol", "HostKernel returned an invalid direct Attempt scope"),
+          })
+        : undefined
+      const approvedManagedAttempt = input.managedAttempt
+        ? yield* Effect.try({
+            try: () => {
+              const refreshed = managedAttemptScopeFromWire(resolved.managedAttempt)
+              if (resolved.attemptScopeTransition !== "batch_bind" ||
+                !isNextManagedAttemptScopeCore(input.managedAttempt!, refreshed)) {
+                throw fail("protocol", "HostKernel returned a stale managed Attempt scope after approval")
+              }
+              return refreshed
+            },
+            catch: (error) => error instanceof SessionSupervisorError
+              ? error : fail("protocol", "HostKernel returned an invalid managed Attempt scope"),
+          })
+        : undefined
+      return {
+        status: "prepared" as const,
+        lease,
+        ...(approvedDirectAttempt ? { directAttempt: approvedDirectAttempt } : {}),
+        ...(approvedManagedAttempt ? { managedAttempt: approvedManagedAttempt } : {}),
+        ...(approvedDirectAttempt || approvedManagedAttempt ? { attemptScopeTransition: "batch_bind" as const } : {}),
+      }
     })
     const executeWrite = Effect.fn("SessionSupervisor.executeWrite")(function* (input: {
       readonly sessionID: string
       readonly locationRef: typeof LocationSchema.Ref.Type
       readonly lease: EffectLease
       readonly content: string
+      readonly directAttempt?: DirectAttemptScopeV1
+      readonly managedAttempt?: ManagedAttemptScopeV1
+      readonly trustedPrincipal: TrustedPrincipal
     }) {
-      const locationID = yield* registerHostLocation(input.locationRef)
+      const locationID = yield* registerHostLocationFor(input.locationRef, input.trustedPrincipal)
       if (!/^blake3:[0-9a-f]{64}$/.test(input.lease.capabilityLeaseDigest)) {
         return yield* Effect.fail(fail("authorization", "capability lease is invalid"))
       }
@@ -2588,6 +4285,8 @@ const layer = Layer.effect(
         locationID,
         effectID: input.lease.effectID,
         capabilityLeaseDigest: input.lease.capabilityLeaseDigest,
+        ...(input.directAttempt ? { directAttempt: directAttemptScopeToWire(input.directAttempt) } : {}),
+        ...(input.managedAttempt ? { managedAttempt: managedAttemptScopeToWire(input.managedAttempt) } : {}),
         content: input.content,
       })
       if (response.status !== "settled" || typeof response.existed !== "boolean") {
@@ -2612,20 +4311,56 @@ const layer = Layer.effect(
         catch: (error) =>
           error instanceof SessionSupervisorError ? error : fail("protocol", "Rust returned an invalid write receipt"),
       })
-      return receipt
+      const refreshedManagedAttempt = input.managedAttempt
+        ? yield* Effect.try({
+            try: () => {
+              const refreshed = managedAttemptScopeFromWire(response.managedAttempt)
+              if (response.attemptScopeTransition !== "effect_receipt" ||
+                !isReceiptAdvancedManagedAttemptScopeCore(input.managedAttempt!, refreshed)) {
+                throw fail("protocol", "HostKernel returned a stale managed Attempt receipt scope")
+              }
+              return refreshed
+            },
+            catch: (error) => error instanceof SessionSupervisorError
+              ? error : fail("protocol", "HostKernel returned an invalid managed Attempt receipt scope"),
+          })
+        : undefined
+      const refreshedDirectAttempt = input.directAttempt
+        ? yield* Effect.try({
+            try: () => {
+              const refreshed = directAttemptScopeFromWire(response.directAttempt)
+              if (response.attemptScopeTransition !== "effect_receipt" ||
+                !isReceiptAdvancedDirectAttemptScopeCore(input.directAttempt!, refreshed)) {
+                throw fail("protocol", "HostKernel returned a stale direct Attempt receipt scope")
+              }
+              return refreshed
+            },
+            catch: (error) => error instanceof SessionSupervisorError
+              ? error : fail("protocol", "HostKernel returned an invalid direct Attempt receipt scope"),
+          })
+        : undefined
+      return {
+        ...receipt,
+        ...(refreshedDirectAttempt ? { directAttempt: refreshedDirectAttempt } : {}),
+        ...(refreshedManagedAttempt ? { managedAttempt: refreshedManagedAttempt } : {}),
+        ...(refreshedDirectAttempt || refreshedManagedAttempt ? { attemptScopeTransition: "effect_receipt" as const } : {}),
+      }
     })
     const executePatch = Effect.fn("SessionSupervisor.executePatch")(function* (input: {
       readonly sessionID: string
       readonly locationRef: typeof LocationSchema.Ref.Type
       readonly lease: EffectLease
       readonly operations: ReadonlyArray<PatchOperation>
+      readonly directAttempt?: DirectAttemptScopeV1
+      readonly managedAttempt?: ManagedAttemptScopeV1
+      readonly trustedPrincipal: TrustedPrincipal
     }) {
       yield* Effect.try({
         try: () => validatePatchOperations(input.operations),
         catch: (error) =>
           error instanceof SessionSupervisorError ? error : fail("effect", "files.patch operations are invalid"),
       })
-      const locationID = yield* registerHostLocation(input.locationRef)
+      const locationID = yield* registerHostLocationFor(input.locationRef, input.trustedPrincipal)
       if (!/^blake3:[0-9a-f]{64}$/.test(input.lease.capabilityLeaseDigest)) {
         return yield* Effect.fail(fail("authorization", "capability lease is invalid"))
       }
@@ -2634,6 +4369,8 @@ const layer = Layer.effect(
         locationID,
         effectID: input.lease.effectID,
         capabilityLeaseDigest: input.lease.capabilityLeaseDigest,
+        ...(input.directAttempt ? { directAttempt: directAttemptScopeToWire(input.directAttempt) } : {}),
+        ...(input.managedAttempt ? { managedAttempt: managedAttemptScopeToWire(input.managedAttempt) } : {}),
         operations: input.operations,
       })
       if (response.status !== "settled") {
@@ -2652,7 +4389,25 @@ const layer = Layer.effect(
         catch: (error) =>
           error instanceof SessionSupervisorError ? error : fail("protocol", "Rust returned an invalid patch receipt"),
       })
-      return receipt
+      const refreshedManagedAttempt = input.managedAttempt
+        ? yield* Effect.try({
+            try: () => {
+              const refreshed = managedAttemptScopeFromWire(response.managedAttempt)
+              if (response.attemptScopeTransition !== "effect_receipt" ||
+                !isReceiptAdvancedManagedAttemptScopeCore(input.managedAttempt!, refreshed)) {
+                throw fail("protocol", "HostKernel returned a stale managed Attempt receipt scope")
+              }
+              return refreshed
+            },
+            catch: (error) => error instanceof SessionSupervisorError
+              ? error : fail("protocol", "HostKernel returned an invalid managed Attempt receipt scope"),
+          })
+        : undefined
+      return {
+        ...receipt,
+        ...(refreshedManagedAttempt ? { managedAttempt: refreshedManagedAttempt } : {}),
+        ...(refreshedManagedAttempt ? { attemptScopeTransition: "effect_receipt" as const } : {}),
+      }
     })
     const runPatch = Effect.fn("SessionSupervisor.runPatch")(function* (input: {
       readonly sessionID: string
@@ -2660,6 +4415,7 @@ const layer = Layer.effect(
       readonly turnContextDigest: string
       readonly operations: ReadonlyArray<PatchOperation>
     }) {
+      const trusted = yield* TrustedPrincipalContext
       yield* Effect.try({
         try: () => validatePatchOperations(input.operations),
         catch: (error) =>
@@ -2691,6 +4447,7 @@ const layer = Layer.effect(
         locationRef,
         lease: admission.lease,
         operations: input.operations,
+        trustedPrincipal: trusted.principal,
       })
       const remaining = new Map(input.operations.map((operation) => [operation.path, operation]))
       if (receipt.targets.length !== input.operations.length || remaining.size !== input.operations.length) {
@@ -2823,12 +4580,29 @@ const layer = Layer.effect(
       registerHostLocation,
       prepareUserEffect,
       replyGuardApproval,
+      awaitManagedVerifierApprovals,
       prepareToolBatch,
       executeWrite,
       executePatch,
       runPatch,
       requestHostKernel,
+      queryRepoStructure,
       hostOwnerEpoch,
+      sessionProjectionCursor: Effect.fn("SessionSupervisor.sessionProjectionCursor")(function* (sessionID: string) {
+        if (typeof sessionID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(sessionID)) {
+          return yield* fail("checkpoint", "Session ID is invalid")
+        }
+        const path = yield* Effect.try({
+          try: () => join(sessionStateDirectory(runtime.stateRoot, sessionID), `session-${sessionID}.cursor`),
+          catch: () => fail("checkpoint", "Session projection state is unavailable"),
+        })
+        const value = yield* Effect.try({
+          try: () => readCheckpoint(path, sessionID),
+          catch: (error) => error instanceof SessionSupervisorError ? error : fail("checkpoint", "Session projection cursor is unavailable"),
+        })
+        if (value.seq === "0") return yield* fail("checkpoint", "Session has no acknowledged durable projection cursor")
+        return value
+      }),
       subscribeHostKernelEvents,
       watchSession,
     })

@@ -17,6 +17,7 @@ export function QuestionPrompt(props: { request: QuestionV2Request }) {
   const renderer = useRenderer()
   const tuiConfig = useTuiConfig()
   const modeStack = useOpencodeModeStack()
+  const [submissionError, setSubmissionError] = createSignal<string>()
 
   const questions = createMemo(() => props.request.questions)
   const single = createMemo(() => questions().length === 1 && questions()[0]?.multiple !== true)
@@ -47,18 +48,40 @@ export function QuestionPrompt(props: { request: QuestionV2Request }) {
 
   function submit() {
     const answers = questions().map((_, i) => store.answers[i] ?? [])
-    void sdk.client.v2.session.question.reply({
-      sessionID: props.request.sessionID,
-      requestID: props.request.id,
-      questionV2Reply: { answers },
-    })
+    void reply(answers)
   }
 
   function reject() {
-    void sdk.client.v2.session.question.reject({
-      sessionID: props.request.sessionID,
-      requestID: props.request.id,
-    })
+    void dismiss()
+  }
+
+  async function reply(answers: QuestionAnswer[]) {
+    setSubmissionError(undefined)
+    try {
+      const result = await sdk.client.v2.session.question.reply({
+        sessionID: props.request.sessionID,
+        requestID: props.request.id,
+        questionV2Reply: { answers },
+      })
+      if (!result.error) return
+    } catch {
+      // Keep transport details out of the TUI; server error bodies can contain sensitive data.
+    }
+    setSubmissionError("Could not confirm answer. Check if the question updated before retrying.")
+  }
+
+  async function dismiss() {
+    setSubmissionError(undefined)
+    try {
+      const result = await sdk.client.v2.session.question.reject({
+        sessionID: props.request.sessionID,
+        requestID: props.request.id,
+      })
+      if (!result.error) return
+    } catch {
+      // Keep transport details out of the TUI; server error bodies can contain sensitive data.
+    }
+    setSubmissionError("Could not confirm dismiss. Check if the question updated before retrying.")
   }
 
   function pick(answer: string, custom: boolean = false) {
@@ -71,11 +94,7 @@ export function QuestionPrompt(props: { request: QuestionV2Request }) {
       setStore("custom", inputs)
     }
     if (single()) {
-      void sdk.client.v2.session.question.reply({
-        sessionID: props.request.sessionID,
-        requestID: props.request.id,
-        questionV2Reply: { answers: [[answer]] },
-      })
+      void reply([[answer]])
       return
     }
     setStore("tab", store.tab + 1)
@@ -476,6 +495,14 @@ export function QuestionPrompt(props: { request: QuestionV2Request }) {
               )
             }}
           </For>
+        </Show>
+
+        <Show when={submissionError()}>
+          {(error) => (
+            <box paddingLeft={1}>
+              <text fg={theme.error}>{error()}</text>
+            </box>
+          )}
         </Show>
       </box>
       <box

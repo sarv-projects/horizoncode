@@ -1,0 +1,16 @@
+{
+  "selection": {
+    "schemaVersion": 1,
+    "sessionID": "ses_01J9ABCDEF0123456789ABCDEFGH",
+    "mode": "conversation_slice",
+    "sourceRevision": "12",
+    "sources": [
+      {
+        "kind": "session-message",
+        "messageID": "msg_01J9ABCDEF0123456789ABCDEFGH",
+        "contentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ]
+  },
+  "digest": "blake3:803bf76abcadc28b4792b0fe217267f753a7fc05deefa86aa7cb2e665dae5f5b"
+}

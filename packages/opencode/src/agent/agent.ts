@@ -32,6 +32,8 @@ import { Reference } from "@opencode-ai/core/reference"
 import { Location } from "@opencode-ai/core/location"
 import { PluginV2 } from "@opencode-ai/core/plugin"
 import { SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
+import { AgentProfileService } from "@opencode-ai/core/config"
+import * as AgentProfileV2 from "@opencode-ai/schema/agent-profile-v2"
 
 export const Info = Schema.Struct({
   name: Schema.String,
@@ -64,6 +66,7 @@ const GeneratedAgent = Schema.Struct({
 
 export interface Interface {
   readonly get: (agent: string) => Effect.Effect<Info, SessionSupervisorError>
+  readonly getProfile: (profileID: string, revision: number) => Effect.Effect<Info, SessionSupervisorError>
   readonly list: () => Effect.Effect<Info[], SessionSupervisorError>
   readonly defaultInfo: () => Effect.Effect<Info, SessionSupervisorError>
   readonly defaultAgent: () => Effect.Effect<string, SessionSupervisorError>
@@ -80,7 +83,75 @@ export interface Interface {
   >
 }
 
-type State = Omit<Interface, "generate">
+type State = Omit<Interface, "generate" | "getProfile">
+
+// AgentProfileV2 uses canonical capability IDs. The direct-session permission
+// engine still evaluates OpenCode tool IDs, so translate only the capability IDs
+// that this native harness actually exposes. Unknown entries fail closed below.
+const PROFILE_CAPABILITY_TO_TOOLS: Readonly<Record<string, readonly string[]>> = {
+  "files.read": ["read"],
+  "files.write": ["write"],
+  "files.patch": ["apply_patch"],
+  "terminal.run": ["bash"],
+  "glob.search": ["glob"],
+  "text.search": ["grep"],
+  "repo.tree": ["repo_tree"],
+  "symbols.search": ["symbols_search"],
+  "references.find": ["references_find"],
+  "question.ask": ["question"],
+}
+
+function profileAgent(profile: AgentProfileV2.AgentProfileDefinitionV2): Info {
+  return {
+    name: profile.name,
+    description: profile.description,
+    mode: "subagent",
+    permission: profile.tools.flatMap((rule) =>
+      (PROFILE_CAPABILITY_TO_TOOLS[rule.toolPattern] ?? []).map((toolID) => ({
+        permission: toolID,
+        pattern: rule.resourcePattern ?? "*",
+        action: rule.effect,
+      })),
+    ),
+    model: {
+      providerID: ProviderV2.ID.make(profile.model.providerId),
+      modelID: ModelV2.ID.make(profile.model.modelId),
+    },
+    prompt: [
+      profile.purpose,
+      profile.whenToUse ? `When to use: ${profile.whenToUse}` : "",
+      profile.whenNotToUse ? `When not to use: ${profile.whenNotToUse}` : "",
+    ].filter(Boolean).join("\n\n"),
+    options: {
+      reasoning: profile.reasoning,
+      ...(profile.model.reasoningEffort ? { reasoningEffort: profile.model.reasoningEffort } : {}),
+      horizonAgentProfile: {
+        profileId: profile.profileId,
+        revision: profile.revision,
+        harness: profile.harness,
+        allowedSkillIds: profile.allowedSkillIds,
+        deniedSkillIds: profile.deniedSkillIds,
+        allowedMcpServers: profile.allowedMcpServers,
+        allowedMcpToolPatterns: profile.allowedMcpToolPatterns,
+        allowedSubagentIds: profile.allowedSubagentIds,
+        deniedSubagentIds: profile.deniedSubagentIds,
+        context: profile.context,
+        memoryPolicy: profile.memoryPolicy,
+        isolation: profile.isolation,
+        inputMode: profile.inputMode,
+        lifecycleHooks: profile.lifecycleHooks,
+        limits: profile.limits,
+      },
+    },
+    native: false,
+    hidden: false,
+    topP: undefined,
+    temperature: undefined,
+    color: undefined,
+    variant: undefined,
+    steps: undefined,
+  }
+}
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Agent") {}
 
@@ -357,8 +428,89 @@ const layer = Layer.effect(
       get: Effect.fn("Agent.get")(function* (agent: string) {
         return yield* InstanceState.useEffect(state, (s) => s.get(agent))
       }),
+      getProfile: Effect.fn("Agent.getProfile")(function* (profileID: string, revision: number) {
+        const ctx = yield* InstanceState.context
+        return yield* Effect.gen(function* () {
+          const profiles = yield* AgentProfileService
+          const profile = yield* profiles.agentProfile(profileID, revision).pipe(
+            Effect.mapError((error) => new SessionSupervisorError({
+              stage: "agent-profile",
+              reason: `pinned profile ${profileID}@${revision} is unavailable: ${error.message}`,
+            })),
+          )
+          if (!profile.enabled || !profile.roles.includes("subagent")) {
+            return yield* new SessionSupervisorError({
+              stage: "agent-profile",
+              reason: `pinned profile ${profileID}@${revision} is disabled or is not a subagent profile`,
+            })
+          }
+          if (profile.instructions.baseRef || profile.instructions.extraRefs.length > 0) {
+            return yield* new SessionSupervisorError({
+              stage: "agent-profile",
+              reason: `pinned profile ${profileID}@${revision} references instructions that the direct-session artifact resolver cannot load`,
+            })
+          }
+          if (profile.adapter.kind !== "native" || profile.adapter.adapterId !== "horizon.native" || profile.harness !== "native-rich") {
+            return yield* new SessionSupervisorError({
+              stage: "agent-profile",
+              reason: `adapter ${profile.adapter.kind}/${profile.adapter.adapterId} with harness ${profile.harness} is not available in the direct-session runtime`,
+            })
+          }
+          if (
+            profile.tools.some((rule) => PROFILE_CAPABILITY_TO_TOOLS[rule.toolPattern] === undefined) ||
+            profile.variants.length > 0 ||
+            profile.capabilityCeiling.length > 0 ||
+            profile.pathRules.length > 0 ||
+            profile.allowedSkillIds.length > 0 ||
+            profile.deniedSkillIds.length > 0 ||
+            profile.allowedMcpServers.length > 0 ||
+            profile.allowedMcpToolPatterns.length > 0 ||
+            profile.allowedSubagentIds.length > 0 ||
+            profile.deniedSubagentIds.length > 0 ||
+            profile.tools.some((rule) =>
+              rule.effect !== "deny" &&
+              (rule.toolPattern === "skill" || rule.toolPattern === "task" || rule.toolPattern === "mcp" || rule.toolPattern.startsWith("mcp.")),
+            ) ||
+            profile.context.isolation !== "fresh" ||
+            profile.context.maxParentHistoryTokens !== undefined ||
+            !profile.context.allowImages ||
+            !profile.context.allowDocuments ||
+            !profile.context.allowArtifacts ||
+            profile.memoryPolicy !== "none" ||
+            profile.isolation !== "workspace" ||
+            profile.inputMode !== "default" ||
+            profile.lifecycleHooks.length > 0 ||
+            profile.limits.tokenBudget !== undefined
+          ) {
+            return yield* new SessionSupervisorError({
+              stage: "agent-profile",
+              reason: `pinned profile ${profileID}@${revision} requests an unsupported tool capability, variant, capability ceiling, context, memory, isolation, hook, skill, MCP, subagent, path or token-budget control that the direct-session runtime cannot enforce`,
+            })
+          }
+          return profileAgent(profile)
+        }).pipe(
+          Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(ctx.directory) }))),
+        )
+      }),
       list: Effect.fn("Agent.list")(function* () {
-        return yield* InstanceState.useEffect(state, (s) => s.list())
+        const ordinary = yield* InstanceState.useEffect(state, (s) => s.list())
+        const primary = ordinary.filter((item) => item.mode !== "subagent")
+        const ctx = yield* InstanceState.context
+        const profileSelectors = yield* Effect.gen(function* () {
+          const profiles = yield* AgentProfileService
+          return yield* profiles.agentProfileSelectors()
+        }).pipe(
+          Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(ctx.directory) }))),
+        )
+        const configured: Info[] = []
+        for (const selection of profileSelectors) {
+          if (!selection.profile.enabled || !selection.profile.roles.includes("subagent")) continue
+          const projection = yield* (yield* Service).getProfile(selection.profile.profileId, selection.profile.revision).pipe(
+            Effect.option,
+          )
+          if (Option.isSome(projection)) configured.push({ ...projection.value, name: selection.selector })
+        }
+        return [...primary, ...configured]
       }),
       defaultInfo: Effect.fn("Agent.defaultInfo")(function* () {
         return yield* InstanceState.useEffect(state, (s) => s.defaultInfo())

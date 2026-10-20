@@ -5,6 +5,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { Effect, Layer } from "effect"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
+import { Npm } from "@opencode-ai/core/npm"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Global } from "@opencode-ai/core/global"
@@ -56,23 +57,41 @@ afterEach(async () => {
     else process.env[key] = value
   }
   originalEnv.clear()
+  delete process.env.HORIZONCODE_UNBUNDLED_PROVIDER_IMPORTED
   await disposeAllInstances()
 })
 
-const providerLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
-  LayerNode.compile(
-    LayerNode.group([
-      Provider.node,
-      FSUtil.node,
-      Env.node,
-      Config.node,
-      Auth.node,
-      Plugin.node,
-      ModelsDev.node,
-      RuntimeFlags.node,
-    ]),
-    [[RuntimeFlags.node, RuntimeFlags.layer(flags)]],
-  )
+const providerLayer = (flags: Partial<RuntimeFlags.Info> = {}, npm?: Layer.Layer<Npm.Service>) =>
+  npm
+    ? LayerNode.compile(
+        LayerNode.group([
+          Provider.node,
+          FSUtil.node,
+          Env.node,
+          Config.node,
+          Auth.node,
+          Plugin.node,
+          ModelsDev.node,
+          RuntimeFlags.node,
+        ]),
+        [
+          [RuntimeFlags.node, RuntimeFlags.layer(flags)],
+          [Npm.node, npm],
+        ] as const,
+      )
+    : LayerNode.compile(
+        LayerNode.group([
+          Provider.node,
+          FSUtil.node,
+          Env.node,
+          Config.node,
+          Auth.node,
+          Plugin.node,
+          ModelsDev.node,
+          RuntimeFlags.node,
+        ]),
+        [[RuntimeFlags.node, RuntimeFlags.layer(flags)]] as const,
+      )
 
 const list = Provider.use.list()
 
@@ -86,6 +105,25 @@ const languageBaseURL = (language: unknown) => (language as { config: { baseURL:
 
 const it = testEffect(LayerNode.compile(LayerNode.group([Provider.node, Env.node, Plugin.node])))
 const experimentalModels = testEffect(providerLayer({ enableExperimentalModels: true }))
+
+const unbundledProviderCalls = { add: 0 }
+const unbundledProviderLayer = testEffect(
+  providerLayer(
+    {},
+    Layer.succeed(Npm.Service, {
+      add: () =>
+        Effect.sync(() => {
+          unbundledProviderCalls.add++
+          return {
+            directory: "/unused",
+            entrypoint: new URL("../fixtures/unbundled-provider.ts", import.meta.url).href,
+          }
+        }),
+      install: () => Effect.void,
+      which: () => Effect.succeed(undefined),
+    }),
+  ),
+)
 
 const alphaProviderConfig = {
   provider: {
@@ -108,6 +146,33 @@ const alphaProviderConfig = {
     },
   },
 }
+
+unbundledProviderLayer.instance(
+  "unbundled npm provider is unavailable without install or import",
+  Effect.gen(function* () {
+    const provider = yield* Provider.Service
+    const model = yield* provider.getModel(
+      ProviderV2.ID.make("unbundled-provider"),
+      ModelV2.ID.make("untrusted-model"),
+    )
+    const result = yield* provider.getLanguage(model).pipe(Effect.exit)
+    expect(result._tag).toBe("Failure")
+    expect(unbundledProviderCalls.add).toBe(0)
+    expect(process.env.HORIZONCODE_UNBUNDLED_PROVIDER_IMPORTED).toBeUndefined()
+  }),
+  {
+    config: {
+      provider: {
+        "unbundled-provider": {
+          name: "Unbundled Provider",
+          npm: "untrusted-provider-package",
+          api: "https://provider.invalid/v1",
+          models: { "untrusted-model": { name: "Untrusted Model" } },
+        },
+      },
+    },
+  },
+)
 
 it.instance("provider loaded from env variable", () =>
   Effect.gen(function* () {
@@ -1189,9 +1254,13 @@ it.instance("ModelNotFoundError for provider includes suggestions", () =>
   }),
 )
 
-it.instance("ModelNotFoundError suggests catalog models for unloaded providers", () =>
+it.instance("ModelNotFoundError falls back to catalog suggestions for models hidden from keyless providers", () =>
   Effect.gen(function* () {
     yield* remove("OPENCODE_API_KEY")
+    const providers = yield* list
+    // Paid models are hidden from the keyless provider but stay discoverable
+    // through catalog suggestions on a typo.
+    expect(providers[ProviderV2.ID.opencode].models["claude-haiku-4-5"]).toBeUndefined()
     const error = yield* Provider.use
       .getModel(ProviderV2.ID.opencode, ModelV2.ID.make("claude-haiku-fake-model"))
       .pipe(Effect.flip)
@@ -2007,7 +2076,7 @@ const instanceStoreLayer = LayerNode.compile(InstanceStore.node, [
 const provideMultiInstance = <A, E, R>(eff: Effect.Effect<A, E, R>) =>
   eff.pipe(Effect.provide(instanceStoreLayer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node)))
 
-it.effect("plugin config providers persist after instance dispose", () =>
+it.effect("plugin config hooks stay unavailable before Guard mediation", () =>
   Effect.gen(function* () {
     const dir = yield* tmpdirScoped()
     const configDir = path.join(dir, ".opencode")
@@ -2048,23 +2117,23 @@ it.effect("plugin config providers persist after instance dispose", () =>
       const plugin = yield* Plugin.Service
       const provider = yield* Provider.Service
       yield* plugin.init()
-      return yield* provider.list()
+      return { hooks: yield* plugin.list(), providers: yield* provider.list() }
     }).pipe(provideInstanceEffect(dir))
 
     const first = yield* loadAndList
-    expect(first[ProviderV2.ID.make("demo")]).toBeDefined()
-    expect(first[ProviderV2.ID.make("demo")].models[ModelV2.ID.make("chat")]).toBeDefined()
+    expect(first.hooks).toEqual([])
+    expect(first.providers[ProviderV2.ID.make("demo")]).toBeUndefined()
 
     yield* Effect.promise(() => disposeAllInstances())
 
     const second = yield* loadAndList
-    expect(second[ProviderV2.ID.make("demo")]).toBeDefined()
-    expect(second[ProviderV2.ID.make("demo")].models[ModelV2.ID.make("chat")]).toBeDefined()
+    expect(second.hooks).toEqual([])
+    expect(second.providers[ProviderV2.ID.make("demo")]).toBeUndefined()
   }).pipe(provideMultiInstance),
 )
 
 it.instance(
-  "plugin config enabled and disabled providers are honored",
+  "plugin config hooks cannot change enabled or disabled providers before Guard mediation",
   Effect.gen(function* () {
     const instance = yield* TestInstance
     const configDir = path.join(instance.directory, ".opencode")
@@ -2091,13 +2160,18 @@ it.instance(
 
     yield* set("ANTHROPIC_API_KEY", "test-anthropic-key")
     yield* set("OPENAI_API_KEY", "test-openai-key")
+    const plugin = yield* Plugin.Service
+    yield* plugin.init()
+    expect(yield* plugin.list()).toEqual([])
     const providers = yield* list
     expect(providers[ProviderV2.ID.anthropic]).toBeDefined()
-    expect(providers[ProviderV2.ID.openai]).toBeUndefined()
+    // The plugin's disabled_providers mutation is not applied; the configured
+    // process environment still determines the provider list.
+    expect(providers[ProviderV2.ID.openai]).toBeDefined()
   }),
 )
 
-it.effect("opencode models require explicit configured access, not zero pricing", () =>
+it.effect("opencode models expose explicit free pricing keyless and paid models with access", () =>
   Effect.gen(function* () {
     const noneDir = yield* tmpdirScoped()
     const keyedDir = yield* tmpdirScoped({
@@ -2113,12 +2187,17 @@ it.effect("opencode models require explicit configured access, not zero pricing"
     const none = yield* listIn(noneDir)
     const keyed = yield* listIn(keyedDir)
 
-    expect(none[ProviderV2.ID.opencode]).toBeUndefined()
+    // Keyless access mirrors the official client: only explicitly free
+    // models are exposed under the public token.
+    expect(none[ProviderV2.ID.opencode].options.apiKey).toBe("public")
+    expect(Object.keys(none[ProviderV2.ID.opencode].models).length).toBeGreaterThan(0)
+    expect(paid(none)).toBe(0)
+    // A configured key keeps the full catalog.
     expect(paid(keyed)).toBeGreaterThan(0)
   }).pipe(provideMultiInstance),
 )
 
-it.effect("opencode loader keeps paid models when auth exists", () =>
+it.effect("legacy plaintext auth does not unlock paid OpenCode models", () =>
   Effect.gen(function* () {
     const noneDir = yield* tmpdirScoped()
     const keyedDir = yield* tmpdirScoped()
@@ -2129,8 +2208,10 @@ it.effect("opencode loader keeps paid models when auth exists", () =>
         .pipe(provideInstanceEffect(directory))
         .pipe(Effect.provide(instanceStoreLayer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node)))
 
-    // Without access the Zen provider is not exposed at all.
-    expect((yield* listIn(noneDir))[ProviderV2.ID.opencode]).toBeUndefined()
+    // Without a key the provider still exposes its free models only.
+    const none = yield* listIn(noneDir)
+    expect(none[ProviderV2.ID.opencode]).toBeDefined()
+    expect(paid(none)).toBe(0)
 
     const authPath = path.join(Global.Path.data, "auth.json")
 
@@ -2147,6 +2228,6 @@ it.effect("opencode loader keeps paid models when auth exists", () =>
 
     const keyedCount = paid(yield* listIn(keyedDir))
 
-    expect(keyedCount).toBeGreaterThan(0)
+    expect(keyedCount).toBe(0)
   }).pipe(provideMultiInstance),
 )

@@ -4,7 +4,7 @@
 
 A capability being listed here means it belongs in the target product. It is **not** evidence that the current source already implements or verifies it. Runtime status must be one of `DESIGNED | CODE_PRESENT | WIRED | TESTED | VERIFIED | UNAVAILABLE`.
 
-The product catalog retains future capabilities as well as V1 ones. Under A-V2-31, expose only supported Linux/WSL CLI/TUI V1 actions; web/desktop/browser, desktop-control and web-search entries remain unavailable/post-V1. DAP, REPL, LSP, local guarded worker, provider/settings and TUI actions remain V1 goals but require runtime proof before exposure.
+The product catalog retains future capabilities as well as V1 ones. Under A-V2-31, expose only supported Linux/WSL CLI/TUI V1 actions; web/desktop application surfaces, browser automation and desktop-control entries remain unavailable/post-V1. Built-in web search is V1 as of the 2026-10-18 promotion (`DEC-V1-26`; §33.9). DAP, REPL, LSP, local guarded worker, provider/settings and TUI actions remain V1 goals but require runtime proof before exposure.
 
 ## 33.1 Catalog rules
 
@@ -171,7 +171,7 @@ These are wrappers over authorized terminal/execution operations that add struct
 
 ## 33.9 Browser, desktop, web-search, debug and REPL tools
 
-### Browser, DOM and preview
+### Browser, DOM and preview (post-V1 per A-V2-31)
 
 ```text
 preview.start
@@ -199,7 +199,7 @@ dom.source_candidates
 
 Bundled browser backends and optional browser MCPs implement the same normalized capability family; they do not create a second permission model.
 
-### Desktop/computer control
+### Desktop/computer control (post-V1 per A-V2-31)
 
 ```text
 desktop.displays
@@ -218,7 +218,7 @@ desktop.clipboard.write
 
 Screenshot/AX/window reads are scoped observations. Input, focus and clipboard mutation are effects. Target refs are generation-bound; unsupported OS/backend operations report unavailable.
 
-### Built-in web search
+### Built-in web search (V1 per `DEC-V1-26`, 2026-10-18; §37.5 / `DEC-V1-20`)
 
 ```text
 web.search
@@ -226,7 +226,7 @@ web.search.providers
 web.search.inspect_provider
 ```
 
-The broker distinguishes direct search from model-grounded search. Provider/account/auth/cost/freshness provenance is explicit. No silent paid or authenticated fallback.
+The broker distinguishes direct search from model-grounded search. Provider/account/auth/cost/freshness provenance is explicit. The built-in default route requires no user key; BYO-key providers (initial set e.g. Brave, Exa — full matrix `DEC-V1-20`) are enabled per provider in Settings, and every enabled route joins one ordered cascade. Auth 4xx failures (401/403/407) are recorded per route and fall through to the next explicitly enabled/configured route; other non-rate-limit 4xx stop, while transient and empty-result handling remains bounded. A later route may have a different cost/auth class only when the user explicitly enabled it. No route is used unless enabled/configured — enabling is consent for its cost/auth class — and there is no silent paid or authenticated fallback. Search results are untrusted external data (§5.8).
 
 ### Debug adapter
 
@@ -379,6 +379,8 @@ permissions.explain
 approvals.pending
 approvals.respond
 
+question.ask
+
 resources.status
 budget.status
 usage.status
@@ -389,6 +391,8 @@ trace.inspect
 ```
 
 Read-only observability tools must not leak secrets or content outside caller scope.
+`question.ask` is the interactive clarification control: bounded multiple-choice/custom
+questions asked of the human, no effect authority, registry `effectClass: "control"`.
 
 ## 33.16 Automation tools
 
@@ -568,6 +572,14 @@ Human/control actions may additionally expose:
 - show version/root/configuration/health;
 - choose a preferred source for one language/workspace.
 
+The canonical lifecycle actions are `language.start` and `language.stop`. They apply only
+to Horizon-supervised servers and are Guarded; editor-owned processes cannot be restarted
+or stopped by the model. Stdio protocol transport is not itself a model capability: the
+HostKernel accepts only typed, allowlisted LSP methods bound to the corresponding existing
+query capability and live process/profile scope. Unknown/custom methods and
+`workspace/executeCommand` are denied. Code actions and rename remain proposals until
+applied through `files.patch`.
+
 A model cannot restart or reconfigure an editor-owned language service merely by calling a query
 tool. Any server process start/restart is an effect and follows ExecutionHost/Guard.
 
@@ -602,6 +614,9 @@ At the 2026-10-11 audit (with 2026-10-15 source-status corrections):
   `packages/core/src/horizon/skills/horizon-docs/SKILL.md`; the current
   `.opencode/skills/horizon-docs/SKILL.md` is only a development compatibility shim.
   Embedded/bundled runtime registration, UI discovery and acceptance remain unverified;
+- `question.ask` is CODE_PRESENT/PARTIAL: canonical V2 question request/reply (multi-question,
+  custom text, per-question review, dismiss) with focused TUI/wire tests; live runtime/service
+  acceptance and V2 notification events remain open;
 - browser/DOM, desktop/computer control, built-in web search, DAP debugging, persistent REPL,
   Mission Control, analytics, automation and rich custom profiles retain their runtime status
   separately from catalog membership. Catalog presence means DESIGNED, not WIRED.

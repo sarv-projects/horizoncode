@@ -134,6 +134,9 @@ generation; it may reduce authority without fresh approval, but cannot start a
 process or broaden a grant. It records a control receipt and persists the fence
 before requesting termination. The interactive lease is not a permanent or
 machine-wide policy grant.
+
+For a managed effect, HostKernel retains only the authenticated parsed Attempt scope associated with the prepared capability lease. Immediately before resolving approval and issuing that lease, it re-resolves the current Attempt, owner epoch/revision, immutable DelegationBinding digest and live workspace/capability/budget/resource leases from canonical owners. Any mismatch, cancellation, revocation or owner restart denies before lease issue; an ephemeral approval binding is discarded on restart. The managed effect scope is not caller JSON authority, and this check does not widen the challenge-bound action.
+
 Model-batch approval is host-issued and challenge-bound: `effects.v2.prepare_tool_batch`
 returns `{status:"prepared",effectID,capabilityLeaseDigest}` only on ALLOW; ASK
 returns a Guard challenge and no digest. After explicit `allow_once` against that
@@ -199,6 +202,8 @@ serialize; shell over a writable workspace is exclusive unless a stronger contra
 proves otherwise. `question` and approval are barriers: dependent later operations
 cannot race ahead.
 
+Whole-batch validation is atomic only with respect to **starting dispatch**. It does not make dispatched filesystem, process, connector, or external operations a transaction. After dispatch starts, preserve a distinct observation/receipt or UNKNOWN state per effect. On member failure, do not dispatch its not-yet-dispatched dependents; independent admitted members may continue only under the existing conflict/resource policy. On cancellation, stop all not-yet-dispatched members and request cancellation of running members through their ordinary owner. Settle or reconcile every dispatched member independently. Do not claim rollback of completed external effects. A compensating action is a new Guarded effect; UNKNOWN is not absence and cannot be blindly replayed.
+
 Use `managed_run` for RunController-owned integration effects (including Run-level
 work without a Worker Attempt); include `taskId` only when the effect is attributable
 to a specific Task. A user-started maintenance/update action uses `user_action`.
@@ -209,6 +214,16 @@ approval, PREPARED, lease, ExecutionHost and settlement path. Pure reads retain 
 owner-scoped authorization and bounded-result rule above, creating an intent only when
 policy classifies the access as auditable. Never fabricate an Attempt to represent Run
 integration or maintenance work.
+
+Managed verifier execution follows §12.19. The coding Attempt remains live until each verifier EffectIntent has its own exact Attempt edge, one-use lease, confined process receipt and current-revision evidence. A settled coding Attempt, reviewer challenge, Goal/Run identity or caller-supplied digest cannot authorize verifier dispatch. After possible launch, cancellation or lost observation is UNKNOWN and must be reconciled without replay.
+
+For that lifecycle, the Attempt/delegation source revision is immutable admission provenance. HostKernel derives the current workspace revision from the ordered SUCCEEDED receipt chain and checks the live registered root against its head before each dispatch; the managed reducer independently checks each receipt's before/after link. Serialize mutating effects in the V1 Attempt. `expectedManagedRevision` fences the current aggregate OwnerLog snapshot and is distinct from an effect edge's `boundRevision`. A verifier's separate read-only intent and receipt bind the chain head with before equal to after. Any failure, UNKNOWN, missing or mismatched predecessor, cancellation, epoch change, or out-of-chain workspace edit fences subsequent effects; caller-supplied rebasing is never accepted.
+
+Before approval, HostKernel may persist a challenge-bound candidate verifier intent containing the exact profile, executable selector, criterion, literal arguments and current workspace head for reviewer display; this candidate is not an Attempt OwnerLog mutation, lease or dispatch authority. After approval by the authenticated distinct reviewer, atomically persist the exact verifier Attempt edge and immutable intent without a lease digest, refresh the managed scope to the post-bind aggregate revision, revalidate approval and the live revision/workspace fence, and only then issue the one-use Guard lease. Do not append the lease digest to the managed log before dispatch; retain it in EffectHost's durable one-use state and the HostKernel-authenticated settled receipt. Approval-pending revision/workspace changes invalidate the lease path. The authenticated distinct reviewer approves; the trusted verifier profile principal owns the supervised process.
+
+**Attempt-bound model ToolBatch ordering:** Apply the same post-bind rule to managed and direct child effects. `prepare_tool_batch` must finish complete-batch validation and Guard evaluation, but must not issue a one-use lease from the pre-bind Attempt scope. After any required explicit approval, HostKernel atomically binds the complete exact effect-ID/intent set to the live Attempt, returns the authenticated refreshed scope at the resulting OwnerLog revision, rechecks that revision plus the exact edges, workspace head, owner epoch, policy and approval, then issues each one-use lease against the refreshed scope and its exact edge/intent. The initial challenge scope is evaluation provenance only; its binding may transition once to the refreshed scope only while no lease has been issued and only for the exact atomic edge transition. An ALLOW route must defer its lease exactly like an ASK route until binding completes. Any concurrent owner/workspace change, missing edge, replay, cancellation or stale approval rejects and requires reconciliation/new authorization. Never mutate an issued lease, accept a caller-rebased scope, or let a pre-bind lease digest authorize post-bind execution. A crash after possible dispatch remains UNKNOWN/no replay. This closes the `expectedManagedRevision` self-invalidation caused by binding the effect itself while retaining the aggregate revision fence.
+
+For an Attempt-bound batch, approval and binding cover the complete exact set before its first dispatch, but leases are issued and consumed serially just in time. After each effect settles, HostKernel observes and persists its exact receipt; a successful workspace mutation advances the ordered chain head and returns a correlated refreshed scope before the next effect is leased. A failed, UNKNOWN, missing or mismatched receipt fences every remaining member. This preserves atomic admission without treating external effects as a rollback transaction or pre-issuing stale leases against a workspace head that a prior member may change.
 Terminal effects belong to one separate host singleton, launched as
 `hz-kernel --state-dir=<state-dir> --socket=<socket> --host-exe=<host-exe> --nonce=<nonce> --incarnation=<incarnation>`.
 The authenticated HelloResult returns a durable, monotonically increasing positive
@@ -275,9 +290,9 @@ Run completion according to policy.
 ## 14.4 Rust ExecutionHost module interface
 
 `ExecutionHost` is a Rust module inside the supervised `hz-kernel` process. It is not
-the Bun/TypeScript `hzcode` application host and is not a separate process. The
+the Bun/TypeScript `horizoncode` application host and is not a separate process. The
 kernel-side module owns the single local operation/process execution seam and invokes
-the selected OS sandbox or subprocess backend. `hzcode` performs provider streaming
+the selected OS sandbox or subprocess backend. `horizoncode` performs provider streaming
 and collects complete tool batches only; it never executes effect-capable operations
 or starts their child processes. Tool handlers, plugin code and controllers may request
 an execution through the kernel-owned flow but cannot create an untracked process
@@ -381,6 +396,10 @@ The host returns a `PreparedExecutionV1` receipt with the normalized executable,
 resolved handles/resources, selected backend/guarantees/residuals, effective limits,
 environment digest (not secret values), policy and lease binding, and an expiry. The
 kernel commits this receipt before launch.
+CPU, memory, process-count and FD values are requirements, not guarantees: if a request
+requires one of those dimensions and the selected OS backend does not report it enforced,
+preparation denies before launch. Admission, deadlines, output caps and sampling do not
+substitute for those OS guarantees.
 Preparation resolves the exact issued lease through EffectService using EffectId and
 the request's capabilityLeaseDigest; it validates current policy, expiry, principal,
 resources and limits without consuming the one-use launch allowance. It cannot create
@@ -442,39 +461,53 @@ Profiles are requests, not claims:
 | `networked-workspace-write` | Workspace-write plus explicit egress destinations/protocols | Separate Guard decision; no implicit broad Internet |
 | `full-access` | Host profile with no OS filesystem containment | Explicit high-risk opt-in; still Guard/audit/budgeted; never described as confined |
 
-For the first product release, Windows is the target platform. This is a release
-requirement, not evidence that the current backend is ready. At the reviewed source
-revision `horizoncode-sandbox/src/windows.rs` returns `Unsupported` for confined
-profiles; only the explicitly requested `full-access` profile may run bare. Therefore
-Windows release acceptance MUST implement and independently test the selected
-filesystem/process/network backend, or keep the affected operation/capability
-unavailable. Do not silently ship workspace shell as “sandboxed” or treat catalog
-presence as support.
+**Amended by A-V2-31 (2026-10-16): V1 releases on the Linux/WSL-first CLI/TUI; native Windows stays unavailable until native acceptance — the Windows-first text below governs the eventual Windows release target, not V1 scope.**
 
-Existing implementation evidence to preserve accurately:
+**V1 platform scope (A-V2-31):** ship Linux/WSL-first CLI/TUI. The current sandbox
+crate is Linux-only; native Windows and macOS confined profiles return typed
+`Unsupported` and remain unavailable until native acceptance. The former Windows-first
+requirement below is superseded for V1. WSL uses the Linux backend and masks Windows
+interop; that is not native Windows acceptance.
 
-- Linux `horizoncode-sandbox/src/linux.rs` uses bubblewrap namespaces, a restricted
-  mount view, scoped roots, protected subpaths, masked deny matches and no network
-  namespace sharing by default. Target guarantees still require per-kernel/runtime
-  acceptance; the source implementation is not production acceptance by itself.
-- macOS uses a Seatbelt profile with scoped root reads. The current implementation
-  explicitly reports child-process network denial as `best_effort` and refuses a
-  request that requires enforced allowlist confinement. Do not relabel it as an
-  enforced whole-tree boundary.
-- Windows currently fails closed for confined profiles; a job object alone is not
-  filesystem or egress confinement.
+**Source-backed implementation state (2026-10-19):** `kernel/Cargo.toml` depends on
+`horizoncode-sandbox`. `kernel/src/terminal_process.rs` probes the backend, checks the
+required filesystem-read/write, network-egress and process-tree guarantees, prepares
+both non-PTY stdio and external bubblewrap terminal launches, and dispatches only a
+prepared launch. `kernel/src/host_kernel.rs` invokes the preflight before exposing the
+guarded process surface. This closes the previous statement that the crate was absent
+and establishes source wiring for these HostKernel terminal/process routes; it is not
+final-revision containment acceptance for every effect origin.
 
-The backend must report each dimension and refuse when a Task's `GuaranteeRequirement`
-is not met. `capability_limited` is not equivalent to `enforced`; `best_effort` must
-name its mechanism and residual. The app may offer a weaker explicit trust mode only
-when policy permits and the UI shows the exact residual before dispatch.
+The backend's enforced Linux default is bubblewrap with fresh namespaces, scoped mount
+roots, protected subpaths, deny masks, private `/tmp`, and network namespace isolation.
+The explicitly requested Landlock-write-scope backend has weaker residuals and cannot
+satisfy an enforced read/process-tree guarantee. Its network API supports deny-default
+or host sharing; it does not enforce a destination allowlist. Therefore
+`networked-workspace-write` requires a separately Guarded, destination-scoped egress
+proxy/service and must remain unavailable when that path cannot prove the requested
+egress guarantee. Do not interpret host-network sharing as confined egress.
 
-The current local `horizoncode-sandbox` is a reference seam, not this full interface.
-Its process helper retains bounded stdout and stderr separately but kills only the
-direct child on watchdog timeout, and its outcome has no explicit truncation receipt;
-the adopted ExecutionHost contract requires observable truncation and process-tree lifecycle
-semantics before treating that helper as a production executor. See the revision-bound
-observations and exact current source seams in 20-OPENCODE-INTEGRATION-LLD.md and the live source/tests.
+The backend reports each dimension and refuses when the requested `GuaranteeRequirement`
+is unmet. `capability_limited` is not equivalent to `enforced`; `best_effort` must name
+its mechanism and residual. The current `horizoncode-sandbox` helper owns confinement
+setup only; ExecutionHost still owns bounded output/truncation receipts, end-to-end
+deadlines, process-tree lifecycle, leases, receipts and UNKNOWN recovery. Source wiring
+must not be promoted to `VERIFIED` until the per-kernel containment matrix (`DEC-V1-03`)
+and every enabled-origin denial/recovery case pass on the integrated revision. Keep
+unsupported origins unavailable until then.
+
+**Resource-limit source status (2026-10-19):** `horizoncode-sandbox` explicitly reports
+`ResourceLimits` as `unsupported`; its cgroup namespace does not impose CPU, memory or FD
+quotas. Current terminal and stdio preflights require enforced filesystem read/write,
+network-egress denial and process-tree dimensions, but do not request OS-enforced
+`ResourceLimits`. Wall-time/output bounds and Rust resource reservations/observations are
+not equivalent to OS CPU/memory/process-count enforcement. Guarantees requiring OS-enforced
+CPU, memory, process-count or FD limits remain unavailable until the selected platform
+backend enforces and reports them. Where a profile does not require those dimensions,
+bounded admission and monitoring may be used only for the dimensions they actually constrain
+or observe; they must not be described as hard OS quotas or used to satisfy a
+`resource_limits` requirement. A worker profile that requires `resource_limits` fails closed
+before launch until OS acceptance proves enforcement.
 
 ## 14.6 Network, MCP and provider-hosted tools
 
@@ -524,7 +557,7 @@ trait SecretBroker {
 
 Canonical non-secret request and receipt records are `SecretMetadataV1`,
 `SecretPutRequestV1`, `SecretUseRequestV1`, `SecretUseLeaseV1` and
-`SecretRevocationReceiptV1` in [`12-DOMAIN-SCHEMAS.md`](12-DOMAIN-SCHEMAS.md#129-effect-approval-audit-and-reconciliation-records).
+`SecretRevocationReceiptV1` in [`12-DOMAIN-SCHEMAS.md`](12-DOMAIN-SCHEMAS.md#1217-secretbroker-credential-records).
 
 `ISSUED → CONSUMED` is committed by SecretBroker before a single authorized request;
 expiry or secret rotation/revocation moves an unused lease to `EXPIRED`/`REVOKED`.
@@ -532,11 +565,16 @@ Consumed leases are not reusable; a provider retry requires a new authorized lea
 
 `secureInputHandle` is a one-time reference to a protected native input channel, not
 credential content; it is scoped to this put operation and is never logged or reused.
-Raw credential values are deliberately absent from these wire schemas. The exact
-single-request delivery boundary between SecretBroker and the built-in `packages/llm`
-adapter remains DEC-V1-06; until it is decided and tested, a provider auth path that
-requires raw credential delivery is unavailable rather than passed through a general
-plugin/kernel RPC.
+Raw credential values are deliberately absent from these wire schemas. DEC-V1-06 was
+resolved on 2026-10-19: select a one-request, in-process, first-party ProviderTransport
+boundary in the built-in `packages/llm` adapter. The SecretBroker lease binds secret
+version, requester, provider, operation digest, destination, purpose, expiry and
+single-request limit. The transport alone receives the minimum credential bytes
+immediately before that request and zeroes its buffer afterward. Raw bytes never pass
+through config, general/plugin/kernel RPC, environment, child processes, tools,
+diagnostics, events or artifacts. This architecture decision is not implementation
+evidence: credentialed routes remain unavailable until durable OS storage, lease
+consumption/revocation checks, zeroization and no-leak transport tests pass.
 
 Secret use binds the secret version, requesting service/process identity, provider or
 MCP server, route/operation digest, destination, Run/profile if any, purpose, expiry
@@ -753,12 +791,25 @@ restart, reconfigure or inherit secrets from them.
 A Horizon-supervised language server:
 - launches through ExecutionHost;
 - receives only required workspace/read/env capabilities;
+- runs under an OS-enforced filesystem profile: source/project content is read-only by default, and writable server caches are isolated to a separately scoped Horizon-owned cache location; no inherited credential, network, process, or arbitrary workspace-write authority;
 - has bounded stdout/stderr/process lifetime;
 - gets its own resource identity/generation;
 - treats project-supplied binaries/config as untrusted executable inputs;
 - routes any mutating workspace edit back through ordinary ToolIntent/Guard.
 
 A language query result is data, not authority to apply the server's suggested code action.
+Capability activation is not authorization: a query may request an LSP, but a supervised process start independently requires policy admission, Guard/ExecutionHost and a resource lease. If required filesystem/process/network confinement cannot be enforced on the current platform, report the affected service or action unavailable rather than running with ambient host access. A formatter/server that writes source or generated workspace files must use an explicit effect path; cache writes do not authorize source writes.
+
+**Launch-profile authority (2026-10-19):** Core Config remains the source of trusted launch
+configuration and projects an immutable, authenticated profile to HostKernel. HostKernel
+validates/resolves that profile and admits it through the existing single ExecutionHost
+supervisor; this adds no second supervisor or independent mutable registry. A P4 caller may
+identify a configured logical profile, but cannot choose executable path, argv, cwd, environment,
+PID or process handle as authority. Built-in and explicitly user-owned config are eligible for
+the V1 projection. Project/plugin/external launch config and binaries remain untrusted and
+unavailable until trust resolution exists. Each admitted launch still requires Guard, a live
+resource lease, the required OS confinement and a HostKernel-minted process reference; a missing
+or stale profile proof denies before spawn.
 
 ### Structured-call safety
 
@@ -769,7 +820,7 @@ from turning an unterminated path/command into an unintended effect.
 
 ## 14.16 Desktop, web search, DAP and REPL effect classification
 
-DAP and bounded REPL are V1 capability families under A-V2-31 and use the same Guard/ExecutionHost. Desktop control and built-in web search are post-V1 and unavailable; the classifications below are preserved for future promotion and must not be read as V1 exposure.
+DAP, bounded REPL and built-in web search are V1 capability families under A-V2-31 (web search per `DEC-V1-26`, 2026-10-18) and use the same Guard/ExecutionHost. Desktop control is post-V1 and unavailable; its classifications below are preserved for future promotion and must not be read as V1 exposure.
 
 Desktop:
 - display/window/screenshot/AX queries are scoped reads;
@@ -777,21 +828,22 @@ Desktop:
 - references are invalid after observation-generation change;
 - no unrestricted desktop Eval capability exists.
 
-Web search:
+Web search (V1, `DEC-V1-26`):
 - provider listing/status is read-only;
 - network search is a network action governed by provider/privacy/cost policy;
-- explicit user/provider policy is required before fallback that changes billing or authentication class.
+- the effective route is the enabled ordered cascade; a route failure falls through to the next enabled route, and chain exhaustion falls back to one bounded normal retry with surfaced per-route reasons;
+- explicit user/provider policy is required before fallback that changes billing or authentication class; enabling a route records that consent.
 
 DAP:
 - start/attach/process control, breakpoint mutation, continue/step/pause and evaluate are effects;
-- stack/scopes/variables are scoped reads from a live adapter generation;
+- stack/scopes/variables are scoped reads from a live adapter generation only when inspection is passive; property getters, lazy evaluation, formatters, or other target-code execution are effects or unavailable unless separately guarded;
 - evaluate may be disabled entirely by policy and never grants ambient host shell authority.
 
 Persistent REPL:
 - start/reset/stop and code execution are controlled worker operations;
-- filesystem/network/process/tool callbacks are constrained by the REPL profile;
+- the OS-enforced worker profile constrains filesystem/network/process/secret access; callback mediation alone is insufficient;
 - callback tool invocations resolve to canonical capabilities and cross Guard;
-- REPL state never carries raw kernel/SecretBroker authority across sessions.
+- REPL state is bound to authenticated owner, workspace, sandbox generation and capability ceiling and never carries raw kernel/SecretBroker authority across sessions.
 
 ## 14.17 Shared kernel, headless pool and diagnostic effect classification (A-V2-30)
 
@@ -817,3 +869,46 @@ External ACP client integration, browser-dependent visual edits and deployment j
 - **Stop and rollback:** cancellation or network timeout after launch does not undo externally executed ACP/deployment actions. Record UNKNOWN until real target evidence proves state; rollback is its own approved exact-scope effect with separate receipt and verification. Do not let an imported external transcript, quoted DOM text or model-provided self-report satisfy a Run acceptance criterion.
 
 Required acceptance evidence §32.35. Any missing OS sandbox, provider-side effect preauthorization, credential channel or robust target reconciler leaves the relevant operation UNAVAILABLE; the design table alone does not make it safe.
+
+## 14.19 Checkpoint/restore effect semantics (LLD closure 2026-10-18)
+
+Checkpoint/rewind is a V1 reliability capability (§32.24; tests CP-001/CP-002), not a git replacement. Closure rules:
+
+- **Snapshot capture** — HostKernel mints one opaque, bounded snapshot bundle from the same descriptor-relative no-follow traversal that observes the registered workspace revision. The bundle binds every regular single-link file's bytes, path, mode, size and digest to the complete manifest and observed revision, with race checks before returning. P7 may persist only that HostKernel-authenticated bundle in ArtifactStore; caller-supplied snapshot bytes or a separate filesystem read are never checkpoint evidence. Until exact manifest/content binding and size bounds are available, capture is UNAVAILABLE. Fidelity is labeled honestly: changes made outside Horizon (manual edits, unmediated processes) are not captured. Storage bounds and eviction are owned by §31.18; events are §04 `checkpoint_created` and the §29.7 `checkpoint_created` hook.
+- **Restore preview contract** — the bounded preview projection is `{workspaceRevisionChanged, mode: Full|SelectedPaths, selectedPaths, actions, conflicts, previewDigest}`. The digest binds checkpoint identity, current observed workspace revision, exact mode/path selection, planned actions/conflicts, and HostKernel-observed no-follow file-kind/link facts. `Full` restore has no actions and is refused whenever the observed workspace revision differs from the captured revision or dirty/untracked user data would be destroyed. `SelectedPaths` is an explicit, bounded selection of captured paths and may include only paths proven to be regular files with no symlink/hard-link ambiguity and no current conflict; dirty, untracked, conflicting and unselected paths are preserved. Every conflict is reported. HostKernel must supply authoritative file facts through its existing workspace observation boundary; P7 must not add a parallel filesystem reader. The exact preview digest is required by the Guarded restore request and is recomputed immediately before dispatch; any workspace revision, action or file-kind change makes it stale.
+- **Restore is a guarded workspace effect** — restore flows through the same Guard/ExecutionHost path as any workspace mutation (PREPARED → lease → receipt), with `checkpoint.restore_preview` mandatory before `checkpoint.restore`. Restore refuses a destructive full reset and offers the explicit targeted per-path preview above (CP-001/CP-002); the user's later work is never silently destroyed.
+- **Partial/uncertain outcomes** — a partially applied restore is `UNKNOWN` with a receipt and exact per-path state, never a silent "restored" claim. Symlinked/hard-linked paths and conflicts are reported, not clobbered.
+- **Ownership** — conversation rewind uses the Core session revert seam (`packages/opencode/src/session/revert.ts`); Rust owns checkpoint artifacts and lifecycle. No second conversation writer.
+
+## 14.20 Guarded Git worktree lifecycle executable and confinement (2026-10-19)
+
+The only Git executable authority is the explicit global user-owned Core Config
+`git_executable` absolute path, projected over the authenticated Core connection to
+HostKernel. Project/plugin config, ambient `PATH`, RPC-selected executables and
+caller/model argv are never consulted. HostKernel canonicalizes the configured file,
+requires a regular executable, pins its content digest/profile revision, and rechecks
+that digest immediately before the existing ExecutionHost supervisor launches it.
+
+Managed worktree acquire/inspect/release are private P8 lifecycle operations. P8 owns
+operation/worktree IDs and fixed relative paths. P1 derives fixed Git argv from the
+opaque operation pin; acquire uses `worktree add --detach --no-checkout`, disables
+hooks and ambient/system/global Git config, and never invokes a shell. The ordinary
+workspace-write sandbox continues to protect all of `.git`. The Git lifecycle profile
+is a separate broker-only OS policy: the workspace is read-only, with write access
+limited to the exact canonical `.git/worktrees` metadata directory and P8's fixed
+`.horizon/worktrees` destination parent. Other `.git` metadata stays read-only.
+Locations whose common Git directory cannot be safely resolved and confined by the
+selected backend are unavailable. No weaker fallback is permitted.
+
+Every operation still requires the canonical Guard decision, any requested human
+approval, a one-use durable lease, P8's immediate possible-dispatch marker, the single
+supervisor, and a settled target-observed receipt. Release requires clean pre-delete
+and post-delete MISSING evidence before P8 writes its permanent tombstone. A crash or
+lost response after the dispatch marker is UNKNOWN and never triggers automatic
+redispatch. If either fixed administrative directory is absent on first acquisition,
+HostKernel may create only that exact directory by descriptor-relative, no-follow
+creation after Guard approval, one-use lease issuance and the durable P8 dispatch marker;
+an existing symlink, non-directory or user-owned collision is denied. Any subsequent
+preflight failure remains behind the marker and is reconciled as no-dispatch only from
+an exact supervisor proof, otherwise UNKNOWN. The supervisor retains the canonical
+executable path and digest across approval and rehashes them immediately before spawn.

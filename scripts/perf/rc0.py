@@ -3,23 +3,117 @@
 
 ``--selfcheck`` samples only this process's own bounded ``sleep`` child tree to verify the
 harness against the live OS; it is not a product-session measurement.
+
+``--preflight`` validates the *shape and liveness* of the exact 1/5/10/20 capture inputs
+(identities exist with the supplied ``/proc`` start identity, outcome objects are internally
+consistent, scenario/build/provider/harness/model metadata present, clean commit) and prints
+the exact capture command. It performs no measurement and no billing.
+
+**Provenance:** every CLI/JSON value is caller-supplied and therefore UNVERIFIED. This harness
+has no locally verifiable, owner-backed attestation source for "this PID is a Horizon Session"
+or "this task outcome was attested by a Horizon Run", so captured records are always labeled
+``provisional_raw_sample``/``NOT_BASELINE`` with ``release_eligible: False``; a release-eligible
+baseline requires an :class:`AttestationV1` from a configured trusted owner source
+(:data:`TRUSTED_ATTESTATION_SOURCES`, currently empty) and actual capture stays BLOCKED until
+the Core/Rust session owner supplies independently verifiable live Session and Run-attested
+task evidence.
 """
 import argparse
+import hashlib
 import json
 import os
 import platform
 import subprocess
 import re
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 MAX_PROCESSES = 256
 MAX_BYTES = 1_048_576
 MAX_WORK = 4096
+MAX_OWNER_SNAPSHOT_BYTES = 1_048_576
+MAX_OWNER_SNAPSHOTS = 20
 SCENARIOS = (1, 5, 10, 20)
 REQUIRED_LINUX_METRICS = ("pss_bytes", "rss_bytes", "cpu_ns", "thread_count", "fd_count")
+AGGREGATE_LINUX_METRICS = REQUIRED_LINUX_METRICS + ("private_bytes",)
 PROC_ROOT = Path("/proc")
+
+# --- Provenance gate -----------------------------------------------------------------
+# A release-eligible RC0 baseline requires an attestation produced by a locally
+# verifiable, owner-backed source (the Core/Rust session owner attesting live Session
+# ownership and Run-attested task outcomes at an exact revision). No such source is
+# integrated yet, so this allowlist is empty and no CLI flag or JSON payload can create
+# a valid AttestationV1. Fill it only together with the owning implementation and its
+# independent verification procedure -- never with an invented key or authority.
+TRUSTED_ATTESTATION_SOURCES = ()
+ATTESTATION_BLOCKED_REASON = (
+    "no locally verifiable owner-backed attestation source is configured; live Horizon "
+    "Session ownership and Run-attested task outcomes must come from the Core/Rust session "
+    "owner before any baseline can be release-eligible"
+)
+
+
+@dataclass(frozen=True)
+class AttestationV1:
+    """Owner-backed attestation of live Session identities and Run-attested outcomes.
+
+    Constructible only for sources listed in :data:`TRUSTED_ATTESTATION_SOURCES`. A
+    caller-supplied dictionary or CLI value cannot pass this constructor, so fabricated
+    inputs can never make a capture release-eligible.
+    """
+
+    source: str
+    commit: str
+    session_ids: tuple
+    run_ids: tuple
+    session_run_ids: tuple = ()
+    host_run_receipt_refs: tuple = ()
+    independent_verifier_evidence_refs: tuple = ()
+    owner_log_event_digests: tuple = ()
+    source_signature_digest: str = ""
+
+    def __post_init__(self):
+        if self.source not in TRUSTED_ATTESTATION_SOURCES:
+            raise ValueError(
+                "attestation source is not a configured trusted owner source"
+            )
+        if (not self.commit or not self.session_ids or not self.run_ids
+                or len(self.session_ids) != len(set(self.session_ids))
+                or len(self.run_ids) != len(set(self.run_ids))
+                or len(self.session_run_ids) != len(self.session_ids)
+                or len(self.host_run_receipt_refs) != len(self.session_ids)
+                or len(self.independent_verifier_evidence_refs) != len(self.session_ids)
+                or len(self.owner_log_event_digests) != len(self.session_ids)
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", self.source_signature_digest)):
+            raise ValueError("incomplete owner attestation")
+        if (set(session for session, _run in self.session_run_ids) != set(self.session_ids)
+                or set(run for _session, run in self.session_run_ids) != set(self.run_ids)
+                or any(not isinstance(ref, str) or not ref or len(ref) > 256 for ref in (
+                    *self.host_run_receipt_refs,
+                    *self.independent_verifier_evidence_refs,
+                ))
+                or any(not re.fullmatch(r"blake3:[0-9a-f]{64}", digest)
+                       for digest in self.owner_log_event_digests)):
+            raise ValueError("owner attestation evidence does not cover exact Session/Run and OwnerLog state")
+
+
+def attestation_covers(attestation, selected, commit):
+    """True only for a typed owner attestation covering these sessions at this commit."""
+    if not isinstance(attestation, AttestationV1):
+        return False
+    if attestation.commit != commit:
+        return False
+    expected = {session for session, _identity in selected}
+    return (
+        set(attestation.session_ids) == expected
+        and {session for session, _run in attestation.session_run_ids} == expected
+        and len(attestation.host_run_receipt_refs) == len(expected)
+        and len(attestation.independent_verifier_evidence_refs) == len(expected)
+        and len(attestation.owner_log_event_digests) == len(expected)
+    )
+
 
 
 class Budget:
@@ -222,54 +316,147 @@ def children(parent_pid, parent_start, budget):
     return list(child_identities.items())
 
 
-def sample_identity(pid, expected_start, budget):
+def sample_identity(pid, expected_start, budget, expected_ancestors=()):
     before, parent = proc_identity(pid, budget)
     if before != expected_start:
         return {"pid": pid, "start_identity": str(expected_start), "quality": "UNKNOWN",
                 "identity_valid": False, "reason": "identity_mismatch", "metrics": {}}
+    expected_parent = expected_ancestors[-1] if expected_ancestors else None
+    if expected_parent is not None and parent != expected_parent[0]:
+        return {"pid": pid, "start_identity": str(expected_start), "parent_pid": parent,
+                "quality": "UNKNOWN", "identity_valid": False,
+                "reason": "parent_identity_mismatch", "metrics": {}}
+    if not ancestors_match(expected_ancestors, budget):
+        return {"pid": pid, "start_identity": str(expected_start), "parent_pid": parent,
+                "quality": "UNKNOWN", "identity_valid": False,
+                "reason": "parent_identity_mismatch" if len(expected_ancestors) == 1
+                else "ancestor_identity_mismatch", "metrics": {}}
     counters, reasons = linux_counters(pid, budget)
-    after, _ = proc_identity(pid, budget)
+    after, parent_after = proc_identity(pid, budget)
     if after != expected_start:
         return {"pid": pid, "start_identity": str(expected_start), "quality": "UNKNOWN",
                 "identity_valid": False, "reason": "identity_changed_during_sample", "metrics": {}}
+    if expected_parent is not None and parent_after != expected_parent[0]:
+        return {"pid": pid, "start_identity": str(expected_start), "parent_pid": parent_after,
+                "quality": "UNKNOWN", "identity_valid": False,
+                "reason": "parent_identity_changed_during_sample", "metrics": {}}
+    if not ancestors_match(expected_ancestors, budget):
+        return {"pid": pid, "start_identity": str(expected_start), "parent_pid": parent_after,
+                "quality": "UNKNOWN", "identity_valid": False,
+                "reason": "parent_identity_changed_during_sample" if len(expected_ancestors) == 1
+                else "ancestor_identity_changed_during_sample", "metrics": {}}
     complete = all(counters.get(metric) is not None for metric in REQUIRED_LINUX_METRICS)
     return {"pid": pid, "start_identity": str(expected_start), "parent_pid": parent,
             "identity_valid": True, "quality": "MEASURED" if complete else "UNKNOWN",
             "metrics": counters, "unknown_reasons": reasons}
 
+
+def ancestors_match(expected_ancestors, budget):
+    """Revalidate every owner-to-parent edge around sampling a queued descendant."""
+    previous_pid = None
+    for ancestor_pid, expected_start in expected_ancestors:
+        actual_start, actual_parent = proc_identity(ancestor_pid, budget)
+        if actual_start != expected_start:
+            return False
+        if previous_pid is not None and actual_parent != previous_pid:
+            return False
+        previous_pid = ancestor_pid
+    return True
+
 def sample_tree(root_pid, root_start):
     if platform.system() != "Linux":
-        return {"processes": [], "quality": "UNKNOWN", "truncated": True,
-                "reason": "native Windows sampler is unavailable to this harness"}
+        result = {"processes": [], "quality": "UNKNOWN", "truncated": True,
+                  "reason": "native Windows sampler is unavailable to this harness"}
+        result["process_tree_totals"] = aggregate_process_tree(result)
+        return result
     budget = Budget()
-    queue = [(root_pid, root_start)]
-    seen = set()
+    queue = [(root_pid, root_start, ())]
+    seen = {}
     output = []
     truncated = False
     try:
         while queue:
-            pid, start = queue.pop(0)
-            if (pid, start) in seen:
+            pid, start, expected_ancestors = queue.pop(0)
+            identity = (pid, start)
+            if identity in seen:
+                if seen[identity] != expected_ancestors:
+                    raise ValueError("process identity observed under multiple parents")
                 continue
-            seen.add((pid, start))
+            seen[identity] = expected_ancestors
             budget.charge_work()
             if len(output) >= MAX_PROCESSES:
                 truncated = True
                 break
-            sample = sample_identity(pid, start, budget)
+            sample = sample_identity(pid, start, budget, expected_ancestors)
             output.append(sample)
             if sample.get("identity_valid"):
-                queue.extend(children(pid, start, budget))
+                child_ancestors = expected_ancestors + (identity,)
+                queue.extend((child_pid, child_start, child_ancestors)
+                             for child_pid, child_start in children(pid, start, budget))
     except (PermissionError, OSError, ValueError, IndexError):
         truncated = True
     complete = (not truncated and bool(output)
                 and all(item.get("identity_valid") and item.get("quality") == "MEASURED" for item in output))
-    return {"processes": output, "quality": "MEASURED" if complete else "UNKNOWN",
-            "truncated": truncated, "source_bytes": budget.bytes, "work_items": budget.work,
-            "reason": None if complete else "partial_or_unknown_sample"}
+    result = {"processes": output, "quality": "MEASURED" if complete else "UNKNOWN",
+              "truncated": truncated, "source_bytes": budget.bytes, "work_items": budget.work,
+              "reason": None if complete else "partial_or_unknown_sample"}
+    result["process_tree_totals"] = aggregate_process_tree(result)
+    return result
 
 
-def baseline_eligible(selected, session_results, outcomes, commit, clean_tree, provider_model, build, harness, local_inference):
+def aggregate_process_tree(sample):
+    """Sum a complete owned tree; incomplete observations stay UNKNOWN, never partial zeroes."""
+    metrics = {name: None for name in AGGREGATE_LINUX_METRICS}
+    processes = sample.get("processes", [])
+    if (sample.get("quality") != "MEASURED" or sample.get("truncated") or not processes
+            or any(not process.get("identity_valid") or process.get("quality") != "MEASURED"
+                   for process in processes)):
+        return {"quality": "UNKNOWN", "metrics": metrics}
+
+    for metric in AGGREGATE_LINUX_METRICS:
+        values = [process.get("metrics", {}).get(metric) for process in processes]
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in values):
+            continue
+        if metric in REQUIRED_LINUX_METRICS:
+            metrics[metric] = sum(values)
+        else:
+            # Private bytes are useful where available but are not substituted for PSS/RSS.
+            metrics[metric] = sum(values)
+
+    complete = all(metrics.get(metric) is not None for metric in REQUIRED_LINUX_METRICS)
+    if not complete:
+        return {"quality": "UNKNOWN", "metrics": {name: None for name in AGGREGATE_LINUX_METRICS}}
+    return {"quality": "MEASURED", "metrics": metrics}
+
+
+def aggregate_process_trees(samples):
+    """Aggregate disjoint owned trees; overlapping PID generations become UNKNOWN."""
+    processes = []
+    identities = set()
+    for sample in samples:
+        if not valid_complete_sample(sample):
+            return {"quality": "UNKNOWN", "metrics": {name: None for name in AGGREGATE_LINUX_METRICS}}
+        for process in sample["processes"]:
+            identity = identity_key(process)
+            if identity is None or identity in identities:
+                return {"quality": "UNKNOWN", "metrics": {name: None for name in AGGREGATE_LINUX_METRICS}}
+            identities.add(identity)
+            processes.append(process)
+    if not processes:
+        return {"quality": "UNKNOWN", "metrics": {name: None for name in AGGREGATE_LINUX_METRICS}}
+    return aggregate_process_tree({"quality": "MEASURED", "truncated": False, "processes": processes})
+
+
+def baseline_eligible(selected, session_results, outcomes, commit, clean_tree, provider_model, build, harness,
+                      local_inference, local_inference_sample=None, machine_metadata=None, attestation=None):
+    """Shape/consistency check **plus** the mandatory provenance gate.
+
+    Without a typed owner :class:`AttestationV1` covering exactly these sessions at this
+    commit the result is always False, so fabricated but well-shaped caller inputs can
+    never be reported as a release-eligible baseline.
+    """
+    if not attestation_covers(attestation, selected, commit):
+        return False
     if len(selected) != len(session_results) or not selected:
         return False
     if {session for session, _identity in selected} != {item.get("session_id") for item in session_results}:
@@ -277,6 +464,33 @@ def baseline_eligible(selected, session_results, outcomes, commit, clean_tree, p
     if not commit or not clean_tree or not provider_model.strip() or provider_model.lower() in ("unknown", "not-recorded"):
         return False
     if not build.strip() or not harness.strip() or local_inference not in ("included", "excluded"):
+        return False
+    if machine_metadata is not None and not (
+        machine_metadata.get("processor")
+        and isinstance(machine_metadata.get("logical_cpu_count"), int)
+        and machine_metadata["logical_cpu_count"] > 0
+        and isinstance(machine_metadata.get("memory_bytes"), int)
+        and machine_metadata["memory_bytes"] > 0
+    ):
+        return False
+    if local_inference == "included":
+        if not local_inference_sample or not valid_complete_sample(local_inference_sample.get("sample", {})):
+            return False
+        inference_owner = identity_key(local_inference_sample.get("owner_identity", {}))
+        inference_processes = local_inference_sample["sample"].get("processes", [])
+        if inference_owner is None or inference_owner not in {
+            identity_key(process) for process in inference_processes
+        }:
+            return False
+        inference_totals = local_inference_sample["sample"].get("process_tree_totals", {})
+        if inference_totals.get("quality") != "MEASURED" or any(
+            not isinstance(inference_totals.get("metrics", {}).get(metric), int)
+            or isinstance(inference_totals.get("metrics", {}).get(metric), bool)
+            or inference_totals.get("metrics", {}).get(metric) < 0
+            for metric in REQUIRED_LINUX_METRICS
+        ):
+            return False
+    elif local_inference_sample is not None:
         return False
     for session, _identity in selected:
         if session not in outcomes:
@@ -287,16 +501,28 @@ def baseline_eligible(selected, session_results, outcomes, commit, clean_tree, p
         if outcome.get("actual") != outcome["expected"] or outcome.get("status") != "passed":
             return False
     selected_by_session = dict(selected)
+    selected_identities = [(pid, str(start)) for _session, (pid, start) in selected]
+    if len(selected_identities) != len(set(selected_identities)):
+        return False
+    observed_processes = set()
     for item in session_results:
         session = item.get("session_id")
         if session not in selected_by_session:
             return False
         owner = item.get("owner_identity", {})
         expected_pid, expected_start = selected_by_session[session]
-        if owner.get("pid") != expected_pid or str(owner.get("start_identity")) != str(expected_start):
+        if identity_key(owner) != (expected_pid, str(expected_start)):
             return False
         sample = item.get("sample", {})
-        if sample.get("quality") != "MEASURED" or sample.get("truncated"):
+        if not valid_complete_sample(sample):
+            return False
+        totals = sample.get("process_tree_totals", {})
+        if totals.get("quality") != "MEASURED" or any(
+            not isinstance(totals.get("metrics", {}).get(metric), int)
+            or isinstance(totals.get("metrics", {}).get(metric), bool)
+            or totals.get("metrics", {}).get(metric) < 0
+            for metric in REQUIRED_LINUX_METRICS
+        ):
             return False
         processes = sample.get("processes", [])
         if not processes or not any(
@@ -310,7 +536,56 @@ def baseline_eligible(selected, session_results, outcomes, commit, clean_tree, p
                 return False
             if any(metrics.get(metric) is None for metric in REQUIRED_LINUX_METRICS):
                 return False
+            identity = identity_key(process)
+            if identity is None:
+                return False
+            if identity in observed_processes:
+                return False
+            observed_processes.add(identity)
+    if local_inference_sample is not None:
+        inference_processes = local_inference_sample["sample"].get("processes", [])
+        for process in inference_processes:
+            identity = identity_key(process)
+            if identity is None:
+                return False
+            if identity in observed_processes:
+                return False
+            observed_processes.add(identity)
     return True
+
+
+def identity_key(record):
+    pid = record.get("pid")
+    start = record.get("start_identity")
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return None
+    try:
+        start = int(start)
+    except (TypeError, ValueError):
+        return None
+    if start <= 0:
+        return None
+    return pid, str(start)
+
+
+def valid_complete_sample(sample):
+    if sample.get("quality") != "MEASURED" or sample.get("truncated"):
+        return False
+    processes = sample.get("processes", [])
+    if not processes:
+        return False
+    return all(
+        process.get("identity_valid")
+        and process.get("quality") == "MEASURED"
+        and identity_key(process) is not None
+        and all(
+            isinstance(process.get("metrics", {}).get(metric), int)
+            and not isinstance(process.get("metrics", {}).get(metric), bool)
+            and process.get("metrics", {}).get(metric) >= 0
+            for metric in REQUIRED_LINUX_METRICS
+        )
+        for process in processes
+    )
 
 
 def identity_arg(value):
@@ -318,11 +593,406 @@ def identity_arg(value):
         session, encoded = value.split("=", 1)
         pid, start = encoded.split(":", 1)
         result = (session, int(pid), int(start))
-        if not session or result[1] <= 0 or result[2] < 0:
+        if not session or result[1] <= 0 or result[2] <= 0:
             raise ValueError
         return result
     except ValueError as error:
         raise argparse.ArgumentTypeError("expected SESSION=PID:START_IDENTITY") from error
+
+
+def _validate_owner_metric(item, label):
+    if not isinstance(item, dict) or set(item) != {"quality", "value"}:
+        raise ValueError(f"{label} metric shape is invalid")
+    quality, value = item["quality"], item["value"]
+    if quality == "UNKNOWN":
+        if value is not None:
+            raise ValueError(f"{label} UNKNOWN metric must not carry a value")
+        return
+    if (quality != "MEASURED" or not isinstance(value, str) or not value.isdigit()
+            or (len(value) > 1 and value.startswith("0"))):
+        raise ValueError(f"{label} MEASURED metric must carry a canonical nonnegative decimal")
+
+
+def load_owner_snapshot(path):
+    """Read the bounded P8 Rust owner sample envelope without elevating trust.
+
+    This is an ingestion contract only. Files are caller-controlled, and the
+    envelope intentionally cannot satisfy :func:`attestation_covers`; P1 must
+    attest the live Session process and P2 must supply independent final-Run
+    verifier evidence before a release baseline can be admitted.
+    """
+    with open(path, "rb") as stream:
+        data = stream.read(MAX_OWNER_SNAPSHOT_BYTES + 1)
+    if len(data) > MAX_OWNER_SNAPSHOT_BYTES:
+        raise ValueError("owner snapshot exceeds the 1 MiB ingestion bound")
+    def unique_object(pairs):
+        result = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON property: {key}")
+            result[key] = item
+        return result
+
+    try:
+        value = json.loads(
+            data.decode("utf-8"),
+            object_pairs_hook=unique_object,
+            parse_constant=lambda constant: (_ for _ in ()).throw(
+                ValueError(f"invalid JSON constant: {constant}")
+            ),
+        )
+    except RecursionError as error:
+        raise ValueError("owner snapshot JSON nesting exceeds parser bounds") from error
+    if not isinstance(value, dict) or value.get("schemaVersion") != 1:
+        raise ValueError("owner snapshot schemaVersion must be 1")
+    if value.get("producer") != "horizoncode.worker-owner.resource-sampler":
+        raise ValueError("owner snapshot producer is not the P8 sampler schema")
+    owner = value.get("owner")
+    log = value.get("ownerLog")
+    workers = value.get("workers")
+    if not isinstance(owner, dict) or not isinstance(log, dict) or not isinstance(workers, list):
+        raise ValueError("owner snapshot is missing owner, ownerLog, or workers")
+    for key in ("principalRef", "workspaceBinding", "sessionId", "runId"):
+        if not isinstance(owner.get(key), str) or not owner[key] or len(owner[key]) > 256:
+            raise ValueError(f"owner snapshot owner.{key} is invalid")
+    for key in ("ownerEpoch",):
+        if not isinstance(owner.get(key), str) or not owner[key].isdigit() or int(owner[key]) <= 0:
+            raise ValueError(f"owner snapshot owner.{key} must be a positive decimal string")
+    if (not isinstance(log.get("ownerId"), str) or not log["ownerId"]
+            or not isinstance(log.get("sequence"), str) or not log["sequence"].isdigit()
+            or not isinstance(log.get("eventDigest"), str)
+            or not re.fullmatch(r"blake3:[0-9a-f]{64}", log["eventDigest"])
+            or not isinstance(log.get("workerPoolRevision"), str)
+            or not log["workerPoolRevision"].isdigit()):
+        raise ValueError("owner snapshot OwnerLog watermark is invalid")
+    sample_sequence = value.get("sampleSequence")
+    if not isinstance(sample_sequence, str) or not sample_sequence.isdigit() or int(sample_sequence) <= 0:
+        raise ValueError("owner snapshot sample sequence is invalid")
+    if len(workers) > MAX_PROCESSES:
+        raise ValueError("owner snapshot worker count exceeds the process bound")
+    process_identity_records = []
+    total_processes = 0
+    for worker in workers:
+        if not isinstance(worker, dict) or worker.get("reservationState") not in (
+            "CLAIMED", "RELEASE_PENDING", "QUARANTINED"
+        ):
+            raise ValueError("owner snapshot worker is invalid or not capacity-holding")
+        if (not isinstance(worker.get("workerExecutionId"), str)
+                or not isinstance(worker.get("taskId"), str)
+                or not isinstance(worker.get("attemptId"), str)
+                or worker.get("quality") not in ("MEASURED", "UNKNOWN")
+                or not isinstance(worker.get("processes"), list)):
+            raise ValueError("owner snapshot worker fields are invalid")
+        if len(worker["processes"]) > MAX_PROCESSES:
+            raise ValueError("owner snapshot process count exceeds the bound")
+        for process in worker["processes"]:
+            total_processes += 1
+            if total_processes > MAX_PROCESSES:
+                raise ValueError("owner snapshot total process count exceeds the bound")
+            if not isinstance(process, dict):
+                raise ValueError("owner snapshot process entry is invalid")
+            pid, start = process.get("pid"), process.get("startIdentity")
+            if (not isinstance(pid, int) or pid <= 0 or not isinstance(start, str)
+                    or not start.isdigit() or int(start) <= 0):
+                raise ValueError("owner snapshot process identity is invalid")
+            process_identity_records.append({"pid": pid, "start_identity": start})
+    if not isinstance(value.get("aggregate"), dict):
+        raise ValueError("owner snapshot aggregate metrics are missing")
+    session_process_owner = value.get("sessionProcessOwner")
+    if not isinstance(session_process_owner, dict):
+        raise ValueError("owner snapshot must explicitly report the Core Session process owner")
+    session_owner_status = session_process_owner.get("status")
+    if session_owner_status == "NOT_PROVIDED":
+        if session_process_owner.get("processIdentity") is not None or session_process_owner.get("metrics") is not None:
+            raise ValueError("unprovided Core process owner must not carry identity or metrics")
+        session_process_identity = None
+        session_process_metrics = None
+    elif session_owner_status == "MEASURED":
+        process = session_process_owner.get("processIdentity")
+        metrics = session_process_owner.get("metrics")
+        if not isinstance(process, dict) or not isinstance(metrics, dict):
+            raise ValueError("measured Core process owner must include identity and metrics")
+        pid, start = process.get("pid"), process.get("startIdentity")
+        if (not isinstance(pid, int) or pid <= 0 or not isinstance(start, str)
+                or not start.isdigit() or int(start) <= 0
+                or not isinstance(process.get("ownerEpoch"), str)
+                or not process["ownerEpoch"].isdigit()
+                or int(process["ownerEpoch"]) != int(owner["ownerEpoch"])
+                or not isinstance(process.get("processIncarnation"), str)
+                or not process["processIncarnation"] or len(process["processIncarnation"]) > 128
+                or not isinstance(process.get("executableIdentityDigest"), str)
+                or not re.fullmatch(r"blake3:[0-9a-f]{64}", process["executableIdentityDigest"])):
+            raise ValueError("measured Core process owner identity is invalid")
+        for metric in ("pssBytes", "rssBytes", "cpuNs", "threadCount", "fdCount", "privateBytes"):
+            _validate_owner_metric(metrics.get(metric), f"sessionProcessOwner.metrics.{metric}")
+        session_process_identity = {
+            "pid": pid,
+            "start_identity": start,
+            "owner_epoch": process["ownerEpoch"],
+            "process_incarnation": process["processIncarnation"],
+            "executable_identity_digest": process["executableIdentityDigest"],
+        }
+        session_process_metrics = metrics
+    else:
+        raise ValueError("owner snapshot Core process owner status is invalid")
+    if session_process_identity is not None and total_processes + 1 > MAX_PROCESSES:
+        raise ValueError("owner snapshot including Core process exceeds the total process bound")
+    for metric in ("pssBytes", "rssBytes", "cpuNs", "threadCount", "fdCount", "privateBytes"):
+        item = value["aggregate"].get(metric)
+        _validate_owner_metric(item, f"owner snapshot aggregate.{metric}")
+    attestation = value.get("productAttestation")
+    if (not isinstance(attestation, dict)
+            or attestation.get("status") != "NOT_ATTESTED"
+            or attestation.get("hostRunReceiptRef") is not None
+            or attestation.get("independentVerifierEvidenceRef") is not None):
+        raise ValueError("owner snapshot must accurately state NOT_ATTESTED")
+    return {
+        "session_id": owner["sessionId"],
+        "run_id": owner["runId"],
+        "owner_log_id": log["ownerId"],
+        "owner_log_sequence": log["sequence"],
+        "owner_log_event_digest": log["eventDigest"],
+        "sample_sequence": sample_sequence,
+        "snapshot_digest": "sha256:" + hashlib.sha256(data).hexdigest(),
+        "worker_count": len(workers),
+        "process_identities": process_identity_records,
+        "aggregate": value["aggregate"],
+        "product_attestation": "NOT_ATTESTED",
+        "session_process_owner": session_process_identity,
+        "session_process_metrics": session_process_metrics,
+    }
+
+
+def aggregate_owner_samples(samples):
+    """Sum worker trees and count each authenticated shared Core process once."""
+    totals = {}
+    for name in ("pssBytes", "rssBytes", "cpuNs", "threadCount", "fdCount", "privateBytes"):
+        values = []
+        complete = bool(samples)
+        for sample in samples:
+            metric = sample["aggregate"].get(name, {})
+            if metric.get("quality") != "MEASURED" or not str(metric.get("value", "")).isdigit():
+                complete = False
+                break
+            values.append(int(metric["value"]))
+        totals[name] = ({"quality": "MEASURED", "value": str(sum(values))}
+                        if complete else {"quality": "UNKNOWN", "value": None})
+    identities = set()
+    overlap = False
+    for sample in samples:
+        for process in sample["process_identities"]:
+            key = (process["pid"], process["start_identity"])
+            if key in identities:
+                overlap = True
+            identities.add(key)
+    core_by_identity = {}
+    core_overlap = False
+    core_conflict = False
+    for sample in samples:
+        process = sample.get("session_process_owner")
+        metrics = sample.get("session_process_metrics")
+        if process is None:
+            continue
+        key = (process["pid"], process["start_identity"])
+        prior = core_by_identity.get(key)
+        if prior is None:
+            core_by_identity[key] = (process, metrics)
+        else:
+            # The same authenticated Core PID/start generation is shared by
+            # Session snapshots. Keep one sample; never add it once per Session.
+            if prior[0] != process:
+                core_conflict = True
+        if key in identities:
+            core_overlap = True
+    core_totals = {}
+    for name in ("pssBytes", "rssBytes", "cpuNs", "threadCount", "fdCount", "privateBytes"):
+        values = []
+        for _process, metrics in core_by_identity.values():
+            metric = (metrics or {}).get(name, {})
+            if metric.get("quality") != "MEASURED" or not str(metric.get("value", "")).isdigit():
+                values = []
+                break
+            values.append(int(metric["value"]))
+        core_totals[name] = (
+            {"quality": "MEASURED", "value": str(sum(values))}
+            if values and not core_conflict else {"quality": "UNKNOWN", "value": None}
+        )
+    if overlap:
+        totals = {name: {"quality": "UNKNOWN", "value": None} for name in totals}
+    combined = {}
+    for name in totals:
+        worker_metric = totals[name]
+        core_metric = core_totals[name]
+        if (worker_metric["quality"] == "MEASURED"
+                and core_metric["quality"] == "MEASURED" and not core_overlap):
+            combined[name] = {
+                "quality": "MEASURED",
+                "value": str(int(worker_metric["value"]) + int(core_metric["value"])),
+            }
+        else:
+            combined[name] = {"quality": "UNKNOWN", "value": None}
+    return {
+        "quality": "UNKNOWN" if overlap or core_overlap or core_conflict or not samples or any(
+            metric["quality"] != "MEASURED" for metric in combined.values()
+        ) else "MEASURED",
+        "overlapping_process_identity": overlap,
+        "core_process_overlap": core_overlap,
+        "core_process_identity_conflict": core_conflict,
+        "session_count": len(samples),
+        "worker_count": sum(sample["worker_count"] for sample in samples),
+        "worker_process_count": len(identities),
+        "core_process_count": len(core_by_identity),
+        "process_count": len(identities.union(core_by_identity)),
+        "core_process_sample_count": sum(sample.get("session_process_owner") is not None for sample in samples),
+        "metrics": totals,
+        "session_process_owner_metrics": core_totals,
+        "combined_metrics": combined,
+    }
+
+
+def capture_command_template(selected, args, outcomes_path):
+    """The exact capture invocation for the supplied identities; no inference is run here."""
+    identities = " ".join(
+        f"--identity {session}={pid}:{start}" for session, (pid, start) in sorted(selected.items())
+    )
+    parts = [
+        "python3 scripts/perf/rc0.py",
+        f"--scenario {json.dumps(args.scenario)}",
+        f"--build {json.dumps(args.build)}",
+        f"--warm-cold {args.warm_cold}",
+        f"--provider-model {json.dumps(args.provider_model)}",
+        f"--harness {json.dumps(args.harness)}",
+        f"--local-inference {args.local_inference}",
+        identities,
+    ]
+    if args.local_inference_identity:
+        model, pid, start = args.local_inference_identity
+        parts.append(f"--local-inference-identity {model}={pid}:{start}")
+    if outcomes_path:
+        parts.append(f"--outcomes {outcomes_path}")
+    for snapshot in args.owner_snapshot:
+        parts.append(f"--owner-snapshot {snapshot}")
+    if args.output:
+        parts.append(f"--output {args.output}")
+    return " ".join(part for part in parts if part)
+
+
+def preflight(selected, outcomes, args, commit, clean_tree, machine, min_sessions):
+    """Validates the *shape and liveness* of the capture inputs; never verifies provenance.
+
+    Returns (inputs_present, record). The record is a plain JSON object so a caller can keep
+    the readiness decision as raw evidence rather than prose. Every value here is
+    caller-supplied and UNVERIFIED: a complete result means only that the inputs are
+    well-shaped, and ``release_eligible`` stays False until a configured owner-backed
+    attestation covers these sessions at this commit."""
+    missing = []
+    sessions = []
+    if len(selected) < min_sessions:
+        missing.append(
+            f"caller-supplied live session identities: {len(selected)} supplied, "
+            f"{min_sessions} required for the 1/5/10/20 capture"
+        )
+    identities = [(pid, str(start)) for _session, (pid, start) in selected.items()]
+    if len(identities) != len(set(identities)):
+        missing.append("duplicate owner process identity across sessions")
+    for session, (pid, start) in sorted(selected.items()):
+        entry = {"session_id": session, "pid": pid, "identity_alive": False,
+                 "identity_matches": False, "task_outcome": None}
+        try:
+            observed_start, _parent = proc_identity(pid, Budget())
+            entry["identity_alive"] = True
+            entry["identity_matches"] = int(observed_start) == int(start)
+        except (OSError, ValueError):
+            entry["identity_alive"] = False
+        if not entry["identity_alive"]:
+            missing.append(f"session {session!r}: owner process {pid} is not live")
+        elif not entry["identity_matches"]:
+            missing.append(
+                f"session {session!r}: start identity mismatch for pid {pid} (pid reuse or wrong identity)"
+            )
+        outcome = outcomes.get(session)
+        if not isinstance(outcome, dict) or outcome.get("expected") is None:
+            missing.append(f"session {session!r}: matching task outcome is missing")
+        elif outcome.get("actual") != outcome["expected"] or outcome.get("status") != "passed":
+            missing.append(f"session {session!r}: task outcome did not pass against expectation")
+        else:
+            entry["task_outcome"] = "passed"
+        sessions.append(entry)
+    extra = sorted(set(outcomes) - set(selected))
+    if extra:
+        missing.append("outcomes for sessions without identities: " + ", ".join(sorted(extra)))
+
+    for flag, value in (("--scenario", args.scenario), ("--build", args.build),
+                        ("--provider-model", args.provider_model), ("--harness", args.harness)):
+        if not value or not str(value).strip():
+            missing.append(f"{flag} is required and must be recorded")
+    local_inference_owner = None
+    if args.local_inference == "included":
+        if args.local_inference_identity is None:
+            missing.append("--local-inference included requires --local-inference-identity")
+        else:
+            model, pid, start = args.local_inference_identity
+            local_inference_owner = {
+                "model": model,
+                "pid": pid,
+                "start_identity": str(start),
+                "identity_alive": False,
+                "identity_matches": False,
+            }
+            try:
+                observed_start, _parent = proc_identity(pid, Budget())
+                local_inference_owner["identity_alive"] = True
+                local_inference_owner["identity_matches"] = int(observed_start) == int(start)
+            except (OSError, ValueError):
+                pass
+            if not local_inference_owner["identity_alive"]:
+                missing.append(f"local inference owner process {pid} is not live")
+            elif not local_inference_owner["identity_matches"]:
+                missing.append(
+                    f"local inference start identity mismatch for pid {pid} (pid reuse or wrong identity)"
+                )
+            if (pid, str(start)) in set(identities):
+                missing.append("local inference owner identity duplicates a Session owner identity")
+    elif args.local_inference_identity is not None:
+        missing.append("--local-inference excluded but a local-inference identity was supplied")
+    if not commit or not clean_tree:
+        missing.append("exact commit requires a clean working tree (commit_exact)")
+    if not (machine.get("processor")
+            and isinstance(machine.get("logical_cpu_count"), int)
+            and machine.get("logical_cpu_count", 0) > 0
+            and isinstance(machine.get("memory_bytes"), int)
+            and machine.get("memory_bytes", 0) > 0):
+        missing.append("machine metadata (processor, logical CPU count, memory bytes) is incomplete")
+
+    record = {
+        "record_type": "rc0_preflight",
+        "status": "INPUTS_UNVERIFIED_COMPLETE" if not missing else "INPUTS_INCOMPLETE",
+        "input_provenance": "UNVERIFIED_CALLER_SUPPLIED",
+        "release_eligible": False,
+        "baseline_eligible": False,
+        "blocked_reason": ATTESTATION_BLOCKED_REASON,
+        "trusted_attestation_sources": list(TRUSTED_ATTESTATION_SOURCES),
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "platform": platform_name(),
+        "commit": commit,
+        "working_tree_clean": clean_tree,
+        "sessions_requested": min_sessions,
+        "sessions_supplied": len(selected),
+        "scenario": args.scenario,
+        "build": args.build,
+        "harness": args.harness,
+        "provider_model": args.provider_model,
+        "local_inference": args.local_inference,
+        "local_inference_owner": local_inference_owner,
+        "sessions": sessions,
+        "missing_inputs": missing,
+        "capture_command": capture_command_template(selected, args,
+                                                     str(args.outcomes) if args.outcomes else None),
+        "measurement_performed": False,
+        "note": "input shape/liveness only: caller-supplied values are unverified, and this "
+                "mode never launches a workload, opens a provider, or bills",
+    }
+    return not missing, record
 
 
 def run_selfcheck():
@@ -355,6 +1025,11 @@ def run_selfcheck():
         return complete, {
             "record_type": "rc0_harness_selfcheck",
             "status": "MEASURED" if complete else "INCOMPLETE",
+            "provisional_raw_sample": False,
+            "input_provenance": "HARNESS_SELFCHECK",
+            "release_eligible": False,
+            "note": "harness self-check only: this process's own bounded child tree, never a "
+                    "product-session measurement",
             "platform": platform,
             "commit": git_metadata()[0],
             "owner": {"pid": os.getpid(), "start_identity": str(start)},
@@ -372,8 +1047,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--selfcheck", action="store_true",
                         help="sample only this process's own bounded sleep tree to verify the harness against the live OS")
-    parser.add_argument("--identity", action="append", type=identity_arg, default=[], help="owner-issued SESSION=PID:START_IDENTITY; repeat per session")
-    parser.add_argument("--outcomes", type=Path, help="JSON object mapping sessions to expected/actual/status task outcomes")
+    parser.add_argument("--preflight", action="store_true",
+                        help="validate the shape/liveness of the 1/5/10/20 capture inputs (unverified provenance) without measuring or billing anything")
+    parser.add_argument("--min-sessions", type=int, default=20,
+                        help="with --preflight: required distinct live caller-supplied session identities (default: 20)")
+    parser.add_argument("--identity", action="append", type=identity_arg, default=[], help="caller-supplied SESSION=PID:START_IDENTITY (unverified: the Core/Rust session owner must attest ownership); repeat per session")
+    parser.add_argument("--local-inference-identity", type=identity_arg,
+                        help="caller-supplied local model MODEL=PID:START_IDENTITY when local inference is included (unverified provenance)")
+    parser.add_argument("--outcomes", type=Path, help="JSON object mapping sessions to expected/actual/status task outcomes (caller-supplied, unverified: Run attestation is required for eligibility)")
+    parser.add_argument("--owner-snapshot", type=Path, action="append", default=[],
+                        help="bounded P8 Rust owner-sampler JSON envelope; ingestion only, NOT an attestation; repeat once per Session")
     parser.add_argument("--scenario", help="real workload/task description")
     parser.add_argument("--build", help="build profile and compiler/runtime identifiers")
     parser.add_argument("--warm-cold", choices=("warm", "cold"))
@@ -403,17 +1086,59 @@ def main():
     grouped = {}
     for session, pid, start in args.identity:
         if session in grouped:
-            parser.error(f"duplicate owner-issued identity for session {session!r}")
+            parser.error(f"duplicate caller-supplied identity for session {session!r}")
         grouped[session] = (pid, start)
+    if args.preflight and args.min_sessions < 1:
+        parser.error("--min-sessions must be at least 1")
     outcomes = {}
     if args.outcomes:
         outcomes = json.loads(args.outcomes.read_text(encoding="utf-8"))
         if not isinstance(outcomes, dict):
             parser.error("--outcomes must contain a JSON object mapping session IDs to outcomes")
+    if len(args.owner_snapshot) > MAX_OWNER_SNAPSHOTS:
+        parser.error(f"at most {MAX_OWNER_SNAPSHOTS} owner snapshots may be ingested")
+    owner_samples = []
+    try:
+        owner_samples = [load_owner_snapshot(path) for path in args.owner_snapshot]
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        parser.error(f"invalid --owner-snapshot: {error}")
+    owner_sample_sessions = [sample["session_id"] for sample in owner_samples]
+    if len(owner_sample_sessions) != len(set(owner_sample_sessions)):
+        parser.error("duplicate owner snapshot Session ID")
+    owner_samples_by_session = {sample["session_id"]: sample for sample in owner_samples}
     commit, clean_tree = git_metadata()
+    machine = {"architecture": platform.machine(), **hardware_metadata()}
+    if args.preflight:
+        ready, record = preflight(grouped, outcomes, args, commit, clean_tree, machine,
+                                  args.min_sessions)
+        record["min_sessions"] = args.min_sessions
+        record["owner_samples_ingested"] = len(owner_samples)
+        record["owner_sample_digests"] = [sample["snapshot_digest"] for sample in owner_samples]
+        record["owner_sample_attestation"] = "NOT_ATTESTED"
+        if owner_samples:
+            record["blocked_reason"] = (
+                ATTESTATION_BLOCKED_REASON
+                + "; P1 must supply the live Core Session process identity and P2 must supply an independently verified final Run result"
+            )
+        print(json.dumps(record, sort_keys=True, separators=(",", ":")))
+        return 0 if ready else 1
+
+    local_inference_sample = None
+    if args.local_inference_identity:
+        model_owner, pid, start = args.local_inference_identity
+        local_inference_sample = {
+            "model": model_owner,
+            "owner_identity": {"pid": pid, "start_identity": str(start)},
+            "sample": sample_tree(pid, start),
+        }
+
     records = []
     for session_count in SCENARIOS:
         selected = list(grouped.items())[:session_count]
+        selected_sessions = {session for session, _identity in selected}
+        selected_owner_samples = [owner_samples_by_session[session]
+                                  for session in sorted(selected_sessions)
+                                  if session in owner_samples_by_session]
         session_results = []
         for session, (pid, start) in selected:
             session_results.append({"session_id": session,
@@ -421,20 +1146,41 @@ def main():
                 "task_outcome": outcomes.get(session), "sample": sample_tree(pid, start)})
         eligible = (len(selected) == session_count and bool(args.scenario.strip()) and baseline_eligible(
             selected, session_results, outcomes, commit, clean_tree, args.provider_model,
-            args.build, args.harness, args.local_inference))
+            args.build, args.harness, args.local_inference, local_inference_sample, machine))
+        agent_totals = aggregate_process_trees([item["sample"] for item in session_results])
+        combined_samples = [item["sample"] for item in session_results]
+        if args.local_inference == "included" and local_inference_sample:
+            combined_samples.append(local_inference_sample["sample"])
+        combined_totals = aggregate_process_trees(combined_samples)
         measured_ids = sum(item["sample"].get("quality") == "MEASURED" for item in session_results)
         records.append({"record_type": "rc0_sample", "captured_at": datetime.now(timezone.utc).isoformat(),
-            "platform": platform_name(), "machine": {"architecture": platform.machine(), **hardware_metadata()},
+            "platform": platform_name(), "machine": machine,
             "commit": commit, "working_tree_clean": clean_tree, "commit_exact": bool(commit and clean_tree),
             "build": args.build, "harness": args.harness, "warm_cold": args.warm_cold, "scenario": args.scenario,
             "sessions_requested": session_count, "sessions_supplied": len(selected),
             "provider_model": args.provider_model, "local_inference": args.local_inference,
+            "local_inference_sample": local_inference_sample,
+            "agent_process_tree_totals": agent_totals,
+            "combined_sampled_process_tree_totals": combined_totals,
             "measured_owned_identities": measured_ids, "expected_task_outcomes_present": bool(selected) and all(
                 isinstance(outcomes.get(session), dict) and outcomes[session].get("expected") is not None for session, _ in selected),
             "task_outcomes_passed": bool(selected) and all(
                 isinstance(outcomes.get(session), dict) and outcomes[session].get("expected") == outcomes[session].get("actual")
                 and outcomes[session].get("status") == "passed" for session, _ in selected),
-            "baseline_eligible": eligible, "status": "BASELINE_CANDIDATE" if eligible else "NOT_BASELINE",
+            "baseline_eligible": eligible, "status": "NOT_BASELINE",
+            "provisional_raw_sample": True,
+            "input_provenance": "UNVERIFIED_CALLER_SUPPLIED",
+            "release_eligible": False,
+            "blocked_reason": ATTESTATION_BLOCKED_REASON,
+            "owner_samples_ingested": len(owner_samples),
+            "owner_sample_digests": [sample["snapshot_digest"] for sample in owner_samples],
+            "owner_sample_attestation": "NOT_ATTESTED",
+            "owner_worker_samples": [{key: sample[key] for key in (
+                "session_id", "run_id", "owner_log_id", "owner_log_sequence",
+                "owner_log_event_digest", "snapshot_digest", "worker_count",
+                "product_attestation", "session_process_owner")}
+                for sample in selected_owner_samples],
+            "owner_worker_aggregate": aggregate_owner_samples(selected_owner_samples),
             "sessions": session_results})
     out = open(args.output, "a", encoding="utf-8") if args.output else sys.stdout
     try:

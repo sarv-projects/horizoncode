@@ -12,6 +12,9 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import DESCRIPTION from "./apply_patch.txt"
 import { FileSystem } from "@opencode-ai/core/filesystem"
 import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
+import type { DirectAttemptScopeV1 } from "@opencode-ai/core/session/supervisor"
+import type { ManagedAttemptScopeV1 } from "@opencode-ai/core/session/supervisor"
+import type { ManagedAttemptAuthority } from "@/session/managed-control"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import type { EffectLease } from "@opencode-ai/core/session/supervisor"
@@ -336,6 +339,12 @@ export const ApplyPatchTool = Tool.define(
       ) {
         return yield* Effect.fail(new Error("Patch denied: guarded operation set or lease changed"))
       }
+      const trustedPrincipal = ctx.trustedPrincipal
+      if (trustedPrincipal?.kind !== "server_auth" || !trustedPrincipal.subject) {
+        return yield* Effect.fail(new Error("Patch denied: missing authenticated principal"))
+      }
+      const managedAttempt = ctx.extra?.managedAttempt as ManagedAttemptAuthority | undefined
+      const managedAttemptScope = managedAttempt?.currentScope()
 
       const locationRef = Location.Ref.make({ directory: AbsolutePath.make(instance.directory) })
       const receipt = yield* Effect.uninterruptible(
@@ -344,8 +353,25 @@ export const ApplyPatchTool = Tool.define(
           locationRef,
           lease,
           operations: guardedPatch as typeof operations,
+          trustedPrincipal,
+          ...(ctx.extra?.directAttempt !== undefined
+            ? { directAttempt: ctx.extra.directAttempt as DirectAttemptScopeV1 }
+            : {}),
+          ...(managedAttemptScope !== undefined
+            ? { managedAttempt: managedAttemptScope as ManagedAttemptScopeV1 }
+            : {}),
         }),
       )
+      if (managedAttemptScope) {
+        if (!receipt.managedAttempt || receipt.attemptScopeTransition !== "effect_receipt") {
+          return yield* Effect.fail(new Error("Patch denied: HostKernel omitted managed receipt scope"))
+        }
+        managedAttempt?.acceptRefreshedScope({
+          previous: managedAttemptScope,
+          refreshed: receipt.managedAttempt,
+          transition: "effect_receipt",
+        })
+      }
       const expected = new Map(operations.map((item) => [item.path, item.operation]))
       if (
         receipt.effectID !== lease.effectID ||

@@ -6,37 +6,55 @@
     "schemaVersion": {
       "const": 1
     },
+    "lane": {
+      "type": "string",
+      "enum": ["direct_session", "managed_attempt"]
+    },
     "deliveryId": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
     },
     "requestId": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
     },
     "parentExecutionId": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
     },
     "childExecutionId": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
     },
     "messageId": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
     },
     "payloadRef": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
     },
     "payloadDigest": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^(sha256|blake3):[a-f0-9]{64}$"
     },
     "replyTo": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
     },
     "kind": {
       "type": "string",
@@ -60,24 +78,65 @@
       ]
     },
     "ownerEpoch": {
-      "type": "integer",
-      "minimum": 0
+      "type": "string",
+      "maxLength": 20,
+      "pattern": "^(0|[1-9][0-9]{0,19})$"
     },
     "sequence": {
-      "type": "integer",
-      "minimum": 0
+      "type": "string",
+      "maxLength": 20,
+      "pattern": "^(0|[1-9][0-9]{0,19})$"
     },
     "expiresAt": {
       "type": "string",
-      "minLength": 1
+      "format": "date-time",
+      "maxLength": 64,
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
     },
     "authorityDigest": {
       "type": "string",
-      "minLength": 1
+      "description": "BLAKE3 of canonical MessagePack [SubagentDeliveryV1.authority, lane, parentExecutionId, childExecutionId, ownerEpoch, authority], recomputed by the trusted lane owner; not an authorization token.",
+      "pattern": "^blake3:[a-f0-9]{64}$"
+    },
+    "authority": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "parentSessionId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$" },
+            "childSessionId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$" },
+            "profileId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$" },
+            "profileRevision": { "type": "string", "maxLength": 20, "pattern": "^(0|[1-9][0-9]{0,19})$" },
+            "profileDigest": { "$ref": "#/$defs/digest" },
+            "permissionScopeDigest": { "$ref": "#/$defs/digest" }
+          },
+          "required": ["parentSessionId", "childSessionId", "profileId", "profileRevision", "profileDigest", "permissionScopeDigest"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "delegationBindingDigest": { "$ref": "#/$defs/digest" },
+            "goalId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$" },
+            "runId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$" },
+            "taskId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$" },
+            "attemptId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$" }
+          },
+          "required": ["delegationBindingDigest", "goalId", "runId", "taskId", "attemptId"],
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^(sha256|blake3):[a-f0-9]{64}$"
     }
   },
   "required": [
     "schemaVersion",
+    "lane",
     "deliveryId",
     "requestId",
     "parentExecutionId",
@@ -87,9 +146,21 @@
     "payloadDigest",
     "kind",
     "ackState",
+    "expiresAt",
     "ownerEpoch",
     "sequence",
-    "authorityDigest"
+    "authorityDigest",
+    "authority"
+  ],
+  "allOf": [
+    {
+      "if": { "properties": { "lane": { "const": "direct_session" } }, "required": ["lane"] },
+      "then": { "properties": { "authority": { "required": ["parentSessionId", "childSessionId", "profileId", "profileRevision", "profileDigest", "permissionScopeDigest"] } } }
+    },
+    {
+      "if": { "properties": { "lane": { "const": "managed_attempt" } }, "required": ["lane"] },
+      "then": { "properties": { "authority": { "required": ["delegationBindingDigest", "goalId", "runId", "taskId", "attemptId"] } } }
+    }
   ],
   "additionalProperties": false
 }

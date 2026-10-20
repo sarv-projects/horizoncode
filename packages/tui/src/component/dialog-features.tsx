@@ -5,6 +5,14 @@ import { useSDK } from "../context/sdk"
 import { useProject } from "../context/project"
 import { useToast } from "../ui/toast"
 
+export function featureSettingIsMutable(feature: FeatureExposure.Feature) {
+  return (
+    feature.state.policyLock !== "locked" &&
+    feature.state.effectiveState !== "unavailable" &&
+    feature.state.effectiveState !== "blocked"
+  )
+}
+
 /**
  * TUI projection of the existing backend config.
  * This dialog never stores independent feature flags or authorizes a tool.
@@ -31,13 +39,21 @@ export function DialogFeatures() {
   const options = createMemo(() =>
     features().map((feature) => {
       const state = feature.state
-      const tag = feature.releaseClass === "stable" ? "" : ` [${feature.releaseClass === "experimental" ? "Experimental" : "Beta"}]`
-      const requested = state.requestedEnabled === null ? `default ${feature.defaultEnabled ? "ON" : "OFF"}` : state.requestedEnabled ? "requested ON" : "requested OFF"
+      const tag =
+        feature.releaseClass === "stable"
+          ? ""
+          : ` [${feature.releaseClass === "experimental" ? "Experimental" : "Beta"}]`
+      const requested =
+        state.requestedEnabled === null
+          ? `default ${feature.defaultEnabled ? "ON" : "OFF"}`
+          : state.requestedEnabled
+            ? "requested ON"
+            : "requested OFF"
       const effective = state.effectiveEnabled ? "effective ON" : "effective OFF"
       const source = state.valueSource === "unknown" ? "source unknown" : `source ${state.valueSource}`
       const lock = `policy lock ${state.policyLock}`
       const status = state.implementationStatus.replaceAll("_", " ")
-      const label = `${state.effectiveState === "unavailable" || state.effectiveState === "blocked" ? `${state.effectiveState === "unavailable" ? "Unavailable" : "Blocked"}: ${state.blockedReason ?? "Unsupported"} · ` : ""}${requested} · ${effective} (${state.effectiveState})${state.pendingApplyAt ? ` · Pending ${state.pendingApplyAt.replaceAll("_", " ")}` : ""} · ${source} · ${lock} · Scope ${feature.supportedScopes.join(", ")} · ${status} · Applies ${feature.applyBoundary.replaceAll("_", " ")}`
+      const label = `${state.policyLock === "locked" ? `Locked: ${state.blockedReason ?? "Managed by policy"} · ` : ""}${state.effectiveState === "unavailable" || state.effectiveState === "blocked" ? `${state.effectiveState === "unavailable" ? "Unavailable" : "Blocked"}: ${state.blockedReason ?? "Unsupported"} · ` : ""}${requested} · ${effective} (${state.effectiveState})${state.pendingApplyAt ? ` · Pending ${state.pendingApplyAt.replaceAll("_", " ")}` : ""} · ${source} · ${lock} · Scope ${feature.supportedScopes.join(", ")} · ${status} · Applies ${feature.applyBoundary.replaceAll("_", " ")}`
       return {
         title: feature.title + tag,
         value: feature.featureId,
@@ -52,7 +68,7 @@ export function DialogFeatures() {
     if (busy()) return
     const feature = features().find((f) => f.featureId === option.value)
     if (!feature) return
-    if (feature.state.effectiveState === "unavailable" || feature.state.effectiveState === "blocked") {
+    if (!featureSettingIsMutable(feature)) {
       toast.show({
         message: feature.state.blockedReason ?? "This feature is not available in this build.",
         variant: "info",
@@ -71,7 +87,10 @@ export function DialogFeatures() {
           featureExposureUpdate: {
             featureId: feature.featureId,
             expectedEnabled: feature.state.requestedEnabled,
-            enabled: !feature.state.effectiveEnabled,
+            // A pending next-turn value is the user's current request even
+            // while the running Session still reports the prior effective
+            // value. Toggle the requested value so the user can cancel it.
+            enabled: !(feature.state.requestedEnabled ?? feature.defaultEnabled),
           },
         },
         { throwOnError: true },
@@ -88,5 +107,11 @@ export function DialogFeatures() {
     }
   }
 
-  return <DialogSelect title="Settings · Features / Experimental" options={options()} onSelect={(option) => void select(option)} />
+  return (
+    <DialogSelect
+      title="Settings · Features / Experimental"
+      options={options()}
+      onSelect={(option) => void select(option)}
+    />
+  )
 }

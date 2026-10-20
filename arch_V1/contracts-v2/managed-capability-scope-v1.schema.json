@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ManagedCapabilityScopeV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "capabilityScope", "requiredCapabilities"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "capabilityScope": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/capabilityId" },
+      "description": "Explicit canonical capability ceiling in an immutable accepted SpecVersion. Empty denies all effects. The Rust owner also enforces bytewise sorted order."
+    },
+    "requiredCapabilities": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/capabilityId" },
+      "description": "Task requirements; every item must be present in the accepted SpecVersion capabilityScope. Empty denies all effects. The Rust owner enforces sorted order and subset membership."
+    }
+  },
+  "$defs": {
+    "capabilityId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
+      "description": "Syntax only. Runtime canonical-ID validation uses arch_V1/contracts-v2/capability-registry-v1.json; aliases and unknown IDs are rejected. This design seed does not imply runtime availability or grant authority."
+    }
+  },
+  "$comment": "Capability IDs only define an accepted request ceiling. Actual dispatch additionally requires current Guard policy and a live authorized lease."
+}

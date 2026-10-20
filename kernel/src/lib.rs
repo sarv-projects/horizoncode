@@ -19,11 +19,23 @@
 // This bounded storage seam is intentionally not wired to a production owner yet.
 #[allow(dead_code)]
 pub(crate) mod artifact_store;
+// Durable checkpoint journal and fail-closed restore preview/recovery policy.
+#[allow(dead_code)]
+pub(crate) mod checkpoint;
+// Deterministic automation scheduling state only. Guarded invocation is not wired.
+#[allow(dead_code)]
+pub(crate) mod automation;
+/// Canonical hashes for authenticated managed AgentProfileV2 definitions.
+pub(crate) mod agent_profile;
+pub(crate) mod context_selection;
 #[cfg(target_os = "linux")]
 pub mod effect_host;
 pub mod guard;
 #[cfg(target_os = "linux")]
 pub mod host_kernel;
+/// HTTPS-only, DNS-pinned outbound HTTP primitives; not dispatched until the durable
+/// HostKernel lease/receipt adapter and SecretBroker resolver are accepted.
+pub mod http_execution;
 pub mod managed_control;
 pub mod messagepack;
 pub mod owner_log;
@@ -35,10 +47,14 @@ pub mod resource_budget;
 pub mod resource_sampler;
 pub mod startup;
 pub mod subscription;
+/// Strict cross-language decoding for direct and managed child deliveries.
+pub mod subagent_delivery;
 #[cfg(target_os = "linux")]
 pub mod supervisor_lease;
 #[cfg(target_os = "linux")]
 pub mod supervisor_session;
+/// Bounded, deterministic Task-DAG admission and typed artifact-edge validation.
+pub mod task_dag;
 /// Bounded generation-scoped terminal grants, input sequencing, and replay state.
 pub mod terminal;
 /// Bounded terminal process execution using the platform-specific process backend.
@@ -51,6 +67,18 @@ pub mod windows_peer;
 
 /// Read-only, durable correlation projection of OpenCode Session events.
 pub mod session_projection;
+
+/// Bounded Rust-owned worker pool composing capacity, worktree and Attempt leases.
+pub mod worker_pool;
+
+/// OwnerLog-backed durable clone-apply-commit adapter for the worker pool.
+pub mod worker_durable;
+
+/// Bounded, process-local model of the Rust-owned worktree lease lifecycle.
+pub mod worktree_pool;
+
+/// Durable intent/receipt contract for HostKernel-guarded worker worktrees.
+pub(crate) mod worktree_lifecycle;
 
 /// Linux private Unix-domain peer authentication used by the RPC session adapter.
 #[cfg(target_os = "linux")]

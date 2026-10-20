@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { mkdir } from "node:fs/promises"
 import net from "node:net"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
@@ -328,12 +329,16 @@ describe("HttpApi Server.listen", () => {
     expect(output).not.toContain("Sent HTTP response")
   })
 
-  test("feature setting writes preserve unrelated config and reject stale updates", async () => {
+  test("feature setting update and rollback preserve unrelated config and reject stale writes", async () => {
     await using tmp = await tmpdir({
       init: async (directory) => {
         await Bun.write(
           path.join(directory, "opencode.json"),
-          JSON.stringify({ compaction: { auto: false, prune: false }, formatter: false }),
+          JSON.stringify({
+            compaction: { auto: false, prune: false },
+            experimental: { batch_tool: true },
+            formatter: false,
+          }),
         )
         await Bun.write(
           path.join(directory, "config.json"),
@@ -349,12 +354,35 @@ describe("HttpApi Server.listen", () => {
       expect(initial.status).toBe(200)
       const before = (await initial.json()) as Array<{
         featureId: string
-        state: { requestedEnabled: boolean | null; effectiveEnabled: boolean }
+        state: {
+          requestedEnabled: boolean | null
+          effectiveEnabled: boolean
+          effectiveState: string
+          valueSource: string
+          policyLock: string
+        }
       }>
       expect(before.find((feature) => feature.featureId === "compaction.prune")?.state).toMatchObject({
         requestedEnabled: false,
         effectiveEnabled: false,
+        effectiveState: "off",
+        valueSource: "project",
+        policyLock: "unlocked",
       })
+      expect(before.find((feature) => feature.featureId === "native_search")?.state).toMatchObject({
+        effectiveEnabled: false,
+        effectiveState: "unavailable",
+        implementationStatus: "designed",
+      })
+
+      // Designed-only experiments remain unavailable through the HTTP
+      // boundary too; a client cannot bypass the TUI's disabled state.
+      const unavailable = await fetch(new URL(`/config/features?${query}`, listener.url), {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ featureId: "native_search", expectedEnabled: null, enabled: true }),
+      })
+      expect(unavailable.status).toBe(400)
 
       const update = await fetch(new URL(`/config/features?${query}`, listener.url), {
         method: "PATCH",
@@ -364,12 +392,22 @@ describe("HttpApi Server.listen", () => {
       expect(update.status).toBe(200)
       const after = (await update.json()) as Array<{
         featureId: string
-        state: { requestedEnabled: boolean | null; effectiveEnabled: boolean }
+        state: {
+          requestedEnabled: boolean | null
+          effectiveEnabled: boolean
+          effectiveState: string
+          pendingApplyAt?: string
+        }
       }>
       expect(after.find((feature) => feature.featureId === "compaction.prune")?.state).toMatchObject({
         requestedEnabled: true,
-        effectiveEnabled: true,
+        effectiveEnabled: false,
+        effectiveState: "pending_apply",
+        pendingApplyAt: "next_turn",
       })
+
+      // Roll back the setting after the pending update. The write path must
+      // preserve other settings and still fence stale/concurrent requests.
 
       const stale = await fetch(new URL(`/config/features?${query}`, listener.url), {
         method: "PATCH",
@@ -403,6 +441,48 @@ describe("HttpApi Server.listen", () => {
       expect(persisted).toMatchObject({ compaction: { auto: true, prune: false }, formatter: false })
     } finally {
       await listener.stop()
+    }
+  })
+
+  test("managed feature settings report their policy source and reject writes", async () => {
+    await using tmp = await tmpdir()
+    const managed = path.join(tmp.path, "managed")
+    await mkdir(managed, { recursive: true })
+    await Bun.write(path.join(managed, "opencode.json"), JSON.stringify({ compaction: { auto: false } }))
+    const previousManagedDir = process.env.OPENCODE_TEST_MANAGED_CONFIG_DIR
+    process.env.OPENCODE_TEST_MANAGED_CONFIG_DIR = managed
+    const listener = await startListener()
+    const headers = { authorization: authorization(), "content-type": "application/json" }
+    const query = `directory=${encodeURIComponent(tmp.path)}`
+    try {
+      const initial = await fetch(new URL(`/config/features?${query}`, listener.url), { headers })
+      expect(initial.status).toBe(200)
+      const features = (await initial.json()) as Array<{
+        featureId: string
+        state: { requestedEnabled: boolean | null; effectiveEnabled: boolean; valueSource: string; policyLock: string }
+      }>
+      expect(features.find((feature) => feature.featureId === "compaction.auto")?.state).toMatchObject({
+        requestedEnabled: false,
+        effectiveEnabled: false,
+        valueSource: "system_policy",
+        policyLock: "locked",
+      })
+
+      const update = await fetch(new URL(`/config/features?${query}`, listener.url), {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ featureId: "compaction.auto", expectedEnabled: false, enabled: true }),
+      })
+      expect(update.status, await update.clone().text()).toBe(403)
+      const persisted = await Bun.file(path.join(tmp.path, "config.json")).exists()
+      expect(persisted).toBe(false)
+      expect(JSON.parse(await Bun.file(path.join(managed, "opencode.json")).text())).toMatchObject({
+        compaction: { auto: false },
+      })
+    } finally {
+      await listener.stop()
+      if (previousManagedDir === undefined) delete process.env.OPENCODE_TEST_MANAGED_CONFIG_DIR
+      else process.env.OPENCODE_TEST_MANAGED_CONFIG_DIR = previousManagedDir
     }
   })
 

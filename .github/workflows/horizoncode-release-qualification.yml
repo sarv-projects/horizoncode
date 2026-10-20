@@ -1,0 +1,92 @@
+name: HorizonCode release qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-candidate:
+    name: Build and audit isolated Linux candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout source without persisted credentials
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Select the repository's local models catalog fixture
+        shell: bash
+        run: |
+          install -d -m 700 /tmp/opencode
+          printf 'MODELS_DEV_API_JSON=%s/opencode/packages/opencode/test/tool/fixtures/models-api.json\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+
+      - name: Build and audit an isolated candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_root="/tmp/opencode/horizoncode-p9-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          build_report="$RUNNER_TEMP/horizoncode-p9-build.json"
+          gate_report="$RUNNER_TEMP/horizoncode-p9-gate.json"
+
+          python3 scripts/release/prepare_build.py \
+            --source "$GITHUB_WORKSPACE" \
+            --destination "$build_root" \
+            --build \
+            --output "$build_report"
+
+          artifact_directory="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["build"]["artifact_directory"] or "")' "$build_report")"
+          if [[ -z "$artifact_directory" ]]; then
+            echo "isolated build did not produce a candidate artifact directory" >&2
+            exit 2
+          fi
+
+          set +e
+          python3 scripts/release/release_gate.py \
+            --root "$GITHUB_WORKSPACE" \
+            --artifact "$artifact_directory" \
+            --output "$gate_report"
+          gate_exit=$?
+          set -e
+          if (( gate_exit > 1 )); then
+            exit "$gate_exit"
+          fi
+
+          python3 - "$build_report" "$gate_report" "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          build = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          gate = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+          target = gate["audit"]["product_target"]
+          artifact = gate["audit"]["artifact"]
+          lines = [
+              "# HorizonCode release qualification",
+              "",
+              f"- Candidate build: `{build['build']['status']}`",
+              f"- Qualification: `{build['qualification_status']}`",
+              f"- Source revision: `{build['source']['revision']}`",
+              f"- Source-state SHA-256: `{build['source']['source_state_sha256']}`",
+              f"- Product target: `{target['classification']}` (`{target['package_name']}`; workspace `{target['workspace_identity']}`)",
+              f"- Candidate binary SHA-256: `{artifact.get('binary_sha256')}`",
+              f"- Release gate: `{gate['status']}` ({len(gate['blockers'])} blockers)",
+              f"- Native Windows: `{gate['platform_support_matrix']['lanes']['native_windows']['support_status']}`",
+              "- Signing and publication: not performed",
+              "",
+              "This manual workflow records qualification evidence only; it is not a release approval.",
+          ]
+          Path(sys.argv[3]).write_text("\n".join(lines) + "\n", encoding="utf-8")
+          if gate["status"] == "BLOCKED":
+              print(f"::warning title=Release gate blocked::{len(gate['blockers'])} release blockers remain")
+          PY

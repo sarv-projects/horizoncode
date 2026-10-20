@@ -1,5 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Effect, Layer, Context, Schema, Scope } from "effect"
+import { Effect, Layer, Context, Option, Schema, Scope } from "effect"
 import { applyPatch, formatPatch, parsePatch, structuredPatch } from "diff"
 import { open, lstat, realpath } from "node:fs/promises"
 import path from "node:path"
@@ -19,6 +19,7 @@ import {
 import { SessionRunState } from "@/session/run-state"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
+import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 
 const PATCH_CONTEXT_LINES = 2_147_483_647
 const MAX_PATCH_BYTES = 10_000_000
@@ -596,6 +597,8 @@ const layer: Layer.Layer<
         return [tracked, ...untracked].filter(Boolean).join("\n")
       }),
       apply: Effect.fn("Vcs.apply")(function* (input: ApplyInput) {
+        const trustedPrincipal = yield* Effect.serviceOption(TrustedPrincipalContext)
+        if (Option.isNone(trustedPrincipal)) return yield* patchError("Patch requires an authenticated principal", "denied")
         const ctx = yield* InstanceState.context
         if (ctx.project.vcs !== "git") {
           return yield* patchError("VCS patch application requires a git workspace", "session")
@@ -722,6 +725,7 @@ const layer: Layer.Layer<
                   operations,
                 })
                 .pipe(
+                  Effect.provideService(TrustedPrincipalContext, trustedPrincipal.value),
                   Effect.mapError((error) =>
                     patchError(
                       error.message,

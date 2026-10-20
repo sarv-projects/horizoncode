@@ -11,7 +11,7 @@ import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { eq } from "drizzle-orm"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { afterAll, expect } from "bun:test"
+import { afterAll, expect, test } from "bun:test"
 import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Stream } from "effect"
 import path from "path"
 import { tmpdir } from "node:os"
@@ -42,6 +42,7 @@ import { SessionSummary } from "../../src/session/summary"
 import { Instruction } from "../../src/session/instruction"
 import { SessionProcessor } from "../../src/session/processor"
 import { SessionPrompt } from "../../src/session/prompt"
+import type { DirectAttemptAuthority } from "../../src/session/tool-batch"
 import { SessionRevert } from "../../src/session/revert"
 import { SessionRunState } from "../../src/session/run-state"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
@@ -171,6 +172,7 @@ const testSupervisorLayer = Layer.succeed(
     registerHostLocation: () => Effect.die("unexpected host location registration"),
     prepareUserEffect: () => Effect.die("unexpected user effect preparation"),
     replyGuardApproval: () => Effect.die("unexpected guard approval reply"),
+    awaitManagedVerifierApprovals: () => Effect.die("unexpected managed verifier approval"),
     prepareToolBatch: () => Effect.die("unexpected effect preparation"),
     executeWrite: () => Effect.die("unexpected effect execution"),
     executePatch: () => Effect.die("unexpected patch execution"),
@@ -375,6 +377,11 @@ const withMcpInstructions = testEffect(
     ],
   }),
 )
+
+test("pending feature settings apply only at root turn boundaries", () => {
+  expect(SessionPrompt.shouldApplyPendingFeatures()).toBe(true)
+  expect(SessionPrompt.shouldApplyPendingFeatures({} as unknown as DirectAttemptAuthority)).toBe(false)
+})
 
 // Config that registers a custom "test" provider with a "test-model" model
 // so provider model lookup succeeds inside the loop.
@@ -591,6 +598,32 @@ noLLMServer.instance(
         })
       }
       expect(yield* sessions.messages({ sessionID: chat.id })).toEqual(before)
+    }),
+  { config: cfg },
+)
+
+noLLMServer.instance(
+  "applies pending next-turn feature settings before persisting the next root prompt",
+  () =>
+    Effect.gen(function* () {
+      const config = yield* Config.Service
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Feature apply boundary" })
+      const before = yield* config.get()
+      expect(before.compaction?.auto ?? true).toBe(true)
+
+      yield* config.updateFeature({ featureId: "compaction.auto", expectedEnabled: null, enabled: false })
+      expect((yield* config.get()).compaction?.auto ?? true).toBe(true)
+
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "apply the pending setting" }],
+      })
+
+      expect((yield* config.get()).compaction?.auto).toBe(false)
     }),
   { config: cfg },
 )
@@ -963,6 +996,345 @@ withRustSupervisor(
         expect(toolCall.state.metadata.truncated).toBe(false)
         expect(approved.result.info.role).toBe("assistant")
       }).pipe(Effect.ensuring(off))
+    }),
+  { config: cfg },
+  180000,
+)
+
+withRustSupervisor(
+  "provider abort automatically cancels a host-approved but unexecuted batch",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make(dir), sandboxes: [] })
+        .onConflictDoNothing()
+        .run()
+        .pipe(Effect.orDie)
+
+      const target = path.join(dir, "provider-cancelled-after-host-approval.txt")
+      const session = yield* sessions.create({
+        title: "Cancel after host approval",
+        permission: [{ permission: "bash", pattern: "*", action: "ask" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "run a command that must be cancelled" }],
+      })
+      yield* llm.tool("bash", { command: `touch '${target}'`, timeout: 30_000 })
+
+      const events = yield* EventV2Bridge.Service
+      const supervisor = yield* SessionSupervisor.Service
+      const approvals = yield* Queue.unbounded<GuardApprovalRequest>()
+      const off = yield* events.listen((event) => {
+        if (event.type === GuardApprovalRequested.type) {
+          Queue.offerUnsafe(approvals, event.data as GuardApprovalRequest)
+        }
+        return Effect.void
+      })
+
+      yield* Effect.addFinalizer(() => off)
+
+      const loop = yield* prompt.loop({ sessionID: session.id }).pipe(Effect.forkChild)
+      const request = yield* awaitWithTimeout(
+        Queue.take(approvals),
+        "timed out waiting for real-host bash approval",
+        "10 seconds",
+      )
+      expect(request.capabilityID).toBe("terminal.run")
+      expect(request.sessionID).toBe(session.id)
+      expect(existsSync(target)).toBe(false)
+
+      // Advance the durable host challenge to APPROVED while Core is still waiting
+      // for its approval reply. Cancelling the provider turn must reach cancel_batch
+      // through llm.ts, rather than relying on a test-side cancellation RPC.
+      const approved = yield* supervisor.requestHostKernel("effects.v2", "resolve_approval", {
+        challengeID: request.challengeID,
+        decision: "allow_once",
+      })
+      expect(approved.status).toBe("approved")
+      yield* prompt.cancel(session.id)
+      const loopExit = yield* Fiber.await(loop)
+      expect(Exit.isSuccess(loopExit)).toBe(true)
+
+      const reconciled = yield* supervisor.requestHostKernel("effects.v2", "reconcile_effect", {
+        effectID: request.effectID,
+        locationID: request.locationID,
+        sessionID: session.id,
+      })
+      expect(reconciled).toMatchObject({ status: "cancelled", effectID: request.effectID })
+      const lateExecute = yield* Effect.exit(
+        supervisor.requestHostKernel("effects.v2", "execute_write", {
+          sessionID: session.id,
+          locationID: request.locationID,
+          effectID: request.effectID,
+          capabilityLeaseDigest: approved.capabilityLeaseDigest,
+          content: "must-not-be-written",
+        }),
+      )
+      expect(Exit.isFailure(lateExecute)).toBe(true)
+      expect(existsSync(target)).toBe(false)
+    }),
+  { config: cfg },
+  180000,
+)
+
+withRustSupervisor(
+  "single slash-command shell interpolation waits for Rust approval and does not spawn when denied",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig(providerCfg)
+      const marker = path.join(dir, "command-shell-denied-marker")
+      yield* writeConfig(dir, {
+        ...providerCfg(llm.url),
+        command: { probe: { template: `Probe !\`touch '${marker}'\`` } },
+      })
+
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make(dir), sandboxes: [] })
+        .onConflictDoNothing()
+        .run()
+        .pipe(Effect.orDie)
+
+      const events = yield* EventV2Bridge.Service
+      const supervisor = yield* SessionSupervisor.Service
+      const approvals = yield* Queue.unbounded<GuardApprovalRequest>()
+      const off = yield* events.listen((event) => {
+        if (event.type === GuardApprovalRequested.type) {
+          Queue.offerUnsafe(approvals, event.data as GuardApprovalRequest)
+        }
+        return Effect.void
+      })
+      yield* Effect.addFinalizer(() => off)
+      const session = yield* sessions.create({ title: "guarded command interpolation" })
+      const command = yield* prompt
+        .command({ sessionID: session.id, command: "probe", arguments: "" })
+        .pipe(
+          Effect.provideService(TrustedPrincipalContext, {
+            principal: { kind: "server_auth", subject: "command-interpolation-test" },
+          }),
+        )
+        .pipe(Effect.forkChild)
+      const request = yield* awaitWithTimeout(
+        Queue.take(approvals),
+        "timed out waiting for slash-command terminal.run approval",
+        "10 seconds",
+      )
+
+      expect(request.capabilityID).toBe("terminal.run")
+      expect(request.sessionID).toBe(session.id)
+      expect(existsSync(marker)).toBe(false)
+      yield* supervisor
+        .replyGuardApproval({ approvalID: request.approvalID, decision: "deny" })
+        .pipe(
+          Effect.provideService(TrustedPrincipalContext, {
+            principal: { kind: "server_auth", subject: "command-interpolation-test" },
+          }),
+        )
+
+      const exit = yield* Fiber.await(command)
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(existsSync(marker)).toBe(false)
+    }),
+  { config: cfg },
+  180000,
+)
+
+withRustSupervisor(
+  "single slash-command shell interpolation executes after Rust approval and returns its outcome",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig(providerCfg)
+      const marker = path.join(dir, "command-shell-approved-marker")
+      const localConfig = providerCfg(llm.url)
+      yield* writeConfig(dir, {
+        ...localConfig,
+        provider: {
+          ...localConfig.provider,
+          test: {
+            ...localConfig.provider.test,
+            options: { ...localConfig.provider.test.options, apiKey: "" },
+          },
+        },
+        command: {
+          probe: {
+            template: `Probe !\`API_TOKEN=interpolation-secret printf 'INTERPOLATION_APPROVED\\n' --password 'private interpolation value'; touch '${marker}'\``,
+          },
+        },
+      })
+
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make(dir), sandboxes: [] })
+        .onConflictDoNothing()
+        .run()
+        .pipe(Effect.orDie)
+
+      const events = yield* EventV2Bridge.Service
+      const supervisor = yield* SessionSupervisor.Service
+      const approvals = yield* Queue.unbounded<GuardApprovalRequest>()
+      const off = yield* events.listen((event) => {
+        if (event.type === GuardApprovalRequested.type) {
+          Queue.offerUnsafe(approvals, event.data as GuardApprovalRequest)
+        }
+        return Effect.void
+      })
+      yield* Effect.addFinalizer(() => off)
+
+      const session = yield* sessions.create({ title: "approved command interpolation" })
+      const command = yield* prompt
+        .command({ sessionID: session.id, command: "probe", arguments: "", agent: "build", model: "test/test-model" })
+        .pipe(
+          Effect.provideService(TrustedPrincipalContext, {
+            principal: { kind: "server_auth", subject: "command-interpolation-test" },
+          }),
+        )
+        .pipe(Effect.forkChild)
+      const request = yield* awaitWithTimeout(
+        Queue.take(approvals),
+        "timed out waiting for slash-command terminal.run approval",
+        "10 seconds",
+      )
+
+      expect(request.capabilityID).toBe("terminal.run")
+      expect(request.sessionID).toBe(session.id)
+      expect(request.inputDigest).toMatch(/^blake3:[0-9a-f]{64}$/)
+      expect(request.argumentSummary.status).toBe("available")
+      if (request.argumentSummary.status !== "available") throw new Error("expected a safe command summary")
+      expect(request.argumentSummary.text).toContain("printf")
+      expect(request.argumentSummary.text).toContain("API_TOKEN=[redacted]")
+      expect(request.argumentSummary.text).toContain("--password [redacted]")
+      expect(request.argumentSummary.text).not.toContain("interpolation-secret")
+      expect(request.argumentSummary.text).not.toContain("private interpolation value")
+      expect(existsSync(marker)).toBe(false)
+      yield* supervisor
+        .replyGuardApproval({ approvalID: request.approvalID, decision: "allow_once" })
+        .pipe(
+          Effect.provideService(TrustedPrincipalContext, {
+            principal: { kind: "server_auth", subject: "command-interpolation-test" },
+          }),
+        )
+
+      const exit = yield* Fiber.await(command)
+      if (Exit.isFailure(exit)) throw Cause.squash(exit.cause)
+      expect(Exit.isSuccess(exit)).toBe(true)
+      expect(existsSync(marker)).toBe(true)
+      expect(JSON.stringify(yield* llm.inputs)).toContain("INTERPOLATION_APPROVED")
+    }),
+  { config: cfg },
+  180000,
+)
+
+withRustSupervisor(
+  "slash-command rejects multiple shell interpolations before any process is dispatched",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig(providerCfg)
+      const firstMarker = path.join(dir, "command-shell-first-marker")
+      const secondMarker = path.join(dir, "command-shell-second-marker")
+      yield* writeConfig(dir, {
+        ...providerCfg(llm.url),
+        command: {
+          probe: {
+            template: `First !\`touch '${firstMarker}'\` then !\`touch '${secondMarker}'\``,
+          },
+        },
+      })
+
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const { db } = yield* Database.Service
+      const { directory } = yield* TestInstance
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make(directory), sandboxes: [] })
+        .onConflictDoNothing()
+        .run()
+        .pipe(Effect.orDie)
+
+      const events = yield* EventV2Bridge.Service
+      const supervisor = yield* SessionSupervisor.Service
+      const approvals = yield* Queue.unbounded<GuardApprovalRequest>()
+      const off = yield* events.listen((event) => {
+        if (event.type === GuardApprovalRequested.type) {
+          Queue.offerUnsafe(approvals, event.data as GuardApprovalRequest)
+        }
+        return Effect.void
+      })
+      yield* Effect.addFinalizer(() => off)
+      const session = yield* sessions.create({ title: "mixed command interpolation" })
+      const observed = yield* Effect.gen(function* () {
+        const command = yield* prompt
+          .command({ sessionID: session.id, command: "probe", arguments: "" })
+          .pipe(
+            Effect.provideService(TrustedPrincipalContext, {
+              principal: { kind: "server_auth", subject: "command-interpolation-test" },
+            }),
+          )
+          .pipe(Effect.forkChild)
+        const first = yield* Effect.raceFirst(
+          Fiber.await(command).pipe(Effect.map((exit) => ({ type: "completed" as const, exit }))),
+          Queue.take(approvals).pipe(Effect.map((approval) => ({ type: "approval" as const, approval }))),
+        )
+        let markerAtSecondApproval = false
+        let exit: Exit.Exit<unknown, unknown>
+        if (first.type === "completed") {
+          exit = first.exit
+        } else {
+          expect(first.approval.capabilityID).toBe("terminal.run")
+          yield* supervisor
+            .replyGuardApproval({ approvalID: first.approval.approvalID, decision: "allow_once" })
+            .pipe(
+              Effect.provideService(TrustedPrincipalContext, {
+                principal: { kind: "server_auth", subject: "command-interpolation-test" },
+              }),
+            )
+          const second = yield* Effect.raceFirst(
+            Fiber.await(command).pipe(Effect.map((result) => ({ type: "completed" as const, exit: result }))),
+            Queue.take(approvals).pipe(Effect.map((approval) => ({ type: "approval" as const, approval }))),
+          )
+          if (second.type === "completed") {
+            exit = second.exit
+          } else {
+            expect(second.approval.capabilityID).toBe("terminal.run")
+            markerAtSecondApproval = existsSync(firstMarker)
+            yield* supervisor
+              .replyGuardApproval({ approvalID: second.approval.approvalID, decision: "deny" })
+              .pipe(
+                Effect.provideService(TrustedPrincipalContext, {
+                  principal: { kind: "server_auth", subject: "command-interpolation-test" },
+                }),
+              )
+            exit = yield* Fiber.await(command)
+          }
+        }
+        return { first, markerAtSecondApproval, exit }
+      })
+      expect(observed.markerAtSecondApproval).toBe(false)
+      expect(existsSync(firstMarker)).toBe(false)
+      expect(existsSync(secondMarker)).toBe(false)
+      expect(observed.first.type).toBe("completed")
+      expect(Exit.isFailure(observed.exit)).toBe(true)
+      if (Exit.isFailure(observed.exit)) {
+        expect(Cause.squash(observed.exit.cause)).toMatchObject({
+          _tag: "SessionSupervisorError",
+          stage: "host-kernel",
+          reason: "multiple shell interpolations require atomic Guard admission",
+        })
+      }
     }),
   { config: cfg },
   180000,

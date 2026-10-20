@@ -1,9 +1,20 @@
 import { describe, expect, test } from "bun:test"
+import { chmodSync, mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { createServer } from "node:net"
+import { Cause, Effect, Exit, Option } from "effect"
 import {
   assertApplicationFrameFence,
+  OPTIONAL_HOST_FEATURES,
   sessionSupervisorArgs,
+  validateManagedVerifierChallenges,
+  collectManagedVerifierApprovalDecisions,
+  waitForSocket,
   withApplicationFrameFence,
+  type ManagedVerifierGuardChallengeV1,
 } from "@opencode-ai/core/session/supervisor"
+import type { ChildProcessHandle } from "effect/unstable/process/ChildProcessSpawner"
 
 const base = {
   source: "/var/lib/opencode/state.db",
@@ -17,6 +28,11 @@ const base = {
 } as const
 
 describe("session_supervisor launch arguments", () => {
+  test("offers read-context only as an optional negotiated host feature", () => {
+    expect(OPTIONAL_HOST_FEATURES).toContain("repo-intel.read-context-v1")
+    expect(OPTIONAL_HOST_FEATURES).not.toContain("repo-intel.read-context-v1-required")
+  })
+
   test("passes the host kernel owner epoch and the exact accepted argument set", () => {
     const args = sessionSupervisorArgs(base)
 
@@ -42,6 +58,40 @@ describe("session_supervisor launch arguments", () => {
   test("rejects a relative launch path", () => {
     expect(() => sessionSupervisorArgs({ ...base, source: "state.db" })).toThrow()
     expect(() => sessionSupervisorArgs({ ...base, socketPath: "s.sock" })).toThrow()
+  })
+})
+
+describe("session supervisor socket startup", () => {
+  test("waits for the bound socket inode to receive owner-only permissions", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "hc-supervisor-socket-race-"))
+    const path = join(directory, "supervisor.sock")
+    const server = createServer()
+    try {
+      await new Promise<void>((resolve) => server.listen(path, resolve))
+      const child = { isRunning: Effect.succeed(true) } as unknown as ChildProcessHandle
+      const secure = waitForSocket(path, child, new AbortController().signal, 1_000)
+      setTimeout(() => chmodSync(path, 0o600), 40)
+      await secure
+    } finally {
+      server.close()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test("rejects a same-owner socket that stays accessible to group or other", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "hc-supervisor-socket-insecure-"))
+    const path = join(directory, "supervisor.sock")
+    const server = createServer()
+    try {
+      await new Promise<void>((resolve) => server.listen(path, resolve))
+      const child = { isRunning: Effect.succeed(true) } as unknown as ChildProcessHandle
+      await expect(
+        waitForSocket(path, child, new AbortController().signal, 1_000),
+      ).rejects.toThrow("permissions or owner are invalid")
+    } finally {
+      server.close()
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 })
 
@@ -118,5 +168,95 @@ describe("supervisor application frame fencing", () => {
       withApplicationFrameFence(request, { ownerEpoch: 7, processIncarnation: "é".repeat(128) }),
     ).toMatchObject({ ownerEpoch: 7 })
     expect(() => withApplicationFrameFence({ kind: "hello" }, fence)).toThrow()
+  })
+})
+
+describe("managed verifier approval challenge bounds", () => {
+  const challenge = (index: number): ManagedVerifierGuardChallengeV1 => ({
+    challengeID: `challenge-${index}`,
+    effectID: `effect-${index}`,
+    capabilityID: "builtin.verifier",
+    locationID: `loc_${"a".repeat(64)}`,
+    inputDigest: `blake3:${"b".repeat(64)}`,
+    normalizedTargets: [{ action: "run", criterion: `criterion-${index}` }],
+    expiresAtUnixMs: Date.now() + 60_000,
+    policySummary: "Run the host-registered verifier for one accepted criterion.",
+    origin: "managed_run",
+    source: "host.managed_verifier",
+    policyID: "builtin.verifier.v1",
+    policyDigest: `blake3:${"c".repeat(64)}`,
+    normalizedAction: "builtin.verifier",
+    argumentSummary: { status: "available", text: "Run the host-selected verifier" },
+    requestedGuarantees: ["no_symlink"],
+    guaranteeAssessment: { status: "assessed", residual: [] },
+    runID: `run-${index}`,
+    noResponse: "deny_and_expire",
+    allowEnabled: true,
+  })
+
+  test("accepts one complete bounded set for the registered location", () => {
+    expect(validateManagedVerifierChallenges(`loc_${"a".repeat(64)}`, [challenge(1)])).toHaveLength(1)
+  })
+
+  test("rejects a challenge set larger than the managed criteria bound before publishing", () => {
+    expect(() =>
+      validateManagedVerifierChallenges(
+        `loc_${"a".repeat(64)}`,
+        Array.from({ length: 33 }, (_, index) => challenge(index + 1)),
+      ),
+    ).toThrow("exceeds the managed criteria bound")
+  })
+
+  test("rejects a challenge bound to another Location or a duplicate effect", () => {
+    const wrongLocation = { ...challenge(1), locationID: `loc_${"c".repeat(64)}` }
+    expect(() => validateManagedVerifierChallenges(challenge(1).locationID, [wrongLocation])).toThrow(
+      "registered Location",
+    )
+    const duplicateEffect = { ...challenge(2), effectID: challenge(1).effectID }
+    expect(() =>
+      validateManagedVerifierChallenges(challenge(1).locationID, [challenge(1), duplicateEffect]),
+    ).toThrow("duplicate")
+  })
+
+  test("returns only observed partial decisions when a later approval window fails", async () => {
+    const observed: string[] = []
+    const result = await Effect.runPromise(
+      collectManagedVerifierApprovalDecisions(
+        Array.from({ length: 18 }, (_, index) => challenge(index + 1)),
+        (item) => {
+          observed.push(item.challengeID)
+          if (item.challengeID === "challenge-17") return Effect.fail(new Error("socket closed"))
+          return Effect.succeed("allow_once" as const)
+        },
+      ),
+    )
+
+    expect(result).toEqual({
+      kind: "abort",
+      reason: "transport_lost",
+      decisions: Array.from({ length: 16 }, (_, index) => ({
+        challengeID: `challenge-${index + 1}`,
+        decision: "allow_once",
+      })),
+    })
+    expect(observed).toEqual(Array.from({ length: 17 }, (_, index) => `challenge-${index + 1}`))
+  })
+
+  test("stops after a genuine denial without inventing decisions for unseen challenges", async () => {
+    const result = await Effect.runPromise(
+      collectManagedVerifierApprovalDecisions(
+        [challenge(1), challenge(2), challenge(3)],
+        (item) => Effect.succeed(item.challengeID === "challenge-2" ? "deny" as const : "allow_once" as const),
+      ),
+    )
+
+    expect(result).toEqual({
+      kind: "abort",
+      reason: "reviewer_denied",
+      decisions: [
+        { challengeID: "challenge-1", decision: "allow_once" },
+        { challengeID: "challenge-2", decision: "deny" },
+      ],
+    })
   })
 })

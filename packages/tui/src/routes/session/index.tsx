@@ -24,7 +24,7 @@ import { useEvent } from "../../context/event"
 import { SplitBorder } from "../../ui/border"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { Spinner } from "../../component/spinner"
-import { createSyntaxStyleMemo, generateSubtleSyntax, selectedForeground, useTheme } from "../../context/theme"
+import { selectedForeground, useTheme } from "../../context/theme"
 import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
 import type {
@@ -34,13 +34,12 @@ import type {
   ToolPart,
   UserMessage,
   TextPart,
-  ReasoningPart,
   SessionStatus,
 } from "@opencode-ai/sdk/v2"
 import { useLocal } from "../../context/local"
 import { Locale } from "../../util/locale"
 import { webSearchProviderLabel } from "../../util/tool-display"
-import { Dynamic, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
+import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import { useSDK } from "../../context/sdk"
 import { useEditorContext } from "../../context/editor"
 import { openEditor } from "../../editor"
@@ -60,7 +59,6 @@ import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
 import { Toast, useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv.tsx"
-import stripAnsi from "strip-ansi"
 import { usePromptRef } from "../../context/prompt"
 import { useEpilogue } from "../../context/epilogue"
 import { normalizePath } from "../../util/path"
@@ -73,17 +71,30 @@ import { sessionEpilogue } from "../../util/presentation"
 import { setPreLayoutSiblingMargin } from "../../util/layout"
 import { useTuiConfig } from "../../config"
 import { useClipboard } from "../../context/clipboard"
-import { nextThinkingMode, reasoningSummary, useThinkingMode, type ThinkingMode } from "../../context/thinking"
+import { nextThinkingMode, useThinkingMode, type ThinkingMode } from "../../context/thinking"
 import { getScrollAcceleration } from "../../util/scroll"
-import { collapseToolOutput } from "../../util/collapse-tool-output"
+import {
+  boundToolOutput,
+  collapseToolOutput,
+  sanitizeToolDisplayValue,
+  toolArgumentPreview,
+} from "../../util/collapse-tool-output"
 import { usePluginRuntime } from "../../plugin/runtime"
 import { DialogRetryAction } from "../../component/dialog-retry-action"
 import { getRevertDiffFiles } from "../../util/revert-diff"
-import { findNextVisibleMessage as findVisibleMessage } from "../../util/session-scroll"
-import { renderTuiArtifacts } from "../../util/artifact-render"
+import {
+  findNextVisibleMessage as findVisibleMessage,
+  reconcileTranscriptWindow,
+  shiftTranscriptWindow,
+  transcriptWindowAt,
+  type TranscriptWindow,
+} from "../../util/session-scroll"
+import { createTuiArtifactRenderer, type TuiArtifactRendererV1 } from "../../util/artifact-render"
+import { ArtifactMarkdown } from "../../component/artifact-markdown"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
+import { ActivityStream } from "../../component/activity-stream"
 
 addDefaultParsers(parsers.parsers)
 
@@ -93,6 +104,8 @@ const GO_UPSELL_ACCOUNT_RATE_LIMIT_LAST_SEEN_AT = "go_upsell_account_rate_limit_
 const GO_UPSELL_ACCOUNT_RATE_LIMIT_DONT_SHOW = "go_upsell_account_rate_limit_dont_show"
 const GO_UPSELL_WINDOW = 86_400_000 // 24 hrs
 const GO_UPSELL_PROVIDERS = new Set(["opencode", "opencode-go"])
+const TRANSCRIPT_MAX_MOUNTED_MESSAGES = 160
+const TRANSCRIPT_WINDOW_PAGE_SIZE = 80
 
 export const alwaysSeparate = new WeakSet<BoxRenderable>()
 
@@ -169,6 +182,7 @@ const context = createContext<{
   providers: () => ReadonlyMap<string, Provider>
   sync: ReturnType<typeof useSync>
   tui: ReturnType<typeof useTuiConfig>
+  artifacts: TuiArtifactRendererV1
 }>()
 
 function use() {
@@ -207,6 +221,10 @@ export function Session() {
     setEpilogue(sessionEpilogue({ title, sessionID: session()?.id }))
   })
   onCleanup(() => setEpilogue())
+  // One bounded isolated artifact renderer per mounted session route; it is
+  // disposed with the route so its worker never outlives the transcript view.
+  const artifacts = createTuiArtifactRenderer()
+  onCleanup(() => artifacts.dispose())
   const children = createMemo(() => {
     const parentID = session()?.parentID ?? session()?.id
     return sync.data.session
@@ -214,6 +232,46 @@ export function Session() {
       .toSorted((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
   })
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
+  const [transcriptWindow, setTranscriptWindow] = createSignal<TranscriptWindow>({ startIndex: 0, endIndex: 0 })
+  const [followTranscriptTail, setFollowTranscriptTail] = createSignal(true)
+  let windowSessionID: string | undefined
+  let previousTranscriptMessageCount = 0
+  createEffect(() => {
+    const sessionID = route.sessionID
+    const count = messages().length
+    if (windowSessionID !== sessionID) {
+      windowSessionID = sessionID
+      previousTranscriptMessageCount = count
+      setFollowTranscriptTail(true)
+      setTranscriptWindow(
+        transcriptWindowAt(
+          count,
+          Math.max(0, count - TRANSCRIPT_MAX_MOUNTED_MESSAGES),
+          TRANSCRIPT_MAX_MOUNTED_MESSAGES,
+        ),
+      )
+      return
+    }
+    if (count === previousTranscriptMessageCount) return
+    setTranscriptWindow(
+      reconcileTranscriptWindow(
+        transcriptWindow(),
+        previousTranscriptMessageCount,
+        count,
+        TRANSCRIPT_MAX_MOUNTED_MESSAGES,
+        followTranscriptTail(),
+      ),
+    )
+    previousTranscriptMessageCount = count
+  })
+  const mountedMessages = createMemo(() => {
+    const range = transcriptWindow()
+    return messages().slice(range.startIndex, range.endIndex)
+  })
+  const mountedMessageIndexByID = createMemo(() => {
+    const start = transcriptWindow().startIndex
+    return new Map(mountedMessages().map((message, index) => [message.id, start + index]))
+  })
   const messagesBeforeRevert = () => {
     const messageID = session()?.revert?.messageID
     if (!messageID) return messages()
@@ -328,7 +386,7 @@ export function Session() {
       }
       editor.reconnect(result.data.directory)
       await sync.session.sync(sessionID)
-      if (route.sessionID === sessionID && scroll) scroll.scrollBy(100_000)
+      if (route.sessionID === sessionID && scroll) toBottom()
     })().catch((error) => {
       if (route.sessionID !== sessionID) return
       toast.show({
@@ -370,6 +428,78 @@ export function Session() {
   const keymap = useOpencodeKeymap()
   const dialog = useDialog()
   const renderer = useRenderer()
+  let transcriptBoundaryTimer: ReturnType<typeof setTimeout> | undefined
+  let transcriptAnchorTimer: ReturnType<typeof setTimeout> | undefined
+  let transcriptScrollPending = false
+  let adjustingTranscriptWindow = false
+
+  function setTranscriptWindowAndRestore(next: TranscriptWindow) {
+    const current = transcriptWindow()
+    if (current.startIndex === next.startIndex && current.endIndex === next.endIndex) return
+    const viewportTop = scroll.y + 1
+    const anchor = scroll.getChildren().find((child) => child.height > 1 && child.y + child.height > viewportTop)
+    const anchorTop = anchor ? anchor.y - scroll.y : undefined
+
+    adjustingTranscriptWindow = true
+    setTranscriptWindow(next)
+    if (transcriptAnchorTimer) clearTimeout(transcriptAnchorTimer)
+    transcriptAnchorTimer = setTimeout(() => {
+      transcriptAnchorTimer = undefined
+      if (!scroll || scroll.isDestroyed) {
+        adjustingTranscriptWindow = false
+        return
+      }
+      if (anchor && anchor.parent && anchorTop !== undefined) {
+        const delta = anchor.y - scroll.y - anchorTop
+        if (delta !== 0) scroll.scrollBy(delta)
+      }
+      adjustingTranscriptWindow = false
+      const range = transcriptWindow()
+      const maxScrollTop = Math.max(0, scroll.scrollHeight - scroll.viewport.height)
+      setFollowTranscriptTail(range.endIndex >= messages().length && scroll.scrollTop >= maxScrollTop - 1)
+    }, 16)
+  }
+
+  function scheduleTranscriptBoundaryCheck() {
+    transcriptScrollPending = true
+    if (transcriptBoundaryTimer) clearTimeout(transcriptBoundaryTimer)
+    transcriptBoundaryTimer = setTimeout(() => {
+      transcriptBoundaryTimer = undefined
+      if (!transcriptScrollPending || adjustingTranscriptWindow || !scroll || scroll.isDestroyed) return
+      transcriptScrollPending = false
+
+      const range = transcriptWindow()
+      const total = messages().length
+      const maxScrollTop = Math.max(0, scroll.scrollHeight - scroll.viewport.height)
+      const atTop = scroll.scrollTop <= 1
+      const atBottom = scroll.scrollTop >= maxScrollTop - 1
+      setFollowTranscriptTail(range.endIndex >= total && atBottom)
+
+      const direction =
+        atTop && range.startIndex > 0 ? "older" : atBottom && range.endIndex < total ? "newer" : undefined
+      if (!direction) return
+      setTranscriptWindowAndRestore(
+        shiftTranscriptWindow(range, total, TRANSCRIPT_MAX_MOUNTED_MESSAGES, TRANSCRIPT_WINDOW_PAGE_SIZE, direction),
+      )
+    }, 0)
+  }
+
+  function scrollTranscriptBy(delta: number, userInitiated = true) {
+    if (!scroll || scroll.isDestroyed) return
+    scroll.scrollBy(delta)
+    if (userInitiated) scheduleTranscriptBoundaryCheck()
+  }
+
+  function scrollTranscriptTo(position: number, userInitiated = true) {
+    if (!scroll || scroll.isDestroyed) return
+    scroll.scrollTo(position)
+    if (userInitiated) scheduleTranscriptBoundaryCheck()
+  }
+
+  onCleanup(() => {
+    if (transcriptBoundaryTimer) clearTimeout(transcriptBoundaryTimer)
+    if (transcriptAnchorTimer) clearTimeout(transcriptAnchorTimer)
+  })
 
   event.on("session.status", (evt) => {
     if (evt.properties.sessionID !== route.sessionID) return
@@ -399,20 +529,37 @@ export function Session() {
     const targetID = findNextVisibleMessage(direction)
 
     if (!targetID) {
-      scroll.scrollBy(direction === "next" ? scroll.height : -scroll.height)
+      scrollTranscriptBy(direction === "next" ? scroll.height : -scroll.height)
       dialog.clear()
       return
     }
 
     const child = scroll.getChildren().find((c) => c.id === targetID)
-    if (child) scroll.scrollBy(child.y - scroll.y - 1)
+    if (child) scrollTranscriptBy(child.y - scroll.y - 1)
     dialog.clear()
   }
 
   function toBottom() {
+    const count = messages().length
+    setFollowTranscriptTail(true)
+    setTranscriptWindow(
+      transcriptWindowAt(count, Math.max(0, count - TRANSCRIPT_MAX_MOUNTED_MESSAGES), TRANSCRIPT_MAX_MOUNTED_MESSAGES),
+    )
     setTimeout(() => {
       if (!scroll || scroll.isDestroyed) return
-      scroll.scrollTo(scroll.scrollHeight)
+      scrollTranscriptTo(scroll.scrollHeight, false)
+    }, 50)
+  }
+
+  async function toFirst() {
+    if (sync.data.session_message_truncated[route.sessionID]) {
+      await sync.session.loadOlder(route.sessionID)
+    }
+    setFollowTranscriptTail(false)
+    setTranscriptWindow(transcriptWindowAt(messages().length, 0, TRANSCRIPT_MAX_MOUNTED_MESSAGES))
+    setTimeout(() => {
+      if (!scroll || scroll.isDestroyed) return
+      scrollTranscriptTo(0, false)
     }, 50)
   }
 
@@ -517,7 +664,7 @@ export function Session() {
               const child = scroll.getChildren().find((child) => {
                 return child.id === messageID
               })
-              if (child) scroll.scrollBy(child.y - scroll.y - 1)
+              if (child) scrollTranscriptBy(child.y - scroll.y - 1)
             }}
             sessionID={route.sessionID}
             setPrompt={(promptInfo) => prompt?.set(promptInfo)}
@@ -540,7 +687,7 @@ export function Session() {
               const child = scroll.getChildren().find((child) => {
                 return child.id === messageID
               })
-              if (child) scroll.scrollBy(child.y - scroll.y - 1)
+              if (child) scrollTranscriptBy(child.y - scroll.y - 1)
             }}
             sessionID={route.sessionID}
           />
@@ -643,7 +790,7 @@ export function Session() {
         const previous = userMessages[boundary - 2]
         if (previous) {
           const child = scroll.getChildren().find((item) => item.id === previous.id)
-          if (child) scroll.scrollBy(child.y - scroll.y - 1)
+          if (child) scrollTranscriptBy(child.y - scroll.y - 1)
         }
         dialog.clear()
       },
@@ -683,7 +830,7 @@ export function Session() {
           toBottom()
         } else {
           const child = scroll.getChildren().find((item) => item.id === userMessages[boundary].id)
-          if (child) scroll.scrollBy(child.y - scroll.y - 1)
+          if (child) scrollTranscriptBy(child.y - scroll.y - 1)
         }
         dialog.clear()
       },
@@ -773,7 +920,7 @@ export function Session() {
       category: "Session",
       hidden: true,
       run: () => {
-        scroll.scrollBy(-scroll.height / 2)
+        scrollTranscriptBy(-scroll.height / 2)
         dialog.clear()
       },
     },
@@ -783,7 +930,7 @@ export function Session() {
       category: "Session",
       hidden: true,
       run: () => {
-        scroll.scrollBy(scroll.height / 2)
+        scrollTranscriptBy(scroll.height / 2)
         dialog.clear()
       },
     },
@@ -793,7 +940,7 @@ export function Session() {
       category: "Session",
       hidden: true,
       run: () => {
-        scroll.scrollBy(-1)
+        scrollTranscriptBy(-1)
         dialog.clear()
       },
     },
@@ -803,7 +950,7 @@ export function Session() {
       category: "Session",
       hidden: true,
       run: () => {
-        scroll.scrollBy(1)
+        scrollTranscriptBy(1)
         dialog.clear()
       },
     },
@@ -813,7 +960,7 @@ export function Session() {
       category: "Session",
       hidden: true,
       run: () => {
-        scroll.scrollBy(-scroll.height / 4)
+        scrollTranscriptBy(-scroll.height / 4)
         dialog.clear()
       },
     },
@@ -823,7 +970,7 @@ export function Session() {
       category: "Session",
       hidden: true,
       run: () => {
-        scroll.scrollBy(scroll.height / 4)
+        scrollTranscriptBy(scroll.height / 4)
         dialog.clear()
       },
     },
@@ -833,7 +980,7 @@ export function Session() {
       category: "Session",
       hidden: true,
       run: () => {
-        scroll.scrollTo(0)
+        toFirst()
         dialog.clear()
       },
     },
@@ -843,7 +990,7 @@ export function Session() {
       category: "Session",
       hidden: true,
       run: () => {
-        scroll.scrollTo(scroll.scrollHeight)
+        toBottom()
         dialog.clear()
       },
     },
@@ -872,7 +1019,7 @@ export function Session() {
             const child = scroll.getChildren().find((child) => {
               return child.id === message.id
             })
-            if (child) scroll.scrollBy(child.y - scroll.y - 1)
+            if (child) scrollTranscriptBy(child.y - scroll.y - 1)
             break
           }
         }
@@ -1191,6 +1338,7 @@ export function Session() {
           providers,
           sync,
           tui: tuiConfig,
+          artifacts,
         }}
       >
         <box flexDirection="row" flexGrow={1} minHeight={0}>
@@ -1213,10 +1361,15 @@ export function Session() {
                 stickyStart="bottom"
                 flexGrow={1}
                 scrollAcceleration={scrollAcceleration()}
+                onMouseScroll={scheduleTranscriptBoundaryCheck}
+                onMouseDrag={scheduleTranscriptBoundaryCheck}
               >
                 <box height={1} />
-                <For each={messages()}>
-                  {(message, index) => (
+                <Show when={sync.data.session_message_truncated[route.sessionID]}>
+                  <text fg={theme.textMuted}>Showing the latest 10,000 messages. Older session history is not loaded.</text>
+                </Show>
+                <For each={mountedMessages()}>
+                  {(message) => (
                     <Switch>
                       <Match when={message.id === revert()?.messageID}>
                         {(function () {
@@ -1279,13 +1432,17 @@ export function Session() {
                         })()}
                       </Match>
                       <Match
-                        when={revert()?.messageID && revertMessageIndex() !== -1 && index() >= revertMessageIndex()}
+                        when={
+                          revert()?.messageID &&
+                          revertMessageIndex() !== -1 &&
+                          (mountedMessageIndexByID().get(message.id) ?? -1) >= revertMessageIndex()
+                        }
                       >
                         <></>
                       </Match>
                       <Match when={message.role === "user"}>
                         <UserMessage
-                          index={index()}
+                          index={mountedMessageIndexByID().get(message.id) ?? 0}
                           onMouseUp={() => {
                             if (renderer.getSelection()?.getSelectedText()) return
                             dialog.replace(() => (
@@ -1509,21 +1666,19 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
 
   return (
     <>
-      <For each={props.parts}>
-        {(part, index) => {
-          const component = createMemo(() => PART_MAPPING[part.type as keyof typeof PART_MAPPING])
-          return (
-            <Show when={component()}>
-              <Dynamic
-                last={index() === props.parts.length - 1}
-                component={component()}
-                part={part as any}
-                message={props.message}
-              />
-            </Show>
-          )
-        }}
-      </For>
+      <ActivityStream
+        parts={props.parts}
+        complete={Boolean(final())}
+        width={ctx.width}
+        renderText={(part) => <TextPart last={false} part={part} message={props.message} />}
+        renderToolDetails={(part) => (
+          <ToolPart
+            last={false}
+            part={part}
+            message={props.message}
+          />
+        )}
+      />
       <Show when={props.parts.some((x) => x.type === "tool" && x.tool === "task")}>
         <box paddingTop={1} paddingLeft={3}>
           <text fg={theme.text}>
@@ -1593,133 +1748,19 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
   )
 }
 
-const PART_MAPPING = {
-  text: TextPart,
-  tool: ToolPart,
-  reasoning: ReasoningPart,
-}
-
 const INLINE_TOOL_ICON_WIDTH = 2
-
-function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: AssistantMessage }) {
-  const { theme } = useTheme()
-  const ctx = use()
-  // Collapsed by default in hide mode: a single line throughout, so the
-  // layout never shifts. Click to open the full markdown block, click to close.
-  const [expanded, setExpanded] = createSignal(false)
-
-  const content = createMemo(() => {
-    // OpenRouter encrypts some reasoning blocks; drop the placeholder.
-    return props.part.text.replace("[REDACTED]", "").trim()
-  })
-  const opaque = createMemo(() => !content() && Boolean(props.part.metadata))
-  // Reasoning is finalized when the server sets `time.end` (see processor.ts).
-  // Flips independently of the parent message completing.
-  const isDone = createMemo(() => props.part.time.end !== undefined)
-  const inMinimal = createMemo(() => ctx.thinkingMode() === "hide")
-  const duration = createMemo(() => {
-    const end = props.part.time.end
-    return end === undefined ? 0 : Math.max(0, end - props.part.time.start)
-  })
-  const summary = createMemo(() => reasoningSummary(content()))
-  const syntax = createSyntaxStyleMemo(() => generateSubtleSyntax(theme))
-
-  const toggle = () => {
-    if (!inMinimal() || opaque()) return
-    setExpanded((prev) => !prev)
-  }
-
-  return (
-    <Show when={content() || opaque()}>
-      <box
-        ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
-        paddingLeft={3}
-        marginTop={1}
-        flexDirection="column"
-        flexShrink={0}
-      >
-        <box onMouseUp={toggle}>
-          <ReasoningHeader
-            toggleable={inMinimal() && !opaque()}
-            open={!inMinimal() || expanded()}
-            done={isDone()}
-            title={summary().title}
-            duration={isDone() ? Locale.duration(duration()) : undefined}
-            encrypted={opaque()}
-          />
-        </box>
-        <Show when={!opaque() && (!inMinimal() || expanded()) && summary().body}>
-          <box paddingLeft={inMinimal() ? 2 : 0} marginTop={1}>
-            <code
-              filetype="markdown"
-              drawUnstyledText={false}
-              streaming={true}
-              syntaxStyle={syntax()}
-              content={summary().body}
-              conceal={ctx.conceal()}
-              fg={theme.textMuted}
-            />
-          </box>
-        </Show>
-      </box>
-    </Show>
-  )
-}
-
-function ReasoningHeader(props: {
-  toggleable: boolean
-  open: boolean
-  done: boolean
-  title: string | null
-  duration?: string
-  encrypted?: boolean
-}) {
-  const { theme } = useTheme()
-  const fg = () =>
-    props.open
-      ? RGBA.fromValues(theme.warning.r, theme.warning.g, theme.warning.b, theme.thinkingOpacity)
-      : theme.warning
-  const completed = () => {
-    if (props.encrypted) return `Thought${props.duration ? ` · ${props.duration}` : ""}`
-    const detail = [props.title, props.duration].filter(Boolean).join(" · ")
-    return `${props.toggleable ? (props.open ? "- " : "+ ") : ""}Thought${detail ? `: ${detail}` : ""}`
-  }
-
-  return (
-    <Switch>
-      <Match when={!props.done}>
-        <box flexDirection="row">
-          <Spinner color={fg()}>{props.title ? "Thinking: " + props.title : "Thinking"}</Spinner>
-        </box>
-      </Match>
-      <Match when={true}>
-        <text fg={fg()} wrapMode="none">
-          {completed()}
-        </text>
-      </Match>
-    </Switch>
-  )
-}
 
 function TextPart(props: { last: boolean; part: TextPart; message: AssistantMessage }) {
   const ctx = use()
-  const { theme, syntax } = useTheme()
   const complete = createMemo(() => props.part.time?.end !== undefined)
-  const rendered = createMemo(() =>
-    renderTuiArtifacts(props.part.text.trim(), { complete: complete() }),
-  )
   return (
     <Show when={props.part.text.trim()}>
       <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3} marginTop={1} flexShrink={0}>
-        <markdown
-          syntaxStyle={syntax()}
-          streaming={!complete()}
-          internalBlockMode="top-level"
-          content={rendered().content}
-          tableOptions={{ style: "grid" }}
+        <ArtifactMarkdown
+          source={props.part.text.trim()}
+          complete={complete()}
+          renderer={ctx.artifacts}
           conceal={ctx.conceal()}
-          fg={theme.markdownText}
-          bg={theme.background}
         />
       </box>
     </Show>
@@ -1731,29 +1772,48 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
 function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMessage }) {
   const ctx = use()
   const display = createMemo(() => toolDisplay(props.part.tool))
+  const safePart = createMemo(() => {
+    const sanitized = sanitizeToolDisplayValue(props.part) as ToolPart | undefined
+    if (!sanitized) return props.part
+    const state = sanitized.state
+    if (state.status === "completed" && typeof state.output === "string") {
+      return { ...sanitized, state: { ...state, output: boundToolOutput(state.output).output } }
+    }
+    if (state.status === "error") {
+      return { ...sanitized, state: { ...state, error: boundToolOutput(state.error).output } }
+    }
+    return sanitized
+  })
 
   // Hide tool if showDetails is false and tool completed successfully
   const shouldHide = createMemo(() => {
     if (ctx.showDetails()) return false
-    if (props.part.state.status !== "completed") return false
+    if (safePart().state.status !== "completed") return false
     return true
   })
 
   const toolprops = {
     get metadata() {
-      return props.part.state.status === "pending" ? {} : (props.part.state.metadata ?? {})
+      const state = safePart().state
+      return "metadata" in state ? ((state.metadata ?? {}) as Record<string, unknown>) : {}
     },
     get input() {
-      return props.part.state.input ?? {}
+      return (safePart().state.input ?? {}) as Record<string, unknown>
+    },
+    get argumentPreview() {
+      return toolArgumentPreview(safePart().state.input)
     },
     get output() {
-      return props.part.state.status === "completed" ? props.part.state.output : undefined
+      const current = safePart().state
+      return current.status === "completed" && typeof current.output === "string"
+        ? boundToolOutput(current.output).output
+        : undefined
     },
     get tool() {
-      return props.part.tool
+      return safePart().tool
     },
     get part() {
-      return props.part
+      return safePart()
     },
   }
 
@@ -1812,6 +1872,7 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
 
 type ToolProps = {
   input: Record<string, unknown>
+  argumentPreview: string
   metadata: Record<string, unknown>
   tool: string
   output?: string
@@ -1820,7 +1881,7 @@ type ToolProps = {
 function GenericTool(props: ToolProps) {
   const { theme } = useTheme()
   const ctx = use()
-  const output = createMemo(() => props.output?.trim() ?? "")
+  const output = createMemo(() => boundToolOutput(props.output?.trim() ?? "").output)
   const [expanded, setExpanded] = createSignal(false)
   const maxLines = 3
   const maxChars = createMemo(() => maxLines * Math.max(20, ctx.width - 6))
@@ -1833,14 +1894,14 @@ function GenericTool(props: ToolProps) {
   return (
     <Show
       when={props.output && ctx.showGenericToolOutput()}
-      fallback={
-        <InlineTool icon="⚙" pending="Writing command…" complete={true} part={props.part}>
-          {props.tool} {input(props.input)}
+        fallback={
+          <InlineTool icon="⚙" pending="Writing command…" complete={true} part={props.part}>
+          {props.tool} {props.argumentPreview}
         </InlineTool>
       }
     >
       <BlockTool
-        title={`# ${props.tool} ${input(props.input)}`}
+        title={`# ${props.tool} ${props.argumentPreview}`}
         part={props.part}
         onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
       >
@@ -2076,7 +2137,8 @@ function Shell(props: ToolProps) {
   const pathFormatter = usePathFormatter()
   const ctx = use()
   const isRunning = createMemo(() => props.part.state.status === "running")
-  const output = createMemo(() => stripAnsi(stringValue(props.metadata.output)?.trim() ?? ""))
+  const output = createMemo(() => boundToolOutput(stringValue(props.metadata.output)?.trim() ?? "").output)
+  const command = createMemo(() => toolArgumentPreview({ command: props.input.command }))
   const [expanded, setExpanded] = createSignal(false)
   const maxLines = 10
   const maxChars = createMemo(() => maxLines * Math.max(20, ctx.width - 6))
@@ -2109,8 +2171,8 @@ function Shell(props: ToolProps) {
           onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
         >
           <box gap={1}>
-            <Show when={isRunning()} fallback={<text fg={theme.text}>$ {stringValue(props.input.command)}</text>}>
-              <Spinner color={theme.text}>{stringValue(props.input.command)}</Spinner>
+            <Show when={isRunning()} fallback={<text fg={theme.text}>$ {command()}</text>}>
+              <Spinner color={theme.text}>{command()}</Spinner>
             </Show>
             <Show when={output()}>
               <text fg={theme.text}>{limited()}</text>
@@ -2128,8 +2190,8 @@ function Shell(props: ToolProps) {
         </BlockTool>
       </Match>
       <Match when={true}>
-        <InlineTool icon="$" pending="Writing command…" complete={stringValue(props.input.command)} part={props.part}>
-          {stringValue(props.input.command)}
+        <InlineTool icon="$" pending="Writing command…" complete={command()} part={props.part}>
+          {command()}
         </InlineTool>
       </Match>
     </Switch>
@@ -2201,7 +2263,7 @@ function Read(props: ToolProps) {
         spinner={isRunning()}
         part={props.part}
       >
-        Read {pathFormatter.format(stringValue(props.input.filePath))} {input(props.input, ["filePath"])}
+        Read {pathFormatter.format(stringValue(props.input.filePath))} {toolArgumentPreview(props.input)}
       </InlineTool>
       <For each={loaded()}>
         {(filepath) => (
@@ -2380,14 +2442,14 @@ function Execute(props: ToolProps) {
   const { theme } = useTheme()
   const isLoading = createMemo(() => props.part.state.status === "pending" || props.part.state.status === "running")
   const calls = createMemo(() => executeCalls(props.metadata.toolCalls))
-  const output = createMemo(() => stripAnsi(props.output?.trim() ?? ""))
+  const output = createMemo(() => boundToolOutput(props.output?.trim() ?? "").output)
   const hasRuntimeError = createMemo(() => props.metadata.error === true)
   const outputPreview = createMemo(() => collapseToolOutput(output(), 4, 4 * Math.max(20, ctx.width - 6)).output)
   const showOutput = createMemo(() => output() && hasRuntimeError())
   const content = createMemo(() => {
     const lines = ["execute"]
     for (const call of calls()) {
-      const args = input(call.input ?? {})
+      const args = toolArgumentPreview(call.input ?? {})
       lines.push(`↳ ${call.tool}${args ? ` ${args}` : ""}${call.status === "error" ? " (failed)" : ""}`)
     }
     return lines.join("\n")
@@ -2467,7 +2529,7 @@ function Edit(props: ToolProps) {
       </Match>
       <Match when={true}>
         <InlineTool icon="←" pending="Preparing edit…" complete={stringValue(props.input.filePath)} part={props.part}>
-          Edit {pathFormatter.format(stringValue(props.input.filePath))} {input({ replaceAll: props.input.replaceAll })}
+          Edit {pathFormatter.format(stringValue(props.input.filePath))} {toolArgumentPreview({ replaceAll: props.input.replaceAll })}
         </InlineTool>
       </Match>
     </Switch>
@@ -2638,15 +2700,6 @@ function Diagnostics(props: { diagnostics: unknown; filePath: string }) {
       </box>
     </Show>
   )
-}
-
-function input(input: Record<string, unknown>, omit?: string[]): string {
-  const primitives = Object.entries(input).filter(([key, value]) => {
-    if (omit?.includes(key)) return false
-    return typeof value === "string" || typeof value === "number" || typeof value === "boolean"
-  })
-  if (primitives.length === 0) return ""
-  return `[${primitives.map(([key, value]) => `${key}=${value}`).join(", ")}]`
 }
 
 function stringValue(value: unknown) {

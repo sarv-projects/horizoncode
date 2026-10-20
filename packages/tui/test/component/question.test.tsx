@@ -35,24 +35,26 @@ async function waitForFrame(
   timeout = 2000,
 ) {
   const start = Date.now()
+  let lastFrame = ""
   while (true) {
     await app.renderOnce()
-    const frame = app.captureCharFrame().replace(/\s+/g, " ")
-    if (predicate(frame)) return frame
-    if (Date.now() - start > timeout) throw new Error("timed out waiting for question prompt frame")
+    lastFrame = app.captureCharFrame().replace(/\s+/g, " ")
+    if (predicate(lastFrame)) return lastFrame
+    if (Date.now() - start > timeout) throw new Error(`timed out waiting for question prompt frame; last frame: ${lastFrame}`)
     await Bun.sleep(10)
   }
 }
 
-async function renderQuestion(request: QuestionV2Request) {
+async function renderQuestion(request: QuestionV2Request, respond?: (call: Call) => Response) {
   const calls: Call[] = []
   const fallback = createFetch()
   const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input.clone() : new Request(input, init)
     const url = new URL(request.url)
     if (url.pathname.includes("/question/")) {
-      calls.push({ method: request.method, pathname: url.pathname, body: await request.text() })
-      return new Response(null, { status: 204 })
+      const call = { method: request.method, pathname: url.pathname, body: await request.text() }
+      calls.push(call)
+      return respond?.(call) ?? new Response(null, { status: 204 })
     }
     return fallback.fetch(request)
   }) as typeof globalThis.fetch
@@ -175,6 +177,105 @@ test("multiple choices and custom text are submitted together over V2", async ()
   }
 })
 
+test("two questions answer sequentially, review on the confirm tab, and submit exact answers", async () => {
+  const { app, calls, dispose } = await renderQuestion({
+    id: "que_multi_flow",
+    sessionID,
+    questions: [
+      {
+        question: "Which OS?",
+        header: "OS",
+        options: [
+          { label: "Linux", description: "Linux runner" },
+          { label: "macOS", description: "macOS runner" },
+        ],
+      },
+      {
+        question: "Which checks?",
+        header: "Checks",
+        multiple: true,
+        options: [
+          { label: "Unit", description: "Unit tests" },
+          { label: "Lint", description: "Lint checks" },
+        ],
+      },
+    ],
+  })
+
+  try {
+    await waitForFrame(app, (frame) => frame.includes("Which OS?"))
+    app.mockInput.pressEnter() // Linux → advance to the checks tab
+    const secondFrame = await waitForFrame(app, (frame) => frame.includes("Which checks?"))
+    expect(secondFrame).toContain("select all that apply")
+
+    app.mockInput.pressEnter() // toggle Unit
+    app.mockInput.pressKey("ARROW_DOWN")
+    app.mockInput.pressEnter() // toggle Lint
+    app.mockInput.pressTab() // → confirm tab
+
+    const reviewFrame = await waitForFrame(app, (frame) => frame.includes("Review"))
+    expect(reviewFrame).toContain("OS: Linux")
+    expect(reviewFrame).toContain("Checks: Unit, Lint")
+
+    app.mockInput.pressEnter()
+    await waitFor(() => calls.length === 1)
+    expect(calls).toEqual([
+      {
+        method: "POST",
+        pathname: `/api/session/${sessionID}/question/que_multi_flow/reply`,
+        body: JSON.stringify({ answers: [["Linux"], ["Unit", "Lint"]] }),
+      },
+    ])
+  } finally {
+    app.renderer.destroy()
+    await dispose()
+  }
+})
+
+test("a multi-question flow marks unanswered questions on review and dismisses from the confirm tab", async () => {
+  const { app, calls, dispose } = await renderQuestion({
+    id: "que_multi_dismiss",
+    sessionID,
+    questions: [
+      {
+        question: "Which OS?",
+        header: "OS",
+        options: [{ label: "Linux", description: "Linux runner" }],
+      },
+      {
+        question: "Which checks?",
+        header: "Checks",
+        multiple: true,
+        options: [{ label: "Unit", description: "Unit tests" }],
+      },
+    ],
+  })
+
+  try {
+    await waitForFrame(app, (frame) => frame.includes("Which OS?"))
+    app.mockInput.pressEnter() // answer only the first question
+    await waitForFrame(app, (frame) => frame.includes("Which checks?"))
+    app.mockInput.pressTab() // → confirm tab
+
+    const reviewFrame = await waitForFrame(app, (frame) => frame.includes("(not answered)"))
+    expect(reviewFrame).toContain("OS: Linux")
+    expect(reviewFrame).toContain("Checks: (not answered)")
+
+    app.mockInput.pressEscape()
+    await waitFor(() => calls.length === 1)
+    expect(calls).toEqual([
+      {
+        method: "POST",
+        pathname: `/api/session/${sessionID}/question/que_multi_dismiss/reject`,
+        body: "",
+      },
+    ])
+  } finally {
+    app.renderer.destroy()
+    await dispose()
+  }
+})
+
 test("escape dismisses a question through its V2 session/request route", async () => {
   const { app, calls, dispose } = await renderQuestion({
     id: "que_dismiss",
@@ -193,6 +294,121 @@ test("escape dismisses a question through its V2 session/request route", async (
         body: "",
       },
     ])
+  } finally {
+    app.renderer.destroy()
+    await dispose()
+  }
+})
+
+test("a failed answer stays retryable and does not expose the server error body", async () => {
+  let responseCount = 0
+  const { app, calls, dispose } = await renderQuestion(
+    {
+      id: "que_retry_answer",
+      sessionID,
+      questions: [
+        {
+          question: "Which build?",
+          header: "Build",
+          options: [{ label: "Fast", description: "Fast build" }],
+        },
+      ],
+    },
+    () =>
+      ++responseCount === 1
+        ? new Response(JSON.stringify({ message: "private server detail" }), {
+            status: 503,
+            headers: { "content-type": "application/json" },
+          })
+        : new Response(null, { status: 204 }),
+  )
+
+  try {
+    await waitForFrame(app, (frame) => frame.includes("Fast"))
+    app.mockInput.pressEnter()
+    await waitFor(() => calls.length === 1)
+    const failedFrame = await waitForFrame(app, (frame) => frame.includes("Could not confirm answer"))
+    expect(failedFrame).not.toContain("private server detail")
+    expect(failedFrame).toContain("Which build?")
+
+    app.mockInput.pressEnter()
+    await waitFor(() => calls.length === 2)
+    const retriedFrame = await waitForFrame(app, (frame) => frame.includes("Fast"))
+    expect(retriedFrame).not.toContain("Could not confirm answer")
+    expect(calls.map((call) => call.pathname)).toEqual([
+      `/api/session/${sessionID}/question/que_retry_answer/reply`,
+      `/api/session/${sessionID}/question/que_retry_answer/reply`,
+    ])
+  } finally {
+    app.renderer.destroy()
+    await dispose()
+  }
+})
+
+test("a failed dismiss stays retryable without hiding the pending question", async () => {
+  let responseCount = 0
+  const { app, calls, dispose } = await renderQuestion(
+    {
+      id: "que_retry_dismiss",
+      sessionID,
+      questions: [{ question: "Continue?", header: "Continue", options: [] }],
+    },
+    () =>
+      ++responseCount === 1
+        ? new Response(JSON.stringify({ message: "private server detail" }), {
+            status: 503,
+            headers: { "content-type": "application/json" },
+          })
+        : new Response(null, { status: 204 }),
+  )
+
+  try {
+    await waitForFrame(app, (frame) => frame.includes("Continue?"))
+    app.mockInput.pressEscape()
+    await waitFor(() => calls.length === 1)
+    const failedFrame = await waitForFrame(app, (frame) => frame.includes("Could not confirm dismiss"))
+    expect(failedFrame).not.toContain("private server detail")
+    expect(failedFrame).toContain("Continue?")
+
+    app.mockInput.pressEscape()
+    await waitFor(() => calls.length === 2)
+    expect(calls.map((call) => call.pathname)).toEqual([
+      `/api/session/${sessionID}/question/que_retry_dismiss/reject`,
+      `/api/session/${sessionID}/question/que_retry_dismiss/reject`,
+    ])
+  } finally {
+    app.renderer.destroy()
+    await dispose()
+  }
+})
+
+test("a transport failure does not claim the answer was rejected or expose transport details", async () => {
+  let responseCount = 0
+  const { app, calls, dispose } = await renderQuestion(
+    {
+      id: "que_unknown_answer",
+      sessionID,
+      questions: [
+        {
+          question: "Which build?",
+          header: "Build",
+          options: [{ label: "Fast", description: "Fast build" }],
+        },
+      ],
+    },
+    () => {
+      if (responseCount++ === 0) throw new Error("private transport detail")
+      return new Response(null, { status: 204 })
+    },
+  )
+
+  try {
+    await waitForFrame(app, (frame) => frame.includes("Fast"))
+    app.mockInput.pressEnter()
+    await waitFor(() => calls.length === 1)
+    const failedFrame = await waitForFrame(app, (frame) => frame.includes("Could not confirm answer"))
+    expect(failedFrame).toContain("Which build?")
+    expect(failedFrame).not.toContain("private transport detail")
   } finally {
     app.renderer.destroy()
     await dispose()

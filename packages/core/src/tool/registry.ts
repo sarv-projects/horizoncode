@@ -10,6 +10,7 @@ import { ToolOutputStore } from "../tool-output-store"
 import { ApplicationTools } from "./application-tools"
 import { Tools } from "./tools"
 import { isBuiltinWrite } from "./write-provenance"
+import type { TrustedPrincipal } from "../trusted-principal"
 import { Wildcard } from "../util/wildcard"
 import { capability, definition, permission, settle, validate as validateInput, validateName, type AnyTool, type Capability, type EffectLease, type RegistrationError } from "./tool"
 import { makeLocationNode } from "../effect/app-node"
@@ -20,6 +21,8 @@ export type ExecuteInput = {
   readonly assistantMessageID: SessionMessage.ID
   readonly call: ToolCall
   readonly effect?: EffectLease
+  /** Captured by the session runner; absent callers can only reach fail-closed tools. */
+  readonly trustedPrincipal?: TrustedPrincipal
 }
 
 export interface Interface {
@@ -87,6 +90,7 @@ const registryLayer = Layer.effect(
         agent: input.agent,
         assistantMessageID: input.assistantMessageID,
         toolCallID: input.call.id,
+        trustedPrincipal: input.trustedPrincipal,
         ...(input.effect ? { effect: input.effect } : {}),
       }).pipe(
         Effect.map((output) => ({ output })),

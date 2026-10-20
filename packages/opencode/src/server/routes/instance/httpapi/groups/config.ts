@@ -7,7 +7,7 @@ import { Authorization } from "../middleware/authorization"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware, WorkspaceRoutingQuery } from "../middleware/workspace-routing"
 import { described } from "./metadata"
-import { ConflictError } from "../errors"
+import { ConflictError, ForbiddenError } from "../errors"
 
 const root = "/config"
 
@@ -51,7 +51,7 @@ export const ConfigApi = HttpApi.make("config")
           query: WorkspaceRoutingQuery,
           payload: FeatureExposure.UpdateSchema,
           success: described(FeatureExposure.FeatureListSchema, "Updated effective feature settings"),
-          error: [ConflictError, HttpApiError.InternalServerError],
+          error: [ConflictError, ForbiddenError, HttpApiError.InternalServerError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "config.featureUpdate",

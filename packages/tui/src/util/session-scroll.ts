@@ -1,6 +1,59 @@
 export type SessionScrollMessage = { id: string }
 export type SessionScrollPart = { type: string; synthetic?: boolean; ignored?: boolean }
 export type SessionScrollChild = { id?: string; y: number }
+export type TranscriptWindow = { startIndex: number; endIndex: number }
+
+function boundedCount(value: number) {
+  if (!Number.isFinite(value)) return 0
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(value)))
+}
+
+/** Select a contiguous, bounded range of canonical messages to mount. */
+export function transcriptWindowAt(messageCount: number, startIndex: number, maxMounted: number): TranscriptWindow {
+  const total = boundedCount(messageCount)
+  const limit = boundedCount(maxMounted)
+  const start = Math.min(total, boundedCount(startIndex))
+  return { startIndex: start, endIndex: Math.min(total, start + limit) }
+}
+
+/** Move a fixed-size mounted window while retaining overlap for scroll anchoring. */
+export function shiftTranscriptWindow(
+  current: TranscriptWindow,
+  messageCount: number,
+  maxMounted: number,
+  pageSize: number,
+  direction: "older" | "newer",
+): TranscriptWindow {
+  const total = boundedCount(messageCount)
+  const limit = boundedCount(maxMounted)
+  const start = Math.min(total, boundedCount(current.startIndex))
+  const end = Math.max(start, Math.min(total, boundedCount(current.endIndex)))
+  const page = boundedCount(pageSize)
+  if (limit === 0 || page === 0) return { startIndex: start, endIndex: end }
+
+  if (direction === "older") {
+    return transcriptWindowAt(total, Math.max(0, start - page), limit)
+  }
+  const nextEnd = Math.min(total, end + page)
+  return transcriptWindowAt(total, Math.max(0, nextEnd - limit), limit)
+}
+
+/** Keep a reader's range stable, or move a tail-following range with new history. */
+export function reconcileTranscriptWindow(
+  current: TranscriptWindow,
+  previousCount: number,
+  messageCount: number,
+  maxMounted: number,
+  followTail: boolean,
+): TranscriptWindow {
+  const previousTotal = boundedCount(previousCount)
+  const total = boundedCount(messageCount)
+  const limit = boundedCount(maxMounted)
+  if (followTail && current.endIndex >= previousTotal) {
+    return transcriptWindowAt(total, Math.max(0, total - limit), limit)
+  }
+  return transcriptWindowAt(total, Math.min(total, boundedCount(current.startIndex)), limit)
+}
 
 export function findNextVisibleMessage(
   messages: SessionScrollMessage[],

@@ -13,10 +13,12 @@ import { Shell } from "./shell"
 import {
   SessionSupervisor,
   SessionSupervisorError,
+  directAttemptScopeToWire,
   wireUnixMs,
   type Cursor,
   type EffectAdmission,
   type EffectLease,
+  type DirectAttemptScopeV1,
   type GuardApprovalDecision,
   type GuardedToolCall,
   type HostKernelEvent,
@@ -105,6 +107,7 @@ export type TerminalRunResult = {
   readonly preview: string
   readonly previewTruncated: boolean
   readonly artifactTruncated: boolean
+  readonly artifactFidelity: "FULL" | "SAMPLE" | "FAILED"
   readonly artifactRef: string
   readonly receiptRef: string
 }
@@ -115,6 +118,7 @@ export type TerminalToolBatchInput = {
   readonly batchID: string
   readonly turnContextDigest: string
   readonly calls: ReadonlyArray<GuardedToolCall>
+  readonly directAttempt?: DirectAttemptScopeV1
   /** Supplied by the server-private shell/plugin environment provider, never by model tool arguments. */
   readonly resolvedEnvironment?: Readonly<Record<string, string>>
 }
@@ -239,7 +243,8 @@ export interface Interface {
     input: TerminalToolBatchInput,
   ) => Effect.Effect<
     { readonly admission: EffectAdmission; readonly calls: ReadonlyArray<GuardedToolCall> },
-    InvalidInputError | ShellProfileUnavailableError | SessionSupervisorError
+    InvalidInputError | ShellProfileUnavailableError | SessionSupervisorError,
+    TrustedPrincipalContext
   >
   readonly runUser: (
     input: TerminalRunInput & { readonly sessionID?: string; readonly locationRef: typeof Location.Ref.Type },
@@ -257,7 +262,8 @@ export interface Interface {
     },
   ) => Effect.Effect<
     TerminalRunResult,
-    InvalidInputError | ShellProfileUnavailableError | SessionSupervisorError
+    InvalidInputError | ShellProfileUnavailableError | SessionSupervisorError,
+    TrustedPrincipalContext
   >
 }
 
@@ -1062,6 +1068,7 @@ const layer = Layer.effect(
         batchID: input.batchID,
         turnContextDigest: input.turnContextDigest,
         calls,
+        ...(input.directAttempt ? { directAttempt: input.directAttempt } : {}),
       })
       return { admission, calls }
     })
@@ -1075,7 +1082,9 @@ const layer = Layer.effect(
       readonly cwd: string
       readonly timeoutMs: number
       readonly resolvedEnvironment: Readonly<Record<string, string>>
+      readonly directAttempt?: DirectAttemptScopeV1
     }) {
+      const trusted = yield* TrustedPrincipalContext
       const locationID = yield* supervisor.registerHostLocation(input.locationRef)
       const response = yield* supervisor.requestHostKernel("terminal.v1", "run", {
         effectID: input.effectID,
@@ -1087,7 +1096,8 @@ const layer = Layer.effect(
         cwd: input.cwd,
         timeoutMs: input.timeoutMs,
         resolvedEnvironment: input.resolvedEnvironment,
-      })
+        ...(input.directAttempt ? { directAttempt: directAttemptScopeToWire(input.directAttempt) } : {}),
+      }, { cancelOnInterrupt: true, trustedPrincipal: trusted.principal })
       return yield* Effect.try({
         try: () => parseTerminalRunResult(response),
         catch: () => new InvalidInputError({ reason: "Terminal host returned an invalid run result" }),
@@ -1124,6 +1134,7 @@ const layer = Layer.effect(
       readonly locationRef: typeof Location.Ref.Type
       readonly lease: EffectLease
       readonly call: GuardedToolCall
+      readonly directAttempt?: DirectAttemptScopeV1
     }) {
       if (input.call.capabilityID !== "terminal.run") {
         return yield* new InvalidInputError({ reason: "runTool requires a prepared terminal.run call" })
@@ -1155,6 +1166,7 @@ const layer = Layer.effect(
         locationRef: input.locationRef,
         effectID: input.lease.effectID,
         capabilityLeaseDigest: input.lease.capabilityLeaseDigest,
+        directAttempt: input.directAttempt,
       })
     })
     const acquireTicket = Effect.fn("Pty.acquireTicket")(function* (input: TicketBinding) {
@@ -1169,14 +1181,22 @@ const layer = Layer.effect(
           ? { source: "server_auth", username: trusted.principal.subject }
           : { source: "host_os" }
       const ownerEpoch = yield* supervisor.hostOwnerEpoch()
-      const response = yield* supervisor.requestHostKernel("terminal.v1", "ticket_acquire", {
-        terminalID: session.info.id,
-        locationID: session.locationID,
-        ...(session.sessionID === undefined ? {} : { sessionID: session.sessionID }),
-        principal,
-        origin: input.origin,
-        protocol: input.protocol,
-      })
+      const response = yield* supervisor.requestHostKernel(
+        "terminal.v1",
+        "ticket_acquire",
+        {
+          terminalID: session.info.id,
+          locationID: session.locationID,
+          ...(session.sessionID === undefined ? {} : { sessionID: session.sessionID }),
+          principal,
+          origin: input.origin,
+          protocol: input.protocol,
+        },
+        // The host binds a delegated `server_auth` principal to the authenticated
+        // Core peer, so the ticket RPC must carry the typed principal exactly like
+        // `terminal.run`; otherwise the kernel denies the request as unattested.
+        { trustedPrincipal: trusted.principal },
+      )
       const expiresAtUnixMs = wireUnixMs(response.expiresAtUnixMs)
       if (
         typeof response.ticketID !== "string" ||
@@ -1213,15 +1233,20 @@ const layer = Layer.effect(
           ? { source: "server_auth", username: trusted.principal.subject }
           : { source: "host_os" }
       const ownerEpoch = yield* supervisor.hostOwnerEpoch()
-      const response = yield* supervisor.requestHostKernel("terminal.v1", "ticket_consume", {
-        ticket: input.ticket,
-        terminalID: session.info.id,
-        locationID: session.locationID,
-        ...(session.sessionID === undefined ? {} : { sessionID: session.sessionID }),
-        principal,
-        origin: input.origin,
-        protocol: input.protocol,
-      })
+      const response = yield* supervisor.requestHostKernel(
+        "terminal.v1",
+        "ticket_consume",
+        {
+          ticket: input.ticket,
+          terminalID: session.info.id,
+          locationID: session.locationID,
+          ...(session.sessionID === undefined ? {} : { sessionID: session.sessionID }),
+          principal,
+          origin: input.origin,
+          protocol: input.protocol,
+        },
+        { trustedPrincipal: trusted.principal },
+      )
       const ticketID = response.ticketID
       const generation = finiteInt(response.generation)
       if (
@@ -1258,14 +1283,19 @@ const layer = Layer.effect(
       if (!/^ticket_[a-zA-Z0-9_-]{1,128}$/.test(input.ticketID)) {
         return yield* new InvalidInputError({ reason: "Terminal ticket ID is invalid" })
       }
-      const response = yield* supervisor.requestHostKernel("terminal.v1", "ticket_revoke", {
-        ticketID: input.ticketID,
-        terminalID: session.info.id,
-        locationID: session.locationID,
-        ...(session.sessionID === undefined ? {} : { sessionID: session.sessionID }),
-        principal,
-        ...(input.attachmentID === undefined ? {} : { attachmentID: input.attachmentID }),
-      })
+      const response = yield* supervisor.requestHostKernel(
+        "terminal.v1",
+        "ticket_revoke",
+        {
+          ticketID: input.ticketID,
+          terminalID: session.info.id,
+          locationID: session.locationID,
+          ...(session.sessionID === undefined ? {} : { sessionID: session.sessionID }),
+          principal,
+          ...(input.attachmentID === undefined ? {} : { attachmentID: input.attachmentID }),
+        },
+        { trustedPrincipal: trusted.principal },
+      )
       if (response.revoked !== true) return yield* new UnavailableError({ ptyID: input.terminalID })
       if (input.attachmentID) session.attachments.delete(input.attachmentID)
     })
@@ -1404,8 +1434,19 @@ function parseTerminalRunResult(value: unknown): TerminalRunResult {
   }
   const previewTruncated = result.previewTruncated
   const artifactTruncated = result.artifactTruncated
+  const artifactFidelity = result.artifactFidelity
   if (typeof previewTruncated !== "boolean" || typeof artifactTruncated !== "boolean") {
     throw new InvalidInputError({ reason: "Terminal host omitted truncation status" })
+  }
+  if (artifactFidelity !== "FULL" && artifactFidelity !== "SAMPLE" && artifactFidelity !== "FAILED") {
+    throw new InvalidInputError({ reason: "Terminal host omitted artifact fidelity" })
+  }
+  if (
+    (artifactFidelity === "FULL" && (status !== "exited" || artifactTruncated)) ||
+    (artifactFidelity === "SAMPLE" && (status !== "exited" || !artifactTruncated)) ||
+    (artifactFidelity === "FAILED" && status === "exited")
+  ) {
+    throw new InvalidInputError({ reason: "Terminal host returned inconsistent artifact fidelity" })
   }
   const artifactRef = result.artifactRef
   const receiptRef = result.receiptRef
@@ -1435,6 +1476,7 @@ function parseTerminalRunResult(value: unknown): TerminalRunResult {
     preview,
     previewTruncated,
     artifactTruncated,
+    artifactFidelity,
     artifactRef,
     receiptRef,
   }

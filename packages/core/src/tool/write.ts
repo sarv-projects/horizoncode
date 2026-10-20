@@ -66,6 +66,9 @@ const layer = Layer.effectDiscard(
             const admission = context.effect
             if (!admission)
               return yield* Effect.fail(new ToolFailure({ message: "Write denied: missing Rust Guard lease" }))
+            const trustedPrincipal = context.trustedPrincipal
+            if (trustedPrincipal?.kind !== "server_auth" || !trustedPrincipal.subject)
+              return yield* Effect.fail(new ToolFailure({ message: "Write denied: missing authenticated principal" }))
             const lease = admission
             if (!lease.effectID || !lease.capabilityLeaseDigest)
               return yield* Effect.fail(new ToolFailure({ message: "Write denied: invalid Rust Guard lease" }))
@@ -95,7 +98,10 @@ const layer = Layer.effectDiscard(
                 sessionID: context.sessionID,
                 locationRef: Location.Ref.make({ directory: location.directory }),
                 lease,
+                ...(lease.directAttempt ? { directAttempt: lease.directAttempt } : {}),
+                ...(lease.managedAttempt ? { managedAttempt: lease.managedAttempt } : {}),
                 content: input.content,
+                trustedPrincipal,
               }),
             )
             if (

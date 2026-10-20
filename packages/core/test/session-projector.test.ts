@@ -587,6 +587,7 @@ describe("SessionProjector", () => {
         assistantMessageID: SessionMessage.ID.make("msg_assistant_completed"),
         timestamp: DateTime.makeUnsafe(3),
         textID: "text-stale",
+        sourceGeneration: "generation-stale",
       })
 
       const rows = yield* db

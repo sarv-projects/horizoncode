@@ -24,7 +24,10 @@ import { Plugin } from "../plugin"
 import { Provider } from "@/provider/provider"
 
 import { WebSearchTool } from "./websearch"
+import { normalizeSearchCascadeSettings, WEB_SEARCH_GUARD_READY, type SearchCascadeSettings } from "./websearch-broker"
 import { LspTool } from "./lsp"
+import { ReferencesFindTool, RepoTreeTool, SymbolsSearchTool } from "./repo-tools"
+import { RepoIntel } from "./repo-intel"
 import { ApplyPatchTool } from "./apply_patch"
 import { Glob } from "@opencode-ai/core/util/glob"
 import path from "path"
@@ -52,13 +55,14 @@ import { McpCatalog } from "@/mcp/catalog"
 
 import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
 import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/location-services"
-export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
-  return (
-    providerID === ProviderV2.ID.opencode ||
-    providerID === ProviderV2.ID.make("opencode-go") ||
-    flags.exa ||
-    flags.parallel
-  )
+export function webSearchEnabled(
+  _providerID: ProviderV2.ID,
+  settings?: SearchCascadeSettings,
+  guardReady = WEB_SEARCH_GUARD_READY,
+) {
+  // Search route configuration is not execution authority. Keep the entire
+  // network origin absent until the Rust Guard/ExecutionHost gate is accepted.
+  return guardReady && normalizeSearchCascadeSettings(settings).enabled.length > 0
 }
 
 type TaskDef = Tool.InferDef<typeof TaskTool>
@@ -101,6 +105,9 @@ const layer = Layer.effect(
     const todo = yield* TodoWriteTool
     const lsptool = yield* LspTool
     const plan = yield* PlanExitTool
+    const repoToolTree = yield* RepoTreeTool
+    const repoToolSymbols = yield* SymbolsSearchTool
+    const repoToolReferences = yield* ReferencesFindTool
     const webfetch = yield* WebFetchTool
     const websearch = yield* WebSearchTool
     const shell = yield* ShellTool
@@ -111,8 +118,12 @@ const layer = Layer.effect(
     const patchtool = yield* ApplyPatchTool
     const skilltool = yield* SkillTool
 
-    const codeMode = flags.experimentalCodeMode ? yield* Effect.promise(() => import("./code-mode")) : undefined
-    const codeModeTool = codeMode ? yield* codeMode.CodeModeTool : undefined
+    // MCP tool calls still originate from this OpenCode-derived package and do
+    // not yet have a production Rust Guard/ExecutionHost transport. Keep the
+    // orchestration tool out of the model-visible registry even when an
+    // experimental flag is set; CodeModeTool also rejects every nested call.
+    const codeMode: undefined = undefined
+    const codeModeTool: undefined = undefined
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -156,6 +167,9 @@ const layer = Layer.effect(
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
+          repoTree: Tool.init(repoToolTree),
+          symbolsSearch: Tool.init(repoToolSymbols),
+          referencesFind: Tool.init(repoToolReferences),
           ...(codeModeTool ? { execute: Tool.init(codeModeTool) } : {}),
         })
 
@@ -177,6 +191,7 @@ const layer = Layer.effect(
             tool.patch,
             ...(tool.execute ? [tool.execute] : []),
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
+            ...(flags.experimentalRepoTools ? [tool.repoTree, tool.symbolsSearch, tool.referencesFind] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
           ],
           task: tool.task,
@@ -221,9 +236,10 @@ const layer = Layer.effect(
     })
 
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
+      const searchConfig = yield* config.get()
       const filtered = (yield* all()).filter((tool) => {
         if (tool.id === WebSearchTool.id) {
-          return webSearchEnabled(input.providerID, { exa: flags.enableExa, parallel: flags.enableParallel })
+          return webSearchEnabled(input.providerID, searchConfig.websearch)
         }
 
         const usePatch =
@@ -301,6 +317,7 @@ export const node = LayerNode.make({
     BackgroundJob.node,
     Provider.node,
     LSP.node,
+    RepoIntel.node,
     Instruction.node,
     FSUtil.node,
     EventV2Bridge.node,

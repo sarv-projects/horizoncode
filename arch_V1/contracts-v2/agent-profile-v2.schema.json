@@ -1,193 +1,554 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "horizon://schemas/agent-profile-v2",
-  "title": "AgentProfileV2",
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "id",
-    "revision",
-    "name",
-    "mode",
-    "model",
-    "harnessId",
-    "tools",
-    "mcp",
-    "pathRules",
-    "contextIsolation",
-    "inputMode",
-    "limits"
-  ],
-  "properties": {
-    "id": {
+  "title": "AgentProfileDefinitionV2",
+  "description": "Core-owned bounded definition. Both digest fields are forbidden in input; Rust computes resolved digests.",
+  "$ref": "#/$defs/AgentProfileDefinitionV2",
+  "$defs": {
+    "Horizon.AgentProfileV2.ProfileId": {
       "type": "string",
-      "minLength": 1
-    },
-    "revision": {
-      "type": "integer",
-      "minimum": 1
-    },
-    "name": {
-      "type": "string",
-      "minLength": 1
-    },
-    "mode": {
-      "enum": [
-        "primary",
-        "specialist",
-        "subagent",
-        "maintenance"
+      "allOf": [
+        {
+          "minLength": 1
+        },
+        {
+          "maxLength": 256
+        },
+        {
+          "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+        }
       ]
     },
-    "model": {
+    "Horizon.AgentProfileV2.Revision": {
+      "type": "integer",
+      "allOf": [
+        {
+          "exclusiveMinimum": 0
+        }
+      ]
+    },
+    "Horizon.AgentProfileV2.Adapter": {
       "type": "object",
-      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "native",
+            "acp",
+            "cli",
+            "container",
+            "remote"
+          ]
+        },
+        "adapterId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 256
+            },
+            {
+              "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "adapterId"
+      ],
+      "additionalProperties": false
+    },
+    "Horizon.AgentProfileV2.ModelSelection": {
+      "type": "object",
+      "properties": {
+        "providerId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 256
+            },
+            {
+              "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+            }
+          ]
+        },
+        "modelId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 256
+            },
+            {
+              "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+            }
+          ]
+        },
+        "reasoningEffort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
       "required": [
         "providerId",
         "modelId"
       ],
+      "additionalProperties": false
+    },
+    "Horizon.AgentProfileV2.ReasoningSelection": {
+      "type": "string"
+    },
+    "Horizon.PluginManifestV1.ArtifactRef": {
+      "type": "object",
       "properties": {
-        "providerId": {
+        "artifactId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 256
+            },
+            {
+              "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+            }
+          ]
+        },
+        "digest": {
+          "type": "string",
+          "allOf": [
+            {
+              "pattern": "^blake3:[0-9a-f]{64}$"
+            }
+          ]
+        },
+        "byteLength": {
           "type": "string"
         },
-        "modelId": {
-          "type": "string"
+        "mediaType": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 256
+            },
+            {
+              "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+            }
+          ]
         },
-        "reasoningEffort": {
-          "type": [
-            "string",
-            "null"
+        "classification": {
+          "type": "string",
+          "enum": [
+            "public",
+            "workspace",
+            "sensitive"
           ]
         }
-      }
-    },
-    "harnessId": {
-      "type": "string",
-      "minLength": 1,
-      "description": "Explicit harness profile id resolved independently from provider/model selection"
-    },
-    "tools": {
-      "type": "object",
-      "additionalProperties": false,
+      },
       "required": [
-        "allow",
-        "deny"
+        "artifactId",
+        "digest",
+        "byteLength",
+        "mediaType",
+        "classification"
       ],
+      "additionalProperties": false
+    },
+    "Horizon.AgentProfileV2.Variant": {
+      "type": "object",
       "properties": {
-        "allow": {
-          "type": "array",
-          "items": {
-            "type": "string"
+        "match": {
+          "type": "object",
+          "properties": {
+            "providerId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "allOf": [
+                    {
+                      "minLength": 1
+                    },
+                    {
+                      "maxLength": 256
+                    },
+                    {
+                      "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+                    }
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "modelPattern": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "protocol": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "responses",
+                    "chat_completions",
+                    "anthropic_messages",
+                    "custom"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
           },
-          "uniqueItems": true
+          "additionalProperties": false
         },
-        "deny": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "uniqueItems": true
+        "instructionPatchRef": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Horizon.PluginManifestV1.ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requestOverrides": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "toolExposureProfile": {
+          "anyOf": [
+            {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 256
+                },
+                {
+                  "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Horizon.AgentProfileV2.ReasoningSelection"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
-      }
-    },
-    "skills": {
-      "type": "array",
-      "items": {
-        "type": "string"
       },
-      "uniqueItems": true,
-      "default": []
+      "required": [
+        "match"
+      ],
+      "additionalProperties": false
     },
-    "mcp": {
+    "Horizon.AgentProfileV2.ToolRule": {
       "type": "object",
-      "additionalProperties": false,
       "properties": {
-        "servers": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "uniqueItems": true
+        "effect": {
+          "type": "string",
+          "enum": [
+            "allow",
+            "ask",
+            "deny"
+          ]
         },
-        "allowTools": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "uniqueItems": true
+        "toolPattern": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 256
+            },
+            {
+              "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+            }
+          ]
         },
-        "denyTools": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "uniqueItems": true
+        "resourcePattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
-      }
-    },
-    "subagents": {
-      "type": "array",
-      "items": {
-        "type": "string"
       },
-      "uniqueItems": true,
-      "default": []
+      "required": [
+        "effect",
+        "toolPattern"
+      ],
+      "additionalProperties": false
     },
-    "pathRules": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "effect",
-          "pattern"
-        ],
-        "properties": {
-          "effect": {
-            "enum": [
-              "allow",
-              "deny",
-              "ask"
-            ]
-          },
-          "pattern": {
-            "type": "string"
-          }
+    "Horizon.AgentProfileV2.PathRule": {
+      "type": "object",
+      "properties": {
+        "effect": {
+          "type": "string",
+          "enum": [
+            "allow",
+            "ask",
+            "deny"
+          ]
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write",
+            "execute",
+            "watch"
+          ]
+        },
+        "glob": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            }
+          ]
         }
-      }
-    },
-    "contextIsolation": {
-      "enum": [
-        "fresh",
-        "conversation_slice",
-        "fork"
-      ]
-    },
-    "inputMode": {
-      "enum": [
-        "default",
-        "read_only",
-        "careful",
-        "sandbox_auto"
-      ]
-    },
-    "instructions": {
-      "type": "array",
-      "items": {
-        "type": "string"
       },
-      "default": []
+      "required": [
+        "effect",
+        "operation",
+        "glob"
+      ],
+      "additionalProperties": false
     },
-    "providerVariants": {
+    "Horizon.AgentProfileV2.LifecycleHook": {
       "type": "object",
-      "additionalProperties": {
-        "type": "string"
+      "properties": {
+        "hookId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 256
+            },
+            {
+              "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+            }
+          ]
+        },
+        "event": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 256
+            },
+            {
+              "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+            }
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "blocking",
+            "advisory",
+            "async"
+          ]
+        },
+        "matcher": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "toolPattern": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "pathGlob": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "agentPattern": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        },
+        "maxOutputBytes": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        }
       },
-      "default": {}
+      "required": [
+        "hookId",
+        "event",
+        "required",
+        "mode",
+        "timeoutMs",
+        "maxOutputBytes"
+      ],
+      "additionalProperties": false
     },
-    "limits": {
+    "Horizon.AgentProfileV2.Limits": {
       "type": "object",
-      "additionalProperties": false,
+      "properties": {
+        "maxDepth": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        },
+        "maxActiveChildren": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        },
+        "maxTotalChildren": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        },
+        "maxPendingMessages": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        },
+        "maxMessageBytes": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        },
+        "tokenBudget": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "allOf": [
+                {
+                  "exclusiveMinimum": 0
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "wallTimeMs": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "allOf": [
+                {
+                  "exclusiveMinimum": 0
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
       "required": [
         "maxDepth",
         "maxActiveChildren",
@@ -195,42 +556,991 @@
         "maxPendingMessages",
         "maxMessageBytes"
       ],
+      "additionalProperties": false
+    },
+    "Horizon.AgentProfileV2.ProfileRevisionRef": {
+      "type": "object",
       "properties": {
-        "maxDepth": {
-          "type": "integer",
-          "minimum": 0
+        "profileId": {
+          "$ref": "#/$defs/Horizon.AgentProfileV2.ProfileId"
         },
-        "maxActiveChildren": {
-          "type": "integer",
-          "minimum": 0
+        "revision": {
+          "$ref": "#/$defs/Horizon.AgentProfileV2.Revision"
         },
-        "maxTotalChildren": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "maxPendingMessages": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "maxMessageBytes": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "tokenBudget": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 1
-        },
-        "wallTimeMs": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 1
+        "definitionDigest": {
+          "type": "string",
+          "allOf": [
+            {
+              "pattern": "^blake3:[0-9a-f]{64}$"
+            }
+          ]
         }
-      }
+      },
+      "required": [
+        "profileId",
+        "revision",
+        "definitionDigest"
+      ],
+      "additionalProperties": false
+    },
+    "AgentProfileDefinitionV2": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "type": "number",
+          "enum": [
+            2
+          ]
+        },
+        "profileId": {
+          "$ref": "#/$defs/Horizon.AgentProfileV2.ProfileId"
+        },
+        "revision": {
+          "$ref": "#/$defs/Horizon.AgentProfileV2.Revision"
+        },
+        "name": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 512
+            }
+          ]
+        },
+        "description": {
+          "type": "string",
+          "allOf": [
+            {
+              "maxLength": 65536
+            }
+          ]
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "builtin",
+            "user",
+            "project",
+            "plugin",
+            "external"
+          ]
+        },
+        "roles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "main",
+              "subagent"
+            ]
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "purpose": {
+          "type": "string",
+          "allOf": [
+            {
+              "maxLength": 65536
+            }
+          ]
+        },
+        "whenToUse": {
+          "type": "string",
+          "allOf": [
+            {
+              "maxLength": 65536
+            }
+          ]
+        },
+        "whenNotToUse": {
+          "type": "string",
+          "allOf": [
+            {
+              "maxLength": 65536
+            }
+          ]
+        },
+        "adapter": {
+          "$ref": "#/$defs/Horizon.AgentProfileV2.Adapter"
+        },
+        "model": {
+          "$ref": "#/$defs/Horizon.AgentProfileV2.ModelSelection"
+        },
+        "harness": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 256
+            },
+            {
+              "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+            }
+          ]
+        },
+        "reasoning": {
+          "$ref": "#/$defs/Horizon.AgentProfileV2.ReasoningSelection"
+        },
+        "variants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Horizon.AgentProfileV2.Variant"
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "instructions": {
+          "type": "object",
+          "properties": {
+            "baseRef": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Horizon.PluginManifestV1.ArtifactRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "extraRefs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Horizon.PluginManifestV1.ArtifactRef"
+              },
+              "allOf": [
+                {
+                  "maxItems": 4096
+                }
+              ]
+            },
+            "maxCompiledTokens": {
+              "type": "integer",
+              "allOf": [
+                {
+                  "exclusiveMinimum": 0
+                }
+              ]
+            }
+          },
+          "required": [
+            "extraRefs",
+            "maxCompiledTokens"
+          ],
+          "additionalProperties": false
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Horizon.AgentProfileV2.ToolRule"
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "allowedSkillIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "allOf": [
+              {
+                "minLength": 1
+              },
+              {
+                "maxLength": 256
+              },
+              {
+                "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+              }
+            ]
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "deniedSkillIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "allOf": [
+              {
+                "minLength": 1
+              },
+              {
+                "maxLength": 256
+              },
+              {
+                "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+              }
+            ]
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "allowedMcpServers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "allOf": [
+              {
+                "minLength": 1
+              },
+              {
+                "maxLength": 256
+              },
+              {
+                "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+              }
+            ]
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "allowedMcpToolPatterns": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "allOf": [
+              {
+                "minLength": 1
+              },
+              {
+                "maxLength": 256
+              },
+              {
+                "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+              }
+            ]
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "allowedSubagentIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "allOf": [
+              {
+                "minLength": 1
+              },
+              {
+                "maxLength": 256
+              },
+              {
+                "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+              }
+            ]
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "deniedSubagentIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "allOf": [
+              {
+                "minLength": 1
+              },
+              {
+                "maxLength": 256
+              },
+              {
+                "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+              }
+            ]
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "pathRules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Horizon.AgentProfileV2.PathRule"
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "context": {
+          "type": "object",
+          "properties": {
+            "isolation": {
+              "type": "string",
+              "enum": [
+                "fresh",
+                "conversation_slice",
+                "fork"
+              ]
+            },
+            "maxParentHistoryTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "allOf": [
+                    {
+                      "exclusiveMinimum": 0
+                    }
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "allowImages": {
+              "type": "boolean"
+            },
+            "allowDocuments": {
+              "type": "boolean"
+            },
+            "allowArtifacts": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "isolation",
+            "allowImages",
+            "allowDocuments",
+            "allowArtifacts"
+          ],
+          "additionalProperties": false
+        },
+        "inputMode": {
+          "type": "string",
+          "enum": [
+            "default",
+            "read_only",
+            "careful",
+            "sandbox_auto"
+          ]
+        },
+        "memoryPolicy": {
+          "type": "string",
+          "enum": [
+            "none",
+            "project_read",
+            "profile_read",
+            "reviewed_write"
+          ]
+        },
+        "isolation": {
+          "type": "string",
+          "enum": [
+            "read_only",
+            "workspace",
+            "worktree",
+            "external"
+          ]
+        },
+        "lifecycleHooks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Horizon.AgentProfileV2.LifecycleHook"
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "capabilityCeiling": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "allOf": [
+              {
+                "minLength": 1
+              },
+              {
+                "maxLength": 256
+              },
+              {
+                "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+              },
+              {
+                "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$"
+              }
+            ]
+          },
+          "allOf": [
+            {
+              "maxItems": 64
+            }
+          ]
+        },
+        "limits": {
+          "$ref": "#/$defs/Horizon.AgentProfileV2.Limits"
+        },
+        "maxParallelChildren": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "profileId",
+        "revision",
+        "name",
+        "description",
+        "source",
+        "roles",
+        "purpose",
+        "whenToUse",
+        "whenNotToUse",
+        "adapter",
+        "model",
+        "harness",
+        "reasoning",
+        "variants",
+        "instructions",
+        "tools",
+        "allowedSkillIds",
+        "deniedSkillIds",
+        "allowedMcpServers",
+        "allowedMcpToolPatterns",
+        "allowedSubagentIds",
+        "deniedSubagentIds",
+        "pathRules",
+        "context",
+        "inputMode",
+        "memoryPolicy",
+        "isolation",
+        "lifecycleHooks",
+        "capabilityCeiling",
+        "limits",
+        "maxParallelChildren",
+        "enabled"
+      ],
+      "additionalProperties": false
+    },
+    "AgentProfileV2": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "type": "number",
+          "enum": [
+            2
+          ]
+        },
+        "profileId": {
+          "$ref": "#/$defs/Horizon.AgentProfileV2.ProfileId"
+        },
+        "revision": {
+          "$ref": "#/$defs/Horizon.AgentProfileV2.Revision"
+        },
+        "name": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 512
+            }
+          ]
+        },
+        "description": {
+          "type": "string",
+          "allOf": [
+            {
+              "maxLength": 65536
+            }
+          ]
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "builtin",
+            "user",
+            "project",
+            "plugin",
+            "external"
+          ]
+        },
+        "roles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "main",
+              "subagent"
+            ]
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "purpose": {
+          "type": "string",
+          "allOf": [
+            {
+              "maxLength": 65536
+            }
+          ]
+        },
+        "whenToUse": {
+          "type": "string",
+          "allOf": [
+            {
+              "maxLength": 65536
+            }
+          ]
+        },
+        "whenNotToUse": {
+          "type": "string",
+          "allOf": [
+            {
+              "maxLength": 65536
+            }
+          ]
+        },
+        "adapter": {
+          "$ref": "#/$defs/Horizon.AgentProfileV2.Adapter"
+        },
+        "model": {
+          "$ref": "#/$defs/Horizon.AgentProfileV2.ModelSelection"
+        },
+        "harness": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 256
+            },
+            {
+              "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+            }
+          ]
+        },
+        "reasoning": {
+          "$ref": "#/$defs/Horizon.AgentProfileV2.ReasoningSelection"
+        },
+        "variants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Horizon.AgentProfileV2.Variant"
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "instructions": {
+          "type": "object",
+          "properties": {
+            "baseRef": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Horizon.PluginManifestV1.ArtifactRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "extraRefs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Horizon.PluginManifestV1.ArtifactRef"
+              },
+              "allOf": [
+                {
+                  "maxItems": 4096
+                }
+              ]
+            },
+            "maxCompiledTokens": {
+              "type": "integer",
+              "allOf": [
+                {
+                  "exclusiveMinimum": 0
+                }
+              ]
+            }
+          },
+          "required": [
+            "extraRefs",
+            "maxCompiledTokens"
+          ],
+          "additionalProperties": false
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Horizon.AgentProfileV2.ToolRule"
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "allowedSkillIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "allOf": [
+              {
+                "minLength": 1
+              },
+              {
+                "maxLength": 256
+              },
+              {
+                "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+              }
+            ]
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "deniedSkillIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "allOf": [
+              {
+                "minLength": 1
+              },
+              {
+                "maxLength": 256
+              },
+              {
+                "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+              }
+            ]
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "allowedMcpServers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "allOf": [
+              {
+                "minLength": 1
+              },
+              {
+                "maxLength": 256
+              },
+              {
+                "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+              }
+            ]
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "allowedMcpToolPatterns": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "allOf": [
+              {
+                "minLength": 1
+              },
+              {
+                "maxLength": 256
+              },
+              {
+                "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+              }
+            ]
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "allowedSubagentIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "allOf": [
+              {
+                "minLength": 1
+              },
+              {
+                "maxLength": 256
+              },
+              {
+                "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+              }
+            ]
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "deniedSubagentIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "allOf": [
+              {
+                "minLength": 1
+              },
+              {
+                "maxLength": 256
+              },
+              {
+                "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+              }
+            ]
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "pathRules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Horizon.AgentProfileV2.PathRule"
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "context": {
+          "type": "object",
+          "properties": {
+            "isolation": {
+              "type": "string",
+              "enum": [
+                "fresh",
+                "conversation_slice",
+                "fork"
+              ]
+            },
+            "maxParentHistoryTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "allOf": [
+                    {
+                      "exclusiveMinimum": 0
+                    }
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "allowImages": {
+              "type": "boolean"
+            },
+            "allowDocuments": {
+              "type": "boolean"
+            },
+            "allowArtifacts": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "isolation",
+            "allowImages",
+            "allowDocuments",
+            "allowArtifacts"
+          ],
+          "additionalProperties": false
+        },
+        "inputMode": {
+          "type": "string",
+          "enum": [
+            "default",
+            "read_only",
+            "careful",
+            "sandbox_auto"
+          ]
+        },
+        "memoryPolicy": {
+          "type": "string",
+          "enum": [
+            "none",
+            "project_read",
+            "profile_read",
+            "reviewed_write"
+          ]
+        },
+        "isolation": {
+          "type": "string",
+          "enum": [
+            "read_only",
+            "workspace",
+            "worktree",
+            "external"
+          ]
+        },
+        "lifecycleHooks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Horizon.AgentProfileV2.LifecycleHook"
+          },
+          "allOf": [
+            {
+              "maxItems": 4096
+            }
+          ]
+        },
+        "capabilityCeiling": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "allOf": [
+              {
+                "minLength": 1
+              },
+              {
+                "maxLength": 256
+              },
+              {
+                "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+              },
+              {
+                "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$"
+              }
+            ]
+          },
+          "allOf": [
+            {
+              "maxItems": 64
+            }
+          ]
+        },
+        "limits": {
+          "$ref": "#/$defs/Horizon.AgentProfileV2.Limits"
+        },
+        "maxParallelChildren": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "permissionCeilingDigest": {
+          "type": "string",
+          "allOf": [
+            {
+              "pattern": "^blake3:[0-9a-f]{64}$"
+            }
+          ]
+        },
+        "definitionDigest": {
+          "type": "string",
+          "allOf": [
+            {
+              "pattern": "^blake3:[0-9a-f]{64}$"
+            }
+          ]
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "profileId",
+        "revision",
+        "name",
+        "description",
+        "source",
+        "roles",
+        "purpose",
+        "whenToUse",
+        "whenNotToUse",
+        "adapter",
+        "model",
+        "harness",
+        "reasoning",
+        "variants",
+        "instructions",
+        "tools",
+        "allowedSkillIds",
+        "deniedSkillIds",
+        "allowedMcpServers",
+        "allowedMcpToolPatterns",
+        "allowedSubagentIds",
+        "deniedSubagentIds",
+        "pathRules",
+        "context",
+        "inputMode",
+        "memoryPolicy",
+        "isolation",
+        "lifecycleHooks",
+        "capabilityCeiling",
+        "limits",
+        "maxParallelChildren",
+        "enabled",
+        "permissionCeilingDigest",
+        "definitionDigest"
+      ],
+      "additionalProperties": false
+    },
+    "ProfileRevisionRef": {
+      "$ref": "#/$defs/Horizon.AgentProfileV2.ProfileRevisionRef"
     }
   }
 }

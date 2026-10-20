@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { Duration, Effect, Fiber, Layer, Schema } from "effect"
-import * as TestClock from "effect/testing/TestClock"
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
+import { Effect, Layer, Schema } from "effect"
+import { HttpClient, HttpClientResponse } from "effect/unstable/http"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
@@ -11,19 +10,17 @@ import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { WebFetchTool } from "@opencode-ai/core/tool/webfetch"
 import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
 import { testEffect } from "./lib/effect"
-import { toolIdentity, executeTool, settleTool, toolDefinitions } from "./lib/tool"
+import { toolIdentity, executeTool, toolDefinitions } from "./lib/tool"
 
 const sessionID = SessionV2.ID.make("ses_webfetch_test")
-const requests: Array<{ readonly url: string; readonly headers: Record<string, string> }> = []
+const requests: string[] = []
 const assertions: PermissionV2.AssertInput[] = []
-let respond = (_request: HttpClientRequest.HttpClientRequest) =>
-  Effect.succeed(new Response("hello", { headers: { "content-type": "text/plain" } }))
 
 const http = Layer.succeed(
   HttpClient.HttpClient,
   HttpClient.make((request) =>
-    Effect.sync(() => requests.push({ url: request.url, headers: request.headers })).pipe(
-      Effect.andThen(respond(request)),
+    Effect.sync(() => requests.push(request.url)).pipe(
+      Effect.andThen(Effect.succeed(new Response("hello", { headers: { "content-type": "text/plain" } }))),
       Effect.map((response) => HttpClientResponse.fromWeb(request, response)),
     ),
   ),
@@ -40,26 +37,24 @@ const permission = Layer.succeed(
     policySnapshotDigest: () => Effect.succeed(`sha256:${"0".repeat(64)}`),
   }),
 )
-const toolLayer = (replacements: LayerNode.Replacements = []) =>
+const toolLayer = () =>
   AppNodeBuilder.build(LayerNode.group([ToolRegistry.node, ToolRegistry.toolsNode, WebFetchTool.node]), [
     [PermissionV2.node, permission],
     [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
-    ...replacements,
+    [LayerNodePlatform.httpClient, http],
   ])
-const it = testEffect(toolLayer([[LayerNodePlatform.httpClient, http]]))
-const live = testEffect(toolLayer())
-
-const reset = () => {
-  requests.length = 0
-  assertions.length = 0
-  respond = () => Effect.succeed(new Response("hello", { headers: { "content-type": "text/plain" } }))
-}
+const it = testEffect(toolLayer())
 
 const call = (input: typeof WebFetchTool.Input.Type, id = "call-webfetch") => ({
   sessionID,
   ...toolIdentity,
   call: { type: "tool-call" as const, id, name: "webfetch", input },
 })
+
+const reset = () => {
+  requests.length = 0
+  assertions.length = 0
+}
 
 describe("WebFetchTool helpers", () => {
   test("defaults format and rejects invalid timeout controls", () => {
@@ -76,207 +71,36 @@ describe("WebFetchTool helpers", () => {
   })
 })
 
-describe("WebFetchTool registration", () => {
-  it.effect("registers and fetches an ordinary hostname HTTP URL without rewriting it", () =>
+// V1 fail-closed contract (plan 2026-10-11, "ToolRegistry.materialize omits registrations
+// whose capability effectClass is unknown"): the leaf declares no Guard-mediated capability,
+// so it must be absent from model definitions and settlement. These negatives pin zero
+// network traffic and zero permission requests. Re-enabling this origin requires declaring
+// the mediated capability and restoring the removed leaf behavior specs.
+describe("WebFetchTool fail-closed origin", () => {
+  it.effect("is withheld from model definitions without a Guard-mediated capability", () =>
     Effect.gen(function* () {
       reset()
       const registry = yield* ToolRegistry.Service
-      const url = "http://example.com/public"
-
-      expect((yield* toolDefinitions(registry)).map((tool) => tool.name)).toEqual(["webfetch"])
-      expect(yield* settleTool(registry, call({ url, format: "text", timeout: 4 }))).toEqual({
-        result: { type: "text", value: "hello" },
-        output: {
-          structured: { url, contentType: "text/plain", format: "text", output: "hello" },
-          content: [{ type: "text", text: "hello" }],
-        },
-      })
-      expect(assertions).toMatchObject([
-        { sessionID, action: "webfetch", resources: [url], save: ["*"], metadata: { url, format: "text", timeout: 4 } },
-      ])
-      expect(requests).toMatchObject([{ url, headers: { accept: expect.stringContaining("text/plain;q=1.0") } }])
-    }),
-  )
-
-  it.effect("accepts localhost URLs with the same requested-URL permission check", () =>
-    Effect.gen(function* () {
-      reset()
-      const registry = yield* ToolRegistry.Service
-      const url = "http://localhost/private"
-
-      expect(yield* executeTool(registry, call({ url, format: "text" }))).toEqual({
-        type: "text",
-        value: "hello",
-      })
-      expect(assertions).toMatchObject([
-        { sessionID, action: "webfetch", resources: [url], save: ["*"], metadata: { url, format: "text" } },
-      ])
-      expect(requests.map((request) => request.url)).toEqual([url])
-    }),
-  )
-
-  live.effect("follows redirects while approving only the requested URL", () =>
-    Effect.acquireUseRelease(
-      Effect.sync(() =>
-        Bun.serve({
-          port: 0,
-          fetch: (request) =>
-            new URL(request.url).pathname === "/redirect"
-              ? new Response("", { status: 302, headers: { location: "/target" } })
-              : new Response("redirected", { headers: { "content-type": "text/plain" } }),
-        }),
-      ),
-      (server) =>
-        Effect.gen(function* () {
-          reset()
-          const registry = yield* ToolRegistry.Service
-          const url = new URL("/redirect", server.url).toString()
-
-          expect(yield* executeTool(registry, call({ url, format: "text" }))).toEqual({
-            type: "text",
-            value: "redirected",
-          })
-          expect(assertions).toMatchObject([
-            { sessionID, action: "webfetch", resources: [url], save: ["*"], metadata: { url, format: "text" } },
-          ])
-        }),
-      (server) => Effect.promise(() => server.stop(true)),
-    ),
-  )
-
-  it.effect("rejects non-HTTP schemes before permission or transport", () =>
-    Effect.gen(function* () {
-      reset()
-      const registry = yield* ToolRegistry.Service
-
-      expect(yield* executeTool(registry, call({ url: "file:///etc/passwd", format: "text" }))).toEqual({
-        type: "error",
-        value: "Unable to fetch file:///etc/passwd",
-      })
-      expect(assertions).toEqual([])
+      expect(yield* toolDefinitions(registry)).toEqual([])
       expect(requests).toEqual([])
+      expect(assertions).toEqual([])
     }),
   )
 
-  it.effect("converts HTML to requested markdown and text", () =>
-    Effect.gen(function* () {
-      reset()
-      respond = () =>
-        Effect.succeed(
-          new Response("<h1>Hello</h1><p>world</p><script>bad()</script>", {
-            headers: { "content-type": "text/html; charset=utf-8" },
-          }),
-        )
-      const registry = yield* ToolRegistry.Service
-
-      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1", format: "markdown" }))).toEqual({
-        type: "text",
-        value: "# Hello\n\nworld",
-      })
-      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1", format: "text" }))).toEqual({
-        type: "text",
-        value: "Helloworld",
-      })
-    }),
-  )
-
-  it.effect("returns an error result when HTML-to-Markdown conversion throws", () =>
-    Effect.gen(function* () {
-      reset()
-      respond = () =>
-        Effect.succeed(
-          new Response("<div>".repeat(10_000) + "content" + "</div>".repeat(10_000), {
-            headers: { "content-type": "text/html" },
-          }),
-        )
-      const registry = yield* ToolRegistry.Service
-      const url = "https://1.1.1.1/deep-html"
-
-      expect(yield* executeTool(registry, call({ url, format: "markdown" }))).toEqual({
-        type: "error",
-        value: `Unable to fetch ${url}`,
-      })
-    }),
-  )
-
-  it.effect("rejects declared and streamed oversized bodies", () =>
+  it.effect("cannot settle, validate, or classify as anything but unknown, with zero network and zero permission", () =>
     Effect.gen(function* () {
       reset()
       const registry = yield* ToolRegistry.Service
-      respond = () =>
-        Effect.succeed(
-          new Response("small", {
-            headers: { "content-type": "text/plain", "content-length": String(WebFetchTool.MAX_RESPONSE_BYTES + 1) },
-          }),
-        )
-      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/declared", format: "text" }))).toEqual({
-        type: "error",
-        value: "Unable to fetch https://1.1.1.1/declared",
-      })
+      const call_ = call({ url: "https://1.1.1.1/blocked", format: "text" })
 
-      respond = () =>
-        Effect.succeed(
-          new Response("x".repeat(WebFetchTool.MAX_RESPONSE_BYTES + 1), { headers: { "content-type": "text/plain" } }),
-        )
-      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/streamed", format: "text" }))).toEqual({
-        type: "error",
-        value: "Unable to fetch https://1.1.1.1/streamed",
-      })
-    }),
-  )
+      expect(yield* executeTool(registry, call_)).toEqual({ type: "error", value: "Unknown tool: webfetch" })
 
-  it.effect("keeps images and files unsupported until typed settlement can carry attachments", () =>
-    Effect.gen(function* () {
-      reset()
-      const registry = yield* ToolRegistry.Service
-      respond = () => Effect.succeed(new Response("png", { headers: { "content-type": "image/png" } }))
-      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/image", format: "html" }))).toEqual({
-        type: "error",
-        value: "Unable to fetch https://1.1.1.1/image",
-      })
+      const materialized = yield* registry.materialize()
+      expect(yield* materialized.validate(call_.call)).toEqual("Unknown tool: webfetch")
+      expect(materialized.classify(call_.call)).toEqual({ id: "webfetch", effectClass: "unknown" })
 
-      respond = () => Effect.succeed(new Response("pdf", { headers: { "content-type": "application/pdf" } }))
-      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/file", format: "html" }))).toEqual({
-        type: "error",
-        value: "Unable to fetch https://1.1.1.1/file",
-      })
-    }),
-  )
-
-  it.effect("retries Cloudflare challenges with an honest user agent", () =>
-    Effect.gen(function* () {
-      reset()
-      let count = 0
-      respond = () =>
-        Effect.succeed(
-          ++count === 1
-            ? new Response("challenge", { status: 403, headers: { "cf-mitigated": "challenge" } })
-            : new Response("ok", { headers: { "content-type": "text/plain" } }),
-        )
-      const registry = yield* ToolRegistry.Service
-
-      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1", format: "text" }))).toEqual({
-        type: "text",
-        value: "ok",
-      })
-      expect(requests).toHaveLength(2)
-      expect(requests[0]?.headers["user-agent"]).toContain("Mozilla/5.0")
-      expect(requests[1]?.headers["user-agent"]).toBe("opencode")
-    }),
-  )
-
-  it.effect("times out stalled requests", () =>
-    Effect.gen(function* () {
-      reset()
-      respond = () => Effect.never
-      const registry = yield* ToolRegistry.Service
-      const fiber = yield* executeTool(
-        registry,
-        call({ url: "https://1.1.1.1/slow", format: "text", timeout: 1 }),
-      ).pipe(Effect.forkChild)
-      yield* TestClock.adjust(Duration.seconds(1))
-
-      expect(yield* Fiber.join(fiber)).toEqual({ type: "error", value: "Unable to fetch https://1.1.1.1/slow" })
+      expect(requests).toEqual([])
+      expect(assertions).toEqual([])
     }),
   )
 })

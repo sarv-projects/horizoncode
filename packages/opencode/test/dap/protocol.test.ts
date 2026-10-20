@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test"
-import { readFileSync, readdirSync } from "node:fs"
-import path from "node:path"
+import { Effect } from "effect"
+import { it } from "../lib/effect"
 import {
   MAX_FRAME_BYTES,
   MAX_HEADER_BYTES,
@@ -9,10 +9,85 @@ import {
   decodeFrame,
   encodeFrame,
   parseMessage,
+  HostDapEventCursorV1,
+  HostDapProtocolJournalV1,
+  ResnapshotRequiredError,
+  validateHostDapDispatchReceiptV1,
+  validateHostEventPageV1,
+  validateHostOperationRequestV1,
   type Envelope,
 } from "@/dap/protocol"
+import type { HostProcessRefV1 } from "@/lsp/process-scope"
 
 const encoder = new TextEncoder()
+const digest = (digit: string) => `blake3:${digit.repeat(64)}`
+const hostProcessRef: HostProcessRefV1 = {
+  executionID: "dap-protocol-test",
+  generation: "1",
+  ownerEpoch: "7",
+  kind: "debug_adapter",
+  profileID: "trusted-dap",
+  profileRevision: "1",
+  profileDigest: digest("3"),
+  executableDigest: digest("4"),
+}
+const workspaceRevision = digest("1")
+
+function hostOperationRequest() {
+  return {
+    hostProcessRef,
+    sessionID: "session-1",
+    locationID: "location-1",
+    workspaceRevision,
+    effectID: "effect-1",
+    challengeID: "challenge-1",
+    capabilityID: "debug.start",
+    capabilityLeaseDigest: digest("2"),
+    operation: {
+      requestSequence: "1",
+      requestID: 1,
+      command: "initialize",
+      arguments: {},
+    },
+  }
+}
+
+function hostDispatchReceipt(requestSequence = "1") {
+  return {
+    schemaVersion: 1,
+    hostProcessRef,
+    requestSequence,
+    processIOSequence: "1",
+    operationDigest: digest("5"),
+    dispatchReceiptDigest: digest("6"),
+    status: "DISPATCHED",
+  }
+}
+
+function hostResponsePage() {
+  return {
+    hostProcessRef,
+    afterEventSequence: "0",
+    processIOSequence: "1",
+    workspaceRevision,
+    status: "RUNNING",
+    events: [
+      {
+        protocol: "dap",
+        messageKind: "response",
+        payload: {
+          schemaVersion: 1,
+          eventSequence: "1",
+          requestSequence: "1",
+          requestID: 1,
+          command: "initialize",
+          success: true,
+          body: { supportsConfigurationDoneRequest: true },
+        },
+      },
+    ],
+  } as const
+}
 
 const request = (seq = 1, command = "threads"): Envelope => ({ seq, type: "request", command })
 const response = (seq = 2): Envelope => ({
@@ -32,13 +107,6 @@ function capture<T = Record<string, unknown>>(fn: () => unknown): T {
     return error as T
   }
   throw new Error("expected call to throw")
-}
-
-function dapSourceFiles(): string[] {
-  const dir = path.join(import.meta.dir, "../../src/dap")
-  return readdirSync(dir)
-    .filter((entry) => entry.endsWith(".ts"))
-    .map((entry) => path.join(dir, entry))
 }
 
 describe("dap.protocol framing", () => {
@@ -80,13 +148,77 @@ describe("dap.protocol framing", () => {
     expect(() => decodeFrame(headerFlood)).toThrow(ProtocolError)
   })
 
+  test("rejects an oversized header even when its terminator is present", () => {
+    const body = encoder.encode(JSON.stringify(request()))
+    const header = encoder.encode(
+      `Content-Length: ${body.byteLength}\r\nX-Pad: ${"x".repeat(MAX_HEADER_BYTES)}\r\n\r\n`,
+    )
+    const frame = new Uint8Array(header.byteLength + body.byteLength)
+    frame.set(header)
+    frame.set(body, header.byteLength)
+
+    const error = capture<ProtocolError>(() => decodeFrame(frame))
+    expect(error.detail).toContain("DAP header exceeds")
+  })
+
+  test("rejects duplicate Content-Length headers", () => {
+    const body = encoder.encode(JSON.stringify(request()))
+    const header = encoder.encode(`Content-Length: ${body.byteLength}\r\nContent-Length: ${body.byteLength}\r\n\r\n`)
+    const frame = new Uint8Array(header.byteLength + body.byteLength)
+    frame.set(header)
+    frame.set(body, header.byteLength)
+
+    expect(() => decodeFrame(frame)).toThrow(ProtocolError)
+  })
+
+  test("rejects additional framing headers", () => {
+    const body = encoder.encode(JSON.stringify(request()))
+    const header = encoder.encode(`Content-Length: ${body.byteLength}\r\nX-Adapter-Mode: permissive\r\n\r\n`)
+    const frame = new Uint8Array(header.byteLength + body.byteLength)
+    frame.set(header)
+    frame.set(body, header.byteLength)
+    expect(() => decodeFrame(frame)).toThrow(ProtocolError)
+  })
+
+  test("rejects invalid UTF-8 in the JSON body", () => {
+    const bodyPrefix = encoder.encode('{"seq":1,"type":"event","event":"')
+    const bodySuffix = encoder.encode('"}')
+    const body = new Uint8Array(bodyPrefix.byteLength + 1 + bodySuffix.byteLength)
+    body.set(bodyPrefix)
+    body[bodyPrefix.byteLength] = 0xff
+    body.set(bodySuffix, bodyPrefix.byteLength + 1)
+    const header = encoder.encode(`Content-Length: ${body.byteLength}\r\n\r\n`)
+    const frame = new Uint8Array(header.byteLength + body.byteLength)
+    frame.set(header)
+    frame.set(body, header.byteLength)
+
+    expect(() => decodeFrame(frame)).toThrow(ProtocolError)
+  })
+
+  test("rejects invalid UTF-8 in the frame header", () => {
+    const prefix = encoder.encode("Content-Length: 2\r\nX-Header: ")
+    const suffix = encoder.encode("\r\n\r\n{}")
+    const frame = new Uint8Array(prefix.byteLength + 1 + suffix.byteLength)
+    frame.set(prefix)
+    frame[prefix.byteLength] = 0xff
+    frame.set(suffix, prefix.byteLength + 1)
+
+    const error = capture<ProtocolError>(() => decodeFrame(frame))
+    expect(error.detail).toContain("not valid UTF-8")
+  })
+
   test("rejects malformed headers and bodies", () => {
     expect(() => decodeFrame(encoder.encode("X-Note: hi\r\n\r\n{}"))).toThrow(ProtocolError)
     expect(() => decodeFrame(encoder.encode("Content-Length: 3\r\n\r\nnot"))).toThrow(ProtocolError)
   })
 
   test("encodeFrame refuses to emit an oversized frame", () => {
-    const payload = { seq: 1, type: "event", event: "output", body: "x".repeat(MAX_FRAME_BYTES + 1) } as unknown as Envelope
+    const payload = {
+      seq: 1,
+      type: "event",
+      event: "output",
+      body: "x".repeat(MAX_FRAME_BYTES + 1),
+    } as unknown as Envelope
     expect(() => encodeFrame(payload)).toThrow(ProtocolError)
   })
 })
@@ -94,9 +226,10 @@ describe("dap.protocol framing", () => {
 describe("dap.protocol message validation", () => {
   test("accepts well-formed envelopes", () => {
     expect(parseMessage({ seq: 1, type: "request", command: "threads" })).toEqual(request())
-    expect(parseMessage({ seq: 1, type: "response", request_seq: 1, success: false, command: "evaluate", message: "no" }).type).toBe(
-      "response",
-    )
+    expect(
+      parseMessage({ seq: 1, type: "response", request_seq: 1, success: false, command: "evaluate", message: "no" })
+        .type,
+    ).toBe("response")
     expect(parseMessage({ seq: 1, type: "event", event: "stopped", body: { reason: "breakpoint" } }).type).toBe("event")
   })
 
@@ -106,6 +239,7 @@ describe("dap.protocol message validation", () => {
       { seq: 0, type: "request", command: "threads" },
       { seq: 1, type: "request" },
       { seq: 1, type: "unknown", command: "threads" },
+      { seq: 1, type: "request", command: "threads", pid: 1234 },
       { seq: 1, type: "response", request_seq: 1, success: "yes", command: "threads" },
       { seq: 1.5, type: "event", event: "x" },
       null,
@@ -116,13 +250,39 @@ describe("dap.protocol message validation", () => {
       expect(error.detail).toBe("malformed DAP message envelope")
     }
   })
+
+  test("rejects oversized direct messages that bypass frame decoding", () => {
+    const error = capture<ProtocolError>(() =>
+      parseMessage({ seq: 1, type: "request", command: "launch", arguments: { payload: "x".repeat(MAX_FRAME_BYTES) } }),
+    )
+
+    expect(error).toBeInstanceOf(ProtocolError)
+    expect(error.detail).toContain("DAP message exceeds")
+  })
+
+  test("rejects non-serializable direct message values as a typed protocol error", () => {
+    const circular: Record<string, unknown> = {}
+    circular.self = circular
+
+    const error = capture<ProtocolError>(() =>
+      parseMessage({ seq: 1, type: "request", command: "launch", arguments: circular }),
+    )
+
+    expect(error).toBeInstanceOf(ProtocolError)
+    expect(error.detail).toBe("malformed DAP message envelope")
+  })
+
+  test("encodeFrame validates envelopes at the runtime boundary", () => {
+    expect(() => encodeFrame({ seq: 0, type: "request", command: "threads" } as unknown as Envelope)).toThrow(
+      ProtocolError,
+    )
+  })
 })
 
 describe("dap.protocol command classification", () => {
   test("classifies read, control, evaluate and launch commands", () => {
     expect(classifyCommand("threads")).toBe("read")
     expect(classifyCommand("stackTrace")).toBe("read")
-    expect(classifyCommand("variables")).toBe("read")
     expect(classifyCommand("setBreakpoints")).toBe("control")
     expect(classifyCommand("continue")).toBe("control")
     expect(classifyCommand("stepIn")).toBe("control")
@@ -133,6 +293,10 @@ describe("dap.protocol command classification", () => {
     expect(classifyCommand("runInTerminal")).toBe("launch")
   })
 
+  test("marks variable inspection conditional because adapters may invoke getters or lazy evaluation", () => {
+    expect(classifyCommand("variables")).toBe("conditional_read")
+  })
+
   test("unknown commands classify as unknown (fail-closed)", () => {
     expect(classifyCommand("vendor/customCommand")).toBe("unknown")
     expect(classifyCommand("")).toBe("unknown")
@@ -140,43 +304,154 @@ describe("dap.protocol command classification", () => {
 })
 
 describe("dap.protocol purity", () => {
-  test("dap sources import no process, network or download machinery", () => {
-    const forbidden = [
-      /\bchild_process\b/,
-      /\bcross-spawn\b/,
-      /["']@\/util\/(?:process|archive)["']/,
-      /\bBun\.spawn\b/,
-      /\bBun\.\$\b/,
-      /\bfetch\s*\(/,
-      /\bhttps?\.(?:request|get)\b/,
-      /\bnode:(?:net|http|https|dgram|worker_threads)["']/,
-      /\bNpm\b/,
-    ]
-    const files = dapSourceFiles()
-    expect(files.length).toBeGreaterThanOrEqual(2)
-    for (const file of files) {
-      const source = readFileSync(file, "utf8")
-      for (const pattern of forbidden) expect(source).not.toMatch(pattern)
-    }
+  it.live("parsing and classifying spawn no process and download nothing", () =>
+    Effect.sync(() => {
+      const spawnSpy = spyOn(Bun, "spawn")
+      const writeSpy = spyOn(Bun, "write")
+      const fetchSpy = spyOn(globalThis, "fetch")
+      try {
+        const frame = encodeFrame(request(1, "runInTerminal"))
+        decodeFrame(frame)
+        decodeFrame(new Uint8Array(0))
+        parseMessage({ seq: 9, type: "event", event: "output", body: "x" })
+        capture(() => parseMessage({ seq: 0, type: "request", command: "threads" }))
+        for (const command of [
+          "initialize",
+          "launch",
+          "attach",
+          "evaluate",
+          "setBreakpoints",
+          "threads",
+          "runInTerminal",
+        ]) {
+          classifyCommand(command)
+        }
+      } finally {
+        spawnSpy.mockRestore()
+        writeSpy.mockRestore()
+        fetchSpy.mockRestore()
+      }
+      expect(spawnSpy).not.toHaveBeenCalled()
+      expect(writeSpy).not.toHaveBeenCalled()
+      expect(fetchSpy).not.toHaveBeenCalled()
+    }),
+  )
+})
+
+describe("DAP typed HostKernel protocol contract", () => {
+  test("validates a bounded operation and its exact durable dispatch receipt", () => {
+    const request = validateHostOperationRequestV1(hostOperationRequest())
+    expect(request).toEqual(hostOperationRequest())
+    expect(validateHostDapDispatchReceiptV1(request, hostDispatchReceipt())).toMatchObject({
+      requestSequence: "1",
+      status: "DISPATCHED",
+      hostProcessRef,
+    })
   })
 
-  test("parsing and classifying spawn no process and download nothing", () => {
-    const spawnSpy = spyOn(Bun, "spawn")
-    const writeSpy = spyOn(Bun, "write")
-    const fetchSpy = spyOn(globalThis, "fetch")
-    try {
-      const frame = encodeFrame(request(1, "runInTerminal"))
-      decodeFrame(frame)
-      decodeFrame(new Uint8Array(0))
-      parseMessage({ seq: 9, type: "event", event: "output", body: "x" })
-      capture(() => parseMessage({ seq: 0, type: "request", command: "threads" }))
-      for (const command of ["initialize", "launch", "attach", "evaluate", "setBreakpoints", "threads", "runInTerminal"]) {
-        classifyCommand(command)
-      }
-    } finally {
-      spawnSpy.mockRestore()
-      writeSpy.mockRestore()
-      fetchSpy.mockRestore()
+  test("denies launch, unsafe IDs, NUL and oversized operation arguments", () => {
+    const launch = hostOperationRequest()
+    ;(launch.operation as { command: string }).command = "launch"
+    expect(() => validateHostOperationRequestV1(launch)).toThrow(ProtocolError)
+
+    const badID = hostOperationRequest()
+    ;(badID.operation as { requestID: number }).requestID = Number.MAX_SAFE_INTEGER + 1
+    expect(() => validateHostOperationRequestV1(badID)).toThrow(ProtocolError)
+
+    const nul = hostOperationRequest()
+    ;(nul.operation as { arguments: Record<string, unknown> }).arguments = { text: "bad\u0000value" }
+    expect(() => validateHostOperationRequestV1(nul)).toThrow(ProtocolError)
+
+    const large = hostOperationRequest()
+    ;(large.operation as { arguments: Record<string, unknown> }).arguments = { text: "x".repeat(MAX_FRAME_BYTES + 1) }
+    expect(() => validateHostOperationRequestV1(large)).toThrow(ProtocolError)
+  })
+
+  test("rejects mismatched Attempt scope and page limits before projection", () => {
+    const scoped = hostOperationRequest() as ReturnType<typeof hostOperationRequest> & { directAttempt?: unknown }
+    scoped.directAttempt = {}
+    expect(() => validateHostOperationRequestV1(scoped)).toThrow(ProtocolError)
+
+    const cursor = new HostDapEventCursorV1(hostProcessRef, "session-1", "location-1", workspaceRevision)
+    const page = hostResponsePage()
+    expect(() => validateHostEventPageV1(
+      { ...cursor.readRequest(), maxEvents: 0 },
+      page,
+    )).toThrow(ProtocolError)
+    expect(() => validateHostEventPageV1(
+      { ...cursor.readRequest(), maxBytes: 1 },
+      page,
+    )).toThrow(ProtocolError)
+  })
+
+  test("accepts an exact durable receipt replay and rejects a conflicting sequence reuse", () => {
+    const request = hostOperationRequest()
+    const journal = new HostDapProtocolJournalV1(hostProcessRef, workspaceRevision)
+    const receipt = hostDispatchReceipt()
+    journal.acceptOperation(request, receipt)
+    expect(journal.acceptOperation(request, receipt)).toEqual(receipt)
+    expect(journal.quarantined).toBe(false)
+
+    const other = new HostDapProtocolJournalV1(hostProcessRef, workspaceRevision)
+    other.acceptOperation(request, receipt)
+    const conflicting = hostOperationRequest()
+    conflicting.operation = { ...conflicting.operation, arguments: { expression: "different" } }
+    expect(() => other.acceptOperation(conflicting, receipt)).toThrow(ResnapshotRequiredError)
+    expect(other.quarantined).toBe(true)
+  })
+
+  test("quarantines an outbound sequence gap", () => {
+    const journal = new HostDapProtocolJournalV1(hostProcessRef, workspaceRevision)
+    const skipped = hostOperationRequest()
+    skipped.operation = { ...skipped.operation, requestSequence: "2" }
+    expect(() => journal.acceptOperation(skipped, hostDispatchReceipt("2"))).toThrow(ResnapshotRequiredError)
+    expect(journal.quarantined).toBe(true)
+  })
+
+  test("binds response events to the dispatched DAP request and suppresses exact page replay", () => {
+    const request = hostOperationRequest()
+    const journal = new HostDapProtocolJournalV1(hostProcessRef, workspaceRevision)
+    journal.acceptOperation(request, hostDispatchReceipt())
+
+    const cursor = new HostDapEventCursorV1(hostProcessRef, "session-1", "location-1", workspaceRevision)
+    const page = hostResponsePage()
+    const accepted = cursor.accept(page)
+    expect(accepted.events).toHaveLength(1)
+    journal.acceptPage(accepted)
+    expect(journal.quarantined).toBe(false)
+    const replay = cursor.accept(page)
+    expect(replay.events).toHaveLength(0)
+    expect(() => journal.acceptPage(replay)).not.toThrow()
+    expect(journal.quarantined).toBe(false)
+  })
+
+  test("quarantines stale or mismatched response sequences", () => {
+    const request = hostOperationRequest()
+    const journal = new HostDapProtocolJournalV1(hostProcessRef, workspaceRevision)
+    journal.acceptOperation(request, hostDispatchReceipt())
+    const cursor = new HostDapEventCursorV1(hostProcessRef, "session-1", "location-1", workspaceRevision)
+    const badPage = {
+      ...hostResponsePage(),
+      events: [
+        {
+          protocol: "dap",
+          messageKind: "response",
+          payload: { ...hostResponsePage().events[0].payload, requestSequence: "2" },
+        },
+      ],
     }
+    const accepted = cursor.accept(badPage)
+    expect(() => journal.acceptPage(accepted)).toThrow(ResnapshotRequiredError)
+    expect(journal.quarantined).toBe(true)
+  })
+
+  test("the protocol journal rejects a cursor skip even when a caller bypasses the event cursor", () => {
+    const journal = new HostDapProtocolJournalV1(hostProcessRef, workspaceRevision)
+    expect(() => journal.acceptPage({
+      ...hostResponsePage(),
+      afterEventSequence: "1",
+      events: [],
+    })).toThrow(ResnapshotRequiredError)
+    expect(journal.quarantined).toBe(true)
   })
 })

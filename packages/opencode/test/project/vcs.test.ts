@@ -1,5 +1,6 @@
 import { afterAll, afterEach, describe, expect } from "bun:test"
 import { createHash } from "node:crypto"
+import { execFile } from "node:child_process"
 import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -10,11 +11,13 @@ import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { AppProcess } from "@opencode-ai/core/process"
 import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
+import { GuardApprovalRequested, type GuardApprovalRequest } from "@opencode-ai/core/session/supervisor"
+import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { parsePatch } from "diff"
-import { Deferred, Effect, Layer } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Queue } from "effect"
 import fs from "fs/promises"
 import path from "path"
 import {
@@ -54,6 +57,11 @@ const supervisorAvailable = process.platform === "linux" && existsSync(superviso
 const supervisorDigest = supervisorAvailable
   ? createHash("sha256").update(readFileSync(supervisorBinary)).digest("hex")
   : undefined
+const hostKernelBinary = path.resolve(import.meta.dir, "../../../../kernel/target/debug/hz-kernel")
+const hostKernelAvailable = process.platform === "linux" && existsSync(hostKernelBinary)
+const hostKernelDigest = hostKernelAvailable
+  ? createHash("sha256").update(readFileSync(hostKernelBinary)).digest("hex")
+  : undefined
 const supervisorRuntime = Layer.succeed(
   SessionSupervisor.RuntimeConfig,
   SessionSupervisor.RuntimeConfig.of({
@@ -69,9 +77,31 @@ const supervisorRuntime = Layer.succeed(
       : undefined,
     installRoot: path.join(rustTestRoot, "install"),
     stateRoot: path.join(rustTestRoot, "state"),
+    hostKernelAssetPath: hostKernelAvailable ? hostKernelBinary : undefined,
+    hostKernelManifestJSON: hostKernelDigest
+      ? JSON.stringify({
+          schemaVersion: 1,
+          status: "available",
+          binaryName: "hz-kernel",
+          target: `linux-${process.arch}-gnu`,
+          sha256: hostKernelDigest,
+        })
+      : undefined,
+    hostKernelInstallRoot: path.join(rustTestRoot, "install-hz-kernel"),
+    hostKernelStateRoot: path.join(rustTestRoot, "state-hz-kernel"),
   }),
 )
-const layer = AppNodeBuilder.build(
+const localOnlyRuntime = Layer.succeed(
+  SessionSupervisor.RuntimeConfig,
+  SessionSupervisor.RuntimeConfig.of({
+    installRoot: path.join(rustTestRoot, "install"),
+    stateRoot: path.join(rustTestRoot, "state"),
+    hostKernelInstallRoot: path.join(rustTestRoot, "install-hz-kernel"),
+    hostKernelStateRoot: path.join(rustTestRoot, "state-hz-kernel"),
+  }),
+)
+const makeLayer = (runtime: typeof supervisorRuntime) =>
+  AppNodeBuilder.build(
   LayerNode.group([
     Vcs.node,
     Git.node,
@@ -91,11 +121,14 @@ const layer = AppNodeBuilder.build(
   ]),
   [
     [Database.node, testDatabaseNode],
-    [SessionSupervisor.runtimeConfigNode, supervisorRuntime],
+    [SessionSupervisor.runtimeConfigNode, runtime],
   ],
 )
+const layer = makeLayer(localOnlyRuntime)
+const hostKernelLayer = makeLayer(supervisorRuntime)
 const it = testEffect(layer)
-const withRustSupervisor = supervisorAvailable ? it.instance : it.instance.skip
+const hostKernelIt = testEffect(hostKernelLayer)
+const withRustSupervisor = supervisorAvailable && hostKernelAvailable ? hostKernelIt.instance : hostKernelIt.instance.skip
 const worktreeIt = testEffect(Layer.mergeAll(layer, testInstanceStoreLayer))
 afterEach(async () => {
   await resetDatabase(testDatabasePath)
@@ -106,8 +139,20 @@ afterAll(async () => {
 })
 
 const git = Effect.fn("VcsTest.git")(function* (cwd: string, args: string[]) {
-  const result = yield* Git.Service.use((git) => git.run(args, { cwd }))
-  if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr.toString("utf8")}`)
+  yield* Effect.promise(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        execFile(
+          "git",
+          ["-c", "core.autocrlf=false", "-c", "core.fsmonitor=false", "-c", "core.longpaths=true", ...args],
+          { cwd },
+          (error, _stdout, stderr) => {
+            if (error) reject(new Error(`git ${args.join(" ")} failed: ${stderr}`))
+            else resolve()
+          },
+        )
+      }),
+  )
 })
 
 const write = Effect.fn("VcsTest.write")(function* (file: string, content: string) {
@@ -157,6 +202,13 @@ const publishHeadChangeUntil = Effect.fn("VcsTest.publishHeadChangeUntil")(funct
 // ---------------------------------------------------------------------------
 
 describe("Vcs", () => {
+  it.instance("does not expose arbitrary Git subprocess execution", () =>
+    Effect.gen(function* () {
+      const service = yield* Git.Service
+      expect("run" in service).toBe(false)
+    }),
+  )
+
   it.instance(
     "branch() returns current branch name",
     () =>
@@ -426,6 +478,42 @@ describe("Vcs apply", () => {
 
         const sessions = yield* Session.Service
         const session = yield* sessions.create({ title: "guarded VCS apply" })
+        const supervisor = yield* SessionSupervisor.Service
+        const events = yield* EventV2Bridge.Service
+        const approvals = yield* Queue.unbounded<GuardApprovalRequest>()
+        const projectionError = yield* Deferred.make<string | undefined>()
+        const off = yield* events.listen((event) => {
+          if (event.type === GuardApprovalRequested.type) {
+            Queue.offerUnsafe(approvals, event.data as GuardApprovalRequest)
+          }
+          return Effect.void
+        })
+        yield* Effect.addFinalizer(() => off)
+        const approval = yield* Effect.forkChild(
+          Effect.gen(function* () {
+            const request = yield* Queue.take(approvals)
+            const missing: string[] = []
+            if (request.capabilityID !== "files.patch") missing.push("capabilityID")
+            if (request.sessionID !== session.id) missing.push("sessionID")
+            if (request.origin !== "session_batch") missing.push("origin")
+            if (request.source !== "core.tool_batch") missing.push("source")
+            if (request.policyID !== "workspace-write.local.v1") missing.push("policyID")
+            if (request.normalizedAction !== "files.patch") missing.push("normalizedAction")
+            if (request.argumentSummary?.status !== "available") missing.push("argumentSummary")
+            if (request.guaranteeAssessment?.status !== "assessed") missing.push("guaranteeAssessment")
+            if (request.allowEnabled !== true) missing.push("allowEnabled")
+            yield* Deferred.succeed(projectionError, missing.length ? `Guard projection missing: ${missing.join(", ")}` : undefined)
+            if (missing.length) {
+              yield* supervisor
+                .replyGuardApproval({ approvalID: request.approvalID, decision: "deny" })
+                .pipe(Effect.provideService(TrustedPrincipalContext, { principal: { kind: "host_os" } }))
+              return
+            }
+            yield* supervisor
+              .replyGuardApproval({ approvalID: request.approvalID, decision: "allow_once" })
+              .pipe(Effect.provideService(TrustedPrincipalContext, { principal: { kind: "host_os" } }))
+          }),
+        )
         const vcs = yield* init()
         const patch = [
           "diff --git a/apply.txt b/apply.txt",
@@ -437,7 +525,12 @@ describe("Vcs apply", () => {
           "+after",
           "",
         ].join("\n")
-        const applied = yield* vcs.apply({ sessionID: session.id, patch })
+        const appliedExit = yield* Effect.exit(vcs.apply({ sessionID: session.id, patch }))
+        const projectionIssue = yield* Deferred.await(projectionError)
+        expect(projectionIssue).toBeUndefined()
+        if (Exit.isFailure(appliedExit)) return yield* Effect.fail(Cause.squash(appliedExit.cause))
+        const applied = appliedExit.value
+        yield* Fiber.join(approval)
         expect(applied.applied).toBe(true)
         expect(yield* Effect.promise(() => fs.readFile(file, "utf8"))).toBe("after\n")
 
@@ -447,5 +540,6 @@ describe("Vcs apply", () => {
         expect(yield* Effect.promise(() => fs.readFile(file, "utf8"))).toBe("external\n")
       }),
     { git: true },
+    20_000,
   )
 })

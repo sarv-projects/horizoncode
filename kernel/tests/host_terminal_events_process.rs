@@ -2,8 +2,8 @@
 
 use horizoncode_kernel::messagepack::Value;
 use horizoncode_kernel::protocol::{
-    FEATURE_EFFECTS_V2, KernelHelloV1, KernelStartupStatusV1, RpcMessageV1, RpcOutcomeV1,
-    RpcRequestV1, read_message, write_message,
+    AuthenticatedPrincipalV1, FEATURE_EFFECTS_V2, KernelHelloV1, KernelStartupStatusV1,
+    RpcMessageV1, RpcOutcomeV1, RpcRequestV1, read_message, write_message,
 };
 use horizoncode_kernel::unix_peer::{UnixPeerPolicy, connect_authenticated};
 use std::collections::BTreeMap;
@@ -70,6 +70,41 @@ fn text<'a>(value: &'a Value, key: &str) -> &'a str {
     value
 }
 
+fn host_process_with_argv0_running(marker: &str) -> bool {
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            return false;
+        };
+        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return false;
+        };
+        let Some((_, fields)) = stat.rsplit_once(") ") else {
+            return false;
+        };
+        let mut fields = fields.split_whitespace();
+        let Some(state) = fields.next() else {
+            return false;
+        };
+        if state == "Z" || state == "X" {
+            return false;
+        }
+        fs::read(format!("/proc/{pid}/cmdline"))
+            .ok()
+            .is_some_and(|cmdline| {
+                cmdline
+                    .split(|byte| *byte == 0)
+                    .any(|argument| argument == marker.as_bytes())
+            })
+    })
+}
+
 fn rpc(
     owner_epoch: u64,
     incarnation: &str,
@@ -105,18 +140,22 @@ fn request(
     operation: &str,
     body: Value,
 ) -> Value {
-    write_message(
-        stream,
-        &RpcMessageV1::Request(Box::new(rpc(
-            owner_epoch,
-            incarnation,
-            id,
-            service,
-            operation,
-            body,
-        ))),
-    )
-    .unwrap();
+    let message = rpc(owner_epoch, incarnation, id, service, operation, body);
+    if operation == "register_location" {
+        write_message(
+            stream,
+            &RpcMessageV1::AuthenticatedRequest {
+                request: Box::new(message),
+                principal: AuthenticatedPrincipalV1::ServerAuth {
+                    subject: "terminal-events-user".to_owned(),
+                },
+                context: None,
+            },
+        )
+        .unwrap();
+    } else {
+        write_message(stream, &RpcMessageV1::Request(Box::new(message))).unwrap();
+    }
     match read_message(stream).unwrap().unwrap() {
         RpcMessageV1::Response(response) => {
             assert_eq!(response.outcome, RpcOutcomeV1::Ok, "{:?}", response.error);
@@ -127,7 +166,7 @@ fn request(
 }
 
 #[test]
-fn authenticated_hz_kernel_rejects_terminal_start_without_tree_cleanup() {
+fn authenticated_hz_kernel_terminal_start_cleans_escaped_processes_on_owner_loss() {
     let directory = Directory::new();
     let state = directory.0.join("state");
     let workspace = directory.0.join("workspace");
@@ -242,10 +281,12 @@ fn authenticated_hz_kernel_rejects_terminal_start_without_tree_cleanup() {
     let shell_profile_id = text(&profile_list[0], "shellProfileID").to_owned();
     let executable = text(&profile_list[0], "executable").to_owned();
     let terminal_id = "pty_auth_events_1";
-    let marker_path = workspace.join("authenticated-start-marker");
+    let pid_path = workspace.join("authenticated-start-pid");
+    let process_marker = format!("hz-terminal-owner-loss-{}", std::process::id());
     let shell_command = format!(
-        "/usr/bin/setsid /bin/sh -c 'touch \"{}\"; sleep 60'",
-        marker_path.display(),
+        "/usr/bin/setsid /bin/bash -c 'echo $$ > \"{}\"; exec -a {} sleep 60'",
+        pid_path.display(),
+        process_marker,
     );
     let arguments = map([
         ("terminalID", string(terminal_id)),
@@ -320,67 +361,33 @@ fn authenticated_hz_kernel_rejects_terminal_start_without_tree_cleanup() {
     .unwrap();
     let started = match read_message(&mut stream).unwrap().unwrap() {
         RpcMessageV1::Response(response) => response,
-        other => panic!("expected failed terminal start response, got {other:?}"),
+        other => panic!("expected terminal start response, got {other:?}"),
     };
-    assert_eq!(started.outcome, RpcOutcomeV1::Error);
-    let error = started.error.as_ref().unwrap();
-    assert_eq!(error.code, "UNAVAILABLE");
+    assert_eq!(started.outcome, RpcOutcomeV1::Ok, "{:?}", started.error);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !pid_path.exists() {
+        assert!(Instant::now() < deadline, "terminal child did not start");
+        thread::sleep(Duration::from_millis(10));
+    }
+    let _pid: u32 = fs::read_to_string(&pid_path)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
     assert!(
-        error
-            .message
-            .contains("cannot guarantee process-tree cleanup")
-    );
-    assert!(
-        !marker_path.exists(),
-        "fail-closed start must not spawn the PTY command"
+        host_process_with_argv0_running(&process_marker),
+        "unique escaped child argv must be alive before owner loss"
     );
 
-    write_message(
-        &mut stream,
-        &RpcMessageV1::Request(Box::new(rpc(
-            owner_epoch,
-            incarnation,
-            "retry_start_terminal",
-            "terminal.v1",
-            "start",
-            start_body,
-        ))),
-    )
-    .unwrap();
-    let retry = match read_message(&mut stream).unwrap().unwrap() {
-        RpcMessageV1::Response(response) => response,
-        other => panic!("expected retry response, got {other:?}"),
-    };
-    assert_eq!(
-        retry.error.as_ref().map(|error| error.code.as_str()),
-        Some("UNAVAILABLE"),
-        "the preflight refusal must not consume the one-use lease"
-    );
-    assert!(!marker_path.exists());
-    write_message(
-        &mut stream,
-        &RpcMessageV1::Request(Box::new(rpc(
-            owner_epoch,
-            incarnation,
-            "status_after_refusal",
-            "terminal.v1",
-            "status",
-            map([
-                ("terminalID", string(terminal_id)),
-                ("generation", Value::Unsigned(1)),
-            ]),
-        ))),
-    )
-    .unwrap();
-    match read_message(&mut stream).unwrap().unwrap() {
-        RpcMessageV1::Response(response) => {
-            assert_eq!(response.outcome, RpcOutcomeV1::Error);
-            assert_eq!(
-                response.error.as_ref().map(|error| error.code.as_str()),
-                Some("effect_not_found")
-            );
-        }
-        other => panic!("expected not-found status after refusal, got {other:?}"),
+    child.0.kill().unwrap();
+    child.0.wait().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while host_process_with_argv0_running(&process_marker) {
+        assert!(
+            Instant::now() < deadline,
+            "unique escaped child argv survived owner loss"
+        );
+        thread::sleep(Duration::from_millis(10));
     }
     let _ = stream.shutdown();
 }

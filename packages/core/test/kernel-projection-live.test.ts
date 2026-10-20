@@ -397,6 +397,7 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
               locationRef,
               lease: admission.lease,
               content,
+              trustedPrincipal: { kind: "server_auth", subject: "projection-test" },
             })
             expect(receipt.effectID).toBe(admission.lease.effectID)
             expect(receipt.target).toBe(target)
@@ -410,6 +411,7 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
                 locationRef,
                 lease: admission.lease,
                 content,
+                trustedPrincipal: { kind: "server_auth", subject: "projection-test" },
               }),
             )
             expect(Exit.isFailure(replay)).toBe(true)
@@ -653,6 +655,7 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
                 locationRef: { directory: AbsolutePath.make(workspace) },
                 lease: { effectID, capabilityLeaseDigest: `blake3:${"0".repeat(64)}` },
                 content,
+                trustedPrincipal: { kind: "server_auth", subject: "projection-test" },
               }),
             )
             expect(Exit.isFailure(replay)).toBe(true)

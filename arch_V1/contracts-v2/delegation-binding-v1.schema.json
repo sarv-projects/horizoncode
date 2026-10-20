@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/delegation-binding-v1",
+  "title": "DelegationBindingV1",
+  "description": "Private Rust-owned immutable authority binding minted from accepted Goal, Task, live Attempt and current leases. No request body may establish these fields.",
+  "$comment": "The u64-positive-decimal-string format is enforced by the strict Rust decoder, including canonical spelling, nonzero values, and the full u64::MAX range. capabilityCeilingDigest is SHA-256 of the canonical sorted effective capability ceiling, not a lease digest; admission fails when that ceiling cannot be resolved.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runID",
+    "taskID",
+    "attemptID",
+    "parentExecutionID",
+    "childExecutionID",
+    "acceptedSpecDigest",
+    "profileID",
+    "profileRevision",
+    "profileDigest",
+    "criteriaIDs",
+    "workspaceLeaseID",
+    "sourceRevision",
+    "capabilityCeilingDigest",
+    "contextSelectionDigest",
+    "budgetLeaseID",
+    "resourceLeaseIDs",
+    "ownerEpoch",
+    "admittedManagedRevision"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runID": { "$ref": "#/$defs/id" },
+    "taskID": { "$ref": "#/$defs/id" },
+    "attemptID": { "$ref": "#/$defs/id" },
+    "parentExecutionID": { "$ref": "#/$defs/id" },
+    "childExecutionID": { "$ref": "#/$defs/id" },
+    "acceptedSpecDigest": { "$ref": "#/$defs/blake3" },
+    "profileID": { "$ref": "#/$defs/id" },
+    "profileRevision": { "$ref": "#/$defs/counter" },
+    "profileDigest": { "$ref": "#/$defs/blake3" },
+    "criteriaIDs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/id" }
+    },
+    "workspaceLeaseID": { "$ref": "#/$defs/id" },
+    "sourceRevision": { "$ref": "#/$defs/blake3" },
+    "capabilityCeilingDigest": {
+      "$ref": "#/$defs/sha256",
+      "description": "SHA-256 digest of the canonical sorted effective capability ceiling; not a lease digest. Admission fails if the ceiling cannot be resolved."
+    },
+    "contextSelectionDigest": { "$ref": "#/$defs/blake3" },
+    "budgetLeaseID": { "$ref": "#/$defs/id" },
+    "resourceLeaseIDs": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/id" }
+    },
+    "ownerEpoch": { "$ref": "#/$defs/counter" },
+    "admittedManagedRevision": { "$ref": "#/$defs/counter" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "counter": {
+      "type": "string",
+      "maxLength": 20,
+      "format": "u64-positive-decimal-string",
+      "pattern": "^(0|[1-9][0-9]*)$"
+    },
+    "blake3": {
+      "type": "string",
+      "pattern": "^blake3:[0-9a-f]{64}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

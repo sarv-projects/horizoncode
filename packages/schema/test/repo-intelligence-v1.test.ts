@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
 import * as Composition from "../src/composition-v1"
 import * as RepoIntel from "../src/repo-intelligence-v1"
+import repoStructureFixture from "../../../arch_V1/contracts-v2/fixtures/repo-structure-page-v1.json" with { type: "json" }
 
 const digest = Schema.decodeUnknownSync(Composition.Digest)(
   "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -142,6 +143,13 @@ describe("Horizon repository-intelligence v1 contracts", () => {
       RepoIntel.RepoGenerationV1,
       RepoIntel.RepoQueryV1,
       RepoIntel.RepoQueryResultV1,
+      RepoIntel.RepoNodeRefV1,
+      RepoIntel.RepoStructureQueryV1,
+      RepoIntel.RepoStructureCoverageV1,
+      RepoIntel.RepoStructureFallbackV1,
+      RepoIntel.RepoStructurePageV1,
+      RepoIntel.RepoGenerationRequestV1,
+      RepoIntel.RepoGenerationPinV1,
     ]
     const identifiers = schemas.map((schema) => schema.ast.annotations?.identifier)
 
@@ -154,6 +162,13 @@ describe("Horizon repository-intelligence v1 contracts", () => {
       "Horizon.RepoIntelligenceV1.RepoGenerationV1",
       "Horizon.RepoIntelligenceV1.RepoQueryV1",
       "Horizon.RepoIntelligenceV1.RepoQueryResultV1",
+      "Horizon.RepoIntelligenceV1.RepoNodeRefV1",
+      "Horizon.RepoIntelligenceV1.RepoStructureQueryV1",
+      "Horizon.RepoIntelligenceV1.RepoStructureCoverageV1",
+      "Horizon.RepoIntelligenceV1.RepoStructureFallbackV1",
+      "Horizon.RepoIntelligenceV1.RepoStructurePageV1",
+      "Horizon.RepoIntelligenceV1.RepoGenerationRequestV1",
+      "Horizon.RepoIntelligenceV1.RepoGenerationPinV1",
     ])
     expect(new Set(identifiers).size).toBe(identifiers.length)
 
@@ -232,5 +247,209 @@ describe("Horizon repository-intelligence v1 contracts", () => {
         digest,
       }),
     ).toThrow()
+  })
+
+  test("validates generation-bound RepoIntel node refs and bounded structure pages", () => {
+    const nodeRef = {
+      workspaceBinding: "workspace-binding",
+      sourceGeneration: digest,
+      sourceRevision: digest,
+      pathRef: "src/example.ts",
+      fileDigest: digest,
+      nodeId: "node-17",
+      nodeKind: "function",
+      symbol: "example",
+      byteRange: { start: 4, end: 42 },
+      parserId: "typescript",
+      parserVersion: "5.9.0",
+    } as const
+    const query = {
+      schemaVersion: 1,
+      messageType: "query",
+      queryId: "query-1",
+      rootRef: ".",
+      sourceGeneration: digest,
+      selector: { symbols: ["example"], nodeRefs: [nodeRef], includeCallers: false },
+      maxNodes: 40,
+      maxBytes: 32_768,
+      maxDepth: 8,
+      deadline: "2026-10-19T12:30:45.123Z",
+    } as const
+    const page = {
+      schemaVersion: 1,
+      messageType: "page",
+      queryId: query.queryId,
+      workspaceBinding: "workspace-binding",
+      sourceGeneration: query.sourceGeneration,
+      sourceRevision: digest,
+      sourceKind: "parser",
+      status: "CURRENT",
+      freshness: "current",
+      completeness: "complete",
+      coverage: { files: 12, nodes: 40, bytes: 32_768 },
+      nodes: [nodeRef],
+      nextCursor: "opaque-owner-bound-cursor",
+    } as const
+
+    roundTrip(RepoIntel.RepoNodeRefV1, nodeRef)
+    roundTrip(RepoIntel.RepoStructureQueryV1, query)
+    roundTrip(RepoIntel.RepoStructurePageV1, page)
+    const decodedWithForgedPrincipal = Schema.decodeUnknownSync(RepoIntel.RepoStructureQueryV1)({
+      ...query,
+      principal: { id: "forged" },
+    })
+    expect(decodedWithForgedPrincipal).not.toHaveProperty("principal")
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructureQueryV1)({ ...query, maxBytes: 32_768 * 32 })).toThrow()
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoNodeRefV1)({
+      ...nodeRef,
+      byteRange: { start: 42, end: 4 },
+    })).toThrow()
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)({
+      ...page,
+      freshness: "current",
+      completeness: "unknown-value",
+    })).toThrow()
+
+    expect(Schema.decodeUnknownSync(RepoIntel.RepoStructureQueryV1)(repoStructureFixture.query)).toMatchObject({
+      queryId: "query-1",
+      sourceGeneration: digest,
+    })
+    expect(Schema.decodeUnknownSync(RepoIntel.RepoStructureQueryV1)(repoStructureFixture.overlayQuery)).toMatchObject({
+      overlayRef: "ovl_0123456789abcdef",
+    })
+    expect(Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)(repoStructureFixture.overlayPage)).toMatchObject({
+      overlayDigest: "blake3:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+      nodes: [{ overlayDigest: "blake3:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789" }],
+    })
+    const fixturePage = Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)(repoStructureFixture.page)
+    expect(fixturePage).toMatchObject({
+      sourceKind: "parser",
+      completeness: "complete",
+    })
+    expect(fixturePage.nodes).toHaveLength(1)
+    expect(fixturePage.nodes[0]?.pathRef).toBe("src/example.ts")
+    const unavailablePage = Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)(repoStructureFixture.unavailablePage)
+    expect(unavailablePage).toMatchObject({
+      status: "UNAVAILABLE",
+      freshness: "unknown",
+      completeness: "unavailable",
+      sourceKind: "none",
+      fallback: { reason: "parser_unsupported", sourceKind: "none" },
+    })
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)({
+      ...repoStructureFixture.unavailablePage,
+      sourceKind: "lexical",
+    })).toThrow()
+  })
+
+  test("binds opaque overlay references to page and node provenance without carrying content", () => {
+    const overlayRef = "ovl_0123456789abcdef"
+    const overlayDigest = Schema.decodeUnknownSync(Composition.Digest)(
+      "blake3:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+    )
+    const query = {
+      schemaVersion: 1,
+      messageType: "query",
+      queryId: "overlay-query",
+      rootRef: ".",
+      sourceGeneration: digest,
+      overlayRef,
+      selector: { symbols: ["example"] },
+      maxNodes: 10,
+      maxBytes: 16_384,
+      maxDepth: 4,
+      deadline: "2026-10-19T12:30:45.123Z",
+    } as const
+    const node = {
+      workspaceBinding: "workspace-binding",
+      sourceGeneration: digest,
+      sourceRevision: digest,
+      overlayDigest,
+      pathRef: "src/example.ts",
+      fileDigest: digest,
+      nodeId: "overlay-node",
+      nodeKind: "function",
+      symbol: "example",
+      byteRange: { start: 0, end: 7 },
+      parserId: "typescript",
+      parserVersion: "5.9.0",
+    } as const
+    const page = {
+      schemaVersion: 1,
+      messageType: "page",
+      queryId: query.queryId,
+      workspaceBinding: "workspace-binding",
+      sourceGeneration: digest,
+      sourceRevision: digest,
+      overlayDigest,
+      sourceKind: "parser",
+      status: "CURRENT",
+      freshness: "current",
+      completeness: "complete",
+      coverage: { files: 1, nodes: 1, bytes: 7 },
+      nodes: [node],
+    } as const
+
+    roundTrip(RepoIntel.RepoOverlayRefV1, overlayRef)
+    roundTrip(RepoIntel.RepoStructureQueryV1, query)
+    roundTrip(RepoIntel.RepoStructurePageV1, page)
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoOverlayRefV1)("not-an-opaque-overlay-ref")).toThrow()
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)({
+      ...page,
+      overlayDigest: digest,
+    })).toThrow("every node overlay digest must match the page overlay digest")
+    const { overlayDigest: _nodeOverlayDigest, ...nodeWithoutOverlayDigest } = node
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)({
+      ...page,
+      nodes: [nodeWithoutOverlayDigest],
+    })).toThrow("every node overlay digest must match the page overlay digest")
+    const { overlayDigest: _overlayDigest, ...pageWithoutOverlayDigest } = page
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)(pageWithoutOverlayDigest))
+      .toThrow("node overlay provenance requires a page overlay digest")
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructureQueryV1)({
+      ...query,
+      overlayRef: "../foreign-session",
+      overlay: { contents: "untrusted" },
+    })).toThrow()
+  })
+
+  test("validates authenticated RepoIntel generation acquisition without caller authority", () => {
+    const ensure = {
+      schemaVersion: 1,
+      messageType: "ensure_generation",
+      requestId: "request-1",
+      rootRef: ".",
+      maxFiles: 512,
+      maxBytes: 4_194_304,
+      maxFileBytes: 262_144,
+      deadline: "2026-10-19T12:30:45.123Z",
+    } as const
+    const pin = {
+      schemaVersion: 1,
+      messageType: "generation",
+      requestId: ensure.requestId,
+      workspaceBinding: "workspace-binding",
+      sourceGeneration: digest,
+      sourceRevision: digest,
+      sourceKind: "lexical",
+      coverage: { files: 27, bytes: 128_000 },
+      expiresAt: "2026-10-19T12:35:45.123Z",
+    } as const
+
+    roundTrip(RepoIntel.RepoGenerationRequestV1, ensure)
+    roundTrip(RepoIntel.RepoGenerationPinV1, pin)
+    const decoded = Schema.decodeUnknownSync(RepoIntel.RepoGenerationRequestV1)({
+      ...ensure,
+      principal: "caller-asserted",
+      locationID: "caller-asserted",
+      readScope: digest,
+    })
+    expect(decoded).not.toHaveProperty("principal")
+    expect(decoded).not.toHaveProperty("locationID")
+    expect(decoded).not.toHaveProperty("readScope")
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoGenerationRequestV1)({ ...ensure, maxFiles: 0 })).toThrow()
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoGenerationRequestV1)({ ...ensure, maxBytes: 67_108_865 })).toThrow()
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoGenerationPinV1)({ ...pin, coverage: { files: -1, bytes: 0 } })).toThrow()
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoGenerationPinV1)({ ...pin, sourceRevision: "not-a-digest" })).toThrow()
   })
 })

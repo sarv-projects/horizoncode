@@ -18,6 +18,8 @@ export type DecodedCredentials = {
 export class Config extends ConfigService.Service<Config>()("@opencode/ServerAuthConfig", {
   password: EffectConfig.string("OPENCODE_SERVER_PASSWORD").pipe(EffectConfig.option),
   username: EffectConfig.string("OPENCODE_SERVER_USERNAME").pipe(EffectConfig.withDefault("opencode")),
+  reviewerPassword: EffectConfig.string("OPENCODE_SERVER_REVIEWER_PASSWORD").pipe(EffectConfig.option),
+  reviewerUsername: EffectConfig.string("OPENCODE_SERVER_REVIEWER_USERNAME").pipe(EffectConfig.option),
 }) {}
 
 export type Info = Context.Service.Shape<typeof Config>
@@ -35,11 +37,44 @@ export function required(config: Info) {
 }
 
 export function authorized(credentials: DecodedCredentials, config: Info) {
-  return (
+  const primary =
     Option.isSome(config.password) &&
     credentials.username === config.username &&
     Redacted.value(credentials.password) === config.password.value
+  return primary || reviewerAuthorized(credentials, config)
+}
+
+/** The optional reviewer credential is valid only as a complete, distinct pair
+ * alongside the normal ServerAuth account. This does not create an identity from
+ * a request body: middleware returns the username that actually authenticated.
+ */
+export function reviewerConfigured(config: Info) {
+  return (
+    required(config) &&
+    Option.isSome(config.reviewerUsername) &&
+    Option.isSome(config.reviewerPassword) &&
+    config.reviewerUsername.value.length > 0 &&
+    config.reviewerPassword.value.length > 0 &&
+    config.reviewerUsername.value !== config.username &&
+    Option.isSome(config.password) &&
+    config.reviewerPassword.value !== config.password.value
   )
+}
+
+function reviewerAuthorized(credentials: DecodedCredentials, config: Info) {
+  return (
+    reviewerConfigured(config) &&
+    Option.isSome(config.reviewerUsername) &&
+    Option.isSome(config.reviewerPassword) &&
+    credentials.username === config.reviewerUsername.value &&
+    Redacted.value(credentials.password) === config.reviewerPassword.value
+  )
+}
+
+export function authenticatedUsername(credentials: DecodedCredentials, config: Info) {
+  if (!authorized(credentials, config)) return undefined
+  if (reviewerAuthorized(credentials, config)) return Option.getOrUndefined(config.reviewerUsername)
+  return config.username
 }
 
 export function header(credentials?: Credentials) {

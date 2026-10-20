@@ -6,7 +6,6 @@ import { isRecord } from "@/util/record"
 import { asSchema, type ModelMessage, type Tool } from "ai"
 import { Cause, Effect, FiberSet, Queue } from "effect"
 import * as Stream from "effect/Stream"
-import { FetchHttpClient } from "effect/unstable/http"
 import {
   LLMRequest,
   Tool as NativeTool,
@@ -20,7 +19,7 @@ import type { LLMClientShape } from "@opencode-ai/llm/route"
 import { LLMNative } from "./native-request"
 
 export type RuntimeStatus =
-  | { readonly type: "supported"; readonly apiKey: string; readonly baseURL?: string }
+  | { readonly type: "supported"; readonly baseURL?: string }
   | { readonly type: "unsupported"; readonly reason: string }
 export type StreamResult =
   | { readonly type: "supported"; readonly stream: Stream.Stream<LLMEvent, unknown> }
@@ -44,36 +43,30 @@ type StreamInput = {
 }
 
 export function status(input: Pick<StreamInput, "model" | "provider" | "auth">): RuntimeStatus {
-  return statusWithFetch(input, providerFetch(input))
+  return statusWithFetch(input)
 }
 
-function statusWithFetch(
-  input: Pick<StreamInput, "model" | "provider" | "auth">,
-  fetch: typeof globalThis.fetch | undefined,
-): RuntimeStatus {
+function statusWithFetch(input: Pick<StreamInput, "model" | "provider" | "auth">): RuntimeStatus {
   const providerID = input.model.providerID
   if (providerID !== "openai" && providerID !== "anthropic" && !providerID.startsWith("opencode"))
     return { type: "unsupported", reason: "provider is not openai, opencode, or anthropic" }
   const npm = input.model.api.npm
   if (npm !== "@ai-sdk/openai" && npm !== "@ai-sdk/openai-compatible" && npm !== "@ai-sdk/anthropic")
     return { type: "unsupported", reason: "provider package is not OpenAI, OpenAI-compatible, or Anthropic" }
-  if (input.auth?.type === "oauth" && !(input.provider.id === "openai" && fetch)) {
-    return { type: "unsupported", reason: "OAuth auth requires a provider fetch override" }
+  // This runtime must not retain provider credentials in RuntimeStatus or pass
+  // strings into SDK model/provider closures. It becomes available for
+  // credentialed routes only after a trusted SecretRef/lease producer is
+  // connected to the request-scoped transport auth boundary.
+  if (input.auth || typeof input.provider.options.apiKey === "string" || input.provider.key) {
+    return { type: "unsupported", reason: "request-scoped SecretBroker auth is unavailable" }
   }
-
-  const apiKey = typeof input.provider.options.apiKey === "string" ? input.provider.options.apiKey : input.provider.key
-  if (!apiKey) return { type: "unsupported", reason: "API key is not configured" }
-
-  return {
-    type: "supported",
-    apiKey,
-    baseURL: typeof input.provider.options.baseURL === "string" ? input.provider.options.baseURL : undefined,
-  }
+  // Credentialless routes may be added explicitly in a later capability
+  // matrix. Current supported native providers require authentication.
+  return { type: "unsupported", reason: "API key is not configured" }
 }
 
 export function stream(input: StreamInput): StreamResult {
-  const fetch = providerFetch(input)
-  const current = statusWithFetch(input, fetch)
+  const current = statusWithFetch(input)
   if (current.type === "unsupported") return current
   if (Object.keys(input.tools).length > 0)
     return {
@@ -94,7 +87,6 @@ export function stream(input: StreamInput): StreamResult {
   const tools = nativeTools(input.tools, input)
   const request = LLMNative.request({
     model: input.model,
-    apiKey: current.apiKey,
     baseURL: current.baseURL,
     messages: ProviderTransform.message(input.messages, input.model, input.providerOptions ?? {}),
     toolChoice: input.toolChoice,
@@ -146,15 +138,8 @@ export function stream(input: StreamInput): StreamResult {
 
   return {
     ...current,
-    stream: fetch ? stream.pipe(Stream.provideService(FetchHttpClient.Fetch, fetch)) : stream,
+    stream,
   }
-}
-
-function providerFetch(input: Pick<StreamInput, "provider" | "auth">): typeof globalThis.fetch | undefined {
-  if (input.provider.id !== "openai" || input.auth?.type !== "oauth") return undefined
-  const value: unknown = input.provider.options.fetch
-  if (typeof value !== "function") return undefined
-  return value as typeof globalThis.fetch
 }
 
 function providerHeaders(value: unknown): Record<string, string> | undefined {

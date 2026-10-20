@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
-import { Context, Effect, FiberMap, Iterable, Layer, Schema, Stream } from "effect"
+import { Context, Effect, FiberMap, Iterable, Layer, Option, Schema, Stream } from "effect"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { FetchHttpClient, HttpBody, HttpClient, HttpClientError, HttpClientRequest } from "effect/unstable/http"
 import { Database } from "@opencode-ai/core/database/database"
@@ -40,6 +40,7 @@ import { InstanceStore } from "@/project/instance-store"
 import { WorkspaceAdapterRuntime } from "./workspace-adapter-runtime"
 import { AppNodeBuilderV1 } from "@/effect/app-node-builder-v1"
 import { WorkspaceEvent } from "@opencode-ai/schema/workspace-event"
+import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 
 export const Info = Schema.Struct({
   ...WorkspaceInfoSchema.fields,
@@ -786,6 +787,13 @@ const layer = Layer.effect(
               }),
           })
           if (operations.length) {
+            const trustedPrincipal = yield* Effect.serviceOption(TrustedPrincipalContext)
+            if (Option.isNone(trustedPrincipal)) {
+              return yield* new WorkspaceCopyChangesUnavailableError({
+                sessionID: input.sessionID,
+                message: "Cannot apply workspace changes without an authenticated principal.",
+              })
+            }
             yield* runState.assertNotBusy(input.sessionID).pipe(
               Effect.mapError(
                 () =>
@@ -813,7 +821,7 @@ const layer = Layer.effect(
                     workspaceRoot: targetRoot,
                     turnContextDigest,
                     operations,
-                  }),
+                  }).pipe(Effect.provideService(TrustedPrincipalContext, trustedPrincipal.value)),
                 ),
               ),
             )

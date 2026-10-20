@@ -11,6 +11,14 @@ const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
 const BoundedList = <S extends Schema.Top>(item: S) => Schema.Array(item).check(Schema.isMaxLength(4096))
 const unique = <A>(values: readonly A[]) => new Set(values).size === values.length
+const CapabilityId = Identifier.check(Schema.isPattern(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/))
+const CapabilityCeiling = Schema.Array(CapabilityId)
+  .check(Schema.isMaxLength(64))
+  .check(Schema.makeFilter((values) =>
+    values.every((value, index) => index === 0 || (values[index - 1] ?? "") < value)
+      ? undefined
+      : "capability ceiling IDs must be sorted and unique",
+  ))
 
 export const ProfileId = Identifier.annotate({ identifier: "Horizon.AgentProfileV2.ProfileId" }).pipe(
   Schema.brand("Horizon.AgentProfileV2.ProfileId"),
@@ -86,8 +94,7 @@ export const Limits = Schema.Struct({
   wallTimeMs: Schema.optional(PositiveInt),
 }).annotate({ identifier: "Horizon.AgentProfileV2.Limits" })
 
-export interface AgentProfileV2 extends Schema.Schema.Type<typeof AgentProfileV2> {}
-export const AgentProfileV2 = Schema.Struct({
+const AgentProfileDefinitionFields = {
   schemaVersion: Schema.Literal(2),
   profileId: ProfileId,
   revision: Revision,
@@ -127,23 +134,45 @@ export const AgentProfileV2 = Schema.Struct({
   memoryPolicy: Schema.Literals(["none", "project_read", "profile_read", "reviewed_write"]),
   isolation: Schema.Literals(["read_only", "workspace", "worktree", "external"]),
   lifecycleHooks: BoundedList(LifecycleHook),
-  permissionCeilingDigest: Composition.Digest,
+  /** Canonical capability IDs only; Guard still checks runtime availability and leases. */
+  capabilityCeiling: CapabilityCeiling,
   limits: Limits,
   maxParallelChildren: NonNegativeInt,
   enabled: Schema.Boolean,
+}
+
+const validateProfileDefinition = (profile: {
+  roles: readonly unknown[]
+  allowedSkillIds: readonly unknown[]
+  deniedSkillIds: readonly unknown[]
+  allowedMcpServers: readonly unknown[]
+  allowedMcpToolPatterns: readonly unknown[]
+  allowedSubagentIds: readonly unknown[]
+  deniedSubagentIds: readonly unknown[]
+  maxParallelChildren: number
+  limits: { maxActiveChildren: number }
+}) => {
+  if (profile.roles.length === 0 || !unique(profile.roles)) return "roles must be non-empty and unique"
+  if (!unique(profile.allowedSkillIds) || !unique(profile.deniedSkillIds)) return "skill IDs must be unique"
+  if (!unique(profile.allowedMcpServers) || !unique(profile.allowedMcpToolPatterns)) return "MCP entries must be unique"
+  if (!unique(profile.allowedSubagentIds) || !unique(profile.deniedSubagentIds)) return "subagent IDs must be unique"
+  if (profile.maxParallelChildren > profile.limits.maxActiveChildren) return "parallel children exceed active-child limit"
+  return undefined
+}
+
+export interface AgentProfileDefinitionV2 extends Schema.Schema.Type<typeof AgentProfileDefinitionV2> {}
+export const AgentProfileDefinitionV2 = Schema.Struct(AgentProfileDefinitionFields)
+  .annotate({ identifier: "Horizon.AgentProfileV2.AgentProfileDefinitionV2" })
+  .check(Schema.makeFilter(validateProfileDefinition))
+
+export interface AgentProfileV2 extends Schema.Schema.Type<typeof AgentProfileV2> {}
+export const AgentProfileV2 = Schema.Struct({
+  ...AgentProfileDefinitionFields,
+  permissionCeilingDigest: Composition.Digest,
   definitionDigest: Composition.Digest,
 })
   .annotate({ identifier: "Horizon.AgentProfileV2.AgentProfileV2" })
-  .check(
-    Schema.makeFilter((profile) => {
-      if (profile.roles.length === 0 || !unique(profile.roles)) return "roles must be non-empty and unique"
-      if (!unique(profile.allowedSkillIds) || !unique(profile.deniedSkillIds)) return "skill IDs must be unique"
-      if (!unique(profile.allowedMcpServers) || !unique(profile.allowedMcpToolPatterns)) return "MCP entries must be unique"
-      if (!unique(profile.allowedSubagentIds) || !unique(profile.deniedSubagentIds)) return "subagent IDs must be unique"
-      if (profile.maxParallelChildren > profile.limits.maxActiveChildren) return "parallel children exceed active-child limit"
-      return undefined
-    }),
-  )
+  .check(Schema.makeFilter(validateProfileDefinition))
 
 
 export const ProfileRevisionRef = Schema.Struct({
@@ -152,6 +181,26 @@ export const ProfileRevisionRef = Schema.Struct({
   definitionDigest: Composition.Digest,
 }).annotate({ identifier: "Horizon.AgentProfileV2.ProfileRevisionRef" })
 export type ProfileRevisionRef = typeof ProfileRevisionRef.Type
+
+/** Canonical machine contract. The root decodes Core input; digest-bearing forms are projections only. */
+export const jsonSchemaDocument = () => {
+  const contracts = [AgentProfileDefinitionV2, AgentProfileV2, ProfileRevisionRef]
+  const definitions = Object.assign({}, ...contracts.map((schema) => Schema.toJsonSchemaDocument(schema).definitions))
+  const definition = Schema.toJsonSchemaDocument(AgentProfileDefinitionV2)
+  const resolved = Schema.toJsonSchemaDocument(AgentProfileV2)
+  const revisionRef = Schema.toJsonSchemaDocument(ProfileRevisionRef)
+  definitions.AgentProfileDefinitionV2 = definition.schema
+  definitions.AgentProfileV2 = resolved.schema
+  definitions.ProfileRevisionRef = revisionRef.schema
+  return {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    $id: "horizon://schemas/agent-profile-v2",
+    title: "AgentProfileDefinitionV2",
+    description: "Core-owned bounded definition. Both digest fields are forbidden in input; Rust computes resolved digests.",
+    $ref: "#/$defs/AgentProfileDefinitionV2",
+    $defs: definitions,
+  }
+}
 
 export interface SelectedRuntime {
   readonly providerId: string

@@ -130,6 +130,7 @@ const locationServices = buildLocationServiceMap([
 ])
 afterAll(() => rmSync(observerTestRoot, { recursive: true, force: true }))
 const observerBinary = path.resolve(import.meta.dir, "../../../kernel/target/debug/session_supervisor")
+const hostKernelBinary = path.resolve(import.meta.dir, "../../../kernel/target/debug/hz-kernel")
 const observerRuntime = Layer.succeed(
   SessionSupervisor.RuntimeConfig,
   SessionSupervisor.RuntimeConfig.of({
@@ -143,6 +144,16 @@ const observerRuntime = Layer.succeed(
     }),
     installRoot: path.join(observerTestRoot, "install"),
     stateRoot: path.join(observerTestRoot, "state"),
+    hostKernelAssetPath: hostKernelBinary,
+    hostKernelManifestJSON: JSON.stringify({
+      schemaVersion: 1,
+      status: "available",
+      binaryName: "hz-kernel",
+      target: `linux-${process.arch}-gnu`,
+      sha256: createHash("sha256").update(readFileSync(hostKernelBinary)).digest("hex"),
+    }),
+    hostKernelInstallRoot: path.join(observerTestRoot, "host-kernel-install"),
+    hostKernelStateRoot: path.join(observerTestRoot, "host-kernel-state"),
   }),
 )
 
@@ -372,19 +383,44 @@ describe("SessionRunnerLLM recorded", () => {
         JSON.stringify(staleCursor),
         { mode: 0o600 },
       )
-      yield* Effect.scoped(
+      const resnapshotRequired = yield* Effect.scoped(
         Effect.gen(function* () {
-          const turnComplete = yield* Ref.make(true)
-          const supervisorReady = yield* Deferred.make<void, SessionSupervisorError>()
-          yield* observer.watchSession(sessionID, database.path, recordedWorktree, turnComplete, supervisorReady)
-          yield* Deferred.await(supervisorReady)
+          const started = yield* observer.openForSession(sessionID, database.path, recordedWorktree)
+          expect(started.status).toBe("available")
+          if (started.status !== "available") return undefined
+          yield* Effect.tryPromise({ try: () => started.client.subscribe(), catch: (error) => error as Error })
+          return yield* Effect.tryPromise({
+            try: () => started.client.receive(),
+            catch: (error) => error as Error,
+          })
         }),
       )
-      const rebuiltCursor = JSON.parse(
-        readFileSync(path.join(observerSessionState, `session-${sessionID}.cursor`), "utf8"),
-      ) as { readonly seq: string }
+      expect(resnapshotRequired).toMatchObject({ kind: "resnapshot_required" })
+      const observerEpochAfterProbe = Number(readFileSync(epochPath, "utf8"))
+      expect(observerEpochAfterProbe).toBe(observerEpochBeforeResnapshot + 1)
+      const turnComplete = yield* Ref.make(false)
+      const supervisorReady = yield* Deferred.make<void, SessionSupervisorError>()
+      // Readiness only confirms process startup. Keep the watcher alive until its durable
+      // acknowledged cursor proves the resnapshot replayed the complete source.
+      const replayWatcher = yield* Effect.forkScoped(
+        observer.watchSession(sessionID, database.path, recordedWorktree, turnComplete, supervisorReady),
+      )
+      yield* Deferred.await(supervisorReady)
+      const cursorPath = path.join(observerSessionState, `session-${sessionID}.cursor`)
+      let replayedSeq = ""
+      const replayDeadline = Date.now() + 15_000
+      while (replayedSeq !== "6" && Date.now() < replayDeadline) {
+        try {
+          replayedSeq = (JSON.parse(readFileSync(cursorPath, "utf8")) as { readonly seq: string }).seq
+        } catch {}
+        if (replayedSeq !== "6") yield* Effect.sleep("10 millis")
+      }
+      expect(replayedSeq).toBe("6")
+      yield* Ref.set(turnComplete, true)
+      yield* Fiber.join(replayWatcher)
+      const rebuiltCursor = JSON.parse(readFileSync(cursorPath, "utf8")) as { readonly seq: string }
       expect(rebuiltCursor.seq).toBe("6")
-      expect(readFileSync(epochPath, "utf8")).toBe(String(observerEpochBeforeResnapshot + 2))
+      expect(readFileSync(epochPath, "utf8")).toBe(String(observerEpochAfterProbe + 2))
 
       yield* Effect.scoped(
         Effect.gen(function* () {
@@ -400,7 +436,7 @@ describe("SessionRunnerLLM recorded", () => {
         }),
       )
       expect(readFileSync(path.join(observerSessionState, "supervisor.epoch"), "utf8")).toBe(
-        String(observerEpochBeforeResnapshot + 3),
+        String(observerEpochAfterProbe + 3),
       )
 
       expect(

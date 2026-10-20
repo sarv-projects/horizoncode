@@ -1087,9 +1087,23 @@
       "sealed": false
     },
     {
+      "id": "language.start",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
       "id": "language.status",
       "kind": "tool",
       "effectClass": "read_only",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "language.stop",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
       "status": "designed",
       "sealed": false
     },
@@ -1203,6 +1217,13 @@
       "kind": "tool",
       "effectClass": "guarded_effect",
       "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "question.ask",
+      "kind": "tool",
+      "effectClass": "control",
+      "status": "code_present",
       "sealed": false
     },
     {

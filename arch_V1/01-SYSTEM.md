@@ -10,7 +10,7 @@ HorizonCode is an OpenCode-derived coding-agent product with:
 - one progressive UX across TUI, web and desktop;
 - optional supervised workers for index/LSP/DAP/browser/desktop/REPL/rendering/external agents.
 
-Under A-V2-31, the V1 release surface is Linux/WSL-first CLI/TUI. Web/desktop applications, browser/desktop control and built-in web search remain post-V1 and unavailable; their presence in this product-topology target does not make them V1 requirements or runtime capabilities.
+Under A-V2-31, the V1 release surface is Linux/WSL-first CLI/TUI. Web/desktop applications and browser/desktop control remain post-V1 and unavailable; their presence in this product-topology target does not make them V1 requirements or runtime capabilities. Built-in web search is V1 per `DEC-V1-26` (2026-10-18).
 
 The product has one HorizonCode control plane. Create/Develop/Delegate/Operate views do not own separate runtimes; an explicitly selected native backend may own its own external Session without becoming a second Horizon control plane.
 
@@ -164,3 +164,36 @@ flowchart TD
 Lifecycle ordering: start trusted host → private kernel hello/peer authentication → negotiate supported capabilities/OS guarantees → rehydrate OwnerLog and reconcile uncertain effects → attach canonical Session source cursors → optionally run direct turn or accept managed SpecVersion → admit worker budget+Guard lease → execute/settle/verify → UI/cost metrics projection. Kernel unavailable means fail closed for effects; keep source-safe UI and read-only operations only if verified. UI disconnect does not prove managed work stopped.
 
 The enforceable contracts are §11.20 state transitions, §12.16 machine schema inventory, §13.12 IPC, §14 effect law, §18.18 pressure state, §21.11 worktree/worker algorithm, §29.18 dataflow, §30.21 context, §31.17 renderer and §37.17–19 proposed interfaces. §32.33–34 is verification. No separate HLD file may override these topic owners.
+
+## 1.14 Evidence-bound managed delegation HLD (A-V2-33)
+
+Managed delegation is a flow across the existing owners. It does not add a delegate daemon, index authority, event bus or verifier trust root.
+
+~~~mermaid
+sequenceDiagram
+  participant UI as TUI
+  participant Core as HorizonCode Core
+  participant Owner as Rust Managed OwnerLog
+  participant Guard as Guard / ExecutionHost
+  participant Repo as RepoIntel (read only)
+  participant Store as ArtifactStore
+  participant Verify as Independent Verifier
+  participant Mux as UiEventMux projection
+  UI->>Core: accepted SpecVersion and reviewer action
+  Core->>Owner: authenticated Attempt admission
+  Owner-->>Core: immutable DelegationBinding + current owner cursor
+  Core->>Repo: bounded generation/revision-bound query
+  Repo-->>Core: source refs, coverage and freshness
+  Core->>Guard: action with Attempt scope + binding digest + one-use lease
+  Guard->>Owner: resolve live binding, budget, workspace and capability state
+  Guard-->>Core: receipt or UNKNOWN
+  Core->>Store: immutable artifact capture after settled effect
+  Core->>Owner: attach evidence to exact source revision
+  Owner->>Verify: criteria, source revision and trusted artifact refs
+  Verify->>Owner: independent verdict and evidence
+  Owner-->>Mux: durable owner cursor events
+  Core-->>Mux: bounded ephemeral progress
+  Mux-->>UI: replayable decisions/evidence + coalescible progress
+~~~
+
+The owner cursor is authoritative for durable transitions; UI progress is only a projection. Every action checks the immutable binding digest and current expected owner revision independently. RepoIntel returns read references only. Artifact and verifier inputs bind to exact source digests and a fresh workspace observation. A stale reference, missing lease, untrusted verdict, receipt loss or unresolved UNKNOWN halts settlement and finalization. Details and acceptance are §§3.21, 4.13, 12.18, 32.38 and 37.22; effectful dispatch remains unavailable until P1 and P7 prerequisites pass.

@@ -15,10 +15,11 @@ export const name = "skill"
 const FILE_LIMIT = 10
 
 export const Input = Schema.Struct({
-  name: Schema.String.annotate({ description: "The name of the skill from the available skills list" }),
+  name: Schema.String.annotate({ description: "A skill ID or an unambiguous alias from the available skills list" }),
 })
 
 export const Output = Schema.Struct({
+  id: Schema.String,
   name: Schema.String,
   directory: Schema.String,
   output: Schema.String,
@@ -29,14 +30,16 @@ export const description = [
   "",
   "Use this tool to inject the skill's instructions and resources into the current conversation. The output may contain detailed workflow guidance as well as references to scripts, files, etc. in the same directory as the skill.",
   "",
-  "The skill name must match one of the available skills in the system context.",
+  "The skill ID or alias must match an available skill. If an alias is ambiguous, select by ID.",
 ].join("\n")
 
 export const toModelOutput = (skill: SkillV2.Info, files: ReadonlyArray<string>) => {
   const directory = path.dirname(skill.location)
   return [
-    `<skill_content name="${skill.name}">`,
+    `<skill_content id="${skill.identity.id}" name="${skill.name}">`,
     `# Skill: ${skill.name}`,
+    `ID: ${skill.identity.id}`,
+    `Source: ${skill.identity.source} · Trust: ${skill.identity.trust} · Revision: ${skill.identity.revision}`,
     "",
     skill.content.trim(),
     "",
@@ -71,13 +74,13 @@ const layer = Layer.effectDiscard(
           execute: (input, context) =>
             Effect.gen(function* () {
               const current = yield* skills.list()
-              const skill = current.find((skill) => skill.name === input.name)
+              const skill = SkillV2.resolveSelection(current, input.name)
               if (!skill) return yield* unableToLoad(input.name)
               return yield* Effect.gen(function* () {
                 yield* permission.assert({
                   action: name,
-                  resources: [skill.name],
-                  save: [skill.name],
+                  resources: [skill.identity.id],
+                  save: [skill.identity.id],
                   sessionID: context.sessionID,
                   agent: context.agent,
                   source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
@@ -91,6 +94,7 @@ const layer = Layer.effectDiscard(
                         .slice(0, FILE_LIMIT)
                     : []
                 return {
+                  id: skill.identity.id,
                   name: skill.name,
                   directory,
                   output: toModelOutput(skill, files),

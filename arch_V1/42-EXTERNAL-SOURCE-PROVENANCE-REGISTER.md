@@ -25,6 +25,21 @@ First-party Horizon source is the live local working tree. At the 2026-10-11 aud
 
 External source inspection does not authorize code copy. Review exact file license, transitive dependencies, notices, ABI/platform constraints and tests before reuse.
 
+### V1 web-search provider contract research (2026-10-19)
+
+This is provider-documentation research, not code extraction or runtime acceptance. The built-in no-key route candidates use only bounded search operations and remain subject to HostKernel Guard/network policy, user-visible route settings, cancellation and per-vendor limits.
+
+| Provider route | Primary source | Contract fact used |
+|---|---|---|
+| Exa MCP | [Exa MCP](https://exa.ai/mcp) | Current setup says no API key is required and describes the MCP as free to use. |
+| You.com free MCP | [You.com MCP server](https://you.com/docs/agents/mcp-server) | `profile=free` exposes `you-search` / `you-discover`, no key and 100 queries per day. |
+| Tavily keyless search | [Tavily MCP source](https://github.com/tavily-ai/tavily-mcp) | Current MCP has keyless mode for search/extract and advertises fixed keyless access headers; paid/account features remain separate. |
+| Firecrawl Keyless | [Firecrawl Keyless launch](https://www.firecrawl.dev/blog/firecrawl-keyless-launch) | Search MCP is available without an API key and free usage is capped per IP per day. |
+| Parallel Search MCP | [Parallel Search MCP](https://parallel.ai/mcp) | Anonymous `web_search` MCP is free without an account/key and has a lower rate limit. |
+| TinyFish | [TinyFish Search](https://www.tinyfish.ai/search) | Search is free, but the documented API path requires account/API-key or OAuth setup; it is not classified as anonymous no-key default. |
+
+Pricing, rate limits, authentication, terms and endpoints are volatile. Release-time implementation must recheck current primary provider sources. No provider credential, paid route, live probe or third-party code is implied by this register.
+
 ## 42.2 Exact upstream extraction matrix (24 bounded source routes)
 
 **Meaning of statuses:** PRESERVE_EXISTING = retain current OpenCode path; ADOPT_DESIGN = a new Horizon capability to implement after gates, NOT already shipped; EXPERIMENT_ONLY = benchmark and assess before importing; REFERENCE_ONLY = do not port code; DEFER = post-V1.
@@ -101,7 +116,7 @@ External source inspection does not authorize code copy. Review exact file licen
 - Pinned file: [packages/coding-agent/src/web/search/provider.ts](https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/web/search/provider.ts).
 - Pinned file: [packages/coding-agent/src/web/search/providers/public.ts](https://github.com/can1357/oh-my-pi/blob/eec114a9226da698ebc015fd8996a8ca3bc4625c/packages/coding-agent/src/web/search/providers/public.ts).
 - Extract **algorithm/logic**: Typed web search routing, 20 direct+6 grounded registry and provenance/fallback.
-- Target **existing service / proposed LLD**: §37 WebSearchProviderProfileV1 proposed; SecretBroker, tool catalog.
+- Target **existing service / proposed LLD**: §37 WebSearchProviderProfileV1 proposed; SecretBroker, tool catalog. **V1 implementation source target as of the 2026-10-18 promotion (`DEC-V1-26`); §42 adaptation/license review still required before porting.**
 - Reject/bound: Free/payed mismatch, provider auth/network policy, no invisible API charges.
 - Proof required: offline, source provenance, cost opt-in, rate-limit, no silent fallback.
 
@@ -299,6 +314,18 @@ External source inspection does not authorize code copy. Review exact file licen
 
 
 
+### SRC-026 — OS confinement backend (bubblewrap + Landlock) and process lifecycle
+
+- Source: codex; status **REFERENCE_ONLY**; priority P1.
+- Pinned file: [codex-rs/linux-sandbox/src/bwrap.rs](https://github.com/openai/codex/blob/8c0f7011674145da7e10627769fb221c74fbf7a0/codex-rs/linux-sandbox/src/bwrap.rs).
+- Pinned file: [codex-rs/linux-sandbox/src/landlock.rs](https://github.com/openai/codex/blob/8c0f7011674145da7e10627769fb221c74fbf7a0/codex-rs/linux-sandbox/src/landlock.rs).
+- Pinned file: [codex-rs/linux-sandbox/src/proxy_lifecycle.rs](https://github.com/openai/codex/blob/8c0f7011674145da7e10627769fb221c74fbf7a0/codex-rs/linux-sandbox/src/proxy_lifecycle.rs).
+- Pinned file: [codex-rs/bwrap/src/main.rs](https://github.com/openai/codex/blob/8c0f7011674145da7e10627769fb221c74fbf7a0/codex-rs/bwrap/src/main.rs).
+- Extract **algorithm/logic**: mount ordering, protected/deny path masking, namespace capability probing, WSL interop masking and proxy-lifecycle concepts.
+- Target **existing service / proposed LLD**: §14.5 sandbox profile vector; implemented as `horizoncode-sandbox/` (P1-SB, 2026-10-18) for Guard/ExecutionHost consumption.
+- Reject/bound: no verbatim copying; HorizonCode-owned API, capability vector and fail-closed guarantees; placement of the crate is not authority.
+- Proof required: real confinement matrix + denial tests (crate suite 24/24 incl. 10 real confinement tests + capability record), ExecutionHost wiring evidence once P1-K integrates.
+
 ## 42.3 Mandatory upstream-to-Horizon implementation procedure
 
 1. **Authority first:** read adopted §17, §§01–05, 12–14, §20, §24 and §33 before a path is mutated. HorizonCode direct Core (OpenCode-derived) owns Session/Input/Message/Part/continuation; provider transport follows A-V2-27; Rust OwnerLog/Guard owns managed Goal/Run/Task/effects/evidence. Direct Sessions do NOT require a Goal.
@@ -395,3 +422,66 @@ Research/provenance register only. “Accepted” means a Horizon feature/optimi
 | 24 | Thin authenticated mobile/remote client | §13/§16; RC5 | remote auth/reconnect/feature-parity tests |
 
 Never interpret coverage as a blanket all-features release claim, and never solve a missing implementation by adding a new Session/Task/Guard owner.
+
+## 42.11 P3 RepoIntel source-intake decision — 2026-10-19
+
+| Source / exact local target | Decision | P3 application |
+|---|---|---|
+| Pinned OpenCode-derived `packages/opencode/src/tool/repo-intel.ts`, `repo-tools.ts`, plus existing `indexd/src/{lib.rs,repo_intel.rs,transport.rs,handler.rs}` | **REUSE EXISTING / ADAPT** | Keep the one bounded lexical generation, exact overlay, cursor and typed-unavailable path. Extend its canonical schema and provenance; no second index or scanner. Production query remains unavailable until HostKernel supplies authenticated principal/Session/Location/workspace/read-scope context. |
+| OMP `crates/pi-walker/src/lib.rs`, `crates/pi-natives/src/grep.rs`, `ast.rs` at §42.1 `eec114a9226d` (SRC-004) | **ADAPT ALGORITHM; REJECT CODE/DEPENDENCIES for this phase** | Retain only behavior-level ideas: bounded deterministic traversal, cancellation, path/ignore policy and explicit scan coverage. `grep.rs` is N-API-bound and reaches the broad `pi-natives`/`pi-builtins`/`pi-vfs` graph; `ast.rs` reaches ast-grep/`pi_ast`; the walker reaches `pi-vfs`, `globset` and cache policy. These dependencies and their platform/Guard integration are outside the existing `indexd` surface. No OMP code or new dependency is added. |
+| Pinned Codex `codex-rs/core/src/tools` search/tool routing and `codex-rs/core/src/tools/runtimes` process boundaries at §42.1 `8c0f70116741` | **REFERENCE ONLY** | The inspected surface informs explicit tool dispatch and keeping process-backed search behind the execution boundary; it supplies no compatible in-process generation/page index to transplant. No Codex source or process-based search adapter is added. |
+
+The P3 transport query/page contract is `contracts-v2/repo-intelligence-query-v1.schema.json`, mirrored by `packages/schema/src/repo-intelligence-v1.ts` and the shared `contracts-v2/fixtures/repo-structure-page-v1.json`. Principal, Session, Location, workspace root, PermissionV2 read scope and policy remain authenticated HostKernel metadata, never request-body authority. Any opaque continuation cursor must be minted/validated by HostKernel against that authenticated scope, source generation, query digest and expiry. Node refs are read evidence only; writes must re-resolve the source digest and pass the canonical `files.patch` + Guard path.
+
+## 42.12 OpenCode/Codex V1 source crosswalk — 2026-10-19
+
+This is a source-reuse decision record, not implementation or acceptance evidence. The local OpenCode snapshot has 6,569 files / 769 directories (138 MiB); the local Codex copy has 9,029 files / 976 directories (112 MiB). OpenCode attribution uses the pin in §42.1. The Codex copy has no local `.git` identity; use the §42.1 immutable pin `8c0f7011674145da7e10627769fb221c74fbf7a0` and compare selected blobs to that pin before copying. Both source roots have MIT top-level licenses (`opencode/LICENSE`, `repos/codex/LICENSE`); check subcrate notices, generated files, and transitive dependency terms for any actual extraction. This bounded audit inventoried each tree and inspected the phase-relevant modules listed below; it does not claim a line-by-line semantic review of every unrelated file in either repository.
+
+| Horizon V1 area | Inspected source and observed mechanism | Decision for HorizonCode | Boundary / work still owned here |
+|---|---|---|---|
+| P0 direct session and tool loop | OpenCode `packages/core/src/session.ts`, `session/runner/llm.ts`, `tool/registry.ts` (preserved in the tracked source lineage); provider response/tool-call processing remains its session owner. | **PRESERVE EXISTING** | Keep Core as the sole direct Session/continuation owner. Do not import Codex rollout/session ownership or make Rust a transcript store. |
+| P1 effects and confinement | Codex `core/src/tools/runtimes/unified_exec.rs`, `core/src/tools/runtimes/unified_exec/launch.rs`, `linux-sandbox/src/{linux_run_main,bwrap,landlock}.rs`; OpenCode `tool/shell.ts`, `tool/write.ts`, `tool/apply_patch.ts`, `session/tool-batch.ts`. Codex prepares a sandbox command from a permission profile and launches through its own exec runtime; OpenCode supplies the useful model-facing tool and complete-response boundaries. | **ADAPT ALGORITHM / PRESERVE Horizon runtime** | The existing Horizon `horizoncode-sandbox` and Rust HostKernel/ExecutionHost remain authoritative. Reuse Codex containment mechanics only where the Horizon backend lacks equivalent behavior; do not copy its shell executor or permission authority. Prove every dispatched product effect is confined and Guarded before enabling it. |
+| P2 direct and managed delegation | OpenCode `packages/opencode/src/tool/task.ts`, `agent/agent.ts`, `agent/subagent-permissions.ts`; Codex `core/src/agent/control/{spawn,runtime,registry,execution,mailbox,completion,resume,interrupt}.rs`, `core/src/agent/child_config.rs`, and `core/src/tools/handlers/multi_agents_v2/{spawn,message_tool,send_message,followup_task,wait,interrupt_agent,list_agents}.rs`. Codex uses one root-owned agent-tree runtime, lineage paths, spawn-slot reservations, depth/capacity controls, child config snapshots, mailbox communication, resume ownership checks, and explicit lifecycle tools/events. OpenCode supplies Task-profile resolution, parent deny/external-directory propagation, foreground/background completion and cancellation. | **ADAPT lifecycle patterns; REUSE OpenCode Task seam** | Do not adopt Codex/OpenCode as managed authority. Rust still admits and settles Task/Attempt/effect receipts; bind child identity, profile revision, scope, budget and workspace to that authority. OpenCode and Codex child text/status never proves completion. Preserve single-Task V1 until independent final-revision verification passes. |
+| P3 RepoIntel and editing | OpenCode tool modules for search, patch, Git and filesystem; Codex `core/src/tools/handlers/tool_search.rs`, `unified_exec.rs`, `apply_patch.rs`; the P3 decision is already recorded in §42.11. | **ADAPT bounded algorithms; REJECT a second index** | Keep indexd/RepoIntel as the one generation owner. Existing results remain read evidence; source freshness and every mutation continue through the authenticated Horizon read grant and Guarded patch path. |
+| P4 LSP, DAP, REPL | Pinned OpenCode `packages/opencode/src/lsp/{server,client,launch}.ts` and `tool/lsp.ts` are the reusable language-server catalog, JSON-RPC lifecycle and diagnostics seam. The inspected Codex core tools did not expose a DAP or persistent REPL implementation suitable for this boundary. | **ADAPT OpenCode LSP; no Codex port identified** | Preserve Horizon LSP/DAP/REPL broker IDs and authenticated lifecycle. Any install, process start, code action/rename, attach/evaluate or callback remains unavailable until P1 Guard, executable resolution and OS confinement are verified. No equivalent Codex DAP/REPL feature is inferred from generic exec. |
+| P5 built-in web search | OpenCode `packages/opencode/src/tool/websearch.ts` chooses one of Exa/Parallel by flags, override, or session checksum and asks for the ordinary websearch permission. Codex `ext/web-search/src/{tool,schema,history,output}.rs` sends a single request to Codex's selected hosted API, bounds prior conversation context, emits begin/end events, and omits raw output from logs. | **REJECT both provider-selection strategies; ADAPT bounded output/event ideas** | Neither source is the approved built-in plus user-enabled ordered cascade. Keep route consent, explicit auth/cost/provenance, per-route failure/cooldown, one bounded retry, and no silent paid upgrade under §§16/37.5/32. Use existing Guarded outbound transport and SecretBroker. |
+| P6 providers, settings, Doctor and S1 | OpenCode `provider/provider.ts`, `provider/auth.ts`, `core/src/models-dev.ts`, config/provider and TUI provider/model dialogs; Codex `model-provider`, `model-provider-info`, `models-manager`, `keyring-store`, and Doctor modules. | **ADAPT metadata, status and UX patterns; REUSE existing canonical integrations** | No second provider registry, credential store, account rotation, or fallback loop. Keep provider/model pinning and SecretBroker; unknown cost/auth/capability remains unknown. The inspected Codex Doctor is a host diagnostic reference, not Horizon Provider Doctor evidence. |
+| P7 streaming, rendering and artifacts | OpenCode `packages/session-ui/src/components/{markdown-stream,markdown-worker-queue,markdown-projection,session-turn}.ts*`, its v2 stream/session UI, and the existing TUI renderers; Codex `tui/src/multi_agents.rs` and `core/src/agent/control/{completion,delivery}.rs` for lifecycle event projection. | **REUSE/adapt UI algorithms and event projection** | Retain Horizon event generation/ordinal, source-generation replay fences, redaction and artifact fidelity owners. Do not copy a separate transcript, event authority, or analytics truth. Codex subagent activity is a useful presentation pattern, not durable managed evidence. |
+| P8 bounded workers, resources and worktrees | Codex `core/src/agent/registry.rs`, `agent/control/{execution,runtime,spawn_guard}.rs`, `agent-graph-store`, `worktree`; OpenCode `packages/opencode/src/worktree/index.ts` and worktree tests. | **ADAPT reservations, lineage and recovery patterns** | Keep one Rust reservation/worker/worktree owner with Horizon lease, budget, dirty-state, user-edit and UNKNOWN semantics. Never adopt unbounded fan-out or Codex process-local state as durable authorization. Worker fan-out remains gated on P1 and P2 evidence. |
+| P9 CLI/TUI packaging and release | OpenCode `packages/opencode/src/installation`, `cli/upgrade.ts`, `cli/cmd/{run,upgrade}.ts`; Codex `cli/src/{main,daemon_install,doctor,sandbox_setup}.rs` and `app-server-daemon/src/managed_install.rs`. | **ADAPT install/diagnostic patterns; preserve Horizon identity** | Ship only the Linux/WSL-first Horizon CLI/TUI surface. No updater/signing/publication claim without Horizon's own license, clean-install, rollback and final-gate evidence. Keep `horizoncode` and `hzcode` as the same entrypoint. |
+
+The source scan found useful mechanisms but no upstream implementation that can replace the Horizon managed Attempt, Guard, effect leases/receipts, final-revision verifier, canonical capability registry, or direct Core Session. No source was copied or ported by this audit. The current local Horizon edits remain subject to the implementation and verification statuses in `HANDOFF.md`; the crosswalk itself does not move any status forward.
+
+### Subagent lifecycle source review — 2026-10-19
+
+The local source review of OpenCode `packages/opencode/src/tool/task.ts` confirms its direct
+Task path resolves the selected profile, asks parent permission, derives child permissions,
+creates a linked Core Session, inherits the current-turn model unless the profile overrides
+it, supports foreground/background work, returns bounded final text and cancels owned child
+work on abort. This is useful for Horizon's **direct-session** Task seam; it does not provide
+the managed Attempt, durable effect receipts or final-revision verification Horizon requires.
+
+The Codex source review of `core/src/agent/control/{spawn,runtime,mailbox,completion,
+resume,residency}.rs`, `core/src/agent/registry.rs`, `core/src/agent/child_config.rs`, and
+`core/src/tools/handlers/multi_agents_v2/{spawn,message_tool,followup_task,wait,
+interrupt_agent,list_agents}.rs` confirms a root-scoped runtime with spawn reservations,
+depth/capacity checks, lineage paths, inherited parent runtime policy, role/model layering,
+owner-checked resume, queue-only mail, explicit send-vs-follow-up wake behavior, bounded
+wait, interrupt, terminal-result delivery and residency eviction/reload. This is a lifecycle
+reference, not a replacement for Horizon's owners; Codex's process-local mailbox/residency
+and execution-policy model are not Horizon durable authority.
+
+**Architecture reconciliation:** the previous generic §3.5 description implied every
+subagent required a managed Task. That contradicted §3.2 (direct work needs no Goal) and
+§29.18 (direct-session delegation without a managed Run). §§3.5, 29.5, 37.9 and 45.8 now
+separate direct Core Session delegation from managed Task/Attempt delegation, while keeping
+shared profile/resource bounds and Guarded effects. Core owns direct Session linkage and
+message/turn delivery; Rust owns its resource/effect facts. Rust owns managed Task/Attempt
+lineage and settlement. The user resolved the machine-contract question on 2026-10-19:
+use one lane-tagged `SubagentDeliveryV1`. The direct lane binds Core parent/child Session
+identity and trusted profile/permission scope; the managed lane binds `DelegationBindingV1`
+and exact Goal/Run/Task/Attempt identity. The schema and owner contracts now define
+`authorityDigest` as domain-separated BLAKE3 over canonical MessagePack of the lane,
+parent/child execution IDs, owner epoch and validated lane claims. Schema
+presence is design/code only; strict Rust/TypeScript validation and golden cross-language
+fixtures remain required before wire enablement.

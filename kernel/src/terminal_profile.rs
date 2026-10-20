@@ -114,8 +114,8 @@ impl ResolvedShellProfile {
     /// Translate a canonical Windows Location cwd through the selected WSL distribution.
     pub fn translate_wsl_cwd(
         &self,
-        location_root: &Path,
-        working_directory: &Path,
+        _location_root: &Path,
+        _working_directory: &Path,
     ) -> Result<Option<String>, ShellProfileError> {
         if !matches!(
             self.kind,
@@ -123,55 +123,11 @@ impl ResolvedShellProfile {
         ) {
             return Ok(None);
         }
-        #[cfg(windows)]
-        {
-            use std::os::windows::ffi::OsStrExt;
-            let root =
-                std::fs::canonicalize(location_root).map_err(|_| ShellProfileError::Unavailable)?;
-            let canonical = std::fs::canonicalize(working_directory)
-                .map_err(|_| ShellProfileError::Unavailable)?;
-            if !canonical.starts_with(&root)
-                || !std::fs::metadata(&canonical)
-                    .map_err(|_| ShellProfileError::Unavailable)?
-                    .is_dir()
-                || canonical.as_os_str().encode_wide().count() > 4096
-            {
-                return Err(ShellProfileError::InvalidConfiguration);
-            }
-            let output = std::process::Command::new(&self.executable)
-                .args([
-                    "--distribution",
-                    self.distribution
-                        .as_deref()
-                        .ok_or(ShellProfileError::Unavailable)?,
-                    "--exec",
-                    "wslpath",
-                    "-a",
-                    canonical.to_str().ok_or(ShellProfileError::Unavailable)?,
-                ])
-                .env_clear()
-                .output()
-                .map_err(|_| ShellProfileError::Unavailable)?;
-            if !output.status.success() || output.stdout.len() > 4096 {
-                return Err(ShellProfileError::Unavailable);
-            }
-            let path = std::str::from_utf8(&output.stdout)
-                .map_err(|_| ShellProfileError::Unavailable)?
-                .trim_end_matches(['\r', '\n']);
-            if !path.starts_with('/')
-                || path.contains('\0')
-                || path.contains('\n')
-                || path.contains('\r')
-            {
-                return Err(ShellProfileError::Unavailable);
-            }
-            return Ok(Some(path.to_owned()));
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = (location_root, working_directory);
-            Err(ShellProfileError::Unavailable)
-        }
+        // WSL cwd conversion used to launch the configured WSL executable directly
+        // to run `wslpath`. That process was outside Guard, PREPARE and the shared
+        // ExecutionHost. WSL profiles are not registered by HostKernel yet, so keep
+        // this helper fail-closed until conversion itself has a mediated route.
+        Err(ShellProfileError::Unavailable)
     }
 }
 
@@ -889,6 +845,27 @@ mod tests {
             Err(ShellProfileError::InvalidConfiguration)
         );
     }
+
+    #[test]
+    fn wsl_cwd_translation_is_unavailable_until_process_is_guarded() {
+        let profile = ResolvedShellProfile {
+            profile_key: "wsl:Ubuntu".to_owned(),
+            shell_profile_id: "shp_test".to_owned(),
+            kind: ShellProfileKind::WslUbuntuBash,
+            executable: PathBuf::from("wsl.exe"),
+            config_digest: format!("blake3:{}", "a".repeat(64)),
+            profile_digest: format!("blake3:{}", "b".repeat(64)),
+            generation: 1,
+            login: false,
+            distribution: Some("Ubuntu".to_owned()),
+            availability: ShellProfileAvailability::Available,
+        };
+        assert_eq!(
+            profile.translate_wsl_cwd(Path::new("C:/workspace"), Path::new("C:/workspace")),
+            Err(ShellProfileError::Unavailable)
+        );
+    }
+
     #[test]
     fn profile_generation_is_durable_idempotent_and_fences_replacement() {
         let path = std::env::temp_dir().join(format!(

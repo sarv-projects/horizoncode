@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "binding": {
+    "schemaVersion": 1,
+    "runID": "run-1",
+    "taskID": "task-1",
+    "attemptID": "attempt-1",
+    "parentExecutionID": "exec-parent-1",
+    "childExecutionID": "exec-child-1",
+    "acceptedSpecDigest": "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "profileID": "profile-review-1",
+    "profileRevision": "9007199254740993",
+    "profileDigest": "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "criteriaIDs": ["criterion-a", "criterion-b"],
+    "workspaceLeaseID": "workspace-lease-1",
+    "sourceRevision": "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "capabilityCeilingDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "contextSelectionDigest": "blake3:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "budgetLeaseID": "budget-lease-1",
+    "resourceLeaseIDs": ["resource-lease-a", "resource-lease-b"],
+    "ownerEpoch": "9007199254740995",
+    "admittedManagedRevision": "9007199254740997"
+  },
+  "canonicalBindingDigest": "blake3:1fd75f1bc0f3999bfc38131ce367cd71ff22e9d0e442de1264ebced0b2c1e81b"
+}

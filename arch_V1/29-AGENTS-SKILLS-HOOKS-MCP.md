@@ -104,6 +104,7 @@ type AgentProfileV2 = {
   memoryPolicy: "none" | "project_read" | "profile_read" | "reviewed_write"
   isolation: "read_only" | "workspace" | "worktree" | "external"
   lifecycleHooks: AgentHookBindingV2[]
+  capabilityCeiling: CapabilityId[]
   permissionCeilingDigest: Digest
   limits: AgentLimits
   maxParallelChildren: number
@@ -114,13 +115,41 @@ type AgentProfileV2 = {
 
 ### Rules
 
-- Profile rules **narrow** permissions; they cannot widen Guard policy.
+- Profile rules and explicit sorted, unique `capabilityCeiling` **narrow** permissions; they cannot widen accepted Task/Spec scope or current Guard policy. Missing/empty ceiling grants no managed effect scope. Never infer capability IDs from tool/path/MCP patterns.
 - A child receives the intersection of parent delegation authority, child profile ceiling and current policy.
 - Changing a profile creates a new immutable revision. Existing work keeps the pinned revision.
 - Provider/model/harness are explicit. A variant tunes one selected model; it is not automatic model routing.
 - Provider-specific profile variants may be stored as neutral metadata or convenient files such as `agent.openai.md` / `agent.anthropic.md`, but resolution must produce one versioned `AgentProfileV2`. File naming is UX, not authority.
 - A missing variant falls back to the base profile only if the base requirements are supported. It never silently chooses another provider.
 - `sandbox_auto` corresponds to reduced prompting only when the runtime has an enforced sandbox. Otherwise it is unavailable.
+
+#### V1 managed profile ownership
+
+Core Config is the single mutable owner of `AgentProfileV2` definitions and immutable revisions. For the first managed V1 vertical, accept only built-in and explicitly user-owned profiles; project/plugin/external profile trust resolution remains unavailable until its source and trust rules are implemented. Core resolves a user-owned profile only within the authenticated ServerAuth subject's namespace. Authenticated Core ingress supplies the selected canonical profile ID, revision and strict digest-free definition to HostKernel; HostKernel validates the accepted Task/Spec selection, derives and persists the Task's profile owner binding from the authenticated envelope (never a body owner), recomputes canonical digests and mints the opaque typed proof. Attempt admission must match the Task-pinned revision and owner. A request body or model cannot construct this proof or supply a trusted digest.
+
+The Core `ContextService` is the single owner that compiles bounded model context. `ContextLedgerV2` remains a read-only projection; a task-specific `ContextSelectionV1` records the selected mode, bounded source/artifact refs, revisions, trust/inclusion provenance, and exact digest. It never copies the canonical transcript into managed state. Rust managed control stores only the immutable per-Attempt profile/context refs and digests in `DelegationBindingV1`; it does not create a second global profile registry or transcript owner. Rust computes the effective capability ceiling by intersecting accepted Task/Spec scope, the profile ceiling, and current Guard policy. Missing or stale proofs deny admission before preparation.
+
+This same profile authority applies to V1 direct-session children. Core Config resolves the
+trusted `AgentProfileV2` revision; the resolved profile must drive the child's actual model,
+harness, instructions, tool exposure and effective permission scope before Core pins the
+profile revision/digest and scope digest to the child Session and Direct Attempt. The legacy
+`Agent` configuration may be migrated into versioned profiles or retained as a stable
+selector alias only after that mapping resolves to an immutable profile revision. It cannot
+remain an independent authority or be hashed as though it were the profile while its values
+still drive execution. Until profile resolution and runtime projection are complete, direct
+Task dispatch and resume remain unavailable; they must not inherit an unpinned parent model
+or silently advance to a newer profile revision.
+
+Core Config owns the explicit `agent_profile_selectors` mapping for Task-compatible selectors:
+each entry is exactly `{ selector, profileId, revision }` and targets one immutable profile
+revision. V1 reads it only from the global user-owned `opencode.json`/`.jsonc`; project config
+cannot define or override child selectors. Both canonical IDs and compatibility aliases resolve
+through this table; selector names or profile display names are never implicit aliases. Reject
+duplicate declarations (even identical ones), conflicting selectors, missing or disabled target
+revisions, and owner-namespace mismatches. Updating a profile does not retarget an existing
+selector automatically; the user-owned mapping must be changed deliberately. A child Session
+resumes its pinned revision and is rejected if a changed mapping no longer names that same
+revision. The selector is lookup metadata, never authority from a Task request or model output.
 ### HarnessProfileV1 — provider/model is not the harness
 
 `harness` is a first-class, versioned request-shaping profile independent from the selected
@@ -246,6 +275,67 @@ type SubagentReplyV2 = {
   limitations: string[]
 }
 ```
+
+**Two execution lanes.** Direct-session delegation creates/resumes a linked Core child
+Session and does not require Goal/Task/Attempt. Managed delegation is a Rust-owned Task
+Attempt under an accepted SpecVersion and requires the immutable `DelegationBindingV1` and
+independent verification. The same child/profile abstractions may serve both lanes, but a
+direct child result cannot be promoted into managed evidence without the managed Attempt,
+receipt, artifact and revision checks. The direct parent Core Session and each child Core
+Session remain the only transcript owners for their respective conversations.
+
+**Lifecycle operations and ordering.** The canonical `agents.*` surface in §33.12 consists
+of `spawn`, `message`, `result`, `wait`, `inspect`, `list`, `capabilities`, `cancel` and
+`graph`; a compact model-facing Task tool may project only the operations useful to its
+profile. Spawn resolves a trusted profile revision, validates context/scope and reserves
+bounded runtime/resource capacity before process/session creation. Persist the parent-child
+lineage and request identity before reporting a successful spawn. A failed reservation or
+creation releases only reservations that have not crossed the durable launch boundary; a
+launch whose outcome cannot be observed is reported UNKNOWN and reconciled under the same
+identity.
+
+`message` enqueues bounded data for the identified child and does not imply that a turn was
+started. `followup` is a message with an explicit wake/turn trigger; it cannot mutate an
+already-running request or splice into an in-flight model token stream. Both use stable
+request/message IDs, bounded payload refs, ownership checks and explicit queued/delivered/
+acknowledged/expired/unknown outcomes. `wait` observes a named child or bounded subtree until
+new activity, terminal state or deadline; timeout reports the still-current child state and
+does not cancel it. `cancel` fences future child admissions before requesting cancellation
+of owned work, then reports cancelled/still-running/unknown from observed lifecycle state.
+`result` is an idempotent bounded read of the terminal delivery and its evidence refs.
+`inspect/list/graph` are projections and never grant control over a child owned by another
+parent. In direct mode, Core persists parent/child Session linkage and owns message and
+turn-delivery state; the Rust resource owner persists only its own capacity/lease facts. In
+managed mode, Rust persists Task/Attempt lineage and delivery/effect/evidence cursors. The
+same logical delivery ID may correlate these projections, but the stores are not merged.
+
+At dispatch, freeze the profile revision, selected provider/model/harness policy, context
+selection digest, parent capability ceiling, workspace/source revision, budget/deadline and
+resource lease refs. A child may have a separately configured selection only when the user
+or accepted managed policy explicitly permits it; quota, failure or capacity pressure never
+silently changes provider/model. Every later child action re-resolves the live parent/child
+lineage, owner epoch, lease and Guard policy. A child profile can only reduce inherited
+authority. Late messages/results from an old epoch are retained as stale/unknown evidence or
+rejected; they cannot replace a newer child execution or Task result.
+
+For the first managed Task in a Run, Rust persists a logical root-coordinator
+`WorkerExecutionId` bound to the authenticated top-level Core Session. It is a lineage record
+for the existing Core coordinator, not a new worker process/runtime. HostKernel derives its
+principal, Session/Location, OwnerLog and transport/process-incarnation binding from authenticated
+owners. The child Attempt owns the P8 resource/budget lease; the root record does not claim a
+separate worker quota, and shared Core process measurements are counted once. Nested managed
+children require the existing active claimed parent WorkerExecution. P8 pins the child lease to
+immutable Task/Attempt/profile/context/Spec/workspace facts before admission, then P1's atomic
+DelegationBinding append supplies a digest that P8 persists on the still-RESERVED lease before
+claim/dispatch. Missing incarnation or any mismatch keeps admission closed (VEO-021).
+
+This adapts OpenCode's Task profile resolution, parent permission propagation and
+foreground/background cancellation, plus Codex's root-owned agent tree, pre-spawn
+reservation, persisted lineage, message/follow-up/wait/interrupt tools, queue-only mailbox,
+completion reporting and resume ownership checks. In direct mode, parent/child Session
+linkage and transcript remain Core-owned while Rust owns resource and effect facts. In
+managed mode, Rust owns Task/Attempt/effect authority. Neither source runtime is copied as a
+second scheduler or authority plane. Source pins and exact inspected paths are in §42.12.
 
 Agent-to-agent text is data, never authority. Messages cannot directly grant tools, rewrite another Goal, change another workspace fence or mark a Task passed.
 
@@ -419,6 +509,8 @@ type McpServerProfileV2 = {
 Environment/header substitutions resolve through SecretBroker; raw secret values never enter configuration, transcript, analytics or model context.
 
 Dynamic `tools/list_changed` creates a new toolset generation. Active provider turns keep their pinned generation.
+
+**Server-mode exposure and spawned-server confinement (scope, 2026-10-18).** V1 consumes MCP servers; HorizonCode does not expose itself as an MCP server to third-party clients — recorded as post-V1 candidate `DEC-V1-23` (current Codex source and the Claude Code CLI reference likewise do not expose the agent itself; their structured surfaces are Codex `app-server`/`exec-server` and Claude headless/SDK, which Horizon's CLI `run`/`serve` and future SDK cover). Spawned stdio MCP servers are Guarded effects: process start runs through ExecutionHost with an OS-confinement profile and workspace fence, and a missing confinement guarantee disables that server rather than running with ambient host access (§14.6; P1.3 origin closure).
 
 ## 29.9 Custom commands, keybindings and Quick Actions
 
@@ -632,3 +724,15 @@ Required capability negotiation by adapter: exact protocol version, session life
 The parent capability intersection, user-reviewed model/account/cost policy, active Task source revision, lease epoch and selected workspace must be frozen per dispatch. A CLI child has no right to launch additional shells or mutate arbitrary paths just because its executable started successfully. For unobservable external tooling, only an explicitly trusted separate backend mode may be offered with truthful weaker safety guarantees; governed effectful delegation remains disabled until the action can be pre-authorized and target outcome reconciled.
 
 Required errors: unsupported protocol/version, lost external process, denied tool capability, unauthorized nested delegation, spurious event replay, mismatched model selection, remote prompt/tool injection, arbitrary cwd escape, cancellation after remote effect, session ownership confusion and non-idempotent UNKNOWN. §32.35 tests and §20.13 source placement are the acceptance owner.
+
+## 29.20 V1 child delivery evidence and bounded context (A-V2-33)
+
+V1 uses the single lane-tagged §12.11 `SubagentDeliveryV1`. In `direct_session`, Core binds the authenticated parent/child Session lineage, trusted profile revision/digest and effective permission-scope digest. In `managed_attempt`, Rust binds its `DelegationBindingV1` digest and exact Goal/Run/Task/Attempt lineage after Attempt admission; Core passes it with bounded, provenance-bearing context refs. `authorityDigest` is domain-separated BLAKE3 over canonical MessagePack `["SubagentDeliveryV1.authority", lane, parentExecutionId, childExecutionId, ownerEpoch, authority]` and is recomputed by the canonical owner; it is never itself authorization. Child-visible text is not authority. Each result contains bounded status/summary, missing criteria, touched-file refs, settled receipt refs and immutable evidence/artifact refs. The child cannot mark Task/Run PASS, update accepted criteria, mint leases or widen provider/model/capability/resource selection.
+
+For `direct_session`, that trusted profile reference is specifically Core Config's immutable
+`AgentProfileV2` revision and its resolved definition digest; the effective permission-scope
+digest is derived from the actual profile/parent intersection used to construct the child
+runtime. A legacy Agent name is only a migration selector, never a profile authority. Resume
+uses the exact saved revision and fails closed if it cannot be recovered.
+
+Context selection records source, trust, generation/revision and inclusion reason. It may use existing `fresh`, `conversation_slice` or `fork` modes; it must not clone the full parent transcript by default. Summaries remain derived artifacts with source/evidence lineage and never replace canonical history, exact test output, receipts or verifier results. P2 acceptance is one real managed Attempt and its recovery/forgery cases; broader DAG/fan-out remains gated by P8.

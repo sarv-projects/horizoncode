@@ -23,11 +23,14 @@ Usage notes:
 - If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label`
 
 export const Input = Schema.Struct({
-  questions: Schema.Array(QuestionV2.Prompt).annotate({ description: "Questions to ask" }),
+  questions: Schema.Array(QuestionV2.Prompt)
+    .check(Schema.isMinLength(1))
+    .check(Schema.isMaxLength(8))
+    .annotate({ description: "One to eight questions to ask" }),
 })
 
 export const Output = Schema.Struct({
-  answers: Schema.Array(QuestionV2.Answer),
+  answers: QuestionV2.Answers,
 })
 export type Output = typeof Output.Type
 

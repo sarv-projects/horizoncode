@@ -1,0 +1,642 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://horizoncode.dev/contracts/repo-intelligence-query-v1.schema.json",
+  "title": "Horizon RepoIntel structure query and page v1",
+  "description": "Bounded generation-pinned RepoIntel navigation. Principal, workspace root, PermissionV2 read scope, policy digest, and overlay ownership are authenticated out of band and must never be inferred from this payload. A generation pin is acquired first through the same authenticated repo-intel.v1 service.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/RepoGenerationRequestV1"
+    },
+    {
+      "$ref": "#/$defs/RepoGenerationPinV1"
+    },
+    {
+      "$ref": "#/$defs/RepoDocumentReadRequestV1"
+    },
+    {
+      "$ref": "#/$defs/RepoDocumentReadResponseV1"
+    },
+    {
+      "$ref": "#/$defs/RepoStructureQueryV1"
+    },
+    {
+      "$ref": "#/$defs/RepoStructurePageV1"
+    }
+  ],
+  "$defs": {
+    "Identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+    },
+    "Digest": {
+      "type": "string",
+      "pattern": "^blake3:[0-9a-f]{64}$"
+    },
+    "RepoOverlayRefV1": {
+      "type": "string",
+      "pattern": "^ovl_[A-Za-z0-9_-]{16,128}$",
+      "description": "Opaque HostKernel-minted immutable overlay lease reference; caller-selected values never establish ownership or authority."
+    },
+    "RelativePathRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(\\.|(?!/)(?!.*\\\\)(?!.*:)(?!.*//)(?!.*(^|/)\\.{1,2}(/|$))[^\\u0000-\\u001f\\u007f]+)$"
+    },
+    "RepoGenerationRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "messageType",
+        "requestId",
+        "rootRef",
+        "maxFiles",
+        "maxBytes",
+        "maxFileBytes",
+        "deadline"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "messageType": {
+          "const": "ensure_generation"
+        },
+        "requestId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "rootRef": {
+          "$ref": "#/$defs/RelativePathRef"
+        },
+        "maxFiles": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "maxFileBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "deadline": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        }
+      }
+    },
+    "RepoGenerationPinV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "messageType",
+        "requestId",
+        "workspaceBinding",
+        "sourceGeneration",
+        "sourceRevision",
+        "sourceKind",
+        "coverage",
+        "expiresAt"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "messageType": {
+          "const": "generation"
+        },
+        "requestId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "workspaceBinding": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "sourceGeneration": {
+          "$ref": "#/$defs/Digest"
+        },
+        "sourceRevision": {
+          "$ref": "#/$defs/Digest"
+        },
+        "sourceKind": {
+          "enum": [
+            "symbol_index",
+            "parser",
+            "lexical",
+            "lsp",
+            "none",
+            "unknown"
+          ]
+        },
+        "coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "files",
+            "bytes"
+          ],
+          "properties": {
+            "files": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4096
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 67108864
+            }
+          }
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        }
+      }
+    },
+    "RepoNodeRefV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workspaceBinding",
+        "sourceGeneration",
+        "sourceRevision",
+        "pathRef",
+        "fileDigest",
+        "nodeId",
+        "nodeKind",
+        "symbol",
+        "byteRange",
+        "parserId",
+        "parserVersion"
+      ],
+      "properties": {
+        "workspaceBinding": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "sourceGeneration": {
+          "$ref": "#/$defs/Digest"
+        },
+        "sourceRevision": {
+          "$ref": "#/$defs/Digest"
+        },
+        "overlayDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "pathRef": {
+          "$ref": "#/$defs/RelativePathRef"
+        },
+        "fileDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "nodeId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "nodeKind": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "symbol": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "byteRange": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "start",
+            "end"
+          ],
+          "properties": {
+            "start": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1048576
+            },
+            "end": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1048576
+            }
+          },
+          "propertyNames": {
+            "enum": [
+              "start",
+              "end"
+            ]
+          }
+        },
+        "parserId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "parserVersion": {
+          "$ref": "#/$defs/Identifier"
+        }
+      }
+    },
+    "RepoStructureQueryV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "messageType",
+        "queryId",
+        "rootRef",
+        "sourceGeneration",
+        "selector",
+        "maxNodes",
+        "maxBytes",
+        "maxDepth",
+        "deadline"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "messageType": {
+          "const": "query"
+        },
+        "queryId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "rootRef": {
+          "$ref": "#/$defs/RelativePathRef"
+        },
+        "sourceGeneration": {
+          "$ref": "#/$defs/Digest"
+        },
+        "overlayRef": {
+          "$ref": "#/$defs/RepoOverlayRefV1"
+        },
+        "selector": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "symbols": {
+              "type": "array",
+              "maxItems": 100,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              }
+            },
+            "nodeRefs": {
+              "type": "array",
+              "maxItems": 100,
+              "items": {
+                "$ref": "#/$defs/RepoNodeRefV1"
+              }
+            },
+            "includeCallers": {
+              "type": "boolean"
+            }
+          },
+          "anyOf": [
+            {
+              "required": [
+                "symbols"
+              ],
+              "properties": {
+                "symbols": {
+                  "minItems": 1
+                }
+              }
+            },
+            {
+              "required": [
+                "nodeRefs"
+              ],
+              "properties": {
+                "nodeRefs": {
+                  "minItems": 1
+                }
+              }
+            },
+            {
+              "required": [
+                "includeCallers"
+              ],
+              "properties": {
+                "includeCallers": {
+                  "const": true
+                }
+              }
+            }
+          ]
+        },
+        "cursor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "maxNodes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 262144
+        },
+        "maxDepth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "deadline": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        }
+      }
+    },
+    "RepoDocumentReadRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "pathRef", "expectedWorkspaceRevision", "maxBytes"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "pathRef": { "$ref": "#/$defs/RelativePathRef" },
+        "expectedWorkspaceRevision": { "$ref": "#/$defs/Digest" },
+        "maxBytes": { "type": "integer", "minimum": 1, "maximum": 6291456 }
+      }
+    },
+    "RepoDocumentReadResponseV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "status", "pathRef", "text", "contentDigest", "observedWorkspaceRevision"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "status": { "const": "OK" },
+        "pathRef": { "$ref": "#/$defs/RelativePathRef" },
+        "text": { "type": "string", "maxLength": 6291456 },
+        "contentDigest": { "$ref": "#/$defs/Digest" },
+        "observedWorkspaceRevision": { "$ref": "#/$defs/Digest" }
+      }
+    },
+    "RepoStructurePageV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "messageType",
+        "queryId",
+        "workspaceBinding",
+        "sourceGeneration",
+        "sourceRevision",
+        "sourceKind",
+        "status",
+        "freshness",
+        "completeness",
+        "coverage",
+        "nodes"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "messageType": {
+          "const": "page"
+        },
+        "queryId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "workspaceBinding": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "sourceGeneration": {
+          "$ref": "#/$defs/Digest"
+        },
+        "sourceRevision": {
+          "$ref": "#/$defs/Digest"
+        },
+        "overlayDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "sourceKind": {
+          "enum": [
+            "symbol_index",
+            "parser",
+            "lexical",
+            "lsp",
+            "none",
+            "unknown"
+          ]
+        },
+        "parserId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "parserVersion": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "status": {
+          "enum": [
+            "CURRENT",
+            "STALE",
+            "PARTIAL",
+            "UNAVAILABLE"
+          ]
+        },
+        "freshness": {
+          "enum": [
+            "current",
+            "stale",
+            "unknown"
+          ]
+        },
+        "completeness": {
+          "enum": [
+            "complete",
+            "partial",
+            "unavailable"
+          ]
+        },
+        "coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "files",
+            "nodes",
+            "bytes"
+          ],
+          "properties": {
+            "files": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "nodes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "nodes": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/RepoNodeRefV1"
+          }
+        },
+        "fallback": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reason",
+            "sourceKind"
+          ],
+          "properties": {
+            "reason": {
+              "enum": [
+                "parser_unsupported",
+                "parse_partial",
+                "lsp_unavailable",
+                "resource_refused",
+                "generation_stale",
+                "overlay_unavailable",
+                "index_corrupt",
+                "scope_mismatch",
+                "deadline_exceeded"
+              ]
+            },
+            "sourceKind": {
+              "enum": [
+                "symbol_index",
+                "parser",
+                "lexical",
+                "lsp",
+                "none"
+              ]
+            }
+          }
+        },
+        "nextCursor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "freshness": {
+                "const": "stale"
+              }
+            },
+            "required": [
+              "freshness"
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "STALE"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "completeness": {
+                "const": "unavailable"
+              }
+            },
+            "required": [
+              "completeness"
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "UNAVAILABLE"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "UNAVAILABLE"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "sourceKind": {
+                "const": "none"
+              },
+              "freshness": {
+                "const": "unknown"
+              },
+              "completeness": {
+                "const": "unavailable"
+              },
+              "nodes": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "overlayDigest"
+            ]
+          },
+          "then": {
+            "properties": {
+              "nodes": {
+                "items": {
+                  "required": [
+                    "overlayDigest"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "not": {
+              "required": [
+                "overlayDigest"
+              ]
+            }
+          },
+          "then": {
+            "properties": {
+              "nodes": {
+                "items": {
+                  "not": {
+                    "required": [
+                      "overlayDigest"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

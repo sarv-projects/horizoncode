@@ -36,9 +36,13 @@ function emptyCredential() {
   }
 }
 
-function trustedContext(request: HttpServerRequest.HttpServerRequest, config: ServerAuth.Info) {
-  if (ServerAuth.required(config))
-    return { principal: { kind: "server_auth" as const, subject: config.username } }
+function trustedContext(
+  request: HttpServerRequest.HttpServerRequest,
+  credential: ServerAuth.DecodedCredentials,
+  config: ServerAuth.Info,
+) {
+  const username = ServerAuth.authenticatedUsername(credential, config)
+  if (username) return { principal: { kind: "server_auth" as const, subject: username } }
   const address = Option.getOrUndefined(request.remoteAddress)
   if (ServerAuth.isTrustedLoopbackPeer(address, request.headers)) return { principal: { kind: "host_os" as const } }
 }
@@ -56,7 +60,7 @@ function validateCredential<A, E, R>(
       )
       return yield* new HttpApiError.Unauthorized({})
     }
-    const context = trustedContext(request, config)
+    const context = trustedContext(request, credential, config)
     return context ? yield* Effect.provideService(effect, TrustedPrincipalContext, context) : yield* effect
   })
 }
@@ -102,7 +106,7 @@ function validateRawCredential<A, E, R>(
         headers: { "www-authenticate": WWW_AUTHENTICATE },
       }),
     )
-  const context = trustedContext(request, config)
+  const context = trustedContext(request, credential, config)
   return context ? Effect.provideService(effect, TrustedPrincipalContext, context) : effect
 }
 

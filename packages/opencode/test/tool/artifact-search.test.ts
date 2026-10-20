@@ -1,42 +1,59 @@
 import { describe, expect } from "bun:test"
 import fs from "node:fs/promises"
-import os from "node:os"
 import path from "node:path"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Cause, Effect, Exit, FileSystem } from "effect"
+import { Cause, Effect, Exit } from "effect"
+import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { ArtifactSearch } from "../../src/tool/artifact-search"
+import { tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
-const it = testEffect(LayerNode.compile(LayerNode.group([FSUtil.node])))
+const it = testEffect(LayerNode.compile(LayerNode.group([FSUtil.node, CrossSpawnSpawner.node])))
 
 const withTmp = <A, E, R>(use: (dir: string) => Effect.Effect<A, E, R>) =>
-  Effect.acquireUseRelease(
-    Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "opencode-artifact-search-"))),
-    (dir) => use(dir),
-    (dir) => Effect.promise(() => fs.rm(dir, { recursive: true, force: true })),
-  )
+  Effect.gen(function* () {
+    const dir = yield* tmpdirScoped()
+    return yield* use(dir)
+  })
 
 const write = (dir: string, rel: string, content: string | Uint8Array) =>
   Effect.promise(() => fs.writeFile(path.join(dir, rel), content))
 
-const spyFs = (base: FSUtil.Interface, options: { onOpen?: (target: string) => Effect.Effect<void> } = {}) => {
-  const counters = { opens: 0, stats: 0 }
-  const fs = {
-    ...base,
-    open: (...args: Parameters<FSUtil.Interface["open"]>) => {
-      counters.opens++
-      const opened = base.open(...args)
-      if (!options.onOpen) return opened
-      const hook = options.onOpen
-      return Effect.flatMap(opened, (handle) => Effect.as(hook(args[0]), handle))
-    },
-    stat: (...args: Parameters<FSUtil.Interface["stat"]>) => {
-      counters.stats++
-      return base.stat(...args)
-    },
-  } as FSUtil.Interface
-  return { fs, counters }
+const spySource = (
+  base: ArtifactSearch.ArtifactSearchSource,
+  options: {
+    onRoot?: (root: string) => Effect.Effect<void>
+    onOpen?: (artifactId: string) => Effect.Effect<void>
+    onRead?: (artifactId: string, read: number) => Effect.Effect<void>
+  } = {},
+) => {
+  const counters = { roots: 0, opens: 0, reads: 0 }
+  const source: ArtifactSearch.ArtifactSearchSource = {
+    openRoot: (root) =>
+      Effect.flatMap(base.openRoot(root), (openedRoot) => {
+        counters.roots++
+        const afterRoot = options.onRoot?.(root) ?? Effect.void
+        return Effect.as(afterRoot, {
+          ...openedRoot,
+          openArtifact: (artifactId) =>
+            Effect.flatMap(openedRoot.openArtifact(artifactId), (openedFile) => {
+              if (openedFile === undefined) return Effect.succeed(undefined)
+              counters.opens++
+              const afterOpen = options.onOpen?.(artifactId) ?? Effect.void
+              return Effect.as(afterOpen, {
+                ...openedFile,
+                read: (size, position) => {
+                  counters.reads++
+                  const beforeRead = options.onRead?.(artifactId, counters.reads) ?? Effect.void
+                  return Effect.flatMap(beforeRead, () => openedFile.read(size, position))
+                },
+              })
+            }),
+        })
+      }),
+  }
+  return { source, counters }
 }
 
 const expectFailure = (effect: Effect.Effect<unknown, ArtifactSearch.ArtifactSearchError>) =>
@@ -49,6 +66,37 @@ const expectFailure = (effect: Effect.Effect<unknown, ArtifactSearch.ArtifactSea
   })
 
 describe("tool.artifact-search", () => {
+  it.live("does not read an artifact swapped to an out-of-root symlink after path validation", () =>
+    withTmp((dir) =>
+      Effect.gen(function* () {
+        if (process.platform !== "linux") return
+        const outside = yield* tmpdirScoped()
+        const target = path.join(dir, "tool_swap.log")
+        const outsideFile = path.join(outside, "secret.log")
+        yield* write(dir, "tool_swap.log", "safe\n")
+        yield* write(outside, "secret.log", "secret-needle\n")
+        const base = yield* FSUtil.Service
+        let swapped = false
+        const spy = spySource(ArtifactSearch.nodeSource, {
+          onRoot: () => {
+            if (swapped) return Effect.void
+            swapped = true
+            return Effect.promise(async () => {
+              await fs.rm(target)
+              await fs.symlink(outsideFile, target)
+            })
+          },
+        })
+        const service = ArtifactSearch.make({ fs: base, root: dir, source: spy.source })
+
+        const failure = yield* expectFailure(service.search({ artifactId: "tool_swap.log", query: "secret-needle" }))
+
+        expect(failure.code).toBe("not_found")
+        expect(spy.counters.reads).toBe(0)
+      }),
+    ),
+  )
+
   it.live("finds a bounded literal match with generation provenance", () =>
     withTmp((dir) =>
       Effect.gen(function* () {
@@ -60,7 +108,7 @@ describe("tool.artifact-search", () => {
         const result = yield* service.search({ artifactId: "tool_1.log", query: "needle" })
 
         expect(result.artifactId).toBe("tool_1.log")
-        expect(result.generation.startsWith("a1:")).toBe(true)
+        expect(result.generation.startsWith("a2:")).toBe(true)
         expect(result.freshness).toBe("fresh")
         expect(result.matches).toEqual([{ line: 1, byteOffset: 9, text: "needle here", excerptTruncated: false }])
         expect(result.scannedBytes).toBe(Buffer.byteLength(contents))
@@ -187,16 +235,16 @@ describe("tool.artifact-search", () => {
       Effect.gen(function* () {
         yield* write(dir, "tool_5.log", "needle\n" + "x".repeat(300_000))
         const base = yield* FSUtil.Service
-        const spy = spyFs(base, {
-          onOpen: (target) => Effect.promise(() => fs.truncate(target, 6)),
+        const spy = spySource(ArtifactSearch.nodeSource, {
+          onOpen: () => Effect.promise(() => fs.truncate(path.join(dir, "tool_5.log"), 6)),
         })
-        const service = ArtifactSearch.make({ fs: spy.fs, root: dir })
+        const service = ArtifactSearch.make({ fs: base, root: dir, source: spy.source })
 
         const result = yield* service.search({ artifactId: "tool_5.log", query: "needle" })
 
         expect(result.freshness).toBe("stale")
         expect(result.staleReason).toBe("source_changed")
-        expect(spy.counters.opens).toBe(1)
+        expect(spy.counters.opens).toBe(2)
       }),
     ),
   )
@@ -208,37 +256,19 @@ describe("tool.artifact-search", () => {
         const base = yield* FSUtil.Service
         const controller = new AbortController()
         const reads = { count: 0 }
-        const spy = spyFs(base, {
-          onOpen: () => Effect.void,
+        const spy = spySource(ArtifactSearch.nodeSource, {
+          onRead: (_artifactId, read) => {
+            if (read === 1) controller.abort()
+            return Effect.void
+          },
         })
-        // Wrap opens to hand back a read-counting, aborting handle for the scan.
-        const hooked = {
-          ...spy.fs,
-          open: (...args: Parameters<FSUtil.Interface["open"]>) =>
-            Effect.map(base.open(...args), (handle) => {
-              const proxied = new Proxy(handle, {
-                get(target, prop, receiver) {
-                  if (prop === "readAlloc") {
-                    return (size: number) => {
-                      reads.count++
-                      if (reads.count === 1) controller.abort()
-                      return target.readAlloc(size)
-                    }
-                  }
-                  const value = Reflect.get(target, prop, receiver)
-                  return typeof value === "function" ? value.bind(target) : value
-                },
-              }) as FileSystem.File
-              return proxied
-            }),
-        } as FSUtil.Interface
-        const service = ArtifactSearch.make({ fs: hooked, root: dir })
+        const service = ArtifactSearch.make({ fs: base, root: dir, source: spy.source })
 
         const failure = yield* expectFailure(
           service.search({ artifactId: "tool_6.log", query: "line", signal: controller.signal }),
         )
         expect(failure.code).toBe("cancelled")
-        expect(reads.count).toBe(1)
+        expect(spy.counters.reads).toBe(1)
       }),
     ),
   )
@@ -248,8 +278,8 @@ describe("tool.artifact-search", () => {
       Effect.gen(function* () {
         yield* write(dir, "tool_ok.log", "needle\n")
         const base = yield* FSUtil.Service
-        const spy = spyFs(base)
-        const service = ArtifactSearch.make({ fs: spy.fs, root: dir })
+        const spy = spySource(ArtifactSearch.nodeSource)
+        const service = ArtifactSearch.make({ fs: base, root: dir, source: spy.source })
 
         for (const artifactId of ["../escape", "/etc/passwd", "a/b", "..", "", "a\\b", ".hidden", "a:b"]) {
           const failure = yield* expectFailure(service.search({ artifactId, query: "needle" }))
@@ -264,8 +294,8 @@ describe("tool.artifact-search", () => {
     withTmp((dir) =>
       Effect.gen(function* () {
         const base = yield* FSUtil.Service
-        const spy = spyFs(base)
-        const service = ArtifactSearch.make({ fs: spy.fs, root: dir })
+        const spy = spySource(ArtifactSearch.nodeSource)
+        const service = ArtifactSearch.make({ fs: base, root: dir, source: spy.source })
 
         const failure = yield* expectFailure(service.search({ artifactId: "tool_missing.log", query: "needle" }))
 
@@ -293,6 +323,59 @@ describe("tool.artifact-search", () => {
           const failure = yield* expectFailure(service.search({ artifactId: "tool_7.log", ...input }))
           expect(failure.code).toBe("invalid_pattern")
         }
+      }),
+    ),
+  )
+
+  it.live("clamps regex deadlines to a timer-safe bound", () =>
+    withTmp((dir) =>
+      Effect.gen(function* () {
+        yield* write(dir, "tool_timer.log", "needle\n")
+        const base = yield* FSUtil.Service
+        const service = ArtifactSearch.make({ fs: base, root: dir })
+
+        const result = yield* service.search({
+          artifactId: "tool_timer.log",
+          query: "needle",
+          mode: "regex",
+          maxDurationMs: Number.MAX_SAFE_INTEGER,
+        })
+
+        expect(result.freshness).toBe("fresh")
+        expect(result.matches.map((match) => match.text)).toEqual(["needle"])
+      }),
+    ),
+  )
+
+  it.live("bounds catastrophic regex execution and cancels an isolated matcher", () =>
+    withTmp((dir) =>
+      Effect.gen(function* () {
+        yield* write(dir, "tool_redos.log", `${"a".repeat(ArtifactSearch.MAX_LINE_BYTES - 1)}!\n`)
+        const base = yield* FSUtil.Service
+        const service = ArtifactSearch.make({ fs: base, root: dir })
+
+        const timed = yield* service.search({
+          artifactId: "tool_redos.log",
+          query: "(a+)+$",
+          mode: "regex",
+          maxDurationMs: 100,
+        })
+        expect(timed.truncation).toContain("deadline")
+        expect(timed.matches).toHaveLength(0)
+
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), 50)
+        const cancelled = yield* expectFailure(
+          service.search({
+            artifactId: "tool_redos.log",
+            query: "(a+)+$",
+            mode: "regex",
+            maxDurationMs: 5_000,
+            signal: controller.signal,
+          }),
+        )
+        clearTimeout(timer)
+        expect(cancelled.code).toBe("cancelled")
       }),
     ),
   )
@@ -352,6 +435,101 @@ describe("tool.artifact-search", () => {
           const failure = yield* expectFailure(service.readRange({ artifactId: "tool_8.log", ...input }))
           expect(failure.code).toBe("invalid_range")
         }
+      }),
+    ),
+  )
+
+  it.live("rejects a range when the artifact is replaced during the scan", () =>
+    withTmp((dir) =>
+      Effect.gen(function* () {
+        if (process.platform !== "linux") return
+        const target = path.join(dir, "tool_rotating.log")
+        const rotated = path.join(dir, "tool_rotating.log.old")
+        yield* write(dir, "tool_rotating.log", "old range contents\nold tail\n")
+        const base = yield* FSUtil.Service
+        const spy = spySource(ArtifactSearch.nodeSource, {
+          onRead: (_artifactId, read) => {
+            if (read !== 1) return Effect.void
+            return Effect.promise(async () => {
+              await fs.rename(target, rotated)
+              await fs.writeFile(target, "new range contents\n")
+            })
+          },
+        })
+        const service = ArtifactSearch.make({ fs: base, root: dir, source: spy.source })
+
+        const failure = yield* expectFailure(
+          service.readRange({ artifactId: "tool_rotating.log", lineStart: 0, lineEndExclusive: 1 }),
+        )
+
+        expect(failure.code).toBe("stale_generation")
+        expect(spy.counters.reads).toBe(1)
+        expect(spy.counters.opens).toBe(2)
+      }),
+    ),
+  )
+
+  it.live("rejects a range when the artifact is truncated during the scan", () =>
+    withTmp((dir) =>
+      Effect.gen(function* () {
+        if (process.platform !== "linux") return
+        const target = path.join(dir, "tool_truncating.log")
+        yield* write(dir, "tool_truncating.log", "first range line\nsecond line\nthird line\n")
+        const base = yield* FSUtil.Service
+        const spy = spySource(ArtifactSearch.nodeSource, {
+          onRead: (_artifactId, read) => {
+            if (read !== 1) return Effect.void
+            return Effect.promise(() => fs.truncate(target, 6))
+          },
+        })
+        const service = ArtifactSearch.make({ fs: base, root: dir, source: spy.source })
+
+        const failure = yield* expectFailure(
+          service.readRange({ artifactId: "tool_truncating.log", lineStart: 0, lineEndExclusive: 3 }),
+        )
+
+        expect(failure.code).toBe("stale_generation")
+        expect(spy.counters.reads).toBeGreaterThanOrEqual(1)
+        expect(spy.counters.opens).toBe(2)
+      }),
+    ),
+  )
+
+  it.live("rejects a range when artifact contents change during the scan with metadata preserved", () =>
+    withTmp((dir) =>
+      Effect.gen(function* () {
+        if (process.platform !== "linux") return
+        const target = path.join(dir, "tool_rewritten.log")
+        const original = "original range line\noriginal tail\n"
+        const replacement = "replaced range line\noriginal tail\n"
+        const fixedTime = new Date("2020-01-02T03:04:05.000Z")
+        yield* write(dir, "tool_rewritten.log", original)
+        yield* Effect.promise(() => fs.utimes(target, fixedTime, fixedTime))
+        const before = yield* Effect.promise(() => fs.stat(target))
+        const base = yield* FSUtil.Service
+        const spy = spySource(ArtifactSearch.nodeSource, {
+          onRead: (_artifactId, read) => {
+            if (read !== 1) return Effect.void
+            return Effect.promise(async () => {
+              await fs.writeFile(target, replacement)
+              await fs.utimes(target, fixedTime, fixedTime)
+            })
+          },
+        })
+        const service = ArtifactSearch.make({ fs: base, root: dir, source: spy.source })
+
+        const failure = yield* expectFailure(
+          service.readRange({ artifactId: "tool_rewritten.log", lineStart: 0, lineEndExclusive: 1 }),
+        )
+        const after = yield* Effect.promise(() => fs.stat(target))
+
+        expect(Buffer.byteLength(replacement)).toBe(Buffer.byteLength(original))
+        expect(after.ino).toBe(before.ino)
+        expect(after.size).toBe(before.size)
+        expect(after.mtimeMs).toBe(before.mtimeMs)
+        expect(failure.code).toBe("stale_generation")
+        expect(spy.counters.reads).toBe(1)
+        expect(spy.counters.opens).toBe(2)
       }),
     ),
   )

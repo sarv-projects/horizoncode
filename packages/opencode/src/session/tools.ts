@@ -10,7 +10,7 @@ import { ToolRegistry } from "@/tool/registry"
 
 import type { TaskPromptOps } from "@/tool/task"
 import { type Tool as AITool, tool, jsonSchema, type ToolExecutionOptions } from "ai"
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 import { Session } from "./session"
 import { SessionProcessor } from "./processor"
 import { PartID } from "./schema"
@@ -20,9 +20,17 @@ import { isRecord } from "@/util/record"
 import type { EffectLease } from "@opencode-ai/core/session/supervisor"
 import path from "node:path"
 import { RuntimeFlags } from "@/effect/runtime-flags"
-import { requireToolExecution, type ToolBatchDefinition, toolCallOutcome } from "./tool-batch"
+import {
+  isStandaloneControlTool,
+  requireToolExecution,
+  type DirectAttemptAuthority,
+  type ManagedAttemptAuthority,
+  type ToolBatchDefinition,
+  toolCallOutcome,
+} from "./tool-batch"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { preparePatchBatch } from "@/tool/apply_patch"
+import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 
 
 export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
@@ -33,6 +41,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   bypassAgentCheck: boolean
   messages: SessionV1.WithParts[]
   promptOps: TaskPromptOps
+  directAttempt?: DirectAttemptAuthority
+  managedAttempt?: ManagedAttemptAuthority
 }) {
   const tools: Record<string, AITool> = {}
   const definitions: Record<string, ToolBatchDefinition> = {}
@@ -42,6 +52,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const flags = yield* RuntimeFlags.Service
   const permission = yield* Permission.Service
   const registry = yield* ToolRegistry.Service
+  const authenticatedPrincipal = yield* Effect.serviceOption(TrustedPrincipalContext)
 
   const context = (
     args: Record<string, unknown>,
@@ -49,17 +60,21 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     effect?: Tool.Context["effect"],
     guardedPatch?: unknown,
     guardedLease?: EffectLease,
+    directAttempt?: unknown,
   ): Tool.Context => ({
     sessionID: input.session.id,
     abort: options.abortSignal!,
     messageID: input.processor.message.id,
     callID: options.toolCallId,
+    ...(Option.isSome(authenticatedPrincipal) ? { trustedPrincipal: authenticatedPrincipal.value.principal } : {}),
     extra: {
       model: input.model,
       bypassAgentCheck: input.bypassAgentCheck,
       promptOps: input.promptOps,
       ...(guardedPatch !== undefined ? { guardedPatch } : {}),
       ...(guardedLease !== undefined ? { guardedLease } : {}),
+      ...(directAttempt !== undefined ? { directAttempt } : {}),
+      ...(input.managedAttempt !== undefined ? { managedAttempt: input.managedAttempt } : {}),
     },
     effect,
     agent: input.agent.name,
@@ -102,7 +117,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     const supported =
       internal ||
       capability.effectClass === "read_only" ||
-      (capability.effectClass === "effect" && ["files.write", "files.patch", "terminal.run"].includes(capability.id))
+      (capability.effectClass === "effect" && ["files.write", "files.patch", "terminal.run"].includes(capability.id)) ||
+      isStandaloneControlTool(item.id, { capability, internal })
     // Unknown/default effect class and unclassified plugin or project tools fail closed:
     // they are not projected into the model-facing tool list or its batch definitions.
     if (!supported) continue
@@ -159,6 +175,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             const effect = requireToolExecution({
               context: options.experimental_context,
               callID: options.toolCallId,
+              toolName: item.id,
               capability,
               internal,
             })
@@ -167,12 +184,15 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
                 ? outcome.execution
                 : undefined
             const guardedLease = outcome?.status === "prepared" ? outcome.lease : undefined
+            const directAttempt =
+              outcome?.status === "prepared" || outcome?.status === "admitted" ? outcome.directAttempt : undefined
             const ctx = context(
               args,
               options,
               effect && "challengeID" in effect ? effect : undefined,
               guardedPatch,
               guardedLease,
+              directAttempt,
             )
             const result = yield* item.execute(args, ctx)
             const output = {

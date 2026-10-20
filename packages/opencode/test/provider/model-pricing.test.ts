@@ -53,6 +53,31 @@ describe("provider pricing provenance (AN-002/AN-003)", () => {
     expect(model.cost.output).toBe(12)
     expect(model.cost.cache.read).toBeUndefined()
   })
+
+  test("missing tier and long-context cache rates remain unknown instead of becoming zero", () => {
+    const provider = Provider.fromModelsDevProvider(
+      catalog({
+        tiered: catalogModel({
+          id: "tiered",
+          cost: {
+            input: 1,
+            output: 2,
+            tiers: [{ tier: { type: "context", size: 100_000 }, input: 3, output: 4 }],
+            context_over_200k: { input: 5, output: 6 },
+          },
+        }),
+      }),
+    )
+    const cost = provider.models.tiered!.cost
+    expect(cost.tiers?.[0]?.cache).toEqual({ read: undefined, write: undefined })
+    expect(cost.experimentalOver200K?.cache).toEqual({ read: undefined, write: undefined })
+  })
+
+  test("provider model schema rejects negative prices instead of publishing invalid cost metadata", () => {
+    const provider = Provider.fromModelsDevProvider(catalog({ model: catalogModel({ id: "model" }) }))
+    const model = provider.models.model!
+    expect(Provider.Model.is({ ...model, cost: { ...model.cost, input: -0.01 } })).toBe(false)
+  })
 })
 
 describe("toPublicInfo credential redaction", () => {

@@ -969,6 +969,7 @@ export type GlobalEvent = {
           sessionID: string
           assistantMessageID: string
           textID: string
+          sourceGeneration?: string
         }
       }
     | {
@@ -980,6 +981,9 @@ export type GlobalEvent = {
           assistantMessageID: string
           textID: string
           delta: string
+          sequence: number
+          offset: number
+          sourceGeneration: string
         }
       }
     | {
@@ -991,6 +995,8 @@ export type GlobalEvent = {
           assistantMessageID: string
           textID: string
           text: string
+          sequence?: number
+          sourceGeneration?: string
         }
       }
     | {
@@ -1002,6 +1008,7 @@ export type GlobalEvent = {
           assistantMessageID: string
           reasoningID: string
           providerMetadata?: LlmProviderMetadata
+          sourceGeneration?: string
         }
       }
     | {
@@ -1013,6 +1020,9 @@ export type GlobalEvent = {
           assistantMessageID: string
           reasoningID: string
           delta: string
+          sequence: number
+          offset: number
+          sourceGeneration: string
         }
       }
     | {
@@ -1024,6 +1034,8 @@ export type GlobalEvent = {
           assistantMessageID: string
           reasoningID: string
           text: string
+          sequence?: number
+          sourceGeneration?: string
           providerMetadata?: LlmProviderMetadata
         }
       }
@@ -1036,6 +1048,7 @@ export type GlobalEvent = {
           assistantMessageID: string
           callID: string
           name: string
+          sourceGeneration?: string
         }
       }
     | {
@@ -1047,6 +1060,9 @@ export type GlobalEvent = {
           assistantMessageID: string
           callID: string
           delta: string
+          sequence: number
+          offset: number
+          sourceGeneration: string
         }
       }
     | {
@@ -1058,6 +1074,8 @@ export type GlobalEvent = {
           assistantMessageID: string
           callID: string
           text: string
+          sequence?: number
+          sourceGeneration?: string
         }
       }
     | {
@@ -1831,6 +1849,13 @@ export type ProviderConfig = {
   }
 }
 
+export type WebSearchRoute = "builtin" | "brave" | "exa"
+
+export type WebSearchConfig = {
+  enabled?: Array<WebSearchRoute>
+  order?: Array<WebSearchRoute>
+}
+
 export type McpLocalConfig = {
   /**
    * Type of MCP server connection
@@ -1961,6 +1986,7 @@ export type Config = {
   provider?: {
     [key: string]: ProviderConfig
   }
+  websearch?: WebSearchConfig
   mcp?: {
     [key: string]:
       | McpLocalConfig
@@ -2059,7 +2085,7 @@ export type FeatureExposure = {
     effectiveEnabled: boolean
     effectiveState: "on" | "off" | "blocked" | "pending_apply" | "unavailable"
     valueSource: "default" | "user" | "project" | "session" | "system_policy" | "unknown"
-    policyLock: "unknown"
+    policyLock: "locked" | "unlocked" | "unknown"
     blockedReason?: string
     pendingApplyAt?: "next_turn" | "next_session" | "restart"
   }
@@ -2077,6 +2103,11 @@ export type ConflictError = {
   _tag: "ConflictError"
   message: string
   resource?: string
+}
+
+export type ForbiddenError = {
+  _tag: "ForbiddenError"
+  message: string
 }
 
 export type EffectHttpApiErrorInternalServerError = {
@@ -2118,8 +2149,6 @@ export type Model = {
           field: "reasoning" | "reasoning_content" | "reasoning_text" | string
         }
   }
-  // Pricing rates are optional: a provider that reports no price is unknown,
-  // never a fabricated zero (AN-002/AN-003).
   cost: {
     input?: number
     output?: number
@@ -2381,11 +2410,6 @@ export type VcsFileDiff = {
   status?: "added" | "deleted" | "modified"
 }
 
-export type ForbiddenError = {
-  _tag: "ForbiddenError"
-  message: string
-}
-
 export type Command = {
   name: string
   description?: string
@@ -2588,6 +2612,10 @@ export type ProviderAuthError1 = {
     message?: string
     kind?: string
   }
+}
+
+export type EffectHttpApiErrorUnauthorized = {
+  _tag: "Unauthorized"
 }
 
 export type Session1 = {
@@ -3213,6 +3241,46 @@ export type WorkspaceWarpError = {
   }
 }
 
+export type GoalReviewError = {
+  name: "GoalReviewError"
+  data: {
+    code: string
+    reason: string
+  }
+}
+
+export type GoalReviewNotFoundError = {
+  name: "GoalReviewNotFoundError"
+  data: {
+    code: string
+    reason: string
+  }
+}
+
+export type GoalReviewConflictError = {
+  name: "GoalReviewConflictError"
+  data: {
+    code: string
+    reason: string
+  }
+}
+
+export type GoalReviewForbiddenError = {
+  name: "GoalReviewForbiddenError"
+  data: {
+    code: string
+    reason: string
+  }
+}
+
+export type GoalReviewUnavailableError = {
+  name: "GoalReviewUnavailableError"
+  data: {
+    code: string
+    reason: string
+  }
+}
+
 export type UnauthorizedError = {
   _tag: "UnauthorizedError"
   message: string
@@ -3720,7 +3788,7 @@ export type SyncEventSessionCreated = {
     seq: number
     aggregateID: string
     data: {
-      sessionID: string
+    sessionID: string
       info: Session
     }
   }
@@ -3735,7 +3803,7 @@ export type SyncEventSessionUpdated = {
     seq: number
     aggregateID: string
     data: {
-      sessionID: string
+    sessionID: string
       info: Session
     }
   }
@@ -4052,6 +4120,7 @@ export type SyncEventSessionNextTextStarted = {
       sessionID: string
       assistantMessageID: string
       textID: string
+      sourceGeneration?: string
     }
   }
 }
@@ -4070,6 +4139,8 @@ export type SyncEventSessionNextTextEnded = {
       assistantMessageID: string
       textID: string
       text: string
+      sequence?: number
+      sourceGeneration?: string
     }
   }
 }
@@ -4088,6 +4159,7 @@ export type SyncEventSessionNextReasoningStarted = {
       assistantMessageID: string
       reasoningID: string
       providerMetadata?: LlmProviderMetadata
+      sourceGeneration?: string
     }
   }
 }
@@ -4106,6 +4178,8 @@ export type SyncEventSessionNextReasoningEnded = {
       assistantMessageID: string
       reasoningID: string
       text: string
+      sequence?: number
+      sourceGeneration?: string
       providerMetadata?: LlmProviderMetadata
     }
   }
@@ -4125,6 +4199,7 @@ export type SyncEventSessionNextToolInputStarted = {
       assistantMessageID: string
       callID: string
       name: string
+      sourceGeneration?: string
     }
   }
 }
@@ -4143,6 +4218,8 @@ export type SyncEventSessionNextToolInputEnded = {
       assistantMessageID: string
       callID: string
       text: string
+      sequence?: number
+      sourceGeneration?: string
     }
   }
 }
@@ -4372,6 +4449,43 @@ export type ProjectDirectories = Array<{
 export type PtyTicketConnectToken = {
   ticket: string
   expires_in: number
+}
+
+export type HorizonProviderDoctorV1SelectionRefV1 = {
+  providerRef: string
+  accountRef?: string
+  modelRef?: string
+  harnessRef?: string
+  endpointRef?: string
+  configRevisionRef?: string
+  catalogRevisionRef?: string
+}
+
+export type HorizonProviderDoctorV1SelectionV1 = {
+  providerRef: string
+  accountRef?: string
+  modelRef?: string
+  harnessRef?: string
+  endpointRef?: string
+  configRevisionRef?: string
+  catalogRevisionRef?: string
+  configurationStatus: "VALID" | "INVALID" | "UNKNOWN"
+}
+
+export type HorizonProviderDoctorV1RemoteChecksV1 = {
+  entitlement: "UNCHECKED" | "PASS" | "FAIL" | "UNKNOWN"
+  quota: "UNCHECKED" | "PASS" | "FAIL" | "UNKNOWN"
+  service: "UNCHECKED" | "PASS" | "FAIL" | "UNKNOWN"
+}
+
+export type HorizonProviderDoctorV1ProbeV1 = {
+  phase: "config" | "auth" | "catalog" | "capability" | "stream" | "tool_call" | "cache"
+  outcome: "PASS" | "FAIL" | "SKIPPED" | "UNKNOWN"
+  code?: string
+  elapsedMs?: number
+  modelRef?: string
+  priceSource?: string
+  redactedDetails?: string
 }
 
 export type WorkspaceEventConnectionStatus = {
@@ -4956,6 +5070,7 @@ export type SessionNextTextStarted = {
     sessionID: string
     assistantMessageID: string
     textID: string
+    sourceGeneration?: string
   }
 }
 
@@ -4977,6 +5092,8 @@ export type SessionNextTextEnded = {
     assistantMessageID: string
     textID: string
     text: string
+    sequence?: number
+    sourceGeneration?: string
   }
 }
 
@@ -4998,6 +5115,7 @@ export type SessionNextToolInputStarted = {
     assistantMessageID: string
     callID: string
     name: string
+    sourceGeneration?: string
   }
 }
 
@@ -5019,6 +5137,8 @@ export type SessionNextToolInputEnded = {
     assistantMessageID: string
     callID: string
     text: string
+    sequence?: number
+    sourceGeneration?: string
   }
 }
 
@@ -5148,6 +5268,7 @@ export type SessionNextReasoningStarted = {
     assistantMessageID: string
     reasoningID: string
     providerMetadata?: LlmProviderMetadata
+    sourceGeneration?: string
   }
 }
 
@@ -5169,6 +5290,8 @@ export type SessionNextReasoningEnded = {
     assistantMessageID: string
     reasoningID: string
     text: string
+    sequence?: number
+    sourceGeneration?: string
     providerMetadata?: LlmProviderMetadata
   }
 }
@@ -5755,6 +5878,9 @@ export type SessionNextTextDelta = {
     assistantMessageID: string
     textID: string
     delta: string
+    sequence: number
+    offset: number
+    sourceGeneration: string
   }
 }
 
@@ -5776,6 +5902,9 @@ export type SessionNextReasoningDelta = {
     assistantMessageID: string
     reasoningID: string
     delta: string
+    sequence: number
+    offset: number
+    sourceGeneration: string
   }
 }
 
@@ -5797,6 +5926,9 @@ export type SessionNextToolInputDelta = {
     assistantMessageID: string
     callID: string
     delta: string
+    sequence: number
+    offset: number
+    sourceGeneration: string
   }
 }
 
@@ -5838,6 +5970,9 @@ export type MessagePartDelta = {
     partID: string
     field: string
     delta: string
+    sequence: number
+    offset: number
+    sourceGeneration: string
   }
 }
 
@@ -6925,6 +7060,7 @@ export type EventSessionNextTextStarted = {
     sessionID: string
     assistantMessageID: string
     textID: string
+    sourceGeneration?: string
   }
 }
 
@@ -6937,6 +7073,9 @@ export type EventSessionNextTextDelta = {
     assistantMessageID: string
     textID: string
     delta: string
+    sequence: number
+    offset: number
+    sourceGeneration: string
   }
 }
 
@@ -6949,6 +7088,8 @@ export type EventSessionNextTextEnded = {
     assistantMessageID: string
     textID: string
     text: string
+    sequence?: number
+    sourceGeneration?: string
   }
 }
 
@@ -6961,6 +7102,7 @@ export type EventSessionNextReasoningStarted = {
     assistantMessageID: string
     reasoningID: string
     providerMetadata?: LlmProviderMetadata
+    sourceGeneration?: string
   }
 }
 
@@ -6973,6 +7115,9 @@ export type EventSessionNextReasoningDelta = {
     assistantMessageID: string
     reasoningID: string
     delta: string
+    sequence: number
+    offset: number
+    sourceGeneration: string
   }
 }
 
@@ -6985,6 +7130,8 @@ export type EventSessionNextReasoningEnded = {
     assistantMessageID: string
     reasoningID: string
     text: string
+    sequence?: number
+    sourceGeneration?: string
     providerMetadata?: LlmProviderMetadata
   }
 }
@@ -6998,6 +7145,7 @@ export type EventSessionNextToolInputStarted = {
     assistantMessageID: string
     callID: string
     name: string
+    sourceGeneration?: string
   }
 }
 
@@ -7010,6 +7158,9 @@ export type EventSessionNextToolInputDelta = {
     assistantMessageID: string
     callID: string
     delta: string
+    sequence: number
+    offset: number
+    sourceGeneration: string
   }
 }
 
@@ -7022,6 +7173,8 @@ export type EventSessionNextToolInputEnded = {
     assistantMessageID: string
     callID: string
     text: string
+    sequence?: number
+    sourceGeneration?: string
   }
 }
 
@@ -7181,6 +7334,9 @@ export type EventMessagePartDelta = {
     partID: string
     field: string
     delta: string
+    sequence: number
+    offset: number
+    sourceGeneration: string
   }
 }
 
@@ -7889,6 +8045,10 @@ export type GlobalUpgradeErrors = {
    * BadRequest | InvalidRequestError
    */
   400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * ServiceUnavailableError
+   */
+  503: ServiceUnavailableError
 }
 
 export type GlobalUpgradeError = GlobalUpgradeErrors[keyof GlobalUpgradeErrors]
@@ -8028,6 +8188,10 @@ export type ConfigFeatureUpdateErrors = {
    * Bad request
    */
   400: BadRequestError
+  /**
+   * ForbiddenError
+   */
+  403: ForbiddenError
   /**
    * ConflictError
    */
@@ -8287,6 +8451,10 @@ export type WorktreeRemoveErrors = {
    * WorktreeError | InvalidRequestError
    */
   400: WorktreeError | InvalidRequestError
+  /**
+   * ServiceUnavailableError
+   */
+  503: ServiceUnavailableError
 }
 
 export type WorktreeRemoveError = WorktreeRemoveErrors[keyof WorktreeRemoveErrors]
@@ -8343,6 +8511,10 @@ export type WorktreeCreateErrors = {
    * WorktreeError | InvalidRequestError
    */
   400: WorktreeError | InvalidRequestError
+  /**
+   * ServiceUnavailableError
+   */
+  503: ServiceUnavailableError
 }
 
 export type WorktreeCreateError = WorktreeCreateErrors[keyof WorktreeCreateErrors]
@@ -8371,6 +8543,10 @@ export type WorktreeResetErrors = {
    * WorktreeError | InvalidRequestError
    */
   400: WorktreeError | InvalidRequestError
+  /**
+   * ServiceUnavailableError
+   */
+  503: ServiceUnavailableError
 }
 
 export type WorktreeResetError = WorktreeResetErrors[keyof WorktreeResetErrors]
@@ -9414,6 +9590,10 @@ export type ProjectInitGitErrors = {
    * Bad request
    */
   400: BadRequestError
+  /**
+   * ServiceUnavailableError
+   */
+  503: ServiceUnavailableError
 }
 
 export type ProjectInitGitError = ProjectInitGitErrors[keyof ProjectInitGitErrors]
@@ -10105,6 +10285,56 @@ export type ProviderOauthCallbackResponses = {
 
 export type ProviderOauthCallbackResponse = ProviderOauthCallbackResponses[keyof ProviderOauthCallbackResponses]
 
+export type ProviderDoctorOfflineData = {
+  body?: {
+    schemaVersion: 1
+    doctorRunId: string
+    selection: HorizonProviderDoctorV1SelectionRefV1
+    deadlineMs: number
+    tier: "offline"
+    maxNetworkRequests: 0
+    ownerRef?: unknown
+    ownerEpoch?: unknown
+    networkGrantRef?: string
+    spendConsentRef?: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/provider/doctor/offline"
+}
+
+export type ProviderDoctorOfflineErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ProviderDoctorOfflineError = ProviderDoctorOfflineErrors[keyof ProviderDoctorOfflineErrors]
+
+export type ProviderDoctorOfflineResponses = {
+  /**
+   * Offline provider configuration diagnostics
+   */
+  200: {
+    schemaVersion: 1
+    doctorRunId: string
+    tier: "offline" | "catalog" | "full"
+    selection: HorizonProviderDoctorV1SelectionV1
+    localReadiness: "READY" | "INCOMPLETE" | "INVALID" | "UNKNOWN"
+    remoteChecks: HorizonProviderDoctorV1RemoteChecksV1
+    credentialAccess: "NOT_READ" | "METADATA_ONLY" | "CREDENTIAL_USED"
+    networkRequestCount: number
+    costStatus: "NOT_APPLICABLE" | "NOT_INCURRED" | "UNKNOWN" | "CHARGED"
+    probes: Array<HorizonProviderDoctorV1ProbeV1>
+  }
+}
+
+export type ProviderDoctorOfflineResponse = ProviderDoctorOfflineResponses[keyof ProviderDoctorOfflineResponses]
+
 export type SessionListData = {
   body?: never
   path?: never
@@ -10493,6 +10723,10 @@ export type SessionPromptErrors = {
    */
   400: EffectHttpApiErrorBadRequest | InvalidRequestError
   /**
+   * ForbiddenError
+   */
+  403: ForbiddenError
+  /**
    * NotFoundError
    */
   404: NotFoundError
@@ -10500,6 +10734,10 @@ export type SessionPromptErrors = {
    * SessionBusyError
    */
   409: SessionBusyError
+  /**
+   * ServiceUnavailableError
+   */
+  503: ServiceUnavailableError
 }
 
 export type SessionPromptError = SessionPromptErrors[keyof SessionPromptErrors]
@@ -10681,6 +10919,10 @@ export type SessionInitErrors = {
    */
   400: EffectHttpApiErrorBadRequest | InvalidRequestError
   /**
+   * ForbiddenError
+   */
+  403: ForbiddenError
+  /**
    * NotFoundError
    */
   404: NotFoundError
@@ -10688,6 +10930,10 @@ export type SessionInitErrors = {
    * SessionBusyError
    */
   409: SessionBusyError
+  /**
+   * ServiceUnavailableError
+   */
+  503: ServiceUnavailableError
 }
 
 export type SessionInitError = SessionInitErrors[keyof SessionInitErrors]
@@ -10799,6 +11045,10 @@ export type SessionSummarizeErrors = {
    */
   400: EffectHttpApiErrorBadRequest | InvalidRequestError
   /**
+   * ForbiddenError
+   */
+  403: ForbiddenError
+  /**
    * NotFoundError
    */
   404: NotFoundError
@@ -10909,6 +11159,10 @@ export type SessionCommandErrors = {
    */
   400: EffectHttpApiErrorBadRequest | InvalidRequestError
   /**
+   * ForbiddenError
+   */
+  403: ForbiddenError
+  /**
    * NotFoundError
    */
   404: NotFoundError
@@ -10962,9 +11216,17 @@ export type SessionShellErrors = {
    */
   400: EffectHttpApiErrorBadRequest | InvalidRequestError
   /**
+   * ForbiddenError
+   */
+  403: ForbiddenError
+  /**
    * NotFoundError
    */
   404: NotFoundError
+  /**
+   * SessionBusyError
+   */
+  409: SessionBusyError
   /**
    * ServiceUnavailableError
    */
@@ -11054,6 +11316,10 @@ export type SessionRevertErrors = {
    */
   400: EffectHttpApiErrorBadRequest | InvalidRequestError
   /**
+   * ForbiddenError
+   */
+  403: ForbiddenError
+  /**
    * NotFoundError
    */
   404: NotFoundError
@@ -11095,6 +11361,10 @@ export type SessionUnrevertErrors = {
    * BadRequest | InvalidRequestError
    */
   400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * ForbiddenError
+   */
+  403: ForbiddenError
   /**
    * NotFoundError
    */
@@ -11984,6 +12254,522 @@ export type ExperimentalWorkspaceWarpResponses = {
 export type ExperimentalWorkspaceWarpResponse =
   ExperimentalWorkspaceWarpResponses[keyof ExperimentalWorkspaceWarpResponses]
 
+export type ExperimentalGoalReviewGoalReviewData = {
+  body?: never
+  path?: never
+  query: {
+    goalID: string
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/control-plane/goal-review"
+}
+
+export type ExperimentalGoalReviewGoalReviewErrors = {
+  /**
+   * GoalReviewError | InvalidRequestError
+   */
+  400: GoalReviewError | InvalidRequestError
+  /**
+   * GoalReviewForbiddenError
+   */
+  403: GoalReviewForbiddenError
+  /**
+   * GoalReviewNotFoundError
+   */
+  404: GoalReviewNotFoundError
+  /**
+   * GoalReviewConflictError
+   */
+  409: GoalReviewConflictError
+  /**
+   * GoalReviewUnavailableError
+   */
+  503: GoalReviewUnavailableError
+}
+
+export type ExperimentalGoalReviewGoalReviewError =
+  ExperimentalGoalReviewGoalReviewErrors[keyof ExperimentalGoalReviewGoalReviewErrors]
+
+export type ExperimentalGoalReviewGoalReviewResponses = {
+  /**
+   * Pending SpecVersion proposals for the reviewed Goal
+   */
+  200: {
+    goalID: string
+    goalRevision: string
+    projectRef: string
+    workspaceRef: string
+    proposals: Array<{
+      goalId: string
+      goalRevision: string
+      specVersionId: string
+      parentVersionId: string | null
+      proposedBy: string
+      reviewAvailability:
+        | {
+            available: true
+          }
+        | {
+            available: false
+            reason: string
+          }
+      specDigest: string
+      objective: string
+      projectRef: string
+      workspaceRef: string
+      scope: Array<string>
+      constraints: Array<string>
+      criteria: Array<{
+        id: string
+        description: string
+      }>
+      budget: {
+        maxTasks: number
+        maxAttemptsPerTask: number
+        maxRunDurationMs: number
+        maxWorkers: number
+        maxMemoryBytes: string | null
+        maxDiskBytes: string | null
+        maxTokens: string | null
+        maxCostMicros: string | null
+      }
+      sourceDigests: Array<string>
+    }>
+    runs: Array<{ runID: string; specID: string; runPhase: string }>
+    acceptedSpecs: Array<{ specID: string; specDigest: string }>
+  }
+}
+
+export type ExperimentalGoalReviewGoalReviewResponse =
+  ExperimentalGoalReviewGoalReviewResponses[keyof ExperimentalGoalReviewGoalReviewResponses]
+
+export type ExperimentalGoalReviewGoalReviewsData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+    afterGoalID?: string
+    limit?: string
+  }
+  url: "/experimental/control-plane/goal-reviews"
+}
+
+export type ExperimentalGoalReviewGoalReviewsErrors = {
+  /**
+   * GoalReviewError | InvalidRequestError
+   */
+  400: GoalReviewError | InvalidRequestError
+  /**
+   * GoalReviewForbiddenError
+   */
+  403: GoalReviewForbiddenError
+  /**
+   * GoalReviewNotFoundError
+   */
+  404: GoalReviewNotFoundError
+  /**
+   * GoalReviewConflictError
+   */
+  409: GoalReviewConflictError
+  /**
+   * GoalReviewUnavailableError
+   */
+  503: GoalReviewUnavailableError
+}
+
+export type ExperimentalGoalReviewGoalReviewsError =
+  ExperimentalGoalReviewGoalReviewsErrors[keyof ExperimentalGoalReviewGoalReviewsErrors]
+
+export type ExperimentalGoalReviewGoalReviewsResponses = {
+  /**
+   * Pending Goal review proposals visible in the current workspace
+   */
+  200: {
+    goals: Array<{
+      goalID: string
+      goalRevision: string
+      projectRef: string
+      workspaceRef: string
+      proposals: Array<{
+        goalId: string
+        goalRevision: string
+        specVersionId: string
+        parentVersionId: string | null
+        proposedBy: string
+        reviewAvailability:
+          | {
+              available: true
+            }
+          | {
+              available: false
+              reason: string
+            }
+        specDigest: string
+        objective: string
+        projectRef: string
+        workspaceRef: string
+        capabilityScope: Array<string>
+        scope: Array<string>
+        constraints: Array<string>
+        criteria: Array<{
+          id: string
+          description: string
+        }>
+        budget: {
+          maxTasks: number
+          maxAttemptsPerTask: number
+          maxRunDurationMs: number
+          maxWorkers: number
+          maxMemoryBytes: string | null
+          maxDiskBytes: string | null
+          maxTokens: string | null
+          maxCostMicros: string | null
+        }
+        sourceDigests: Array<string>
+      }>
+      runs: Array<{ runID: string; specID: string; runPhase: string }>
+      acceptedSpecs: Array<{ specID: string; specDigest: string }>
+    }>
+    nextAfterGoalID: string | null
+  }
+}
+
+export type ExperimentalGoalReviewGoalReviewsResponse =
+  ExperimentalGoalReviewGoalReviewsResponses[keyof ExperimentalGoalReviewGoalReviewsResponses]
+
+export type ExperimentalGoalReviewGoalProposeData = {
+  body?: {
+    schemaVersion: 1
+    objective: string
+    capabilityScope: Array<string>
+    scope: Array<string>
+    constraints: Array<string>
+    criteria: Array<{
+      id: string
+      description: string
+    }>
+    budget: {
+      maxTasks: number
+      maxAttemptsPerTask: number
+      maxRunDurationMs: number
+      maxWorkers: number
+      maxMemoryBytes?: number
+      maxDiskBytes?: number
+      maxTokens?: number
+      maxCostMicros?: number
+    }
+    sourceDigests: Array<string>
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/control-plane/goal-proposals"
+}
+
+export type ExperimentalGoalReviewGoalProposeErrors = {
+  /**
+   * GoalReviewError | InvalidRequestError
+   */
+  400: GoalReviewError | InvalidRequestError
+  /**
+   * GoalReviewForbiddenError
+   */
+  403: GoalReviewForbiddenError
+  /**
+   * GoalReviewNotFoundError
+   */
+  404: GoalReviewNotFoundError
+  /**
+   * GoalReviewConflictError
+   */
+  409: GoalReviewConflictError
+  /**
+   * GoalReviewUnavailableError
+   */
+  503: GoalReviewUnavailableError
+}
+
+export type ExperimentalGoalReviewGoalProposeError =
+  ExperimentalGoalReviewGoalProposeErrors[keyof ExperimentalGoalReviewGoalProposeErrors]
+
+export type ExperimentalGoalReviewGoalProposeResponses = {
+  /**
+   * New Goal and pending SpecVersion proposal
+   */
+  200: {
+    schemaVersion: 1
+    goalID: string
+    specID: string
+    specDigest: string
+    proposedBy: string
+    accepted: boolean
+    revision: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+}
+
+export type ExperimentalGoalReviewGoalProposeResponse =
+  ExperimentalGoalReviewGoalProposeResponses[keyof ExperimentalGoalReviewGoalProposeResponses]
+
+export type ExperimentalGoalReviewGoalReviewDecisionData = {
+  body?: {
+    decision: "accept" | "reject"
+    goalID: string
+    specID: string
+    specDigest: string
+    expectedRevision: string | number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/control-plane/goal-review/decision"
+}
+
+export type ExperimentalGoalReviewGoalReviewDecisionErrors = {
+  /**
+   * GoalReviewError | InvalidRequestError
+   */
+  400: GoalReviewError | InvalidRequestError
+  /**
+   * GoalReviewForbiddenError
+   */
+  403: GoalReviewForbiddenError
+  /**
+   * GoalReviewNotFoundError
+   */
+  404: GoalReviewNotFoundError
+  /**
+   * GoalReviewConflictError
+   */
+  409: GoalReviewConflictError
+  /**
+   * GoalReviewUnavailableError
+   */
+  503: GoalReviewUnavailableError
+}
+
+export type ExperimentalGoalReviewGoalReviewDecisionError =
+  ExperimentalGoalReviewGoalReviewDecisionErrors[keyof ExperimentalGoalReviewGoalReviewDecisionErrors]
+
+export type ExperimentalGoalReviewGoalReviewDecisionResponses = {
+  /**
+   * SpecVersion decision applied by the kernel
+   */
+  200: {
+    goalID: string
+    specID: string
+    specDigest: string
+    decision: "ACCEPTED" | "REJECTED"
+    decidedBy: string
+    decidedAtMs: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    reviewedRevision: string
+    revision: string
+  }
+}
+
+export type ExperimentalGoalReviewGoalReviewDecisionResponse =
+  ExperimentalGoalReviewGoalReviewDecisionResponses[keyof ExperimentalGoalReviewGoalReviewDecisionResponses]
+
+export type ExperimentalGoalReviewGoalVerificationData = {
+  body?: {
+    schemaVersion: 1
+    goalID: string
+    runID: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/control-plane/goal-verification"
+}
+
+export type ExperimentalGoalReviewGoalVerificationErrors = {
+  /**
+   * GoalReviewError | InvalidRequestError
+   */
+  400: GoalReviewError | InvalidRequestError
+  /**
+   * GoalReviewForbiddenError
+   */
+  403: GoalReviewForbiddenError
+  /**
+   * GoalReviewNotFoundError
+   */
+  404: GoalReviewNotFoundError
+  /**
+   * GoalReviewConflictError
+   */
+  409: GoalReviewConflictError
+  /**
+   * GoalReviewUnavailableError
+   */
+  503: GoalReviewUnavailableError
+}
+
+export type ExperimentalGoalReviewGoalVerificationError =
+  ExperimentalGoalReviewGoalVerificationErrors[keyof ExperimentalGoalReviewGoalVerificationErrors]
+
+export type ExperimentalGoalReviewGoalVerificationResponses = {
+  /**
+   * Safe result of the current-workspace verifier flow
+   */
+  200: {
+    schemaVersion: 1
+    status:
+      | "ABORTED"
+      | "VERIFYING"
+      | "SUCCEEDED"
+      | "FAILED"
+      | "UNKNOWN"
+      | "NEEDS_YOU"
+      | "CANCELLING"
+      | "CANCELLED"
+    goalID: string
+    runID: string
+    verificationRunID: string
+    reason?: "reviewer_denied" | "cancelled" | "expired" | "transport_lost"
+    revision: string
+  }
+}
+
+export type ExperimentalGoalReviewGoalVerificationResponse =
+  ExperimentalGoalReviewGoalVerificationResponses[keyof ExperimentalGoalReviewGoalVerificationResponses]
+
+export type ExperimentalGoalReviewGoalRunControlData = {
+  body?: {
+    schemaVersion: 1
+    action: "pause" | "resume" | "cancel"
+    goalID: string
+    runID: string
+    expectedRevision: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/control-plane/goal-run-control"
+}
+
+export type ExperimentalGoalReviewGoalRunControlErrors = {
+  400: GoalReviewError | InvalidRequestError
+  403: GoalReviewForbiddenError
+  404: GoalReviewNotFoundError
+  409: GoalReviewConflictError
+  503: GoalReviewUnavailableError
+}
+
+export type ExperimentalGoalReviewGoalRunControlError =
+  ExperimentalGoalReviewGoalRunControlErrors[keyof ExperimentalGoalReviewGoalRunControlErrors]
+
+export type ExperimentalGoalReviewGoalRunControlResponses = {
+  200: {
+    schemaVersion: 1
+    goalID: string
+    runID: string
+    status: "PAUSED" | "RUNNING" | "CANCELLED" | "CANCELLING"
+    runPhase: string
+    revision: string
+  }
+}
+
+export type ExperimentalGoalReviewGoalRunControlResponse =
+  ExperimentalGoalReviewGoalRunControlResponses[keyof ExperimentalGoalReviewGoalRunControlResponses]
+
+export type ExperimentalGoalReviewGoalRunPlanData = {
+  body?: {
+    schemaVersion: 1
+    goalID: string
+    specID: string
+    specDigest: string
+    expectedGoalRevision: string
+    runID: string
+    tasks: Array<{
+      taskID: string
+      dependencies: Array<string>
+      criterionIDs: Array<string>
+      requiredCapabilities: Array<string>
+      profileSelection: { profileId: string; revision: string }
+    }>
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/control-plane/goal-run-plan"
+}
+
+export type ExperimentalGoalReviewGoalRunPlanErrors = {
+  400: GoalReviewError | InvalidRequestError
+  403: GoalReviewForbiddenError
+  404: GoalReviewNotFoundError
+  409: GoalReviewConflictError
+  503: GoalReviewUnavailableError
+}
+
+export type ExperimentalGoalReviewGoalRunPlanError =
+  ExperimentalGoalReviewGoalRunPlanErrors[keyof ExperimentalGoalReviewGoalRunPlanErrors]
+
+export type ExperimentalGoalReviewGoalRunPlanResponses = {
+  200: {
+    schemaVersion: 1
+    status: "PLAN_ONLY"
+    executionAvailable: false
+    goalID: string
+    runID: string
+    specID: string
+    revision: string
+    runPhase: string
+    taskIDs: Array<string>
+    tasksReady: false
+    reason: string
+  }
+}
+
+export type ExperimentalGoalReviewGoalRunPlanResponse =
+  ExperimentalGoalReviewGoalRunPlanResponses[keyof ExperimentalGoalReviewGoalRunPlanResponses]
+
+export type ExperimentalGoalReviewGoalRunStartData = {
+  body?: {
+    schemaVersion: 1
+    goalID: string
+    runID: string
+    expectedGoalRevision: string
+    specID: string
+    specDigest: string
+      sessionID: string
+    idempotencyKey: string
+  }
+  path?: never
+  query?: { directory?: string; workspace?: string }
+  url: "/experimental/control-plane/goal-run-start"
+}
+
+export type ExperimentalGoalReviewGoalRunStartErrors = {
+  400: GoalReviewError | InvalidRequestError
+  403: GoalReviewForbiddenError
+  404: GoalReviewNotFoundError
+  409: GoalReviewConflictError
+  503: GoalReviewUnavailableError
+}
+
+export type ExperimentalGoalReviewGoalRunStartError =
+  ExperimentalGoalReviewGoalRunStartErrors[keyof ExperimentalGoalReviewGoalRunStartErrors]
+
+export type ExperimentalGoalReviewGoalRunStartResponses = {
+  200: { schemaVersion: 1; goalID: string; runID: string; specID: string; sessionID: string; runPhase: string; revision: string }
+}
+
+export type ExperimentalGoalReviewGoalRunStartResponse =
+  ExperimentalGoalReviewGoalRunStartResponses[keyof ExperimentalGoalReviewGoalRunStartResponses]
+
 export type V2HealthGetData = {
   body?: never
   path?: never
@@ -12477,9 +13263,17 @@ export type V2SessionRevertStageErrors = {
    */
   401: UnauthorizedError
   /**
+   * ForbiddenError
+   */
+  403: ForbiddenError
+  /**
    * SessionNotFoundError | MessageNotFoundError
    */
   404: MessageNotFoundError | SessionNotFoundError
+  /**
+   * ConflictError
+   */
+  409: ConflictError
   /**
    * UnknownError
    */
@@ -12522,9 +13316,17 @@ export type V2SessionRevertClearErrors = {
    */
   401: UnauthorizedError
   /**
+   * ForbiddenError
+   */
+  403: ForbiddenError
+  /**
    * SessionNotFoundError
    */
   404: SessionNotFoundError
+  /**
+   * ConflictError
+   */
+  409: ConflictError
   /**
    * UnknownError
    */

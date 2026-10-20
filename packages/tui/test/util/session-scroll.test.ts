@@ -63,4 +63,5 @@ describe("session scroll message navigation", () => {
     expect(find(longMessages, longChildren, longParts, 10_000, "prev")).toBe("message-4994")
     expect(find(longMessages, longChildren, longParts, 10_000, "next")).toBe("message-5006")
   })
+
 })

@@ -115,6 +115,18 @@ Test/refresh/discovery network requests show whether they can consume paid quota
 
 Search provider, model provider and agent harness are separate categories even if backed by the same company/account.
 
+### Web search connections (V1, `DEC-V1-26`)
+
+Built-in web search is configured in Settings as an ordered route list (§37.5):
+
+- the built-in no-key route chain (Exa, You.com free profile, Tavily keyless search, Firecrawl Keyless, Parallel Search) is available by default, in the default order specified in §37.5; each provider may enforce its own anonymous rate limit;
+- BYO-key providers (initial set: Brave and Exa; supported matrix expands only with sourced adapters; full matrix `DEC-V1-20`) each expose: enable toggle, credential source (SecretBroker/OS-credential reference; raw secret never displayed again after entry), cost class, freshness and health status, and a test/inspect action mapped to `web.search.inspect_provider`;
+- enabling a provider adds it to the cascade; disabled or unconfigured providers are absent — no separate "off" step is required;
+- cascade order is user-visible and reorderable; every enabled route joins one ordered chain;
+- enabling a paid or authenticated provider records the user's consent for that route's cost/auth class; a failed free route can never silently hop to a paid provider that was not enabled;
+- when every enabled route fails, the resolution shows per-route reasons and applies one bounded normal retry — a fabricated or silently substituted result is never returned;
+- switching search routes never changes the selected model/provider/harness and never triggers hidden spend.
+
 ## 16.8 Settings
 
 Settings are schema-driven and searchable.
@@ -207,7 +219,7 @@ Source inspiration may come from OMP or other products through 42, but this docu
 
 ## 16.14 Built for the Future: verifiable beginner and expert flows
 
-Brand: HorizonCode - Built for the Future. The public npm name is planned as horizoncode, with hzcode as optional short CLI alias.
+Brand: HorizonCode - Built for the Future. The public npm name is planned as horizoncode, with hzcode as the shipped short CLI command for the same entrypoint (amended 2026-10-18).
 A user should understand: what the agent is doing, what changed, what was tested, what it costs and how to undo it. Beginner and expert UIs share one session/runtime, not separate engines.
 V1 beginner journey: describe a coding change -> review/accept a clear plan when using managed work -> implement through guarded tools -> inspect the diff -> run tests -> independently verify the final revision -> explain evidence, cost and undo. Browser visual editing, hosted preview and deployment are post-V1.
 Provider UI distinguishes authorized API keys/subscriptions, legitimate free offers, local models and the separate native OpenCode backend. Show restricted-model eligibility; unknown pricing is never free.
@@ -241,6 +253,8 @@ Feature exposure descriptor (shape in `contracts-v2/feature-exposure-v1.schema.j
 Inventory optional user-facing features separately from internal legacy flags. Runtime-capable options must resolve from their existing **backend config owner**, including source precedence, channel, platform, dependent capability, Guard policy and effective state. GUI-local `settings.v3` cannot grant a backend capability. Broad inherited `OPENCODE_EXPERIMENTAL` must not count as individual opt-in for a newly governed HorizonCode experiment; preserve classified legacy compatibility deliberately rather than accidentally enabling all new experiments.
 
 A settings write must preserve unrelated values, detect conflicting/stale updates, honor apply boundaries and return the authoritative effective state. If the current config source cannot report precedence/lock, display UNKNOWN rather than inventing provenance. A TUI checkbox is never authorization. Implementation targets and FEAT source-parity cases are §20.10.1 and §32.31.1.
+
+The RepoIntel analysis profile (`lightweight | adaptive | full`) is a value in the existing config owner, projected through existing feature/config state; it is not another registry or authorization grant. Missing/invalid effective state is conservative `lightweight`. Changing it records requested/effective/source/pending state only; it does not start LSP processes, schedule indexing, call an embedding/provider endpoint, or warm a cache. Such work requires a later explicit query/action and normal Guard/resource admission. Under pressure, effective analysis may be narrower than requested, with a visible reason and no provider/model switch.
 
 ### 16.15.2 Snapcompact source feasibility (2026-10-15)
 
@@ -281,3 +295,7 @@ UI acceptance lives in §32.32. Current source coverage is not inferred from the
 **Interaction law:** a user choosing a provider/model or changing an optional setting must see pending/effective state and whether a restart/new turn is required. UI only transmits typed user intent; the OS/process/Guard owner still checks actual execution eligibility. Resource pressure is not a reason for a silent provider change, automatic deleting caches owned by others or UI freeze. Render a reasoned unblock path (free owned safe cache, wait for Task, reduce selected concurrency, ask for approval) without claiming an unsafe shortcut.
 
 **Acceptance:** all above controls keyboard accessible in TUI, labels readable for beginner and expert, no duplicate Session owners in UI, 20-session stream stays navigable, failures show exact source/metric/OS, unknown measurements truthfully unknown, changing or revoking a permission invalidates visible action controls, spend confirmation auditable and no hidden remote telemetry.
+
+## 16.18 Checkpoint/rewind surface (LLD closure 2026-10-18)
+
+One ActionDescriptor-backed surface (slash/menu/API) lists checkpoints with turn provenance and offers: restore code + conversation, conversation only, or code only — always preview-first. A changed workspace revision refuses Full restore; the UI offers an explicit SelectedPaths preview bound to an exact preview digest. Only conflict-free captured regular single-link files may be selected; dirty, untracked, conflicting and unselected paths remain untouched, and unsupported file-kind facts fail closed (§14.19). The surface states honest limits (external changes not captured, symlink/hard-link skips) and never claims code restore when only conversation state moved. Acceptance: CP-001/CP-002 plus the beginner journey's "explain evidence, cost and undo" step; keyboard accessible, no duplicate Session owner.

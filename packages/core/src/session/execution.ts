@@ -7,6 +7,7 @@ import { SessionRunner } from "./runner/index"
 import { SessionSchema } from "./schema"
 
 import type { SessionSupervisorError } from "./supervisor"
+import type { TrustedPrincipal } from "../trusted-principal"
 
 export type Error = SessionRunner.RunError | SessionSupervisorError
 
@@ -14,9 +15,9 @@ export interface Interface {
   /** Snapshots active execution owned by this process. */
   readonly active: Effect.Effect<ReadonlySet<SessionSchema.ID>>
   /** Starts execution while idle or joins the active execution. */
-  readonly resume: (sessionID: SessionSchema.ID) => Effect.Effect<void, Error>
+  readonly resume: (sessionID: SessionSchema.ID, principal: TrustedPrincipal) => Effect.Effect<void, Error>
   /** Registers newly recorded work. Repeated wakeups may coalesce. */
-  readonly wake: (sessionID: SessionSchema.ID) => Effect.Effect<void>
+  readonly wake: (sessionID: SessionSchema.ID, principal: TrustedPrincipal) => Effect.Effect<void, Error>
   /** Interrupt active work owned by this process. Idle interruption is a no-op. */
   readonly interrupt: (sessionID: SessionSchema.ID) => Effect.Effect<void>
 }

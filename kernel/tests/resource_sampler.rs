@@ -16,6 +16,7 @@ struct FakeBackend {
     mutate_after_read: Option<(u32, ProcessIdentity)>,
     parent_reuse_during_children: Option<(u32, ProcessIdentity)>,
     child_reparent_during_children: Option<(u32, u32)>,
+    child_reparent_after_identity: Option<(u32, u32)>,
     reported_bytes: usize,
     reported_work: usize,
     reads: usize,
@@ -23,11 +24,29 @@ struct FakeBackend {
 
 impl ProcessBackend for FakeBackend {
     fn identity(&mut self, pid: u32) -> Result<ProcessIdentity, UnknownReason> {
-        self.processes
+        let identity = self
+            .processes
             .iter()
             .find(|process| process.identity.pid == pid)
-            .map(|process| process.identity.clone())
-            .ok_or(UnknownReason::Exited)
+            .map(|process| process.identity.clone());
+        if self
+            .child_reparent_after_identity
+            .as_ref()
+            .is_some_and(|(child_pid, _)| *child_pid == pid)
+        {
+            let (child_pid, new_parent) = self
+                .child_reparent_after_identity
+                .take()
+                .expect("matching reparent race is present");
+            if let Some(process) = self
+                .processes
+                .iter_mut()
+                .find(|process| process.identity.pid == child_pid)
+            {
+                process.parent = Some(new_parent);
+            }
+        }
+        identity.ok_or(UnknownReason::Exited)
     }
 
     fn children(
@@ -250,6 +269,22 @@ fn child_reparented_during_enumeration_is_not_attributed_to_owner() {
 }
 
 #[test]
+fn child_reparented_after_enumeration_is_not_attributed_to_owner() {
+    let mut backend = FakeBackend {
+        processes: root_and_child(),
+        child_reparent_after_identity: Some((11, 77)),
+        ..FakeBackend::default()
+    };
+    let result = sample_owned_tree(&mut backend, identity(10, 1), SampleBudget::default()).unwrap();
+    assert_eq!(
+        result.metrics.pss_bytes,
+        Metric::unknown(UnknownReason::IdentityChanged)
+    );
+    assert!(result.truncated);
+    assert!(!result.processes.contains(&identity(11, 2)));
+}
+
+#[test]
 fn denied_and_unsupported_metrics_remain_unknown_and_propagate() {
     let mut denied = counters();
     denied.rss_bytes = Metric::unknown(UnknownReason::PermissionDenied);
@@ -390,4 +425,142 @@ fn traversal_is_bounded_and_truncation_makes_aggregates_unknown() {
         result.metrics.pss_bytes,
         Metric::unknown(UnknownReason::BudgetExceeded)
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_proc_backend_samples_a_live_owned_process_generation() {
+    use std::process::{Child, Command, Stdio};
+
+    struct ChildGuard(Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let child = ChildGuard(
+        Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start bounded test-owned child"),
+    );
+    let mut backend = horizoncode_kernel::resource_sampler::LinuxProcBackend::system();
+    let identity = backend
+        .identity(child.0.id())
+        .expect("read the child PID/start identity from /proc");
+    let sample = sample_owned_tree(&mut backend, identity.clone(), SampleBudget::default())
+        .expect("sample only the live child identity");
+
+    assert_eq!(sample.process_count, 1);
+    assert_eq!(sample.processes, vec![identity]);
+    assert!(!sample.truncated);
+    assert!(matches!(sample.metrics.pss_bytes, Metric::Measured(value) if value > 0));
+    assert!(matches!(sample.metrics.rss_bytes, Metric::Measured(value) if value > 0));
+    assert!(matches!(sample.metrics.cpu_ns, Metric::Measured(_)));
+    assert!(matches!(sample.metrics.thread_count, Metric::Measured(value) if value > 0));
+    assert!(matches!(sample.metrics.fd_count, Metric::Measured(_)));
+}
+
+/// Live capture readiness: the real Linux backend samples an owned process tree
+/// with every required RC0 metric MEASURED and no unknown substitution. This is
+/// harness/OS evidence for the `scripts/perf/rc0.py` capture path; it is not a
+/// 1/5/10/20 Horizon baseline and never launches product workloads.
+#[cfg(target_os = "linux")]
+mod linux_capture_readiness {
+    use horizoncode_kernel::resource_sampler::{
+        AggregateCounters, LinuxProcBackend, Metric, ProcessBackend, SampleBudget, SampleError,
+        TreeSample, sample_owned_tree,
+    };
+
+    // Both live tests spawn children of the test process. Serialize them so the
+    // exited-owner negative cannot intentionally kill a sibling process while
+    // the positive test is sampling that same test-process tree.
+    static LIVE_SAMPLE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn assert_required_metrics_measured(counters: &AggregateCounters) {
+        for (label, value) in [
+            ("pss_bytes", &counters.pss_bytes),
+            ("rss_bytes", &counters.rss_bytes),
+            ("cpu_ns", &counters.cpu_ns),
+            ("thread_count", &counters.thread_count),
+            ("fd_count", &counters.fd_count),
+        ] {
+            assert!(
+                matches!(value, Metric::Measured(_)),
+                "required RC0 metric {label} must be MEASURED for an owned tree: {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn live_linux_tree_sampling_measures_every_required_metric() {
+        let _lock = LIVE_SAMPLE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn an owned test child");
+        let mut backend = LinuxProcBackend::system();
+        let owner = backend
+            .identity(std::process::id())
+            .expect("own process identity is readable");
+        let result = sample_owned_tree(&mut backend, owner.clone(), SampleBudget::default())
+            .expect("owned tree sampling");
+        child.kill().expect("kill owned child");
+        child.wait().expect("reap owned child");
+
+        assert!(!result.truncated, "{result:?}");
+        assert!(result.process_count >= 2, "{result:?}");
+        assert!(
+            result.processes.contains(&owner),
+            "owner identity is present in its own owned tree"
+        );
+        assert!(
+            result
+                .processes
+                .iter()
+                .any(|process| process.pid == child.id()),
+            "spawned child is attributed to the owned tree"
+        );
+        assert_required_metrics_measured(&result.metrics);
+    }
+
+    #[test]
+    fn live_linux_sampling_never_fabricates_a_sample_for_an_exited_owner() {
+        let _lock = LIVE_SAMPLE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn an owned test child");
+        let pid = child.id();
+        let mut backend = LinuxProcBackend::system();
+        let owner = backend.identity(pid).expect("child identity");
+        child.kill().expect("kill owned child");
+        child.wait().expect("reap owned child");
+        match sample_owned_tree(&mut backend, owner.clone(), SampleBudget::default()) {
+            Err(SampleError::IdentityUnavailable { .. }) => {}
+            Err(other) => panic!("unexpected sampling error for an exited owner: {other:?}"),
+            Ok(TreeSample {
+                metrics, processes, ..
+            }) => {
+                // A recycled identity may still resolve, but the sample must
+                // then carry the owner or an explicit UNKNOWN -- never a
+                // fabricated measurement attributed to the dead process.
+                let owner_present = processes.contains(&owner);
+                let measured = matches!(metrics.pss_bytes, Metric::Measured(_));
+                assert!(
+                    !measured || owner_present,
+                    "measured tree for an exited owner must include its identity: {processes:?}"
+                );
+            }
+        }
+    }
 }

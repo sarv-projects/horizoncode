@@ -16,6 +16,8 @@ export type DecodedCredentials = {
 export type Info = {
   readonly password: Option.Option<string>
   readonly username: string
+  readonly reviewerPassword: Option.Option<string>
+  readonly reviewerUsername: Option.Option<string>
 }
 
 export class Config extends Context.Service<Config, Info>()("@opencode/ServerAuthConfig") {
@@ -31,6 +33,8 @@ export class Config extends Context.Service<Config, Info>()("@opencode/ServerAut
           yield* EffectConfig.all({
             password: EffectConfig.string("OPENCODE_SERVER_PASSWORD").pipe(EffectConfig.option),
             username: EffectConfig.string("OPENCODE_SERVER_USERNAME").pipe(EffectConfig.withDefault("opencode")),
+            reviewerPassword: EffectConfig.string("OPENCODE_SERVER_REVIEWER_PASSWORD").pipe(EffectConfig.option),
+            reviewerUsername: EffectConfig.string("OPENCODE_SERVER_REVIEWER_USERNAME").pipe(EffectConfig.option),
           }),
         )
       }),
@@ -42,12 +46,48 @@ export function required(config: Info) {
   return Option.isSome(config.password) && config.password.value !== ""
 }
 
-export function authorized(credentials: DecodedCredentials, config: Info) {
+/** Reviewer auth is an optional second identity, enabled only as a complete pair
+ * distinct from the primary credentials. */
+export function reviewerConfigured(config: Info) {
   return (
+    required(config) &&
+    Option.isSome(config.password) &&
+    Option.isSome(config.reviewerUsername) &&
+    Option.isSome(config.reviewerPassword) &&
+    config.reviewerUsername.value.length > 0 &&
+    config.reviewerPassword.value.length > 0 &&
+    config.reviewerUsername.value !== config.username &&
+    config.reviewerPassword.value !== config.password.value
+  )
+}
+
+export function authorized(credentials: DecodedCredentials, config: Info) {
+  const primary = (
     Option.isSome(config.password) &&
     credentials.username === config.username &&
     Redacted.value(credentials.password) === config.password.value
   )
+  const reviewer =
+    reviewerConfigured(config) &&
+    Option.isSome(config.reviewerUsername) &&
+    Option.isSome(config.reviewerPassword) &&
+    credentials.username === config.reviewerUsername.value &&
+    Redacted.value(credentials.password) === config.reviewerPassword.value
+  return primary || reviewer
+}
+
+/** Returns only the identity whose configured credential actually authenticated. */
+export function authenticatedUsername(credentials: DecodedCredentials, config: Info) {
+  if (!authorized(credentials, config)) return undefined
+  if (
+    reviewerConfigured(config) &&
+    Option.isSome(config.reviewerUsername) &&
+    Option.isSome(config.reviewerPassword) &&
+    credentials.username === config.reviewerUsername.value &&
+    Redacted.value(credentials.password) === config.reviewerPassword.value
+  )
+    return config.reviewerUsername.value
+  return config.username
 }
 
 export function header(credentials?: Credentials) {

@@ -11,7 +11,6 @@ import { Flag } from "@opencode-ai/core/flag/flag"
 import { Auth } from "../auth"
 import { Env } from "../env"
 import { applyEdits, modify } from "jsonc-parser"
-import { InstallationLocal, InstallationVersion } from "@opencode-ai/core/installation/version"
 import { existsSync } from "fs"
 import { Account } from "@/account/account"
 import { isRecord } from "@/util/record"
@@ -19,7 +18,7 @@ import { FeatureExposure } from "@opencode-ai/core/v1/config/feature-exposure"
 import type { ConsoleState } from "@opencode-ai/core/v1/config/console-state"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { InstanceState } from "@/effect/instance-state"
-import { Context, Duration, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
+import { Context, Duration, Effect, Layer, Option, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 import { containsPath, type InstanceContext } from "../project/instance-context"
@@ -35,7 +34,6 @@ import { ConfigPaths } from "./paths"
 import { ConfigPlugin } from "./plugin"
 import { ConfigVariable } from "./variable"
 import { ConfigV2Compat } from "./v2-compat"
-import { Npm } from "@opencode-ai/core/npm"
 import { withTransientReadRetry } from "@/util/effect-http-client"
 
 // Custom merge function that concatenates array fields instead of replacing them
@@ -122,13 +120,19 @@ export class FeatureSettingConflict extends Error {
   }
 }
 
+export class FeatureSettingLocked extends Error {
+  constructor() {
+    super("Feature setting is locked by runtime or organization policy")
+    this.name = "FeatureSettingLocked"
+  }
+}
+
 
 
 type State = {
   config: Info
   featureConfig: FeatureExposure.SourceConfig
   directories: string[]
-  deps: Fiber.Fiber<void>[]
   consoleState: ConsoleState
 }
 
@@ -138,6 +142,7 @@ export interface Interface {
   readonly getConsoleState: () => Effect.Effect<ConsoleState>
   readonly update: (config: Info) => Effect.Effect<void>
   readonly getFeatures: () => Effect.Effect<FeatureExposure.Feature[]>
+  readonly applyPendingFeatures: () => Effect.Effect<void>
   readonly updateFeature: (
     input: FeatureExposure.Update,
   ) => Effect.Effect<FeatureExposure.Feature[], Error | EffectFlock.LockError>
@@ -195,7 +200,6 @@ const layer = Layer.effect(
     const authSvc = yield* Auth.Service
     const accountSvc = yield* Account.Service
     const env = yield* Env.Service
-    const npmSvc = yield* Npm.Service
     const http = yield* HttpClient.HttpClient
 
     const readConfigFile = (filepath: string) => fs.readFileStringSafe(filepath).pipe(Effect.orDie)
@@ -257,11 +261,6 @@ const layer = Layer.effect(
       if (!("path" in options)) return data
 
       yield* Effect.promise(() => resolveLoadedPlugins(data, options.path))
-      if (!data.$schema) {
-        data.$schema = "https://opencode.ai/config.json"
-        const updated = text.replace(/^\s*\{/, '{\n  "$schema": "https://opencode.ai/config.json",')
-        yield* fs.writeFileString(options.path, updated).pipe(Effect.catch(() => Effect.void))
-      }
       return data
     })
 
@@ -274,16 +273,6 @@ const layer = Layer.effect(
 
     const loadGlobal = Effect.fnUntraced(function* (env?: Record<string, string>) {
       let result: Info = {}
-      // Seed the default global config with the schema for editor completion, but avoid writing when the user
-      // explicitly routes config through env-provided paths or content.
-      if (!Flag.OPENCODE_CONFIG && !Flag.OPENCODE_CONFIG_DIR && !Flag.OPENCODE_CONFIG_CONTENT) {
-        const file = globalConfigFile()
-        if (!existsSync(file)) {
-          yield* fs
-            .writeWithDirs(file, JSON.stringify({ $schema: "https://opencode.ai/config.json" }, null, 2))
-            .pipe(Effect.catch(() => Effect.void))
-        }
-      }
       result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "config.json"), env))
       result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "opencode.json"), env))
       result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "opencode.jsonc"), env))
@@ -292,13 +281,10 @@ const layer = Layer.effect(
       if (existsSync(legacy)) {
         yield* Effect.promise(() =>
           import(pathToFileURL(legacy).href, { with: { type: "toml" } })
-            .then(async (mod) => {
+            .then((mod) => {
               const { provider, model, ...rest } = mod.default
               if (provider && model) result.model = `${provider}/${model}`
-              result["$schema"] = "https://opencode.ai/config.json"
               result = mergeConfig(result, rest)
-              await fsNode.writeFile(path.join(Global.Path.config, "config.json"), JSON.stringify(result, null, 2))
-              await fsNode.unlink(legacy)
             })
             .catch(() => {}),
         )
@@ -377,8 +363,38 @@ const layer = Layer.effect(
           result.plugin_origins = plugins
         })
 
+        let featureConfig: FeatureExposure.SourceConfig = {}
+        const captureFeatureOrigins = (source: string, next: Info, kind?: ConfigPlugin.Scope) => {
+          const compaction = next.compaction
+          if (!compaction) return
+          const managed = source.endsWith("/api/config") || source.includes("managed")
+          const valueSource = managed
+            ? "system_policy"
+            : kind === "global"
+              ? "user"
+              : kind === "local" || source === "OPENCODE_CONFIG_CONTENT" || containsPath(source, ctx)
+                ? "project"
+                : source === Global.Path.config || source.startsWith(`${Global.Path.config}${path.sep}`)
+                  ? "user"
+                  : "unknown"
+          const origins = { ...featureConfig.origins }
+          for (const key of ["auto", "prune"] as const) {
+            if (compaction[key] === undefined) continue
+            origins[key] = {
+              valueSource,
+              policyLock: managed ? "locked" : "unlocked",
+              ...(managed ? { blockedReason: "Managed by organization or system policy" } : {}),
+            }
+          }
+          featureConfig = {
+            ...featureConfig,
+            compaction: { ...featureConfig.compaction, ...compaction },
+            origins,
+          }
+        }
         const merge = (source: string, next: Info, kind?: ConfigPlugin.Scope) => {
           result = mergeConfigConcatArrays(result, next)
+          captureFeatureOrigins(source, next, kind)
           return mergePluginOrigins(source, next.plugin, kind)
         }
 
@@ -448,8 +464,6 @@ const layer = Layer.effect(
           yield* Effect.logDebug("loading config from OPENCODE_CONFIG_DIR", { path: Flag.OPENCODE_CONFIG_DIR })
         }
 
-        const deps: Fiber.Fiber<void>[] = []
-
         for (const dir of directories) {
           if (dir.endsWith(".opencode") || dir === Flag.OPENCODE_CONFIG_DIR) {
             for (const file of ["opencode.json", "opencode.jsonc"]) {
@@ -463,27 +477,6 @@ const layer = Layer.effect(
           }
 
           yield* ensureGitignore(dir).pipe(Effect.orDie)
-
-          const dep = yield* npmSvc
-            .install(dir, {
-              add: [
-                {
-                  name: "@opencode-ai/plugin",
-                  version: InstallationLocal ? undefined : InstallationVersion,
-                },
-              ],
-            })
-            .pipe(
-              Effect.exit,
-              Effect.tap((exit) =>
-                Exit.isFailure(exit)
-                  ? Effect.logWarning("background dependency install failed", { dir, error: String(exit.cause) })
-                  : Effect.void,
-              ),
-              Effect.asVoid,
-              Effect.forkDetach,
-            )
-          deps.push(dep)
 
           result.command = mergeDeep(result.command ?? {}, yield* Effect.promise(() => ConfigCommand.load(dir)))
           result.agent = mergeDeep(result.agent ?? {}, yield* Effect.promise(() => ConfigAgent.load(dir)))
@@ -559,13 +552,12 @@ const layer = Layer.effect(
         // macOS managed preferences (.mobileconfig deployed via MDM) override everything
         const managed = yield* Effect.promise(() => ConfigManaged.readManagedPreferences())
         if (managed) {
-          result = mergeConfigConcatArrays(
-            result,
-            yield* loadConfig(managed.text, {
-              dir: path.dirname(managed.source),
-              source: managed.source,
-            }),
-          )
+          const managedConfig = yield* loadConfig(managed.text, {
+            dir: path.dirname(managed.source),
+            source: managed.source,
+          })
+          result = mergeConfigConcatArrays(result, managedConfig)
+          captureFeatureOrigins(managed.source, managedConfig, "global")
         }
 
         for (const [name, mode] of Object.entries(result.mode ?? {})) {
@@ -611,22 +603,35 @@ const layer = Layer.effect(
           result.share = "auto"
         }
 
-        const featureConfig = {
-          compaction: result.compaction ? { ...result.compaction } : undefined,
-        }
+        featureConfig.compaction = result.compaction ? { ...result.compaction } : featureConfig.compaction
 
         if (Flag.OPENCODE_DISABLE_AUTOCOMPACT) {
           result.compaction = { ...result.compaction, auto: false }
+          featureConfig.origins = {
+            ...featureConfig.origins,
+            auto: {
+              ...(featureConfig.origins?.auto ?? { valueSource: "unknown" as const }),
+              policyLock: "locked",
+              blockedReason: "Disabled by runtime policy",
+            },
+          }
         }
         if (Flag.OPENCODE_DISABLE_PRUNE) {
           result.compaction = { ...result.compaction, prune: false }
+          featureConfig.origins = {
+            ...featureConfig.origins,
+            prune: {
+              ...(featureConfig.origins?.prune ?? { valueSource: "unknown" as const }),
+              policyLock: "locked",
+              blockedReason: "Disabled by runtime policy",
+            },
+          }
         }
 
         return {
           config: result,
           featureConfig,
           directories,
-          deps,
           consoleState: {
             consoleManagedProviders: Array.from(consoleManagedProviders),
             activeOrgName,
@@ -652,47 +657,67 @@ const layer = Layer.effect(
       return yield* InstanceState.use(state, (s) => FeatureExposure.list(s.featureConfig, s.config))
     })
 
+    const applyPendingFeatures = Effect.fn("Config.applyPendingFeatures")(function* () {
+      const current = yield* InstanceState.get(state)
+      const compaction = { ...current.config.compaction }
+      for (const key of ["auto", "prune"] as const) {
+        const origin = current.featureConfig.origins?.[key]
+        if (origin?.pendingApplyAt !== "next_turn" || origin.policyLock === "locked") continue
+        const value = current.featureConfig.compaction?.[key]
+        if (value !== undefined) compaction[key] = value
+      }
+      current.config = { ...current.config, compaction }
+    })
+
     const updateFeature = Effect.fn("Config.updateFeature")(function* (input: FeatureExposure.Update) {
-      const current = yield* InstanceState.use(state, (s) => ({
-        requested: s.featureConfig,
-        effective: s.config,
-      }))
+      const current = yield* InstanceState.get(state)
+      if (input.featureId !== "compaction.auto" && input.featureId !== "compaction.prune")
+        return yield* Effect.fail(new Error("Feature setting is unavailable"))
       const key = input.featureId === "compaction.auto" ? "auto" : "prune"
       const file = path.join(yield* InstanceState.directory, "config.json")
-      yield* flock.withLock(
-        Effect.tryPromise({
-          try: async () => {
-            const text = await fsNode.readFile(file, "utf8").catch((error) => {
-              if ((error as NodeJS.ErrnoException).code === "ENOENT") return "{}"
-              throw error
-            })
-            const stored = text ? ConfigParse.jsonc(text, file) : {}
-            const local = isRecord(stored) && isRecord(stored.compaction) ? stored.compaction[key] : undefined
-            const requested = current.requested.compaction?.[key] ?? null
-            if (local !== undefined ? local !== input.expectedEnabled : requested !== input.expectedEnabled) {
-              throw new FeatureSettingConflict()
-            }
-            const updated = patchJsonc(text || "{}", { compaction: { [key]: input.enabled } })
-            await fsNode.writeFile(file, updated, "utf8")
-          },
-          catch: (error) => (error instanceof Error ? error : new Error(String(error), { cause: error })),
+      return yield* flock.withLock(
+        Effect.gen(function* () {
+          if (
+            current.featureConfig.origins?.[key]?.policyLock === "locked" ||
+            (key === "auto" && Flag.OPENCODE_DISABLE_AUTOCOMPACT) ||
+            (key === "prune" && Flag.OPENCODE_DISABLE_PRUNE)
+          )
+            return yield* Effect.fail(new FeatureSettingLocked())
+          yield* Effect.tryPromise({
+            try: async () => {
+              const text = await fsNode.readFile(file, "utf8").catch((error) => {
+                if ((error as NodeJS.ErrnoException).code === "ENOENT") return "{}"
+                throw error
+              })
+              const stored = text ? ConfigParse.jsonc(text, file) : {}
+              const local = isRecord(stored) && isRecord(stored.compaction) ? stored.compaction[key] : undefined
+              const requested = current.featureConfig.compaction?.[key] ?? null
+              if (local !== undefined ? local !== input.expectedEnabled : requested !== input.expectedEnabled) {
+                throw new FeatureSettingConflict()
+              }
+              const updated = patchJsonc(text || "{}", { compaction: { [key]: input.enabled } })
+              await fsNode.writeFile(file, updated, "utf8")
+              // Publish requested state with the file write under the same lock.
+              // Runtime config remains pinned until its next-turn reload.
+              current.featureConfig = {
+                ...current.featureConfig,
+                compaction: { ...current.featureConfig.compaction, [key]: input.enabled },
+                origins: {
+                  ...current.featureConfig.origins,
+                  [key]: {
+                    valueSource: "project",
+                    policyLock: "unlocked",
+                    pendingApplyAt: "next_turn",
+                  },
+                },
+              }
+            },
+            catch: (error) => (error instanceof Error ? error : new Error(String(error), { cause: error })),
+          })
+          return FeatureExposure.list(current.featureConfig, current.config)
         }),
         `config-feature-setting:${file}`,
       )
-      const requested = {
-        ...current.requested,
-        compaction: { ...current.requested.compaction, [key]: input.enabled },
-      }
-      const enabled =
-        (key === "auto" && Flag.OPENCODE_DISABLE_AUTOCOMPACT) ||
-        (key === "prune" && Flag.OPENCODE_DISABLE_PRUNE)
-          ? false
-          : input.enabled
-      const effective = {
-        ...current.effective,
-        compaction: { ...current.effective.compaction, [key]: enabled },
-      }
-      return FeatureExposure.list(requested, effective)
     })
 
     const directories = Effect.fn("Config.directories")(function* () {
@@ -703,11 +728,9 @@ const layer = Layer.effect(
       return yield* InstanceState.use(state, (s) => s.consoleState)
     })
 
-    const waitForDependencies = Effect.fn("Config.waitForDependencies")(function* () {
-      yield* InstanceState.useEffect(state, (s) =>
-        Effect.forEach(s.deps, Fiber.join, { concurrency: "unbounded" }).pipe(Effect.asVoid),
-      )
-    })
+    // Retained for callers compiled against the previous config API. Config loading
+    // no longer installs the external plugin package while plugin effects are disabled.
+    const waitForDependencies = Effect.fn("Config.waitForDependencies")(() => Effect.void)
 
     const update = Effect.fn("Config.update")(function* (config: Info) {
       const dir = yield* InstanceState.directory
@@ -759,6 +782,7 @@ const layer = Layer.effect(
       getConsoleState,
       update,
       getFeatures,
+      applyPendingFeatures,
       updateFeature,
       updateGlobal,
       invalidate,
@@ -771,7 +795,7 @@ const layer = Layer.effect(
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [FSUtil.node, EffectFlock.node, Auth.node, Account.node, Env.node, Npm.node, httpClient],
+  deps: [FSUtil.node, EffectFlock.node, Auth.node, Account.node, Env.node, httpClient],
 })
 
 export * as Config from "./config"

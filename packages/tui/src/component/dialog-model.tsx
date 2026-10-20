@@ -8,6 +8,42 @@ import { DialogVariant } from "./dialog-variant"
 import * as fuzzysort from "fuzzysort"
 import { useConnected } from "./use-connected"
 import { useSync } from "../context/sync"
+import { explicitZeroPriceLabel, modelPriceLabel } from "../util/model"
+import { DialogProviderDoctor } from "./dialog-provider-doctor"
+
+type ListedModelCapabilities = {
+  toolcall?: boolean
+  reasoning?: boolean
+  input?: { image?: boolean; audio?: boolean; video?: boolean; pdf?: boolean }
+  output?: { image?: boolean; audio?: boolean; video?: boolean; pdf?: boolean }
+}
+
+/** Catalog capability hints and connection state; this is not a live endpoint probe. */
+export function modelAvailabilityLabel(input: {
+  connected: boolean
+  status?: "active" | "alpha" | "beta" | "deprecated"
+  capabilities?: ListedModelCapabilities
+}) {
+  const labels = [
+    input.connected ? "Provider available" : "Provider unavailable",
+    `Catalog ${input.status ?? "status unknown"}`,
+  ]
+  const capabilities = input.capabilities
+  const listed = [
+    capabilities?.toolcall ? "tools" : undefined,
+    capabilities?.reasoning ? "reasoning" : undefined,
+    capabilities?.input?.image ? "image input" : undefined,
+    capabilities?.input?.audio ? "audio input" : undefined,
+    capabilities?.input?.video ? "video input" : undefined,
+    capabilities?.input?.pdf ? "PDF input" : undefined,
+    capabilities?.output?.image ? "image output" : undefined,
+    capabilities?.output?.audio ? "audio output" : undefined,
+    capabilities?.output?.video ? "video output" : undefined,
+    capabilities?.output?.pdf ? "PDF output" : undefined,
+  ].filter((value): value is string => value !== undefined)
+  if (listed.length > 0) labels.push(`Listed support: ${listed.join(", ")}`)
+  return labels.join(" · ")
+}
 
 export function DialogModel(props: { providerID?: string }) {
   const local = useLocal()
@@ -42,7 +78,11 @@ export function DialogModel(props: { providerID?: string }) {
             description: provider.name,
             category,
             disabled: provider.id === "opencode" && model.id.includes("-nano"),
-            footer: provider.id === "opencode" && isZeroPricedModel(model) ? "Free" : undefined,
+            footer: `${modelPriceLabel(model.cost)} · ${modelAvailabilityLabel({
+              connected: sync.data.provider_next.connected.includes(provider.id),
+              status: model.status,
+              capabilities: model.capabilities,
+            })}`,
             onSelect: () => {
               onSelect(provider.id, model.id)
             },
@@ -88,7 +128,11 @@ export function DialogModel(props: { providerID?: string }) {
                 .join(" ") || undefined,
             category: connected() ? provider.name : undefined,
             disabled: provider.id === "opencode" && model.includes("-nano"),
-            footer: provider.id === "opencode" && isZeroPricedModel(info) ? "Free" : undefined,
+            footer: `${modelPriceLabel(info.cost)} · ${modelAvailabilityLabel({
+              connected: sync.data.provider_next.connected.includes(provider.id),
+              status: info.status,
+              capabilities: info.capabilities,
+            })}`,
             onSelect() {
               onSelect(provider.id, model)
             },
@@ -168,8 +212,15 @@ export function DialogModel(props: { providerID?: string }) {
       options={options()}
       actions={[
         {
+          command: "provider.doctor.offline",
+          title: "Provider Doctor · Offline",
+          onTrigger() {
+            dialog.replace(() => <DialogProviderDoctor />)
+          },
+        },
+        {
           command: "model.dialog.provider",
-          title: connected() ? "Connect provider" : "View all providers",
+          title: connected() ? "Switch provider/model" : "View providers",
           onTrigger() {
             dialog.replace(() => <DialogProvider />)
           },
@@ -203,37 +254,12 @@ type ModelCostShape = ModelPriceRates & {
   experimentalOver200K?: ModelPriceRates
 }
 
-function declaredNonZero(value: number | undefined) {
-  return value !== undefined && value !== 0
-}
-
 /**
- * AN-002/AN-003: "Free" may only be claimed when the provider declares both
- * primary token rates as exactly zero and no other declared component is
- * non-zero. Omitted secondary rates stay unknown and do not fabricate a price;
- * a model without a declared zero primary price is never labelled free.
+ * Pricing is only known to be zero when every listed rate is explicitly zero.
+ * Missing components are unknown, not a free-price claim.
  */
 export function isZeroPricedModel(model: { cost?: ModelCostShape }) {
-  const cost = model.cost
-  if (!cost) return false
-  if (cost.input !== 0 || cost.output !== 0) return false
-  if (declaredNonZero(cost.cache?.read) || declaredNonZero(cost.cache?.write)) return false
-  if (
-    cost.tiers?.some(
-      (tier) =>
-        tier.input !== 0 || tier.output !== 0 || declaredNonZero(tier.cache?.read) || declaredNonZero(tier.cache?.write),
-    )
-  )
-    return false
-  if (
-    cost.experimentalOver200K &&
-    (cost.experimentalOver200K.input !== 0 ||
-      cost.experimentalOver200K.output !== 0 ||
-      declaredNonZero(cost.experimentalOver200K.cache?.read) ||
-      declaredNonZero(cost.experimentalOver200K.cache?.write))
-  )
-    return false
-  return true
+  return explicitZeroPriceLabel(model.cost) !== undefined
 }
 
 export function sortModelOptions<T extends { footer?: string; releaseDate: string | number; title: string }>(
@@ -243,7 +269,7 @@ export function sortModelOptions<T extends { footer?: string; releaseDate: strin
   if (newestFirst) return sortBy(options, [(option) => option.releaseDate, "desc"], (option) => option.title)
   return sortBy(
     options,
-    (option) => option.footer !== "Free",
+    (option) => option.footer !== "Free" && option.footer !== "Listed $0",
     [(option) => option.releaseDate, "desc"],
     (option) => option.title,
   )

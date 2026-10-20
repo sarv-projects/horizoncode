@@ -9,6 +9,8 @@ import { isAbsolute, join } from "path"
 import { DatabaseMigration } from "./migration"
 import { InstallationChannel } from "../installation/version"
 import { makeGlobalNode } from "../effect/app-node"
+import { randomUUID } from "node:crypto"
+import { sql } from "drizzle-orm"
 
 const makeDatabase = EffectDrizzleSqlite.makeWithDefaults()
 type DatabaseShape = Effect.Success<typeof makeDatabase>
@@ -16,6 +18,7 @@ type DatabaseShape = Effect.Success<typeof makeDatabase>
 export interface Interface {
   db: DatabaseShape
   readonly path: string
+  readonly sourceStoreID: string
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/storage/Database") {}
@@ -34,7 +37,20 @@ const layerFromFilename = (filename: string) =>
       yield* db.run("PRAGMA wal_checkpoint(PASSIVE)")
       yield* DatabaseMigration.apply(db)
 
-      return { db, path: filename }
+      // SQLite has no cross-platform UUID default. Insert a cryptographically
+      // random identity once; OR IGNORE makes concurrent process startup stable.
+      yield* db.run(sql`
+        INSERT OR IGNORE INTO core_source_identity (singleton_id, source_store_id)
+        VALUES (1, ${`store_${randomUUID().replaceAll("-", "")}`})
+      `)
+      const sourceIdentity = yield* db.get<{ source_store_id: string }>(sql`
+        SELECT source_store_id FROM core_source_identity WHERE singleton_id = 1
+      `)
+      if (!sourceIdentity || !/^[A-Za-z0-9._-]{1,256}$/.test(sourceIdentity.source_store_id)) {
+        return yield* Effect.die("Core source-store identity is missing or malformed")
+      }
+
+      return { db, path: filename, sourceStoreID: sourceIdentity.source_store_id }
     }).pipe(Effect.orDie),
   ).pipe(Layer.provide(sqliteLayer({ filename })))
 

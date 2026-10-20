@@ -1,7 +1,7 @@
 export * as SessionV2 from "./session"
 export * from "./session/schema"
 
-import { DateTime, Effect, Layer, Schema, Context, Stream } from "effect"
+import { DateTime, Effect, Layer, Schema, Context, Stream, Option } from "effect"
 import { ListAnchor } from "@opencode-ai/schema/session"
 import { and, asc, desc, eq, gt, like, lt, or, type SQL } from "drizzle-orm"
 import { ProjectV2 } from "./project"
@@ -13,7 +13,8 @@ import { Prompt } from "./session/prompt"
 import { PromptInput } from "@opencode-ai/schema/prompt-input"
 import { EventV2 } from "./event"
 import { Snapshot } from "./snapshot"
-import { SessionSupervisor, type SessionSupervisorError } from "./session/supervisor"
+import { SessionSupervisor, SessionSupervisorError } from "./session/supervisor"
+import { TrustedPrincipalContext } from "./trusted-principal"
 import { Database } from "./database/database"
 import { SessionProjector } from "./session/projector"
 import { SessionMessageTable, SessionTable } from "./session/sql"
@@ -27,6 +28,7 @@ import { ProjectTable } from "./project/sql"
 import path from "path"
 import { fromRow } from "./session/info"
 import { SessionStore } from "./session/store"
+import * as ContextSelection from "./session/context-selection"
 import { SessionExecution } from "./session/execution"
 import { makeGlobalNode } from "./effect/app-node"
 import { LocationServiceMap } from "./location-service-map"
@@ -128,6 +130,10 @@ export interface Interface {
   readonly context: (
     sessionID: SessionSchema.ID,
   ) => Effect.Effect<SessionMessage.Message[], NotFoundError | MessageDecodeError>
+  readonly contextSelection: (input: {
+    readonly sessionID: SessionSchema.ID
+    readonly mode: import("@opencode-ai/schema/context-selection-v1").ContextSelectionModeV1
+  }) => Effect.Effect<import("@opencode-ai/schema/context-selection-v1").ContextSelectionV1, NotFoundError | MessageDecodeError>
   readonly events: (input: {
     sessionID: SessionSchema.ID
     after?: number
@@ -148,7 +154,7 @@ export interface Interface {
     prompt: PromptInput.Prompt
     delivery?: SessionInput.Delivery
     resume?: boolean
-  }) => Effect.Effect<SessionInput.Admitted, NotFoundError | PromptConflictError>
+  }) => Effect.Effect<SessionInput.Admitted, NotFoundError | PromptConflictError | SessionExecution.Error>
   readonly shell: (input: {
     id?: EventV2.ID
     sessionID: SessionSchema.ID
@@ -173,11 +179,12 @@ export interface Interface {
       files?: boolean
     }) => Effect.Effect<
       Revert.State,
-      NotFoundError | SessionRevert.FileChangesUnavailableError | SessionRevert.MessageNotFoundError | SessionSupervisorError
+      NotFoundError | SessionRevert.FileChangesUnavailableError | SessionRevert.MessageNotFoundError | SessionSupervisorError,
+      TrustedPrincipalContext
     >
     readonly clear: (
       sessionID: SessionSchema.ID,
-    ) => Effect.Effect<void, NotFoundError | SessionRevert.FileChangesUnavailableError | SessionSupervisorError>
+    ) => Effect.Effect<void, NotFoundError | SessionRevert.FileChangesUnavailableError | SessionSupervisorError, TrustedPrincipalContext>
     readonly commit: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError>
   }
 }
@@ -348,6 +355,19 @@ const layer = Layer.effect(
         yield* result.get(sessionID)
         return yield* store.context(sessionID)
       }),
+      contextSelection: Effect.fn("V2Session.contextSelection")(function* (input) {
+        yield* result.get(input.sessionID)
+        const [messages, sourceRevision] = yield* Effect.all([
+          store.context(input.sessionID),
+          EventV2.latestSequence(db, input.sessionID),
+        ])
+        return ContextSelection.compile({
+          sessionID: input.sessionID,
+          mode: input.mode,
+          sourceRevision: Math.max(0, sourceRevision),
+          messages,
+        })
+      }),
       events: (input) =>
         Stream.unwrap(
           result
@@ -365,6 +385,13 @@ const layer = Layer.effect(
       prompt: Effect.fn("V2Session.prompt")((input) =>
         Effect.uninterruptible(
           Effect.gen(function* () {
+            const authenticated = input.resume === false ? Option.none() : yield* Effect.serviceOption(TrustedPrincipalContext)
+            if (input.resume !== false && Option.isNone(authenticated)) {
+              return yield* new SessionSupervisorError({
+                stage: "authorization",
+                reason: "Authenticated principal required to resume Session execution",
+              })
+            }
             yield* result.get(input.sessionID)
             const prompt = resolvePrompt(input.prompt)
             const messageID = input.id ?? SessionMessage.ID.create()
@@ -384,7 +411,13 @@ const layer = Layer.effect(
             )
             if (!SessionInput.equivalent(admitted, expected))
               return yield* new PromptConflictError({ sessionID: input.sessionID, messageID })
-            if (input.resume !== false) yield* execution.wake(admitted.sessionID)
+            if (input.resume !== false) {
+              if (Option.isNone(authenticated)) return yield* new SessionSupervisorError({
+                stage: "authorization",
+                reason: "Authenticated principal required to resume Session execution",
+              })
+              yield* execution.wake(admitted.sessionID, authenticated.value.principal)
+            }
             return admitted
           }),
         ),
@@ -429,8 +462,15 @@ const layer = Layer.effect(
       }),
       active: execution.active,
       resume: Effect.fn("V2Session.resume")(function* (sessionID) {
+        const trusted = yield* Effect.serviceOption(TrustedPrincipalContext)
+        if (Option.isNone(trusted)) {
+          return yield* new SessionSupervisorError({
+            stage: "authorization",
+            reason: "Authenticated principal required to resume Session execution",
+          })
+        }
         yield* result.get(sessionID)
-        yield* execution.resume(sessionID)
+        yield* execution.resume(sessionID, trusted.value.principal)
       }),
       interrupt: Effect.fn("V2Session.interrupt")((sessionID) =>
         Effect.uninterruptible(execution.interrupt(sessionID)),

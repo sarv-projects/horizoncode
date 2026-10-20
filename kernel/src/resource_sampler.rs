@@ -14,6 +14,168 @@ pub struct ProcessIdentity {
     pub process_handle: isize,
 }
 
+/// Process identity and owner scope derived from a replayed durable worker
+/// lease. The constructor is crate-private: request JSON and arbitrary PID
+/// lists cannot create sampling authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OwnedProcessLeaseV1 {
+    worker_execution_id: String,
+    owner: crate::resource_budget::AuthenticatedOwnerContext,
+    process_identity: ProcessIdentity,
+    state: crate::resource_budget::ReservationState,
+}
+
+impl OwnedProcessLeaseV1 {
+    pub(crate) fn from_durable_owner(
+        worker_execution_id: String,
+        owner: crate::resource_budget::AuthenticatedOwnerContext,
+        process_identity: ProcessIdentity,
+        state: crate::resource_budget::ReservationState,
+    ) -> Result<Self, ResourceLeaseAttributionError> {
+        if worker_execution_id.is_empty()
+            || worker_execution_id.len() > 128
+            || process_identity.pid == 0
+            || process_identity.start_identity == 0
+            || !matches!(
+                state,
+                crate::resource_budget::ReservationState::Claimed
+                    | crate::resource_budget::ReservationState::ReleasePending
+                    | crate::resource_budget::ReservationState::Quarantined
+            )
+        {
+            return Err(ResourceLeaseAttributionError::InvalidLease);
+        }
+        Ok(Self {
+            worker_execution_id,
+            owner,
+            process_identity,
+            state,
+        })
+    }
+
+    pub(crate) fn worker_execution_id(&self) -> &str {
+        &self.worker_execution_id
+    }
+    pub(crate) fn owner(&self) -> &crate::resource_budget::AuthenticatedOwnerContext {
+        &self.owner
+    }
+    pub(crate) fn process_identity(&self) -> &ProcessIdentity {
+        &self.process_identity
+    }
+    pub(crate) fn state(&self) -> crate::resource_budget::ReservationState {
+        self.state
+    }
+}
+
+/// Authenticated live Core peer identity for a single-process resource sample.
+/// This conveys sampling identity only, never worker or effect authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SessionProcessOwnerIdentityV1 {
+    process_identity: ProcessIdentity,
+    owner_epoch: u64,
+    process_incarnation: String,
+    executable_identity_digest: String,
+}
+
+impl SessionProcessOwnerIdentityV1 {
+    pub(crate) fn from_authenticated_peer(
+        peer: &crate::host_kernel::AuthenticatedCorePeerFactsV1,
+    ) -> Result<Self, ResourceLeaseAttributionError> {
+        let process_identity = ProcessIdentity::new(peer.pid(), peer.start_identity());
+        if process_identity.pid == 0
+            || process_identity.start_identity == 0
+            || peer.owner_epoch() == 0
+            || peer.process_incarnation().is_empty()
+            || peer.process_incarnation().len() > 128
+            || !peer.executable_identity_digest().starts_with("blake3:")
+            || peer.executable_identity_digest().len() != 71
+            || !peer.executable_identity_digest()[7..]
+                .bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(ResourceLeaseAttributionError::InvalidLease);
+        }
+        Ok(Self {
+            process_identity,
+            owner_epoch: peer.owner_epoch(),
+            process_incarnation: peer.process_incarnation().to_owned(),
+            executable_identity_digest: peer.executable_identity_digest().to_owned(),
+        })
+    }
+
+    pub(crate) fn process_identity(&self) -> &ProcessIdentity { &self.process_identity }
+    pub(crate) fn owner_epoch(&self) -> u64 { self.owner_epoch }
+    pub(crate) fn process_incarnation(&self) -> &str { &self.process_incarnation }
+    pub(crate) fn executable_identity_digest(&self) -> &str { &self.executable_identity_digest }
+    pub(crate) fn matches_authenticated_peer(
+        &self,
+        peer: &crate::host_kernel::AuthenticatedCorePeerFactsV1,
+    ) -> bool {
+        self.process_identity.pid == peer.pid()
+            && self.process_identity.start_identity == peer.start_identity()
+            && self.owner_epoch == peer.owner_epoch()
+            && self.process_incarnation == peer.process_incarnation()
+            && self.executable_identity_digest == peer.executable_identity_digest()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ResourceLeaseAttributionError {
+    InvalidLease,
+}
+
+/// Bounded immutable process set and OwnerLog watermark for one resource
+/// sample. Samples are derived telemetry and never mutate reservations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DurableOwnedProcessLeaseSetV1 {
+    owner_log_id: String,
+    owner_log_sequence: String,
+    owner_log_event_digest: String,
+    worker_pool_revision: u64,
+    leases: Vec<OwnedProcessLeaseV1>,
+}
+
+impl DurableOwnedProcessLeaseSetV1 {
+    pub(crate) fn from_durable_owner(
+        owner_log_id: String,
+        owner_log_sequence: String,
+        owner_log_event_digest: String,
+        worker_pool_revision: u64,
+        leases: Vec<OwnedProcessLeaseV1>,
+    ) -> Result<Self, ResourceLeaseAttributionError> {
+        if owner_log_id.is_empty()
+            || owner_log_sequence.parse::<u64>().is_err()
+            || !owner_log_event_digest.starts_with("blake3:")
+            || worker_pool_revision == 0
+            || leases.len() > crate::worker_pool::MAX_WORKER_RECORDS
+        {
+            return Err(ResourceLeaseAttributionError::InvalidLease);
+        }
+        Ok(Self {
+            owner_log_id,
+            owner_log_sequence,
+            owner_log_event_digest,
+            worker_pool_revision,
+            leases,
+        })
+    }
+
+    pub(crate) fn owner_log_id(&self) -> &str {
+        &self.owner_log_id
+    }
+    pub(crate) fn owner_log_sequence(&self) -> &str {
+        &self.owner_log_sequence
+    }
+    pub(crate) fn owner_log_event_digest(&self) -> &str {
+        &self.owner_log_event_digest
+    }
+    pub(crate) fn worker_pool_revision(&self) -> u64 {
+        self.worker_pool_revision
+    }
+    pub(crate) fn leases(&self) -> &[OwnedProcessLeaseV1] {
+        &self.leases
+    }
+}
+
 impl ProcessIdentity {
     pub const fn new(pid: u32, start_identity: u64) -> Self {
         Self {
@@ -43,6 +205,7 @@ pub enum UnknownReason {
     Unavailable,
     Malformed,
     BudgetExceeded,
+    AttributionConflict,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -122,6 +285,7 @@ pub struct TreeSample {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SampleError {
     InvalidBudget,
+    LeaseSetTooLarge,
     IdentityUnavailable { pid: u32, reason: UnknownReason },
     IdentityChanged { pid: u32 },
 }
@@ -148,7 +312,19 @@ pub fn sample_owned_process<B: ProcessBackend>(
     backend: &mut B,
     owner: ProcessIdentity,
 ) -> Result<CounterSet, SampleError> {
-    backend.begin_sample(DEFAULT_MAX_BYTES, DEFAULT_MAX_WORK);
+    sample_owned_process_bounded(backend, owner, DEFAULT_MAX_BYTES, DEFAULT_MAX_WORK)
+}
+
+fn sample_owned_process_bounded<B: ProcessBackend>(
+    backend: &mut B,
+    owner: ProcessIdentity,
+    max_bytes: usize,
+    max_work: usize,
+) -> Result<CounterSet, SampleError> {
+    if max_bytes == 0 || max_bytes > DEFAULT_MAX_BYTES || max_work == 0 || max_work > DEFAULT_MAX_WORK {
+        return Err(SampleError::InvalidBudget);
+    }
+    backend.begin_sample(max_bytes, max_work);
     let before =
         backend
             .identity(owner.pid)
@@ -160,7 +336,7 @@ pub fn sample_owned_process<B: ProcessBackend>(
         return Err(SampleError::IdentityChanged { pid: owner.pid });
     }
     let counters = backend.counters(&owner);
-    if backend.bytes_consumed() > DEFAULT_MAX_BYTES || backend.work_consumed() > DEFAULT_MAX_WORK {
+    if backend.bytes_consumed() > max_bytes || backend.work_consumed() > max_work {
         return Ok(CounterSet::unknown(UnknownReason::BudgetExceeded));
     }
     match backend.identity(owner.pid) {
@@ -196,7 +372,7 @@ pub fn sample_owned_tree<B: ProcessBackend>(
         return Err(SampleError::IdentityChanged { pid: owner.pid });
     }
     let root_pid = owner.pid;
-    let mut queue = vec![owner];
+    let mut queue = vec![(owner, Vec::<ProcessIdentity>::new())];
     let mut visited = HashSet::new();
     let mut processes = Vec::new();
     let mut metrics = AggregateCounters {
@@ -211,7 +387,7 @@ pub fn sample_owned_tree<B: ProcessBackend>(
     let mut truncation_reason = None;
     let mut truncated = false;
 
-    while let Some(expected) = queue.pop() {
+    while let Some((expected, expected_ancestors)) = queue.pop() {
         if !visited.insert(expected.clone()) {
             continue;
         }
@@ -238,6 +414,13 @@ pub fn sample_owned_tree<B: ProcessBackend>(
             truncated = true;
             continue;
         }
+        if let Err(reason) =
+            verify_ancestry(backend, &expected_ancestors, &expected, &mut work, budget)
+        {
+            truncation_reason = Some(reason);
+            truncated = true;
+            break;
+        }
         let counters = backend.counters(&expected);
         if backend.bytes_consumed() > budget.max_bytes || backend.work_consumed() > budget.max_work
         {
@@ -262,6 +445,13 @@ pub fn sample_owned_tree<B: ProcessBackend>(
                 continue;
             }
         }
+        if let Err(reason) =
+            verify_ancestry(backend, &expected_ancestors, &expected, &mut work, budget)
+        {
+            truncation_reason = Some(reason);
+            truncated = true;
+            break;
+        }
         merge(&mut metrics, counters);
         processes.push(expected.clone());
         match backend.children(&expected) {
@@ -274,9 +464,11 @@ pub fn sample_owned_tree<B: ProcessBackend>(
                     truncated = true;
                     break;
                 }
+                let mut child_ancestors = expected_ancestors;
+                child_ancestors.push(expected.clone());
                 for child in children.into_iter().rev() {
                     if !visited.contains(&child) {
-                        queue.push(child);
+                        queue.push((child, child_ancestors.clone()));
                     }
                 }
             }
@@ -298,6 +490,531 @@ pub fn sample_owned_tree<B: ProcessBackend>(
         truncated,
         processes,
     })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AttributedProcessTreeSampleV1 {
+    worker_execution_id: String,
+    task_id: String,
+    attempt_id: String,
+    state: crate::resource_budget::ReservationState,
+    sample: TreeSample,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SessionProcessOwnerSampleV1 {
+    identity: SessionProcessOwnerIdentityV1,
+    metrics: AggregateCounters,
+}
+
+impl AttributedProcessTreeSampleV1 {
+    pub(crate) fn worker_execution_id(&self) -> &str {
+        &self.worker_execution_id
+    }
+    pub(crate) fn task_id(&self) -> &str {
+        &self.task_id
+    }
+    pub(crate) fn attempt_id(&self) -> &str {
+        &self.attempt_id
+    }
+    pub(crate) fn state(&self) -> crate::resource_budget::ReservationState {
+        self.state
+    }
+    pub(crate) fn sample(&self) -> &TreeSample {
+        &self.sample
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DurableOwnedResourceSnapshotV1 {
+    owner: crate::resource_budget::AuthenticatedOwnerContext,
+    owner_log_id: String,
+    owner_log_sequence: String,
+    owner_log_event_digest: String,
+    worker_pool_revision: u64,
+    /// Sequence allocated by the trusted HostKernel OS sampler for the
+    /// machine-wide capacity observation paired with this process sample.
+    sample_sequence: u64,
+    sampled_at_ms: u64,
+    trees: Vec<AttributedProcessTreeSampleV1>,
+    aggregate: AggregateCounters,
+    session_process_owner: Option<SessionProcessOwnerSampleV1>,
+}
+
+impl DurableOwnedResourceSnapshotV1 {
+    pub(crate) fn matches_owner(
+        &self,
+        owner: &crate::resource_budget::AuthenticatedOwnerContext,
+    ) -> bool {
+        self.owner == *owner
+    }
+
+    /// Stable RC0 ingestion shape. Values are decimal strings so counters above
+    /// JavaScript's exact integer range remain exact. This sample is not a
+    /// Session/Run completion attestation; P2 must independently bind its
+    /// verifier result and P1 must bind the live HostKernel process owner.
+    pub(crate) fn to_rc0_owner_sample_json(&self) -> serde_json::Value {
+        use serde_json::json;
+        json!({
+            "schemaVersion": 1,
+            "producer": "horizoncode.worker-owner.resource-sampler",
+            "owner": {
+                "principalRef": self.owner.principal_ref(),
+                "workspaceBinding": self.owner.workspace_binding(),
+                "sessionId": self.owner.session_id(),
+                "runId": self.owner.run_id(),
+                "ownerEpoch": self.owner.owner_epoch().to_string(),
+            },
+            "ownerLog": {
+                "ownerId": self.owner_log_id,
+                "sequence": self.owner_log_sequence,
+                "eventDigest": self.owner_log_event_digest,
+                "workerPoolRevision": self.worker_pool_revision.to_string(),
+            },
+            "sampledAtMs": self.sampled_at_ms.to_string(),
+            "sampleSequence": self.sample_sequence.to_string(),
+            "sessionProcessOwner": {
+                "status": self.session_process_owner.as_ref().map_or("NOT_PROVIDED", |_| "MEASURED"),
+                "processIdentity": self.session_process_owner.as_ref().map(|sample| json!({
+                    "pid": sample.identity.process_identity.pid,
+                    "startIdentity": sample.identity.process_identity.start_identity.to_string(),
+                    "ownerEpoch": sample.identity.owner_epoch.to_string(),
+                    "processIncarnation": sample.identity.process_incarnation,
+                    "executableIdentityDigest": sample.identity.executable_identity_digest,
+                })),
+                "metrics": self.session_process_owner.as_ref().map(|sample| json!({
+                    "pssBytes": metric_json(&sample.metrics.pss_bytes),
+                    "rssBytes": metric_json(&sample.metrics.rss_bytes),
+                    "cpuNs": metric_json(&sample.metrics.cpu_ns),
+                    "threadCount": metric_json(&sample.metrics.thread_count),
+                    "fdCount": metric_json(&sample.metrics.fd_count),
+                    "privateBytes": metric_json(&sample.metrics.private_bytes),
+                })),
+                "source": "authenticated HostKernel Core peer sampled as one process; descendants belong to worker samples",
+            },
+            "workers": self.trees.iter().map(|tree| json!({
+                "workerExecutionId": tree.worker_execution_id,
+                "taskId": tree.task_id,
+                "attemptId": tree.attempt_id,
+                "reservationState": reservation_state_label(tree.state),
+                "quality": tree_quality(&tree.sample),
+                "processes": tree.sample.processes.iter().map(|process| json!({
+                    "pid": process.pid,
+                    "startIdentity": process.start_identity.to_string(),
+                })).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+            "aggregate": {
+                "pssBytes": metric_json(&self.aggregate.pss_bytes),
+                "rssBytes": metric_json(&self.aggregate.rss_bytes),
+                "cpuNs": metric_json(&self.aggregate.cpu_ns),
+                "threadCount": metric_json(&self.aggregate.thread_count),
+                "fdCount": metric_json(&self.aggregate.fd_count),
+                "privateBytes": metric_json(&self.aggregate.private_bytes),
+            },
+            "productAttestation": {
+                "status": "NOT_ATTESTED",
+                "hostRunReceiptRef": null,
+                "independentVerifierEvidenceRef": null,
+                "required": ["hostRunReceiptRef", "independentVerifierEvidenceRef", "sourceCommit"],
+            },
+        })
+    }
+
+    pub(crate) fn owner_log_id(&self) -> &str {
+        &self.owner_log_id
+    }
+    pub(crate) fn owner_log_sequence(&self) -> &str {
+        &self.owner_log_sequence
+    }
+    pub(crate) fn owner_log_event_digest(&self) -> &str {
+        &self.owner_log_event_digest
+    }
+    pub(crate) fn worker_pool_revision(&self) -> u64 {
+        self.worker_pool_revision
+    }
+    pub(crate) fn sampled_at_ms(&self) -> u64 {
+        self.sampled_at_ms
+    }
+    pub(crate) fn sample_sequence(&self) -> u64 {
+        self.sample_sequence
+    }
+
+    /// Creates a narrow, opaque memory telemetry record only when the exact
+    /// worker tree is fully measured and belongs to this OwnerLog snapshot.
+    /// It does not change admission capacity or prove an OS quota.
+    pub(crate) fn attributed_memory_usage(
+        &self,
+        worker_execution_id: &str,
+    ) -> Result<AttributedWorkerUsageV1, ResourceLeaseAttributionError> {
+        // A per-tree counter cannot reduce reserved headroom when the complete
+        // sample detected overlapping process trees or incomplete attribution.
+        // Keeping the full reserve is safer than double-crediting shared PSS.
+        if !matches!(self.aggregate.pss_bytes, Metric::Measured(_)) {
+            return Err(ResourceLeaseAttributionError::InvalidLease);
+        }
+        let tree = self
+            .trees
+            .iter()
+            .find(|tree| tree.worker_execution_id == worker_execution_id)
+            .ok_or(ResourceLeaseAttributionError::InvalidLease)?;
+        let Metric::Measured(value) = &tree.sample.metrics.pss_bytes else {
+            return Err(ResourceLeaseAttributionError::InvalidLease);
+        };
+        if tree.sample.truncated || *value > u128::from(u64::MAX) {
+            return Err(ResourceLeaseAttributionError::InvalidLease);
+        }
+        Ok(AttributedWorkerUsageV1 {
+            worker_execution_id: tree.worker_execution_id.clone(),
+            task_id: tree.task_id.clone(),
+            attempt_id: tree.attempt_id.clone(),
+            process_identity: tree
+                .sample
+                .processes
+                .first()
+                .cloned()
+                .ok_or(ResourceLeaseAttributionError::InvalidLease)?,
+            units: *value as u64,
+            sample_sequence: self.sample_sequence,
+            owner_log_id: self.owner_log_id.clone(),
+            owner_log_sequence: self.owner_log_sequence.clone(),
+            owner_log_event_digest: self.owner_log_event_digest.clone(),
+            worker_pool_revision: self.worker_pool_revision,
+        })
+    }
+    pub(crate) fn trees(&self) -> &[AttributedProcessTreeSampleV1] {
+        &self.trees
+    }
+    pub(crate) fn aggregate(&self) -> &AggregateCounters {
+        &self.aggregate
+    }
+}
+
+/// Opaque, sample-derived usage. Only the sampler can mint it; it conveys no
+/// launch/effect authority and must be checked against the live pool and
+/// matching HostKernel sample sequence before it is durably recorded as
+/// telemetry. It does not change reservation accounting.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttributedWorkerUsageV1 {
+    worker_execution_id: String,
+    task_id: String,
+    attempt_id: String,
+    process_identity: ProcessIdentity,
+    units: u64,
+    sample_sequence: u64,
+    owner_log_id: String,
+    owner_log_sequence: String,
+    owner_log_event_digest: String,
+    worker_pool_revision: u64,
+}
+
+impl AttributedWorkerUsageV1 {
+    pub(crate) fn worker_execution_id(&self) -> &str {
+        &self.worker_execution_id
+    }
+    pub(crate) fn task_id(&self) -> &str {
+        &self.task_id
+    }
+    pub(crate) fn attempt_id(&self) -> &str {
+        &self.attempt_id
+    }
+    pub(crate) fn process_identity(&self) -> &ProcessIdentity {
+        &self.process_identity
+    }
+    pub(crate) fn units(&self) -> u64 {
+        self.units
+    }
+    pub(crate) fn sample_sequence(&self) -> u64 {
+        self.sample_sequence
+    }
+    pub(crate) fn owner_log_id(&self) -> &str {
+        &self.owner_log_id
+    }
+    pub(crate) fn owner_log_sequence(&self) -> &str {
+        &self.owner_log_sequence
+    }
+    pub(crate) fn owner_log_event_digest(&self) -> &str {
+        &self.owner_log_event_digest
+    }
+    pub(crate) fn worker_pool_revision(&self) -> u64 {
+        self.worker_pool_revision
+    }
+
+    pub(crate) fn from_owner_log(
+        worker_execution_id: String,
+        task_id: String,
+        attempt_id: String,
+        process_identity: ProcessIdentity,
+        units: u64,
+        sample_sequence: u64,
+        owner_log_id: String,
+        owner_log_sequence: String,
+        owner_log_event_digest: String,
+        worker_pool_revision: u64,
+    ) -> Result<Self, ResourceLeaseAttributionError> {
+        if worker_execution_id.is_empty()
+            || worker_execution_id.len() > 128
+            || task_id.is_empty()
+            || attempt_id.is_empty()
+            || process_identity.pid == 0
+            || process_identity.start_identity == 0
+            || sample_sequence == 0
+            || owner_log_id.is_empty()
+            || owner_log_sequence.parse::<u64>().is_err()
+            || !owner_log_event_digest.starts_with("blake3:")
+            || worker_pool_revision == 0
+        {
+            return Err(ResourceLeaseAttributionError::InvalidLease);
+        }
+        Ok(Self {
+            worker_execution_id,
+            task_id,
+            attempt_id,
+            process_identity,
+            units,
+            sample_sequence,
+            owner_log_id,
+            owner_log_sequence,
+            owner_log_event_digest,
+            worker_pool_revision,
+        })
+    }
+}
+
+/// Samples only process generations from a P8 OwnerLog-derived lease set and
+/// attributes them to its authenticated Run. Work/byte/process budgets are
+/// partitioned across worker trees; duplicate descendants make the aggregate
+/// UNKNOWN to prevent physical memory from being counted twice.
+pub(crate) fn sample_durable_owned_process_leases<B: ProcessBackend>(
+    backend: &mut B,
+    leases: &DurableOwnedProcessLeaseSetV1,
+    authenticated_owner: &crate::resource_budget::AuthenticatedOwnerContext,
+    authenticated_session_peer: Option<&crate::host_kernel::AuthenticatedCorePeerFactsV1>,
+    budget: SampleBudget,
+    sampled_at_ms: u64,
+    sample_sequence: u64,
+) -> Result<DurableOwnedResourceSnapshotV1, SampleError> {
+    if budget.max_processes == 0
+        || budget.max_work == 0
+        || budget.max_bytes == 0
+        || budget.max_processes > DEFAULT_MAX_PROCESSES
+        || budget.max_work > DEFAULT_MAX_WORK
+        || budget.max_bytes > DEFAULT_MAX_BYTES
+        || sample_sequence == 0
+    {
+        return Err(SampleError::InvalidBudget);
+    }
+    // Construct the session identity from fresh HostKernel peer facts for each
+    // sample. Accepting a previously projected identity here could accidentally
+    // sample a stale Core PID generation after its authenticated peer changed.
+    let session_process_owner = authenticated_session_peer
+        .map(SessionProcessOwnerIdentityV1::from_authenticated_peer)
+        .transpose()
+        .map_err(|_| SampleError::InvalidBudget)?;
+    let selected: Vec<_> = leases
+        .leases
+        .iter()
+        .filter(|lease| {
+            lease.owner.principal_ref() == authenticated_owner.principal_ref()
+                && lease.owner.workspace_binding() == authenticated_owner.workspace_binding()
+                && lease.owner.session_id() == authenticated_owner.session_id()
+                && lease.owner.run_id() == authenticated_owner.run_id()
+                && lease.owner.owner_epoch() == authenticated_owner.owner_epoch()
+        })
+        .collect();
+    if selected.len() > budget.max_processes {
+        return Err(SampleError::LeaseSetTooLarge);
+    }
+    if let Some(peer) = session_process_owner.as_ref() {
+        if peer.owner_epoch() != authenticated_owner.owner_epoch() {
+            return Err(SampleError::IdentityChanged {
+                pid: peer.process_identity().pid,
+            });
+        }
+    }
+    let sample_count = selected.len() + usize::from(session_process_owner.is_some());
+    if sample_count > budget.max_processes {
+        return Err(SampleError::LeaseSetTooLarge);
+    }
+    if sample_count > 0 && (budget.max_work < sample_count || budget.max_bytes < sample_count) {
+        return Err(SampleError::InvalidBudget);
+    }
+    let mut aggregate = empty_aggregate();
+    let mut trees = Vec::with_capacity(selected.len());
+    let mut seen = HashSet::new();
+    if !selected.is_empty() {
+        let share = SampleBudget {
+            max_processes: (budget.max_processes / sample_count).max(1),
+            max_work: (budget.max_work / sample_count).max(1),
+            max_bytes: (budget.max_bytes / sample_count).max(1),
+        };
+        for lease in selected {
+            let sample = match sample_owned_tree(backend, lease.process_identity.clone(), share) {
+                Ok(sample) => sample,
+                Err(SampleError::IdentityUnavailable { reason, .. }) => unknown_tree(reason),
+                Err(SampleError::IdentityChanged { .. }) => {
+                    unknown_tree(UnknownReason::IdentityChanged)
+                }
+                Err(_) => unknown_tree(UnknownReason::BudgetExceeded),
+            };
+            if sample
+                .processes
+                .iter()
+                .any(|process| !seen.insert(process.clone()))
+            {
+                set_all_unknown(&mut aggregate, UnknownReason::AttributionConflict);
+            } else {
+                merge_aggregate(&mut aggregate, &sample.metrics);
+            }
+            trees.push(AttributedProcessTreeSampleV1 {
+                worker_execution_id: lease.worker_execution_id.clone(),
+                task_id: lease.owner.task_id().to_owned(),
+                attempt_id: lease.owner.attempt_id().to_owned(),
+                state: lease.state,
+                sample,
+            });
+        }
+    }
+    let mut session_process_owner = session_process_owner.map(|identity| {
+        let max_bytes = (budget.max_bytes / (trees.len() + 1)).max(1);
+        let max_work = (budget.max_work / (trees.len() + 1)).max(1);
+        let metrics = match sample_owned_process_bounded(
+            backend,
+            identity.process_identity().clone(),
+            max_bytes,
+            max_work,
+        ) {
+            Ok(counters) => AggregateCounters {
+                pss_bytes: counters.pss_bytes,
+                rss_bytes: counters.rss_bytes,
+                cpu_ns: counters.cpu_ns,
+                thread_count: counters.thread_count,
+                fd_count: counters.fd_count,
+                private_bytes: counters.private_bytes,
+            },
+            Err(SampleError::IdentityUnavailable { reason, .. }) => AggregateCounters::unknown(reason),
+            Err(SampleError::IdentityChanged { .. }) => {
+                AggregateCounters::unknown(UnknownReason::IdentityChanged)
+            }
+            Err(_) => AggregateCounters::unknown(UnknownReason::BudgetExceeded),
+        };
+        SessionProcessOwnerSampleV1 { identity: identity.clone(), metrics }
+    });
+    if let Some(session_sample) = session_process_owner.as_mut() {
+        if trees.iter().any(|tree| tree.sample.processes.contains(session_sample.identity.process_identity())) {
+            set_all_unknown(&mut aggregate, UnknownReason::AttributionConflict);
+            set_all_unknown(&mut session_sample.metrics, UnknownReason::AttributionConflict);
+        }
+    }
+    Ok(DurableOwnedResourceSnapshotV1 {
+        owner: authenticated_owner.clone(),
+        owner_log_id: leases.owner_log_id.clone(),
+        owner_log_sequence: leases.owner_log_sequence.clone(),
+        owner_log_event_digest: leases.owner_log_event_digest.clone(),
+        worker_pool_revision: leases.worker_pool_revision,
+        sampled_at_ms,
+        sample_sequence,
+        trees,
+        aggregate,
+        session_process_owner,
+    })
+}
+
+fn empty_aggregate() -> AggregateCounters {
+    AggregateCounters {
+        pss_bytes: Metric::measured(0),
+        rss_bytes: Metric::measured(0),
+        cpu_ns: Metric::measured(0),
+        thread_count: Metric::measured(0),
+        fd_count: Metric::measured(0),
+        private_bytes: Metric::measured(0),
+    }
+}
+
+fn metric_json(metric: &Metric<u128>) -> serde_json::Value {
+    use serde_json::json;
+    match metric {
+        Metric::Measured(value) => json!({"quality":"MEASURED","value":value.to_string()}),
+        Metric::Unknown(reason) => {
+            json!({"quality":"UNKNOWN","reason":unknown_reason_label(reason)})
+        }
+    }
+}
+
+fn unknown_reason_label(reason: &UnknownReason) -> &'static str {
+    match reason {
+        UnknownReason::Unsupported => "UNSUPPORTED",
+        UnknownReason::PermissionDenied => "PERMISSION_DENIED",
+        UnknownReason::Exited => "EXITED",
+        UnknownReason::IdentityChanged => "IDENTITY_CHANGED",
+        UnknownReason::Unavailable => "UNAVAILABLE",
+        UnknownReason::Malformed => "MALFORMED",
+        UnknownReason::BudgetExceeded => "BUDGET_EXCEEDED",
+        UnknownReason::AttributionConflict => "ATTRIBUTION_CONFLICT",
+    }
+}
+
+fn tree_quality(sample: &TreeSample) -> &'static str {
+    if !sample.truncated
+        && matches!(&sample.metrics.pss_bytes, Metric::Measured(_))
+        && matches!(&sample.metrics.rss_bytes, Metric::Measured(_))
+        && matches!(&sample.metrics.cpu_ns, Metric::Measured(_))
+        && matches!(&sample.metrics.thread_count, Metric::Measured(_))
+        && matches!(&sample.metrics.fd_count, Metric::Measured(_))
+    {
+        "MEASURED"
+    } else {
+        "UNKNOWN"
+    }
+}
+
+fn reservation_state_label(state: crate::resource_budget::ReservationState) -> &'static str {
+    use crate::resource_budget::ReservationState;
+    match state {
+        ReservationState::Proposed => "PROPOSED",
+        ReservationState::Reserved => "RESERVED",
+        ReservationState::Claimed => "CLAIMED",
+        ReservationState::ReleasePending => "RELEASE_PENDING",
+        ReservationState::Quarantined => "QUARANTINED",
+        ReservationState::Released => "RELEASED",
+        ReservationState::Expired => "EXPIRED",
+    }
+}
+
+fn merge_aggregate(target: &mut AggregateCounters, source: &AggregateCounters) {
+    add_metric(&mut target.pss_bytes, source.pss_bytes.clone());
+    add_metric(&mut target.rss_bytes, source.rss_bytes.clone());
+    add_metric(&mut target.cpu_ns, source.cpu_ns.clone());
+    add_metric(&mut target.thread_count, source.thread_count.clone());
+    add_metric(&mut target.fd_count, source.fd_count.clone());
+    add_metric(&mut target.private_bytes, source.private_bytes.clone());
+}
+
+fn verify_ancestry<B: ProcessBackend>(
+    backend: &mut B,
+    ancestors: &[ProcessIdentity],
+    process: &ProcessIdentity,
+    work: &mut usize,
+    budget: SampleBudget,
+) -> Result<(), UnknownReason> {
+    if ancestors.is_empty() {
+        return Ok(());
+    }
+
+    let mut lineage = ancestors.to_vec();
+    lineage.push(process.clone());
+    for edge in lineage.windows(2) {
+        let children = backend.children(&edge[0])?;
+        *work = work.saturating_add(children.len());
+        if work.saturating_add(backend.work_consumed()) > budget.max_work
+            || backend.bytes_consumed() > budget.max_bytes
+        {
+            return Err(UnknownReason::BudgetExceeded);
+        }
+        if !children.iter().any(|child| child == &edge[1]) {
+            return Err(UnknownReason::IdentityChanged);
+        }
+    }
+    Ok(())
 }
 
 fn unknown_tree(reason: UnknownReason) -> TreeSample {

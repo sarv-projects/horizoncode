@@ -48,6 +48,12 @@ Return:
 - acceptance test;
 - unresolved gate.
 
+## Current implementation and recovery sources
+
+- Use `implementationtov1release.md` for the main-agent-maintained V1 scope/status map, `HANDOFF.md` for observed implementation evidence, and `docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md` for dependency order. These are not architecture authorities; resolve design questions from the normative topic owner.
+- At a fresh session or after context compaction, follow the exact bootstrap order in root `AGENTS.md`, then reload Engram context and search the active phase/blocker. A summary or dated `CURRENT_RUN.md` entry is a lead, not proof: re-check current source, tests, and owner evidence before relying on a status claim.
+- For architecture/catalog/schema documentation changes, preserve one canonical owner and validate both `python3 scripts/architecture/audit_markdown_repo.py` and `python3 scripts/architecture/validate_convergence.py`. The capability registry is a design/alias seed, not a second runtime authority; catalog/schema/test rows do not establish runtime support.
+
 ## Status vocabulary
 
 DESIGNED -> CODE_PRESENT -> WIRED -> TESTED -> VERIFIED -> RELEASED.

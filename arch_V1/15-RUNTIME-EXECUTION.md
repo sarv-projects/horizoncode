@@ -113,7 +113,7 @@ Supported V1 target:
 - persistent variables/imports within one bounded session;
 - explicit reset/stop;
 - bounded stdout/stderr and artifactization;
-- CPU/memory/time/network/filesystem limits;
+- time/network/filesystem policy plus CPU/memory bounds only where OS-enforced; if the REPL profile requires unavailable CPU/memory enforcement, execution stays unavailable (`DEC-V1-27`);
 - tool callbacks only through canonical ActionDescriptor/Guard;
 - source/workspace generation awareness.
 
@@ -151,9 +151,11 @@ WebSearchBroker separates:
 
 Request pins provider/account/cost policy. Results include source URL/provider/retrieval time and bounded extracted text/metadata.
 
-Fallback:
-- only explicit configured routes;
-- never silent paid/auth-class change;
+Fallback (V1 cascade, `DEC-V1-26`):
+- the built-in default route is enabled without a key; BYO-key providers are enabled per route in Settings;
+- every enabled route joins one ordered cascade; auth 4xx (401/403/407) failures are recorded per route and fall through to the next explicitly enabled route; other non-rate-limit 4xx stop and surface; timeout/network/5xx and empty-result handling remains bounded;
+- an exhausted chain applies one bounded normal retry and surfaces per-route reasons;
+- only explicitly enabled/configured routes are used; never silent paid/auth-class change;
 - no claim a source adapter is usable merely because code exists.
 
 Search is network access and follows privacy/domain/provider policy.

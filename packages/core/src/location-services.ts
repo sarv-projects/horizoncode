@@ -43,6 +43,7 @@ export const locationServices = LayerNode.group([
   Location.node,
   Policy.node,
   Config.node,
+  Config.agentProfileNode,
   AgentV2.node,
   CommandV2.node,
   Reference.node,

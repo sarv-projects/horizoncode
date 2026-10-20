@@ -220,7 +220,7 @@ Release status belongs in HANDOFF/release evidence, not this contract.
 
 ## 18.16 Reproducible checkout and package naming
 
-Use horizoncode as the planned npm publication and CLI name; hzcode may be an alias. Do not expose an untested stub as a published CLI. Keep vendor package identifiers until dependencies, build outputs, licensing and migration tests are verified.
+Use horizoncode as the canonical npm publication and CLI name; hzcode is the shipped short command for the same entrypoint (amended 2026-10-18). Do not expose an untested stub as a published CLI. Keep vendor package identifiers until dependencies, build outputs, licensing and migration tests are verified.
 The tracked opencode/ snapshot is a pinned source. scripts/architecture/bootstrap_source.py --check reports missing files without mutation; --apply creates missing files only and never overwrites a HorizonCode overlay. Relative source symlinks must resolve within the pinned snapshot.
 Fresh clone acceptance: check status, inspect bootstrap plan, apply in the fresh clone, install pinned dependencies, compile/run targeted tests, verify no secret files were staged and check the resulting package. The former pre-push ran all 36 upstream packages and timed out. The focused push gate (scripts/architecture/run_push_gate.sh) now checks Core TypeScript, actual Rust Guard and denial tests, source bootstrap and architecture contracts. Its live result was exit 0. The full workspace Turbo typecheck is still mandatory separately through scripts/architecture/run_full_gate.sh and the PR/manual GitHub Actions workflow. A timeout or a local push-gate pass does not establish release readiness.
 

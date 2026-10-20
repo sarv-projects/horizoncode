@@ -1,0 +1,2 @@
+provider = "openai"
+model = "release-test-model"

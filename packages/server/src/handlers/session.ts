@@ -1,4 +1,5 @@
 import { SessionV2 } from "@opencode-ai/core/session"
+import type { Admitted } from "@opencode-ai/core/session/input"
 import { DateTime, Effect, Stream } from "effect"
 import { HttpApiBuilder, HttpApiSchema } from "effect/unstable/httpapi"
 import { Api } from "../api"
@@ -7,6 +8,7 @@ import {
   ConflictError,
   ForbiddenError,
   InvalidCursorError,
+  InvalidRequestError,
   MessageNotFoundError,
   ServiceUnavailableError,
   SessionNotFoundError,
@@ -178,7 +180,29 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                     }),
                   ),
                 ),
-              ),
+                Effect.mapError((error) => {
+                  if (error._tag === "Integration.Authorization") {
+                    return new InvalidRequestError({
+                      message: "Authentication failed",
+                      kind: "integration_authorization",
+                    })
+                  }
+                  if (error instanceof SessionSupervisorError) {
+                    return mapSupervisorError(error, ctx.params.sessionID)
+                  }
+                  return new ServiceUnavailableError({
+                    message: "Session execution is unavailable",
+                    service: "session.execution",
+                  })
+                }),
+              ) as Effect.Effect<
+                Admitted,
+                | ConflictError
+                | ForbiddenError
+                | InvalidRequestError
+                | ServiceUnavailableError
+                | SessionNotFoundError
+              >,
           }
         }),
       )

@@ -2,6 +2,7 @@ import { render, TimeToFirstDraw, useRenderer, useTerminalDimensions } from "@op
 import { registerOpencodeSpinner } from "./component/register-spinner"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { Deferred, Effect } from "effect"
+import { randomUUID } from "node:crypto"
 import { Global } from "@opencode-ai/core/global"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
@@ -40,13 +41,23 @@ import { LocationProvider } from "./context/location"
 import { LocalProvider, useLocal } from "./context/local"
 import { PermissionProvider } from "./context/permission"
 import { DialogModel } from "./component/dialog-model"
+import { DialogSelect, type DialogSelectOption } from "./ui/dialog-select"
+import {
+  DialogGoalReview,
+  type GoalReviewProjection,
+} from "./component/dialog-goal-review"
+import { DialogGoalVerification, type GoalVerificationResult } from "./component/dialog-goal-verification"
 import { useConnected } from "./component/use-connected"
 import { DialogMcp } from "./component/dialog-mcp"
+import { DialogGuardApproval } from "./component/dialog-guard-approval"
+import { DialogProviderDoctor } from "./component/dialog-provider-doctor"
 import { DialogFeatures } from "./component/dialog-features"
+import { DialogWebSearchSettings } from "./component/dialog-websearch-settings"
 import { DialogStatus } from "./component/dialog-status"
 import { DialogDebug } from "./component/dialog-debug"
 import { DialogThemeList } from "./component/dialog-theme-list"
 import { DialogHelp } from "./ui/dialog-help"
+import { DialogPrompt } from "./ui/dialog-prompt"
 import { DialogAgent } from "./component/dialog-agent"
 import { DialogSessionList } from "./component/dialog-session-list"
 import { DialogWorkspaceList } from "./component/dialog-workspace-list"
@@ -128,6 +139,10 @@ const appBindingCommands = [
   "docs.open",
   "diff.open",
   "workspace.list",
+  "provider.doctor.offline",
+  "goal.review",
+  "goal.propose",
+  "web.search.settings",
   "app.debug",
   "app.console",
   "app.heap_snapshot",
@@ -388,6 +403,574 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   const attention = createTuiAttention({ renderer, config: tuiConfig, kv })
   const clipboard = useClipboard()
 
+  // Guard approvals are host-issued one-use challenges. Only open the earliest
+  // unexpired request when no other dialog is using the shared modal surface.
+  // Escape/backdrop close answers deny; the active signal prevents a second
+  // challenge from replacing the first while its reply is in flight.
+  const [guardApprovalReplying, setGuardApprovalReplying] = createSignal(false)
+  createEffect(() => {
+    const request = sync.guardApproval.pending()[0]
+    if (!request || dialog.stack.length > 0 || guardApprovalReplying()) return
+    let answered = false
+    const reply = async (decision: "allow_once" | "deny") => {
+      if (answered) return false
+      answered = true
+      setGuardApprovalReplying(true)
+      try {
+        return await sync.guardApproval.reply(request.approvalID, decision)
+      } finally {
+        setGuardApprovalReplying(false)
+      }
+    }
+    dialog.replace(
+      () => <DialogGuardApproval request={request} onDecision={reply} />,
+      () => void reply("deny"),
+    )
+  })
+
+  async function openGoalReviewInbox() {
+    try {
+      const response = await sdk.client.experimental.goalReview.goalReviews(
+        {
+          directory: sdk.directory,
+          workspace: project.workspace.current(),
+          limit: "64",
+        },
+        { throwOnError: true },
+      )
+      const proposals = response.data.goals.flatMap((goal) => goal.proposals).slice(0, 64)
+      if (proposals.length === 0) {
+        void DialogAlert.show(dialog, "Goal review", "No proposed SpecVersion is awaiting review in this workspace.")
+        return
+      }
+      const options: DialogSelectOption<GoalReviewProjection>[] = proposals.map((proposal) => ({
+        title: `${proposal.goalId} · ${proposal.specVersionId}`,
+        value: proposal,
+        description: proposal.objective,
+        details: [
+          `Revision ${proposal.goalRevision}`,
+          `Proposed by ${proposal.proposedBy}`,
+          `Digest ${proposal.specDigest}`,
+          proposal.reviewAvailability.available
+            ? "Authenticated reviewer available"
+            : `Decision unavailable: ${proposal.reviewAvailability.reason}`,
+        ],
+      }))
+      dialog.replace(() => (
+        <DialogSelect
+          title="Goal · Pending SpecVersion reviews"
+          options={options}
+          onSelect={(option) => {
+            const proposal = option.value
+            dialog.replace(() => (
+              <DialogGoalReview
+                proposal={proposal}
+                onAccept={async (decision) => {
+                  await sdk.client.experimental.goalReview.goalReviewDecision(
+                    {
+                      directory: sdk.directory,
+                      workspace: project.workspace.current(),
+                      decision: "accept",
+                      goalID: decision.goalId,
+                      specID: decision.specVersionId,
+                      specDigest: decision.specDigest,
+                      expectedRevision: decision.expectedRevision,
+                    },
+                    { throwOnError: true },
+                  )
+                }}
+                onReject={async (decision) => {
+                  await sdk.client.experimental.goalReview.goalReviewDecision(
+                    {
+                      directory: sdk.directory,
+                      workspace: project.workspace.current(),
+                      decision: "reject",
+                      goalID: decision.goalId,
+                      specID: decision.specVersionId,
+                      specDigest: decision.specDigest,
+                      expectedRevision: decision.expectedRevision,
+                    },
+                    { throwOnError: true },
+                  )
+                }}
+              />
+            ))
+          }}
+        />
+      ))
+    } catch (error) {
+      toast.error(error)
+    }
+  }
+
+  async function openGoalProposal() {
+    let pending = false
+    dialog.replace(() => (
+      <DialogPrompt
+        title="Propose a managed Goal"
+        placeholder='{"schemaVersion":1,"objective":"...","capabilityScope":[],"scope":[],"constraints":[],"criteria":[{"id":"...","description":"..."}],"budget":{"maxTasks":1,"maxAttemptsPerTask":1,"maxRunDurationMs":60000,"maxWorkers":1},"sourceDigests":[]}'
+        description={() => (
+          <text>
+            Paste one schemaVersion 1 JSON draft (32 KiB max). The server binds it to this project and workspace,
+            creates IDs, and sends the proposal to the Goal review inbox.
+          </text>
+        )}
+        onConfirm={(value) => {
+          if (pending) return
+          pending = true
+          void (async () => {
+            try {
+              if (new TextEncoder().encode(value).byteLength > 32 * 1024)
+                throw new Error("Draft exceeds the 32 KiB limit")
+              const parsed: unknown = JSON.parse(value)
+              if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+                throw new Error("Draft must be a JSON object")
+              const draft = parsed as Record<string, unknown>
+              if (draft.schemaVersion !== 1) throw new Error("Draft must use schemaVersion 1")
+              if (
+                typeof draft.objective !== "string" ||
+                !Array.isArray(draft.capabilityScope) ||
+                !Array.isArray(draft.scope) ||
+                !Array.isArray(draft.constraints) ||
+                !Array.isArray(draft.criteria) ||
+                typeof draft.budget !== "object" ||
+                draft.budget === null ||
+                !Array.isArray(draft.sourceDigests)
+              ) {
+                throw new Error("Draft is missing a required schemaVersion 1 field")
+              }
+              const response = await sdk.client.experimental.goalReview.goalPropose(
+                {
+                  directory: sdk.directory,
+                  workspace: project.workspace.current(),
+                  schemaVersion: 1,
+                  objective: draft.objective,
+                  capabilityScope: draft.capabilityScope as string[],
+                  scope: draft.scope as string[],
+                  constraints: draft.constraints as string[],
+                  criteria: draft.criteria as Array<{ id: string; description: string }>,
+                  budget: draft.budget as {
+                    maxTasks: number
+                    maxAttemptsPerTask: number
+                    maxRunDurationMs: number
+                    maxWorkers: number
+                    maxMemoryBytes?: number
+                    maxDiskBytes?: number
+                    maxTokens?: number
+                    maxCostMicros?: number
+                  },
+                  sourceDigests: draft.sourceDigests as string[],
+                },
+                { throwOnError: true },
+              )
+              dialog.clear()
+              toast.show({
+                message: `Goal proposal ${response.data.goalID} · ${response.data.specID} sent for review`,
+                variant: "info",
+              })
+            } catch (error) {
+              pending = false
+              toast.error(error)
+            }
+          })()
+        }}
+      />
+    ))
+  }
+
+  function openGoalVerification() {
+    dialog.replace(() => (
+      <DialogPrompt
+        title="Verify an accepted managed Run"
+        placeholder="goalID runID"
+        description={() => <text>Enter the accepted Goal ID and current Run ID, separated by one space.</text>}
+        onConfirm={(value) => {
+          const parts = value.trim().split(/\s+/)
+          if (parts.length !== 2 || parts.some((part) => !/^[A-Za-z0-9._-]{1,256}$/.test(part))) {
+            toast.error("Enter exactly one Goal ID and one Run ID")
+            return
+          }
+          const [goalID, runID] = parts
+          dialog.replace(() => (
+            <DialogGoalVerification
+              goalID={goalID}
+              runID={runID}
+              onVerify={async (): Promise<GoalVerificationResult> => {
+                const response = await sdk.client.experimental.goalReview.goalVerification(
+                  {
+                    directory: sdk.directory,
+                    workspace: project.workspace.current(),
+                    schemaVersion: 1,
+                    goalID,
+                    runID,
+                  },
+                  { throwOnError: true },
+                )
+                if (response.data.goalID !== goalID || response.data.runID !== runID) {
+                  throw new Error("Verification response does not match the requested Goal and Run")
+                }
+                if (response.data.status === "ABORTED") {
+                  if (!response.data.reason) throw new Error("Aborted verification response has no reason")
+                  return {
+                    status: "ABORTED",
+                    reason: response.data.reason,
+                    revision: response.data.revision,
+                  }
+                }
+                return { status: response.data.status, revision: response.data.revision }
+              }}
+            />
+          ))
+        }}
+      />
+    ))
+  }
+
+  function openGoalRunControl() {
+    dialog.replace(() => (
+      <DialogPrompt
+        title="Control a managed Run"
+        placeholder="goalID runID pause|resume|cancel"
+        description={() => <text>Enter the Goal ID, Run ID, and one action, separated by spaces.</text>}
+        onConfirm={(value) => {
+          const parts = value.trim().split(/\s+/)
+          if (
+            parts.length !== 3 ||
+            parts.slice(0, 2).some((part) => !/^[A-Za-z0-9._-]{1,256}$/.test(part)) ||
+            !["pause", "resume", "cancel"].includes(parts[2])
+          ) {
+            toast.error("Enter a Goal ID, Run ID, and pause, resume, or cancel")
+            return
+          }
+          const [goalID, runID, action] = parts as [string, string, "pause" | "resume" | "cancel"]
+          void (async () => {
+            try {
+              const current = await sdk.client.experimental.goalReview.goalReview(
+                { directory: sdk.directory, workspace: project.workspace.current(), goalID },
+                { throwOnError: true },
+              )
+              if (current.data.goalID !== goalID) throw new Error("Run control snapshot belongs to a different Goal")
+              const run = current.data.runs.find((item) => item.runID === runID)
+              if (!run) throw new Error("Run does not exist in the current Goal snapshot")
+              const expectedRevision = current.data.goalRevision
+              dialog.replace(() => (
+                <DialogConfirm
+                  title={`${action[0]!.toUpperCase()}${action.slice(1)} managed Run?`}
+                  message={`Run ${runID} is ${run.runPhase} at Goal revision ${expectedRevision}. ${run.runPhase === "PLAN_ONLY" && action === "cancel" ? "This discards the unstarted plan without starting workers." : `Confirm ${action}.`}`}
+                  onConfirm={async () => {
+                    try {
+                      const response = await sdk.client.experimental.goalReview.goalRunControl(
+                        {
+                          directory: sdk.directory,
+                          workspace: project.workspace.current(),
+                          schemaVersion: 1,
+                          action,
+                          goalID,
+                          runID,
+                          expectedRevision,
+                        },
+                        { throwOnError: true },
+                      )
+                      if (response.data.goalID !== goalID || response.data.runID !== runID) {
+                        throw new Error("Run control response does not match the requested Goal and Run")
+                      }
+                      dialog.clear()
+                      toast.show({
+                        message: `Run ${runID}: ${response.data.status} · revision ${response.data.revision}`,
+                        variant: "info",
+                      })
+                    } catch (error) {
+                      toast.error(error)
+                    }
+                  }}
+                />
+              ))
+            } catch (error) {
+              toast.error(error)
+            }
+          })()
+        }}
+      />
+    ))
+  }
+
+  function openGoalRunPlan() {
+    let pending = false
+    dialog.replace(() => (
+      <DialogPrompt
+        title="Plan tasks for an accepted Goal"
+        placeholder='{"schemaVersion":1,"goalID":"goal_…","specID":"spec_…","specDigest":"blake3:…","expectedGoalRevision":"12","runID":"run_…","tasks":[{"taskID":"task_1","dependencies":[],"criterionIDs":["criterion_1"],"requiredCapabilities":["files.read"],"profileSelection":{"profileId":"default","revision":"1"}}]}'
+        description={() => (
+          <text>
+            Paste one bounded dependency plan JSON. The server checks the accepted SpecVersion, profile pins, and
+            current workspace. This records the exact DAG only: Tasks stay unready and no worker or effect is dispatched.
+          </text>
+        )}
+        onConfirm={(value) => {
+          if (pending) return
+          pending = true
+          void (async () => {
+            try {
+              if (new TextEncoder().encode(value).byteLength > 32 * 1024) throw new Error("Run plan exceeds the 32 KiB limit")
+              const parsed: unknown = JSON.parse(value)
+              if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("Run plan must be a JSON object")
+              const plan = parsed as Record<string, unknown>
+              if (plan.schemaVersion !== 1 || typeof plan.goalID !== "string" || typeof plan.specID !== "string" ||
+                typeof plan.specDigest !== "string" || typeof plan.expectedGoalRevision !== "string" ||
+                typeof plan.runID !== "string" || !Array.isArray(plan.tasks)) {
+                throw new Error("Run plan is missing a required schemaVersion 1 field")
+              }
+              const response = await sdk.client.experimental.goalReview.goalRunPlan({
+                directory: sdk.directory,
+                workspace: project.workspace.current(),
+                schemaVersion: 1,
+                goalID: plan.goalID,
+                specID: plan.specID,
+                specDigest: plan.specDigest,
+                expectedGoalRevision: plan.expectedGoalRevision,
+                runID: plan.runID,
+                tasks: plan.tasks as Array<{
+                  taskID: string
+                  dependencies: string[]
+                  criterionIDs: string[]
+                  requiredCapabilities: string[]
+                  profileSelection: { profileId: string; revision: string }
+                }>,
+              }, { throwOnError: true })
+              if (response.data.status !== "PLAN_ONLY" || response.data.executionAvailable !== false || response.data.tasksReady !== false) {
+                throw new Error("Server returned an invalid managed plan-only state")
+              }
+              dialog.clear()
+              toast.show({
+                message: `Run ${response.data.runID} planned · ${response.data.taskIDs.length} Tasks · execution unavailable`,
+                variant: "info",
+              })
+            } catch (error) {
+              pending = false
+              toast.error(error)
+            }
+          })()
+        }}
+      />
+    ))
+  }
+
+  function openGoalRunStart() {
+    dialog.replace(() => (
+      <DialogPrompt
+        title="Start a planned managed Run"
+        placeholder='{"schemaVersion":1,"goalID":"goal_…","runID":"run_…","idempotencyKey":"start_run_…"}'
+        description={() => (
+          <text>
+            Enter the Goal and persisted plan to start. The accepted SpecVersion, revision, and exact plan are
+            loaded from the current trusted snapshot. Starting only marks dependency-ready Task roots; Guard,
+            Attempt admission, and each effect still require their own authorization.
+          </text>
+        )}
+        onConfirm={(value) => {
+          void (async () => {
+            try {
+              if (new TextEncoder().encode(value).byteLength > 8 * 1024) throw new Error("Run start request exceeds the 8 KiB limit")
+              const parsed: unknown = JSON.parse(value)
+              if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("Run start must be a JSON object")
+              const start = parsed as Record<string, unknown>
+              if (start.schemaVersion !== 1 || typeof start.goalID !== "string" || typeof start.runID !== "string" ||
+                typeof start.idempotencyKey !== "string" || start.goalID.length > 256 || start.runID.length > 256 ||
+                start.idempotencyKey.length > 256) {
+                throw new Error("Run start is missing a required schemaVersion 1 field")
+              }
+              const current = await sdk.client.experimental.goalReview.goalReview(
+                { directory: sdk.directory, workspace: project.workspace.current(), goalID: start.goalID },
+                { throwOnError: true },
+              )
+              const run = current.data.runs.find((item) => item.runID === start.runID)
+              if (!run) throw new Error("Run does not exist in the current Goal snapshot")
+              if (run.runPhase !== "PLAN_ONLY") throw new Error(`Run is already ${run.runPhase}; only a plan-only Run can be started here`)
+              const acceptedSpec = current.data.acceptedSpecs.find((item) => item.specID === run.specID)
+              if (!acceptedSpec) throw new Error("Run is not bound to a currently accepted SpecVersion")
+              const authority = {
+                goalID: start.goalID as string,
+                runID: start.runID as string,
+                specID: run.specID,
+                specDigest: acceptedSpec.specDigest,
+                expectedGoalRevision: current.data.goalRevision,
+                idempotencyKey: start.idempotencyKey as string,
+              }
+              dialog.replace(() => (
+                <DialogConfirm
+                  title="Start this managed Run?"
+                  message={`Run ${authority.runID} is ${run.runPhase} · accepted SpecVersion ${authority.specID} · Goal revision ${authority.expectedGoalRevision}. The server will reject stale authority; an exact replay is idempotent. Effect admission remains separately guarded.`}
+                  onConfirm={async () => {
+                    try {
+                      const response = await sdk.client.experimental.goalReview.goalRunStart({
+                        directory: sdk.directory,
+                        workspace: project.workspace.current(),
+                        schemaVersion: 1,
+                        goalID: authority.goalID,
+                        runID: authority.runID,
+                        expectedGoalRevision: authority.expectedGoalRevision,
+                        specID: authority.specID,
+                        specDigest: authority.specDigest,
+                        sessionID: route.data.sessionID,
+                        idempotencyKey: authority.idempotencyKey,
+                      }, { throwOnError: true })
+                      if (response.data.goalID !== authority.goalID || response.data.runID !== authority.runID ||
+                        response.data.sessionID !== route.data.sessionID) {
+                        throw new Error("Server returned a different managed Run")
+                      }
+                      dialog.clear()
+                      toast.show({ message: `Run ${response.data.runID} · ${response.data.runPhase} · revision ${response.data.revision}`, variant: "info" })
+                    } catch (error) {
+                      toast.error(error)
+                    }
+                  }}
+                />
+              ))
+            } catch (error) {
+              toast.error(error)
+            }
+          })()
+        }}
+      />
+    ))
+  }
+
+  function automationSessionID() {
+    if (route.data.type !== "session") throw new Error("Automation controls require an authenticated session in the current workspace")
+    return route.data.sessionID
+  }
+
+  function safeAutomationText(value: unknown, maxBytes = 160) {
+    const clean = String(value).replace(/[\u0000-\u001f\u007f]/g, " ").trim()
+    const bytes = new TextEncoder().encode(clean)
+    if (bytes.byteLength <= maxBytes) return clean
+    return new TextDecoder().decode(bytes.slice(0, maxBytes)) + "…"
+  }
+
+  async function openAutomationManager() {
+    try {
+      const sessionID = automationSessionID()
+      const response = await sdk.client.experimental.automation.list({
+        directory: sdk.directory,
+        workspace: project.workspace.current(),
+        sessionID,
+      }, { throwOnError: true })
+      const automations = response.data.automations
+      if (automations.length === 0) {
+        void DialogAlert.show(dialog, "Automation", "No durable automations are configured in this workspace.")
+        return
+      }
+      dialog.replace(() => (
+        <DialogSelect
+          title="Automation · Rust journal"
+          options={automations.map((raw) => {
+            const automation = raw as Record<string, unknown>
+            const definition = automation.definition as Record<string, unknown>
+            const summary = automation.active ? "active" : automation.pending ? "pending" : automation.retryPending ? "retry pending" : "idle"
+            return {
+              title: `${safeAutomationText(automation.automationID)} · v${safeAutomationText(automation.version)} · ${summary}`,
+              value: automation,
+              description: `${safeAutomationText(definition.actionCapabilityID)} · ${safeAutomationText(definition.scheduleExpression)} · ${definition.enabled === true ? "enabled" : "disabled"}`,
+              details: ["Guarded invocation unavailable", `Occurrence history: ${String(automation.historyCount)}`],
+            }
+          })}
+          onSelect={(option) => {
+            const automation = option.value
+            const automationID = String(automation.automationID)
+            const version = String(automation.version)
+            const actions: DialogSelectOption<string>[] = [
+              { title: "Inspect current journal state", value: "inspect", description: "Refresh the committed definition and active occurrences from OwnerLog." },
+              { title: "View latest occurrence history", value: "history", description: "Read the bounded latest-first OwnerLog projection." },
+              { title: automation.definition.enabled === true ? "Disable automation" : "Enable automation", value: "toggle", description: "Revision-fenced journal update; does not invoke the action." },
+              { title: "Edit definition", value: "edit", description: "Replace the versioned definition with validated JSON." },
+            ]
+            dialog.replace(() => <DialogSelect title={`Automation · ${automationID}`} options={actions} onSelect={(action) => {
+              void (async () => {
+                try {
+                  const sessionID = automationSessionID()
+                  const common = { directory: sdk.directory, workspace: project.workspace.current(), schemaVersion: 1 as const, sessionID, automationID, idempotencyKey: `automation_${randomUUID().replaceAll("-", "")}`, expectedVersion: version }
+                  if (action.value === "inspect") {
+                    const inspected = await sdk.client.experimental.automation.inspect({ directory: sdk.directory, workspace: project.workspace.current(), sessionID, automationID }, { throwOnError: true })
+                    const value = inspected.data as Record<string, unknown>
+                    const definition = value.definition as Record<string, unknown>
+                    const lines = [
+                      `Automation: ${safeAutomationText(value.automationID)}`,
+                      `Version: ${safeAutomationText(value.version, 32)}`,
+                      `Action: ${safeAutomationText(definition.actionCapabilityID)}`,
+                      `Schedule: ${safeAutomationText(definition.scheduleExpression)}`,
+                      `Timezone: ${safeAutomationText(definition.timezone, 128)}`,
+                      `Enabled: ${String(definition.enabled)}`,
+                      `Invocation: unavailable until Guarded action receipts are supported`,
+                    ]
+                    void DialogAlert.show(dialog, `Automation · ${automationID}`, lines.join("\n"))
+                    return
+                  }
+                  if (action.value === "history") {
+                    const history = await sdk.client.experimental.automation.history({ directory: sdk.directory, workspace: project.workspace.current(), sessionID, automationID, limit: "32" }, { throwOnError: true })
+                    const rows = Array.isArray(history.data.history) ? history.data.history : []
+                    const text = rows.length === 0 ? "No occurrences recorded." : rows.map((item) => {
+                      const occurrence = item as Record<string, unknown>
+                      return `${safeAutomationText(occurrence.scheduledAtMs)} · ${safeAutomationText(occurrence.status, 32)} · attempt ${safeAutomationText(occurrence.attempt, 8)} · ${safeAutomationText(occurrence.occurrenceID, 128)}`
+                    }).join("\n")
+                    void DialogAlert.show(dialog, `Automation history · ${automationID}`, text)
+                    return
+                  }
+                  if (action.value === "toggle") {
+                    const enabled = automation.definition.enabled !== true
+                    const response = enabled
+                      ? await sdk.client.experimental.automation.enable(common, { throwOnError: true })
+                      : await sdk.client.experimental.automation.disable(common, { throwOnError: true })
+                    const versionValue = ((response.data as Record<string, unknown>).automation as Record<string, unknown>).version
+                    toast.show({ message: `Automation ${automationID} ${enabled ? "enabled" : "disabled"} · revision ${String(versionValue ?? "committed")}`, variant: "info" })
+                    return
+                  }
+                  const definition = automation.definition as Record<string, unknown>
+                  dialog.replace(() => <DialogPrompt
+                    title={`Edit automation · ${automationID}`}
+                    placeholder={JSON.stringify(definition)}
+                    description={() => <text>Enter the complete versioned definition as JSON. Schedule remains opaque here; invocation stays disabled until Guarded action receipts are available.</text>}
+                    onConfirm={(value) => {
+                      void (async () => {
+                        try {
+                          const parsed = JSON.parse(value) as Record<string, unknown>
+                          const result = await sdk.client.experimental.automation.update({ ...common, definition: parsed }, { throwOnError: true })
+                          dialog.clear()
+                          const versionValue = ((result.data as Record<string, unknown>).automation as Record<string, unknown>).version
+                          toast.show({ message: `Automation ${automationID} updated · revision ${String(versionValue ?? "committed")}`, variant: "info" })
+                        } catch (error) { toast.error(error) }
+                      })()
+                    }}
+                  />)
+                } catch (error) { toast.error(error) }
+              })()
+            }} />)
+          }}
+        />
+      ))
+    } catch (error) { toast.error(error) }
+  }
+
+  function openAutomationCreate() {
+    dialog.replace(() => <DialogPrompt
+      title="Create durable automation"
+      placeholder='{"automationID":"automation_…","definition":{"actionCapabilityID":"...","actionVersion":1,"actionDigest":"blake3:…","scheduleExpression":"…","timezone":"UTC","enabled":false,"overlapPolicy":"SKIP","missedRunPolicy":"SKIP","retry":{"maxAttempts":1,"initialDelayMs":1000,"maxDelayMs":60000}}}'
+      description={() => <text>Enter a bounded automationID and complete definition JSON. Schedule resolution and execution are Rust-owned. Guarded invocation is unavailable in V1, so creating this record cannot run its action.</text>}
+      onConfirm={(value) => {
+        void (async () => {
+          try {
+            if (new TextEncoder().encode(value).byteLength > 8 * 1024) throw new Error("Automation definition exceeds the 8 KiB limit")
+            const parsed = JSON.parse(value) as Record<string, unknown>
+            if (typeof parsed.automationID !== "string" || typeof parsed.definition !== "object" || parsed.definition === null || Array.isArray(parsed.definition)) throw new Error("Provide automationID and definition")
+            const response = await sdk.client.experimental.automation.create({ directory: sdk.directory, workspace: project.workspace.current(), schemaVersion: 1, sessionID: automationSessionID(), automationID: parsed.automationID, idempotencyKey: `automation_${randomUUID().replaceAll("-", "")}`, definition: parsed.definition as Record<string, unknown> }, { throwOnError: true })
+            dialog.clear()
+            const versionValue = ((response.data as Record<string, unknown>).automation as Record<string, unknown>).version
+            toast.show({ message: `Automation ${parsed.automationID} created · revision ${String(versionValue ?? "committed")}`, variant: "info" })
+          } catch (error) { toast.error(error) }
+        })()
+      }}
+    />)
+  }
+
   const api = createTuiApi(
     createTuiApiAdapters({
       version: InstallationVersion,
@@ -596,6 +1179,61 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         },
       },
       {
+        name: "goal.review",
+        title: "Review Goal proposal",
+        category: "Session",
+        slashName: "goal",
+        run: openGoalReviewInbox,
+      },
+      {
+        name: "goal.propose",
+        title: "Propose a managed Goal",
+        category: "Session",
+        run: openGoalProposal,
+      },
+      {
+        name: "goal.verify",
+        title: "Verify an accepted managed Run",
+        category: "Session",
+        slashName: "goal-verify",
+        run: openGoalVerification,
+      },
+      {
+        name: "goal.control",
+        title: "Pause, resume, or cancel a managed Run",
+        category: "Session",
+        slashName: "goal-control",
+        run: openGoalRunControl,
+      },
+      {
+        name: "goal.plan",
+        title: "Plan tasks for an accepted Goal",
+        category: "Session",
+        slashName: "goal-plan",
+        run: openGoalRunPlan,
+      },
+      {
+        name: "goal.start",
+        title: "Start a planned managed Run",
+        category: "Session",
+        slashName: "goal-start",
+        run: openGoalRunStart,
+      },
+      {
+        name: "automation.list",
+        title: "Manage durable automations",
+        category: "Session",
+        slashName: "automations",
+        run: openAutomationManager,
+      },
+      {
+        name: "automation.create",
+        title: "Create a durable automation definition",
+        category: "Session",
+        slashName: "automation-create",
+        run: openAutomationCreate,
+      },
+      {
         name: "workspace.copy_path",
         title: "Copy worktree path",
         category: "Workspace",
@@ -770,6 +1408,24 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         slashName: "features",
         run: () => {
           dialog.replace(() => <DialogFeatures />)
+        },
+      },
+      {
+        name: "web.search.settings",
+        title: "Settings · Web search",
+        category: "System",
+        slashName: "web-search",
+        run: () => {
+          dialog.replace(() => <DialogWebSearchSettings />)
+        },
+      },
+      {
+        name: "provider.doctor.offline",
+        title: "Settings · Provider Doctor · Offline",
+        category: "System",
+        slashName: "provider-doctor",
+        run: () => {
+          dialog.replace(() => <DialogProviderDoctor />)
         },
       },
       {

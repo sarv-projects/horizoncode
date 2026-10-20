@@ -127,7 +127,7 @@ For each Run maintain a DAG `G=(Tasks,dependsOn)` with accepted SpecVersion and 
 1. Read current owner revision+SpecVersion+run pause/cancel state+peer workspace leases+OS capacity.
 2. Check task dependencies and outstanding UNKNOWN effects; same Run Task must have at most one active Attempt unless an explicit speculative-read fork uses separate Attempt IDs and cannot emit writes.
 3. Reserve capacity **atomically** with workspace/worktree lease and one Attempt admission identity. Advance the sole `ResourceReservation` enum from `PROPOSED` to `RESERVED` (then `CLAIMED` on authenticated launch) under §11.20; do not introduce `ACTIVE` as an alternate state. Durable owner log append wins before any process spawn; idempotent replay returns same reservation, changed request ID returns CONFLICT.
-4. Allocate clean compatible warm workspace or make one bounded worktree; bind path canonical root, base revision, OS executable profile and expiry. Do not delete/reuse untracked or dirty worktree.
+4. Allocate clean compatible warm workspace or make one bounded worktree; bind path canonical root, base revision, OS executable profile and expiry. The worktree's base revision locator and the HostKernel's measured workspace content revision are separate pinned facts: validate and digest each independently, never require their textual values to match or use one as the other's substitute. Do not delete/reuse untracked or dirty worktree.
 5. Return opaque reservation/lease and exact allowed resources to worker; launch via §14 ExecutionHost only after Guard. On expiry/stale epoch, reject and recover receipt state before a new worker begins.
 6. Advance through `RELEASE_PENDING → RELEASED` and release capacity only after observing actual process-tree exit, artifact/log flush and effect reconciliation. Unlaunched `RESERVED` work may `EXPIRED` after proof of no dispatch; any launched uncertain process/effect becomes `QUARANTINED` and retains its conservative budget until reconciliation, never FREE. Watchdog may notify of lost worker but cannot bypass the settlement proof.
 
@@ -140,3 +140,80 @@ For each Run maintain a DAG `G=(Tasks,dependsOn)` with accepted SpecVersion and 
 **Completion algorithm:** each Task independent verifier checks criterion subset and actual repository/source revision; downstream tasks can only unblock after PASS and dependency revision match. Integration applies guarded merge/patch operations under workspace lease, then final revision fingerprint, criterion evidence and independent Run verifier; any source mutation after verification invalidates prior PASS/final acceptance.
 
 **Recovery cases:** stale lease owner, clock shift (use monotonic deadlines within process, durable expiry plus owner epoch on restart), PID reuse, provider timeout after tool execution, duplicate RPC, Git worktree path renamed, disk full after PREPARE, unowned process, task cycle introduced concurrently and verifier race all block/reconcile deterministically. Never release a dirty worktree merely because a Session tab is closed.
+
+
+### V1 managed-admission constraints (2026-10-19)
+
+V1 admission reserves one `ActiveWorkers` unit per Attempt and enforces both the configured WorkerPool live-worker ceiling and the accepted SpecVersion `maxWorkers`. This is bounded admission/accounting, not an OS-enforced CPU/memory/disk/FD quota. Those measurements support backpressure and monitoring; explicit memory/disk guarantees remain unavailable until an OS backend enforces them. Derive the Attempt deadline from the pinned AgentProfileV2 wall time when present, otherwise the accepted SpecVersion run-duration budget, capped at 24 hours and at the remaining Run duration persisted from authenticated `goal.start`. Expiry never substitutes for the no-dispatch or terminal receipt required to release a reservation.
+
+Select a managed worktree only from P8's durable registrations after the guarded lifecycle has proved it clean, current and bound to the authenticated Goal workspace. The registration's base-revision locator and HostKernel's measured workspace-content digest are independent pins. Do not synthesize a worktree identity from the Goal path or accept one from a caller.
+
+### 21.12 Guarded managed worktree lifecycle and tombstones
+
+Before a Task Attempt exists, lifecycle ownership comes from P8's opaque
+`WorktreeRootOwnerV1`, resolved from the authenticated root-coordinator proof for an
+explicitly started Run and its SessionLink. This is lineage and lifecycle scope only; it
+does not grant a child execution or filesystem effect. P1 independently evaluates Guard,
+approval, one-use effect lease, confined ExecutionHost execution, and the settled receipt.
+P8 allocates operation/worktree IDs and relative paths, persists an opaque
+`WorktreeLifecycleOperationPinV1`, and retains exact replay identity. P1 resolves canonical
+argv and filesystem paths only from that pin and trusted Location state.
+
+P1 first obtains a read-only pending-intent projection for Guard descriptor construction.
+Only after Guard/approval and the durable one-use lease does it ask P8 to append
+`WorktreeOperationDispatchStarted`, immediately before supervisor invocation. A crash or
+lost response after that marker is UNKNOWN and cannot be redispatched; an intent without
+that marker remains safely pending. Create registration requires exact settled guarded
+Create plus a fresh no-follow Inspect proving current, owned, clean state and no user
+changes. Historical registrations without that provenance are not admission-eligible.
+
+Release requires current root ownership, no active worker lease, a clean pre-delete
+observation, and a guarded post-delete MISSING receipt. P8 atomically removes the live pool
+entry and appends a durable tombstone retaining the exact release receipt and OwnerLog
+cursor. Tombstoned worktree IDs remain historical and can never be selected or registered
+again. A typed removal receipt binds owner, worktree, release operation/receipt, tombstone,
+OwnerLog cursor, pool revision and a canonical digest; exact delivery retries return the
+same receipt.
+
+If an intent-only Pending operation belongs to an old owner epoch/process, a fresh
+authenticated root proof for the same Goal/Run/principal/root Session/Location/workspace/Spec
+lineage may retire it as `NotAdmittedNoDispatch/EXPIRED`. P8 records this terminal result in
+its OwnerLog and returns the exact cursor-bound retirement receipt. This is allowed only
+while the old operation remains Pending with no receipt or dispatch marker; a changed
+lineage or any ambiguous state remains unavailable. The exact operation ID and idempotency
+key are never revived. The caller must consume the retirement receipt, choose a new key, and
+rerun Guard/approval against the current workspace before another operation is prepared.
+
+V1 Task workers are `LogicalCoreSession` executions: each managed Attempt is a distinct
+Core child Session/Attempt adapter inside the already-running authenticated Core process.
+P8 does not assign a child PID and must not interpret the shared Core PID as a worker exit.
+Worker settlement requires an exact current P8 claim and DelegationBinding, P2's typed
+terminal Attempt plus complete bound-effect receipt-chain proof, and P1's current proof that
+the Attempt has no callbacks, Guard leases, or owned command processes. ActiveWorkers capacity
+is released only after those proofs are revalidated and durably recorded. A worktree becomes
+reusable only with the final guarded clean/no-user-change observation; missing, dirty, or
+uncertain workspace evidence quarantines its worktree. UNKNOWN or incomplete effects retain
+the worker reservation until independent terminal/no-effect reconciliation. Future
+process-backed workers must use a distinct execution kind and require exact supervised
+process-generation exit evidence before release.
+
+P8 exposes this boundary through the crate-private
+`WorkerSettlementProofV1::from_host_kernel` and
+`WorkerPoolControl::settle_managed_worker` APIs. The proof binds the immutable admission
+pins, claim-event nonce/cursor, DelegationBinding digest, P2 terminal snapshot and effect
+chain, authenticated Core/root scope, prompt-quiescence marker, HostKernel quiescence
+evidence, and optional final workspace observation. P8 appends a dedicated
+`worker_managed_logical_settled` event and returns a stable cursor-bound
+`WorkerSettlementReceiptV1`; exact proof replay returns that same receipt, while a different
+proof for the Attempt conflicts. Legacy process-exit booleans cannot settle a P8 managed
+logical child.
+
+After restart or owner-epoch advance, only a still-QUARANTINED, unbound worker may use
+`WorkerReconciliationProofV1` and `reconcile_managed_worker`. The proof additionally binds a
+fresh current-epoch authenticated owner/root with the same Goal/Run/Attempt principal,
+Session and workspace lineage, plus independent terminal/effect and quiescence evidence.
+The reconciliation event releases the ActiveWorkers unit without claiming that the shared
+Core process exited. It releases the worktree to the Free pool only when the fresh guarded
+observation matches P2's final workspace head and proves clean, owned, no-follow state with
+no user changes; all other workspace outcomes remain quarantined. Receipt lookup by Attempt
+recovers a committed result after a lost response without dispatch or release authority.

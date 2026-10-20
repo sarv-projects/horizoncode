@@ -36,13 +36,15 @@ ACCEPTED is immutable.
 ## 11.3 Run
 
 Run:
-PREPARING -> RUNNING
+PREPARING -> PLANNED -> RUNNING
 RUNNING <-> PAUSED
 RUNNING -> VERIFYING -> SUCCEEDED | FAILED | NEEDS_YOU
-PREPARING/RUNNING/PAUSED/VERIFYING -> CANCELLING -> CANCELLED
+PREPARING/PLANNED/RUNNING/PAUSED/VERIFYING -> CANCELLING -> CANCELLED
 unexpected persistence/execution uncertainty -> RECONCILING -> RUNNING | PAUSED | NEEDS_YOU | FAILED.
 
 Rules:
+- PLANNED contains the accepted SpecVersion and complete pinned Task plan; all Tasks are unready and no scheduler/worker dispatch is permitted. Only authenticated goal.start may transition the exact current plan to RUNNING and atomically ready Tasks whose dependencies are satisfied; downstream Tasks become READY after successful predecessor settlement.
+- goal.plan and SpecVersion acceptance do not grant effect authority or start execution.
 - Session idle/closed does not finish a Run.
 - worker/process exit does not finish a Run.
 - SUCCEEDED requires current verifier evidence against final integrated revision.
@@ -176,7 +178,7 @@ with FAILED/EXPIRED/QUARANTINED.
 A REPL has:
 - language/runtime version;
 - workspace and environment scope;
-- memory/CPU/wall-time limits;
+- wall-time limits plus OS-enforced memory/CPU limits where required; do not treat host admission/monitoring as a hard quota;
 - explicit network/filesystem profile;
 - generation/epoch;
 - mediated callback capability set.
@@ -257,7 +259,7 @@ No lifecycle implementation may invent a second conversational Session owner.
 
 ## 11.19 Headless worker and shared attachment lifecycle (A-V2-30)
 
-The source of truth remains Rust `Run → Task → Attempt` and `WorkerExecution` leases; interactive/headless UI mode does not create a second Task state machine. A ready Task may move to resource-blocked/queued without launching a worker; resource pressure does not count as evidence of a task failure or authorize provider change. An admitted Attempt binds its worker identity, owner epoch, trust/sandbox profile, resource capacity, workspace generation and parent capability subset before launching effects.
+The source of truth remains Rust `Run → Task → Attempt` and `WorkerExecution` leases; interactive/headless UI mode does not create a second Task state machine. A ready Task may move to resource-blocked/queued without launching a worker; resource pressure does not count as evidence of a task failure or authorize provider change. An admitted Attempt binds its worker identity, owner epoch, trust/sandbox profile, workspace generation and parent capability subset before launching effects. Its resource reservation is an admission/attribution fact; CPU/memory/process-count/FD are hard limits only when the OS backend enforces them. A profile requiring unsupported enforcement is unavailable before spawn (`DEC-V1-27`).
 
 A proposed shared virtual Session attachment transitions `ATTACHING → AUTHENTICATED → ACTIVE → DRAINING/DETACHED`; revocation or host/kernel restart increments the binding epoch and rejects stale subscriptions, ACKs and effect admissions. On crash/cancel, fence first, then settle or retain UNKNOWN according to actual observable execution; do not let a stale child mark PASS. Peer read/edit collision notifications are advisory and do not mutate Task phase. An independent verifier validates evidence against the final integrated revision before terminal Run success.
 

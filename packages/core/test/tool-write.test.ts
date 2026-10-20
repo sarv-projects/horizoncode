@@ -67,6 +67,7 @@ const supervisor = Layer.succeed(
     hostOwnerEpoch: () => Effect.die("unused"),
     subscribeHostKernelEvents: () => Stream.empty,
     replyGuardApproval: () => Effect.die("unused"),
+    awaitManagedVerifierApprovals: () => Effect.die("unused"),
     executeWrite: ({ lease: providedLease, content }) =>
       Effect.gen(function* () {
         supervisorCalls.push("execute")

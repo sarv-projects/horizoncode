@@ -4,7 +4,11 @@ use horizoncode_kernel::managed_control::{
     AcceptanceCriterion, AttemptPhase, GoalDraft, ManagedCommand, ManagedControl, ManagedError,
     RunPhase, SessionLink, SpecBudget, SpecVersionDraft,
 };
-use horizoncode_kernel::protocol::CursorV1;
+use horizoncode_kernel::owner_log::{
+    DurabilityProfile, OwnerEventInput, OwnerIdentity, OwnerLogV2,
+};
+use horizoncode_kernel::protocol::{CursorV1, DelegationBindingV1};
+use serde_json::json;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -43,6 +47,10 @@ fn sha(seed: char) -> String {
     format!("sha256:{}", seed.to_string().repeat(64))
 }
 
+fn b3(seed: char) -> String {
+    format!("blake3:{}", seed.to_string().repeat(64))
+}
+
 fn goal() -> GoalDraft {
     GoalDraft {
         objective: "Complete the managed task".into(),
@@ -58,6 +66,7 @@ fn spec(proposed_by: &str, max_attempts_per_task: u16) -> SpecVersionDraft {
         objective: "Complete the managed task without changing unrelated files".into(),
         project_ref: "project-one".into(),
         workspace_ref: "workspace-one".into(),
+        capability_scope: vec![],
         scope: vec!["kernel/src/**".into()],
         constraints: vec!["Preserve user-owned changes".into()],
         criteria: vec![AcceptanceCriterion {
@@ -80,13 +89,134 @@ fn spec(proposed_by: &str, max_attempts_per_task: u16) -> SpecVersionDraft {
 }
 
 fn send(store: &mut ManagedControl, delivery: &str, command: ManagedCommand) {
+    let reviewer = match &command {
+        ManagedCommand::AcceptSpec {
+            spec_id,
+            spec_digest,
+            accepted_by,
+            ..
+        } => Some((spec_id.clone(), spec_digest.clone(), accepted_by.clone())),
+        ManagedCommand::RejectSpec {
+            spec_id,
+            spec_digest,
+            rejected_by,
+            ..
+        } => Some((spec_id.clone(), spec_digest.clone(), rejected_by.clone())),
+        _ => None,
+    };
+    if let Some((spec_id, spec_digest, reviewer_id)) = reviewer {
+        let snapshot = store.snapshot();
+        if snapshot
+            .specs
+            .get(&spec_id)
+            .is_some_and(|spec| spec.reviewer_id.is_none())
+        {
+            store
+                .apply(
+                    snapshot.revision,
+                    &format!("{delivery}-reviewer"),
+                    ManagedCommand::AssignSpecReviewer {
+                        spec_id,
+                        spec_digest,
+                        reviewer_id,
+                    },
+                )
+                .unwrap();
+        }
+    }
+    if let ManagedCommand::BindAttemptEffect { attempt_id, .. } = &command {
+        bind_test_delegation(store, attempt_id);
+    }
     let rev = store.snapshot().revision;
     store.apply(rev, delivery, command).unwrap();
 }
 
+/// Explicit trusted fixture authority for managed-effect state-machine tests. The
+/// production OwnerLog adapter never infers these values from an effect request.
+fn bind_test_delegation(store: &mut ManagedControl, attempt_id: &str) {
+    let snapshot = store.snapshot();
+    let Some(attempt) = snapshot.attempts.get(attempt_id) else {
+        panic!("managed test fixture Attempt is missing")
+    };
+    if attempt.delegation_binding.is_some() {
+        return;
+    }
+    let run_id = attempt.run_id.clone();
+    let task_id = attempt.task_id.clone();
+    let owner_epoch = attempt.owner_epoch;
+    let workspace_revision = attempt
+        .workspace_revision
+        .clone()
+        .unwrap_or_else(|| b3('f'));
+    if attempt.workspace_revision.is_none() {
+        send(
+            store,
+            &fixture_delivery("workspace", attempt_id),
+            ManagedCommand::BindAttemptWorkspaceRevision {
+                attempt_id: attempt_id.to_owned(),
+                workspace_revision: workspace_revision.clone(),
+            },
+        );
+    }
+    let snapshot = store.snapshot();
+    let run = &snapshot.runs[&run_id];
+    let task = &run.tasks[&task_id];
+    let mut criteria_ids = task.criterion_ids.clone();
+    criteria_ids.sort();
+    criteria_ids.dedup();
+    assert!(
+        !criteria_ids.is_empty(),
+        "effect fixture Task requires criteria"
+    );
+    let spec_digest = snapshot.specs[&run.spec_id].digest.clone();
+    let binding = DelegationBindingV1 {
+        run_id,
+        task_id,
+        attempt_id: attempt_id.to_owned(),
+        parent_execution_id: fixture_execution_id("parent", attempt_id),
+        child_execution_id: fixture_execution_id("child", attempt_id),
+        accepted_spec_digest: spec_digest,
+        profile_id: "fixture-profile".into(),
+        profile_revision: 1,
+        profile_digest: b3('a'),
+        criteria_ids,
+        workspace_lease_id: "fixture-workspace-lease".into(),
+        source_revision: workspace_revision,
+        capability_ceiling_digest: sha('b'),
+        context_selection_digest: b3('c'),
+        budget_lease_id: "fixture-budget-lease".into(),
+        resource_lease_ids: vec![],
+        owner_epoch,
+        admitted_managed_revision: snapshot.revision + 1,
+    };
+    store
+        .bind_attempt_delegation(
+            &fixture_delivery("delegation", attempt_id),
+            attempt_id,
+            binding,
+        )
+        .unwrap();
+}
+
+fn fixture_delivery(prefix: &str, attempt_id: &str) -> String {
+    format!(
+        "fixture-{prefix}-{}",
+        blake3::hash(attempt_id.as_bytes()).to_hex()
+    )
+}
+
+fn fixture_execution_id(prefix: &str, attempt_id: &str) -> String {
+    format!("{prefix}-{}", blake3::hash(attempt_id.as_bytes()).to_hex())
+}
+
 fn accepted_run(store: &mut ManagedControl) {
+    accepted_run_with_workers(store, 1);
+}
+
+fn accepted_run_with_workers(store: &mut ManagedControl, max_workers: u16) {
     send(store, "goal1", ManagedCommand::CreateGoal { goal: goal() });
-    let spec = spec("server_auth.author", 2);
+    let mut spec = spec("server_auth.author", 2);
+    spec.budget.max_workers = max_workers;
     let spec_digest = spec.digest();
     send(
         store,
@@ -113,6 +243,130 @@ fn accepted_run(store: &mut ManagedControl) {
         ManagedCommand::StartRun {
             run_id: "run-v1".into(),
             spec_id: "spec-v1".into(),
+        },
+    );
+}
+
+#[test]
+fn goal_proposal_is_one_durable_transaction_and_failed_spec_can_retry_cleanly() {
+    let root = PrivateRoot::new();
+    let mut control = ManagedControl::open(root.path(), "goal-atomic").unwrap();
+    let mut goal_draft = goal();
+    goal_draft.created_by = "host_os_uid:1000".into();
+    let mut invalid_spec = spec("host_os_uid:1000", 2);
+    invalid_spec.objective = goal_draft.objective.clone();
+    invalid_spec.project_ref = "different-project".into();
+
+    let error = control
+        .create_goal_proposal(
+            0,
+            "proposal-delivery",
+            "goal-atomic".into(),
+            "spec-atomic".into(),
+            goal_draft.clone(),
+            invalid_spec,
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ManagedError::Conflict("SpecVersion project/workspace mismatch")
+    ));
+    assert_eq!(control.snapshot().revision, 0);
+    assert!(control.snapshot().goal.is_none());
+    assert!(control.snapshot().specs.is_empty());
+
+    let mut valid_spec = spec("host_os_uid:1000", 2);
+    valid_spec.objective = goal_draft.objective.clone();
+    let created = control
+        .create_goal_proposal(
+            0,
+            "proposal-delivery",
+            "goal-atomic".into(),
+            "spec-atomic".into(),
+            goal_draft.clone(),
+            valid_spec.clone(),
+        )
+        .unwrap();
+    assert_eq!(created.goal_id, "goal-atomic");
+    assert_eq!(created.spec_id, "spec-atomic");
+    assert_eq!(created.revision, 1);
+    assert_eq!(control.snapshot().revision, 1);
+    assert_eq!(
+        control.snapshot().goal.as_ref().unwrap().created_by,
+        "host_os_uid:1000"
+    );
+    assert_eq!(control.snapshot().specs.len(), 1);
+    assert_eq!(
+        control.snapshot().specs["spec-atomic"].digest,
+        created.spec_digest
+    );
+
+    let replay = control
+        .create_goal_proposal(
+            0,
+            "proposal-delivery",
+            "goal-atomic".into(),
+            "spec-atomic".into(),
+            goal_draft,
+            valid_spec,
+        )
+        .unwrap();
+    assert_eq!(replay, created);
+    assert_eq!(control.snapshot().revision, 1);
+
+    drop(control);
+    let reopened = ManagedControl::open_existing(root.path(), "goal-atomic").unwrap();
+    assert_eq!(reopened.snapshot().revision, 1);
+    assert!(reopened.snapshot().goal.is_some());
+    assert_eq!(reopened.snapshot().specs.len(), 1);
+}
+
+fn settle_attempt_success(
+    store: &mut ManagedControl,
+    delivery_prefix: &str,
+    run_id: &str,
+    task_id: &str,
+    attempt_id: &str,
+    receipt_seed: char,
+) {
+    send(
+        store,
+        &format!("{delivery_prefix}-executing"),
+        ManagedCommand::StartAttempt {
+            run_id: run_id.into(),
+            task_id: task_id.into(),
+            attempt_id: attempt_id.into(),
+        },
+    );
+    send(
+        store,
+        &format!("{delivery_prefix}-effect"),
+        ManagedCommand::BindAttemptEffect {
+            run_id: run_id.into(),
+            task_id: task_id.into(),
+            attempt_id: attempt_id.into(),
+            effect_id: format!("eff-{delivery_prefix}"),
+            location_id: "loc-test".into(),
+            session_id: "ses-test".into(),
+        },
+    );
+    send(
+        store,
+        &format!("{delivery_prefix}-settling"),
+        ManagedCommand::BeginAttemptSettlement {
+            run_id: run_id.into(),
+            task_id: task_id.into(),
+            attempt_id: attempt_id.into(),
+        },
+    );
+    send(
+        store,
+        &format!("{delivery_prefix}-receipt"),
+        ManagedCommand::SettleAttempt {
+            run_id: run_id.into(),
+            task_id: task_id.into(),
+            attempt_id: attempt_id.into(),
+            receipt_digest: b3(receipt_seed),
         },
     );
 }
@@ -208,6 +462,78 @@ fn run_requires_accepted_immutable_spec_and_revision_fence() {
 }
 
 #[test]
+fn task_required_capabilities_must_be_a_subset_of_the_accepted_spec_scope() {
+    let root = PrivateRoot::new();
+    let mut store = ManagedControl::open(root.path(), "goal-capability-scope").unwrap();
+    send(&mut store, "goal", ManagedCommand::CreateGoal { goal: goal() });
+
+    let mut draft = spec("server_auth.author", 1);
+    draft.capability_scope = vec!["files.patch".into()];
+    let spec_digest = draft.digest();
+    send(
+        &mut store,
+        "propose",
+        ManagedCommand::ProposeSpec {
+            spec_id: "spec-capabilities".into(),
+            spec: draft,
+            spec_digest: spec_digest.clone(),
+        },
+    );
+    send(
+        &mut store,
+        "accept",
+        ManagedCommand::AcceptSpec {
+            spec_id: "spec-capabilities".into(),
+            spec_digest,
+            accepted_by: "server_auth.reviewer".into(),
+            accepted_at_ms: 1,
+        },
+    );
+    send(
+        &mut store,
+        "run",
+        ManagedCommand::StartRun {
+            run_id: "run-capabilities".into(),
+            spec_id: "spec-capabilities".into(),
+        },
+    );
+
+    let revision = store.snapshot().revision;
+    let widened = store.apply(
+        revision,
+        "task-widened",
+        ManagedCommand::AddTask {
+            run_id: "run-capabilities".into(),
+            task_id: "task-widened".into(),
+            dependencies: vec![],
+            criterion_ids: vec!["tests-pass".into()],
+            required_capabilities: vec!["files.read".into()],
+        },
+    );
+    assert!(matches!(widened, Err(ManagedError::Conflict(_))));
+    assert_eq!(store.snapshot().revision, revision);
+    assert!(!store.snapshot().runs["run-capabilities"].tasks.contains_key("task-widened"));
+
+    store
+        .apply(
+            revision,
+            "task-narrowed",
+            ManagedCommand::AddTask {
+                run_id: "run-capabilities".into(),
+                task_id: "task-narrowed".into(),
+                dependencies: vec![],
+                criterion_ids: vec!["tests-pass".into()],
+                required_capabilities: vec!["files.patch".into()],
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        store.snapshot().runs["run-capabilities"].tasks["task-narrowed"].required_capabilities,
+        ["files.patch"]
+    );
+}
+
+#[test]
 fn full_spec_digest_and_acceptance_are_bound_to_distinct_review_identity() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-full-spec").unwrap();
@@ -294,6 +620,197 @@ fn full_spec_digest_and_acceptance_are_bound_to_distinct_review_identity() {
     assert_eq!(accepted.content.criteria, draft.criteria);
     assert_eq!(accepted.content.budget, draft.budget);
     assert_eq!(accepted.content.source_digests, draft.source_digests);
+}
+
+#[test]
+fn rejected_spec_is_terminal_audited_and_can_be_revised_without_becoming_active() {
+    let root = PrivateRoot::new();
+    let mut store = ManagedControl::open(root.path(), "goal-rejected-spec").unwrap();
+    send(
+        &mut store,
+        "goal",
+        ManagedCommand::CreateGoal { goal: goal() },
+    );
+
+    let first = spec("server_auth.author", 2);
+    let first_digest = first.digest();
+    send(
+        &mut store,
+        "propose-first",
+        ManagedCommand::ProposeSpec {
+            spec_id: "spec-v1".into(),
+            spec: first,
+            spec_digest: first_digest.clone(),
+        },
+    );
+    let proposed_revision = store.snapshot().revision;
+    assert!(matches!(
+        store.apply(
+            proposed_revision,
+            "reject-stale-digest",
+            ManagedCommand::RejectSpec {
+                spec_id: "spec-v1".into(),
+                spec_digest: b3('f'),
+                rejected_by: "server_auth.reviewer".into(),
+                rejected_at_ms: 11,
+            }
+        ),
+        Err(ManagedError::Conflict(_))
+    ));
+    assert!(matches!(
+        store.apply(
+            proposed_revision,
+            "reject-zero-time",
+            ManagedCommand::RejectSpec {
+                spec_id: "spec-v1".into(),
+                spec_digest: first_digest.clone(),
+                rejected_by: "server_auth.reviewer".into(),
+                rejected_at_ms: 0,
+            }
+        ),
+        Err(ManagedError::Invalid(_))
+    ));
+    assert!(matches!(
+        store.apply(
+            proposed_revision,
+            "reject-invalid-reviewer",
+            ManagedCommand::RejectSpec {
+                spec_id: "spec-v1".into(),
+                spec_digest: first_digest.clone(),
+                rejected_by: String::new(),
+                rejected_at_ms: 11,
+            }
+        ),
+        Err(ManagedError::Invalid(_))
+    ));
+    assert_eq!(store.snapshot().revision, proposed_revision);
+    send(
+        &mut store,
+        "reject-first",
+        ManagedCommand::RejectSpec {
+            spec_id: "spec-v1".into(),
+            spec_digest: first_digest.clone(),
+            rejected_by: "server_auth.reviewer".into(),
+            rejected_at_ms: 12,
+        },
+    );
+
+    let rejected = &store.snapshot().specs["spec-v1"];
+    assert!(!rejected.accepted);
+    assert_eq!(rejected.accepted_by, None);
+    assert_eq!(
+        rejected.rejected_by.as_deref(),
+        Some("server_auth.reviewer")
+    );
+    assert_eq!(rejected.rejected_at_ms, Some(12));
+    let revision = store.snapshot().revision;
+    assert!(matches!(
+        store.apply(
+            revision,
+            "accept-rejected",
+            ManagedCommand::AcceptSpec {
+                spec_id: "spec-v1".into(),
+                spec_digest: first_digest.clone(),
+                accepted_by: "server_auth.reviewer".into(),
+                accepted_at_ms: 13,
+            }
+        ),
+        Err(ManagedError::Conflict(_))
+    ));
+    assert!(matches!(
+        store.apply(
+            revision,
+            "reject-again",
+            ManagedCommand::RejectSpec {
+                spec_id: "spec-v1".into(),
+                spec_digest: first_digest.clone(),
+                rejected_by: "server_auth.reviewer".into(),
+                rejected_at_ms: 14,
+            }
+        ),
+        Err(ManagedError::Conflict(_))
+    ));
+    assert!(
+        store
+            .apply(
+                revision,
+                "run-rejected",
+                ManagedCommand::StartRun {
+                    run_id: "run-rejected".into(),
+                    spec_id: "spec-v1".into(),
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(store.snapshot().revision, revision);
+    drop(store);
+
+    let mut restored = ManagedControl::open(root.path(), "goal-rejected-spec").unwrap();
+    assert_eq!(
+        restored.snapshot().specs["spec-v1"].rejected_by.as_deref(),
+        Some("server_auth.reviewer")
+    );
+    assert_eq!(
+        restored.snapshot().specs["spec-v1"].rejected_at_ms,
+        Some(12)
+    );
+
+    let mut replacement = spec("server_auth.author", 2);
+    replacement.parent_version_id = Some("spec-v1".into());
+    let replacement_digest = replacement.digest();
+    send(
+        &mut restored,
+        "propose-replacement",
+        ManagedCommand::ProposeSpec {
+            spec_id: "spec-v2".into(),
+            spec: replacement,
+            spec_digest: replacement_digest.clone(),
+        },
+    );
+    send(
+        &mut restored,
+        "accept-replacement",
+        ManagedCommand::AcceptSpec {
+            spec_id: "spec-v2".into(),
+            spec_digest: replacement_digest,
+            accepted_by: "server_auth.reviewer".into(),
+            accepted_at_ms: 15,
+        },
+    );
+    send(
+        &mut restored,
+        "run-replacement",
+        ManagedCommand::StartRun {
+            run_id: "run-v2".into(),
+            spec_id: "spec-v2".into(),
+        },
+    );
+    assert_eq!(restored.snapshot().runs["run-v2"].phase, RunPhase::Running);
+    let accepted_revision = restored.snapshot().revision;
+    let accepted_digest = restored.snapshot().specs["spec-v2"].digest.clone();
+    assert!(matches!(
+        restored.apply(
+            accepted_revision,
+            "reject-accepted-replacement",
+            ManagedCommand::RejectSpec {
+                spec_id: "spec-v2".into(),
+                spec_digest: accepted_digest,
+                rejected_by: "server_auth.reviewer".into(),
+                rejected_at_ms: 16,
+            }
+        ),
+        Err(ManagedError::Conflict(_))
+    ));
+    assert_eq!(restored.snapshot().revision, accepted_revision);
+    assert_eq!(
+        restored
+            .snapshot()
+            .goal
+            .as_ref()
+            .unwrap()
+            .active_spec_version_id,
+        Some("spec-v2".into())
+    );
 }
 
 #[test]
@@ -386,6 +903,7 @@ fn retry_exhaustion_fences_attempt_admission_and_requires_user() {
             task_id: "task-a".into(),
             dependencies: vec![],
             criterion_ids: vec!["tests-pass".into()],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -403,6 +921,10 @@ fn retry_exhaustion_fences_attempt_admission_and_requires_user() {
             run_id: "run-v1".into(),
             task_id: "task-a".into(),
             attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
     );
     send(
@@ -420,6 +942,10 @@ fn retry_exhaustion_fences_attempt_admission_and_requires_user() {
         store.snapshot().attempts["attempt-one"].phase,
         AttemptPhase::Failed
     );
+    assert_eq!(
+        store.snapshot().attempts["attempt-one"].receipt_digest,
+        None
+    );
     assert_eq!(store.snapshot().runs["run-v1"].phase, RunPhase::Running);
 
     send(
@@ -429,6 +955,10 @@ fn retry_exhaustion_fences_attempt_admission_and_requires_user() {
             run_id: "run-v1".into(),
             task_id: "task-a".into(),
             attempt_id: "attempt-two".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
     );
     send(
@@ -458,6 +988,10 @@ fn retry_exhaustion_fences_attempt_admission_and_requires_user() {
                     run_id: "run-v1".into(),
                     task_id: "task-a".into(),
                     attempt_id: "attempt-three".into(),
+                    executor_principal: "server_auth.executor".into(),
+                    owner_epoch: 1,
+                    location_id: "test-location".into(),
+                    session_id: "test-session".into(),
                 }
             )
             .is_err()
@@ -483,6 +1017,183 @@ fn retry_exhaustion_fences_attempt_admission_and_requires_user() {
 }
 
 #[test]
+fn immutable_delegation_binding_is_atomic_replayable_and_required_for_effect_intents() {
+    let root = PrivateRoot::new();
+    let mut store = ManagedControl::open(root.path(), "goal-delegation-binding").unwrap();
+    accepted_run(&mut store);
+    send(
+        &mut store,
+        "task",
+        ManagedCommand::AddTask {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            dependencies: vec![],
+            criterion_ids: vec!["tests-pass".into()],
+            required_capabilities: vec![],
+        },
+    );
+    send(
+        &mut store,
+        "ready",
+        ManagedCommand::MarkTaskReady {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+        },
+    );
+    send(
+        &mut store,
+        "admit",
+        ManagedCommand::AdmitAttempt {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
+        },
+    );
+    send(
+        &mut store,
+        "start",
+        ManagedCommand::StartAttempt {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+        },
+    );
+    let source_revision = b3('c');
+    send(
+        &mut store,
+        "workspace",
+        ManagedCommand::BindAttemptWorkspaceRevision {
+            attempt_id: "attempt-one".into(),
+            workspace_revision: source_revision.clone(),
+        },
+    );
+
+    let blocked = store.apply(
+        store.snapshot().revision,
+        "effect-before-binding",
+        ManagedCommand::BindAttemptEffect {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+            effect_id: "effect-one".into(),
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
+        },
+    );
+    assert!(blocked.is_err());
+    assert!(store.snapshot().attempts["attempt-one"].effects.is_empty());
+
+    let spec_digest = store.snapshot().specs["spec-v1"].digest.clone();
+    let mut binding = DelegationBindingV1 {
+        run_id: "run-v1".into(),
+        task_id: "task-a".into(),
+        attempt_id: "attempt-one".into(),
+        parent_execution_id: "exec-parent".into(),
+        child_execution_id: "exec-child".into(),
+        accepted_spec_digest: spec_digest,
+        profile_id: "profile-v1".into(),
+        profile_revision: 1,
+        profile_digest: b3('a'),
+        criteria_ids: vec!["tests-pass".into()],
+        workspace_lease_id: "workspace-lease-1".into(),
+        source_revision,
+        capability_ceiling_digest: sha('b'),
+        context_selection_digest: b3('d'),
+        budget_lease_id: "budget-lease-1".into(),
+        resource_lease_ids: vec![],
+        owner_epoch: 1,
+        admitted_managed_revision: store.snapshot().revision + 1,
+    };
+    let stale_revision = binding.admitted_managed_revision;
+    binding.admitted_managed_revision += 1;
+    assert!(
+        store
+            .bind_attempt_delegation("stale-binding", "attempt-one", binding.clone())
+            .is_err()
+    );
+    binding.admitted_managed_revision = stale_revision;
+    store
+        .bind_attempt_delegation("binding", "attempt-one", binding.clone())
+        .unwrap();
+    assert_eq!(
+        store.snapshot().attempt_delegation_binding("attempt-one"),
+        Some(&binding)
+    );
+    store
+        .bind_attempt_delegation("binding", "attempt-one", binding.clone())
+        .unwrap();
+    send(
+        &mut store,
+        "effect-after-binding",
+        ManagedCommand::BindAttemptEffect {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+            effect_id: "effect-one".into(),
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
+        },
+    );
+    assert_eq!(store.snapshot().attempts["attempt-one"].effects.len(), 1);
+    let effect_edge_revision = store.snapshot().revision;
+    assert_eq!(
+        store.attempt_effect_bound_revision("attempt-one", "effect-one"),
+        Some(effect_edge_revision)
+    );
+    send(
+        &mut store,
+        "pause-after-effect-edge",
+        ManagedCommand::PauseRun {
+            run_id: "run-v1".into(),
+        },
+    );
+    assert!(store.snapshot().revision > effect_edge_revision);
+    assert_eq!(
+        store.attempt_effect_bound_revision("attempt-one", "effect-one"),
+        Some(effect_edge_revision)
+    );
+    drop(store);
+
+    let mut reopened = ManagedControl::open(root.path(), "goal-delegation-binding").unwrap();
+    assert_eq!(
+        reopened
+            .snapshot()
+            .attempt_delegation_binding("attempt-one"),
+        Some(&binding)
+    );
+    assert_eq!(
+        reopened.snapshot().attempts["attempt-one"].phase,
+        AttemptPhase::Unknown
+    );
+    assert_eq!(reopened.snapshot().attempts["attempt-one"].effects.len(), 1);
+    assert_eq!(
+        reopened.attempt_effect_bound_revision("attempt-one", "effect-one"),
+        Some(effect_edge_revision)
+    );
+    assert!(
+        reopened
+            .apply(
+                reopened.snapshot().revision,
+                "effect-after-restart",
+                ManagedCommand::BindAttemptEffect {
+                    run_id: "run-v1".into(),
+                    task_id: "task-a".into(),
+                    attempt_id: "attempt-one".into(),
+                    effect_id: "effect-two".into(),
+                    location_id: "test-location".into(),
+                    session_id: "test-session".into(),
+                },
+            )
+            .is_err()
+    );
+    assert_eq!(reopened.snapshot().attempts["attempt-one"].effects.len(), 1);
+}
+
+#[test]
 fn new_final_revision_invalidates_previous_verification_evidence() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-manual-edit").unwrap();
@@ -495,6 +1206,7 @@ fn new_final_revision_invalidates_previous_verification_evidence() {
             task_id: "task-a".into(),
             dependencies: vec![],
             criterion_ids: vec!["tests-pass".into()],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -512,7 +1224,19 @@ fn new_final_revision_invalidates_previous_verification_evidence() {
             run_id: "run-v1".into(),
             task_id: "task-a".into(),
             attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
+    );
+    settle_attempt_success(
+        &mut store,
+        "first-task-attempt",
+        "run-v1",
+        "task-a",
+        "attempt-one",
+        'e',
     );
     send(
         &mut store,
@@ -521,6 +1245,7 @@ fn new_final_revision_invalidates_previous_verification_evidence() {
             run_id: "run-v1".into(),
             task_id: "task-a".into(),
             attempt_id: "attempt-one".into(),
+            verifier_id: "server_auth.verifier".into(),
             source_revision: sha('a'),
             evidence_digest: sha('d'),
         },
@@ -531,6 +1256,7 @@ fn new_final_revision_invalidates_previous_verification_evidence() {
         ManagedCommand::BeginVerification {
             run_id: "run-v1".into(),
             final_revision: sha('a'),
+            verifier_id: "server_auth.verifier".into(),
         },
     );
     send(
@@ -541,8 +1267,23 @@ fn new_final_revision_invalidates_previous_verification_evidence() {
             criterion_id: "tests-pass".into(),
             source_revision: sha('a'),
             evidence_digest: sha('e'),
-            verifier_id: "test-verifier".into(),
+            verifier_id: "server_auth.verifier".into(),
         },
+    );
+    assert!(
+        store
+            .apply(
+                store.snapshot().revision,
+                "wrong-verifier-evidence",
+                ManagedCommand::RecordCriterionEvidence {
+                    run_id: "run-v1".into(),
+                    criterion_id: "tests-pass".into(),
+                    source_revision: sha('a'),
+                    evidence_digest: sha('e'),
+                    verifier_id: "server_auth.other".into(),
+                }
+            )
+            .is_err()
     );
 
     // The trusted workspace observer reports a user edit before finalization.
@@ -552,6 +1293,7 @@ fn new_final_revision_invalidates_previous_verification_evidence() {
         ManagedCommand::BeginVerification {
             run_id: "run-v1".into(),
             final_revision: sha('b'),
+            verifier_id: "server_auth.verifier".into(),
         },
     );
     assert!(
@@ -569,7 +1311,7 @@ fn new_final_revision_invalidates_previous_verification_evidence() {
                     criterion_id: "tests-pass".into(),
                     source_revision: sha('a'),
                     evidence_digest: sha('f'),
-                    verifier_id: "test-verifier".into(),
+                    verifier_id: "server_auth.verifier".into(),
                 }
             )
             .is_err()
@@ -594,18 +1336,578 @@ fn new_final_revision_invalidates_previous_verification_evidence() {
             criterion_id: "tests-pass".into(),
             source_revision: sha('b'),
             evidence_digest: sha('f'),
-            verifier_id: "test-verifier".into(),
+            verifier_id: "server_auth.verifier".into(),
+        },
+    );
+    let revision = store.snapshot().revision;
+    assert!(matches!(
+        store.apply(
+            revision,
+            "final-b-with-digest-only-evidence",
+            ManagedCommand::FinalizeRun {
+                run_id: "run-v1".into(),
+                final_revision: sha('b'),
+            }
+        ),
+        Err(ManagedError::Conflict(_))
+    ));
+    assert_eq!(store.snapshot().runs["run-v1"].phase, RunPhase::Verifying);
+}
+
+#[test]
+fn admitted_attempt_cannot_pass_task_verification_without_a_settled_receipt() {
+    let root = PrivateRoot::new();
+    let mut store = ManagedControl::open(root.path(), "goal-attempt-receipt").unwrap();
+    accepted_run(&mut store);
+    send(
+        &mut store,
+        "task",
+        ManagedCommand::AddTask {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            dependencies: vec![],
+            criterion_ids: vec!["tests-pass".into()],
+            required_capabilities: vec![],
         },
     );
     send(
         &mut store,
-        "final-b",
-        ManagedCommand::FinalizeRun {
+        "ready",
+        ManagedCommand::MarkTaskReady {
             run_id: "run-v1".into(),
-            final_revision: sha('b'),
+            task_id: "task-a".into(),
         },
     );
-    assert_eq!(store.snapshot().runs["run-v1"].phase, RunPhase::Succeeded);
+    send(
+        &mut store,
+        "attempt",
+        ManagedCommand::AdmitAttempt {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
+        },
+    );
+    assert!(matches!(
+        store.apply(
+            store.snapshot().revision,
+            "receipt-before-execution",
+            ManagedCommand::SettleAttempt {
+                run_id: "run-v1".into(),
+                task_id: "task-a".into(),
+                attempt_id: "attempt-one".into(),
+                receipt_digest: b3('e'),
+            }
+        ),
+        Err(ManagedError::Conflict(_))
+    ));
+    let revision = store.snapshot().revision;
+
+    assert!(matches!(
+        store.apply(
+            revision,
+            "premature-verification",
+            ManagedCommand::VerifyTask {
+                run_id: "run-v1".into(),
+                task_id: "task-a".into(),
+                attempt_id: "attempt-one".into(),
+                verifier_id: "server_auth.verifier".into(),
+                source_revision: sha('a'),
+                evidence_digest: sha('d'),
+            }
+        ),
+        Err(ManagedError::Conflict(_))
+    ));
+    assert_eq!(store.snapshot().revision, revision);
+    assert_eq!(
+        store.snapshot().attempts["attempt-one"].phase,
+        AttemptPhase::Admitted
+    );
+    assert_eq!(
+        store.snapshot().runs["run-v1"].tasks["task-a"]
+            .active_attempt
+            .as_deref(),
+        Some("attempt-one")
+    );
+
+    settle_attempt_success(
+        &mut store,
+        "settle-attempt",
+        "run-v1",
+        "task-a",
+        "attempt-one",
+        'e',
+    );
+    send(
+        &mut store,
+        "verify-settled-task",
+        ManagedCommand::VerifyTask {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+            verifier_id: "server_auth.verifier".into(),
+            source_revision: sha('a'),
+            evidence_digest: sha('d'),
+        },
+    );
+    assert_eq!(
+        store.snapshot().attempts["attempt-one"].phase,
+        AttemptPhase::Succeeded
+    );
+    assert_eq!(
+        store.snapshot().attempts["attempt-one"]
+            .receipt_digest
+            .as_deref(),
+        Some(b3('e').as_str())
+    );
+    let verification = store.snapshot().runs["run-v1"].tasks["task-a"]
+        .verification_evidence
+        .as_ref()
+        .expect("Task verification evidence should be durable");
+    assert_eq!(verification.attempt_id, "attempt-one");
+    assert_eq!(verification.source_revision, sha('a'));
+    assert_eq!(verification.evidence_digest, sha('d'));
+    drop(store);
+
+    let restored = ManagedControl::open(root.path(), "goal-attempt-receipt").unwrap();
+    assert_eq!(
+        restored.snapshot().attempts["attempt-one"]
+            .receipt_digest
+            .as_deref(),
+        Some(b3('e').as_str())
+    );
+    let verification = restored.snapshot().runs["run-v1"].tasks["task-a"]
+        .verification_evidence
+        .as_ref()
+        .expect("replayed Task verification evidence should be durable");
+    assert_eq!(verification.attempt_id, "attempt-one");
+    assert_eq!(verification.source_revision, sha('a'));
+    assert_eq!(verification.evidence_digest, sha('d'));
+}
+
+#[test]
+fn settled_attempt_rejects_missing_or_wrong_format_receipt_reference() {
+    let root = PrivateRoot::new();
+    let mut store = ManagedControl::open(root.path(), "goal-missing-receipt").unwrap();
+    accepted_run(&mut store);
+    send(
+        &mut store,
+        "task",
+        ManagedCommand::AddTask {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            dependencies: vec![],
+            criterion_ids: vec!["tests-pass".into()],
+            required_capabilities: vec![],
+        },
+    );
+    send(
+        &mut store,
+        "ready",
+        ManagedCommand::MarkTaskReady {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+        },
+    );
+    send(
+        &mut store,
+        "attempt",
+        ManagedCommand::AdmitAttempt {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
+        },
+    );
+    send(
+        &mut store,
+        "executing",
+        ManagedCommand::StartAttempt {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+        },
+    );
+    send(
+        &mut store,
+        "settling",
+        ManagedCommand::BeginAttemptSettlement {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+        },
+    );
+    let revision = store.snapshot().revision;
+
+    // The state reducer rejects absent/malformed references. It cannot
+    // authenticate a well-formed reference; that remains the future trusted
+    // HostKernel adapter's responsibility and is not exposed as RPC ingress.
+    for (delivery_id, receipt_digest) in [
+        ("missing-receipt", String::new()),
+        ("wrong-receipt-algorithm", sha('a')),
+    ] {
+        assert!(matches!(
+            store.apply(
+                revision,
+                delivery_id,
+                ManagedCommand::SettleAttempt {
+                    run_id: "run-v1".into(),
+                    task_id: "task-a".into(),
+                    attempt_id: "attempt-one".into(),
+                    receipt_digest,
+                }
+            ),
+            Err(ManagedError::Invalid(_))
+        ));
+    }
+
+    assert_eq!(store.snapshot().revision, revision);
+    assert_eq!(
+        store.snapshot().attempts["attempt-one"].phase,
+        AttemptPhase::Settling
+    );
+    assert_eq!(
+        store.snapshot().attempts["attempt-one"].receipt_digest,
+        None
+    );
+}
+
+#[test]
+fn managed_attempt_accepts_host_receipt_reference_encoding() {
+    let root = PrivateRoot::new();
+    let mut store = ManagedControl::open(root.path(), "goal-host-receipt-format").unwrap();
+    accepted_run(&mut store);
+    send(
+        &mut store,
+        "task",
+        ManagedCommand::AddTask {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            dependencies: vec![],
+            criterion_ids: vec!["tests-pass".into()],
+            required_capabilities: vec![],
+        },
+    );
+    send(
+        &mut store,
+        "ready",
+        ManagedCommand::MarkTaskReady {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+        },
+    );
+    send(
+        &mut store,
+        "attempt",
+        ManagedCommand::AdmitAttempt {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
+        },
+    );
+    send(
+        &mut store,
+        "executing",
+        ManagedCommand::StartAttempt {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+        },
+    );
+    // The Attempt-to-effect edge is durable only while the Attempt is EXECUTING, so
+    // it is recorded before settlement begins (matching the shared helper).
+    send(
+        &mut store,
+        "bind-host-receipt-effect",
+        ManagedCommand::BindAttemptEffect {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+            effect_id: "eff-attempt-one".into(),
+            location_id: "loc-test".into(),
+            session_id: "ses-test".into(),
+        },
+    );
+    send(
+        &mut store,
+        "settling",
+        ManagedCommand::BeginAttemptSettlement {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+        },
+    );
+    send(
+        &mut store,
+        "record-host-receipt-reference",
+        ManagedCommand::SettleAttempt {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+            receipt_digest: b3('a'),
+        },
+    );
+
+    let attempt = &store.snapshot().attempts["attempt-one"];
+    assert_eq!(attempt.phase, AttemptPhase::Succeeded);
+    assert_eq!(attempt.receipt_digest.as_deref(), Some(b3('a').as_str()));
+}
+
+#[test]
+fn post_dispatch_failure_requires_settled_receipt_before_retry_or_needs_you() {
+    let root = PrivateRoot::new();
+    let mut store = ManagedControl::open(root.path(), "goal-settled-failure").unwrap();
+    accepted_run(&mut store);
+    send(
+        &mut store,
+        "task",
+        ManagedCommand::AddTask {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            dependencies: vec![],
+            criterion_ids: vec!["tests-pass".into()],
+            required_capabilities: vec![],
+        },
+    );
+    send(
+        &mut store,
+        "ready",
+        ManagedCommand::MarkTaskReady {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+        },
+    );
+    send(
+        &mut store,
+        "attempt-one",
+        ManagedCommand::AdmitAttempt {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
+        },
+    );
+    send(
+        &mut store,
+        "attempt-one-executing",
+        ManagedCommand::StartAttempt {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+        },
+    );
+    let executing_revision = store.snapshot().revision;
+    assert!(matches!(
+        store.apply(
+            executing_revision,
+            "unsafe-failure-while-executing",
+            ManagedCommand::FailAttempt {
+                run_id: "run-v1".into(),
+                task_id: "task-a".into(),
+                attempt_id: "attempt-one".into(),
+                failure_code: "validation-failed".into(),
+                retryable: true,
+            }
+        ),
+        Err(ManagedError::Conflict(_))
+    ));
+    assert!(matches!(
+        store.apply(
+            executing_revision,
+            "failure-settlement-before-settling",
+            ManagedCommand::SettleAttemptFailure {
+                run_id: "run-v1".into(),
+                task_id: "task-a".into(),
+                attempt_id: "attempt-one".into(),
+                failure_code: "validation-failed".into(),
+                retryable: true,
+                receipt_digest: Some(b3('b')),
+            }
+        ),
+        Err(ManagedError::Conflict(_))
+    ));
+    assert_eq!(store.snapshot().revision, executing_revision);
+    send(
+        &mut store,
+        "attempt-one-settling",
+        ManagedCommand::BeginAttemptSettlement {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+        },
+    );
+
+    let revision = store.snapshot().revision;
+    assert!(matches!(
+        store.apply(
+            revision,
+            "unsafe-failure-without-receipt",
+            ManagedCommand::FailAttempt {
+                run_id: "run-v1".into(),
+                task_id: "task-a".into(),
+                attempt_id: "attempt-one".into(),
+                failure_code: "validation-failed".into(),
+                retryable: true,
+            }
+        ),
+        Err(ManagedError::Conflict(_))
+    ));
+    assert_eq!(store.snapshot().revision, revision);
+    assert_eq!(
+        store.snapshot().attempts["attempt-one"].phase,
+        AttemptPhase::Settling
+    );
+    assert_eq!(
+        store.snapshot().runs["run-v1"].tasks["task-a"]
+            .active_attempt
+            .as_deref(),
+        Some("attempt-one")
+    );
+
+    for (delivery_id, receipt_digest) in [
+        ("failure-missing-receipt", String::new()),
+        ("failure-wrong-receipt-algorithm", sha('c')),
+    ] {
+        // An empty or non-BLAKE3 receipt is refused before any durable write; a
+        // pre-dispatch failure simply omits the receipt instead of sending a malformed one.
+        assert!(matches!(
+            store.apply(
+                revision,
+                delivery_id,
+                ManagedCommand::SettleAttemptFailure {
+                    run_id: "run-v1".into(),
+                    task_id: "task-a".into(),
+                    attempt_id: "attempt-one".into(),
+                    failure_code: "validation-failed".into(),
+                    retryable: true,
+                    receipt_digest: Some(receipt_digest),
+                }
+            ),
+            Err(ManagedError::Invalid(_))
+        ));
+    }
+
+    let failed_attempt = ManagedCommand::SettleAttemptFailure {
+        run_id: "run-v1".into(),
+        task_id: "task-a".into(),
+        attempt_id: "attempt-one".into(),
+        failure_code: "validation-failed".into(),
+        retryable: true,
+        receipt_digest: Some(b3('b')),
+    };
+    let settlement_revision = store.snapshot().revision;
+    store
+        .apply(
+            settlement_revision,
+            "attempt-one-settled-failure",
+            failed_attempt.clone(),
+        )
+        .unwrap();
+    let failed = &store.snapshot().attempts["attempt-one"];
+    assert_eq!(failed.phase, AttemptPhase::Failed);
+    assert_eq!(failed.failure_code.as_deref(), Some("validation-failed"));
+    assert_eq!(failed.retryable, Some(true));
+    assert_eq!(failed.receipt_digest.as_deref(), Some(b3('b').as_str()));
+    assert_eq!(store.snapshot().runs["run-v1"].phase, RunPhase::Running);
+    assert!(store.snapshot().runs["run-v1"].tasks["task-a"].ready);
+
+    let revision_after_settlement = store.snapshot().revision;
+    store
+        .apply(
+            settlement_revision,
+            "attempt-one-settled-failure",
+            failed_attempt,
+        )
+        .unwrap();
+    assert_eq!(store.snapshot().revision, revision_after_settlement);
+    drop(store);
+
+    let mut restored = ManagedControl::open(root.path(), "goal-settled-failure").unwrap();
+    assert_eq!(
+        restored.snapshot().attempts["attempt-one"]
+            .receipt_digest
+            .as_deref(),
+        Some(b3('b').as_str())
+    );
+    send(
+        &mut restored,
+        "attempt-two",
+        ManagedCommand::AdmitAttempt {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-two".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
+        },
+    );
+    send(
+        &mut restored,
+        "attempt-two-executing",
+        ManagedCommand::StartAttempt {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-two".into(),
+        },
+    );
+    send(
+        &mut restored,
+        "attempt-two-settling",
+        ManagedCommand::BeginAttemptSettlement {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-two".into(),
+        },
+    );
+    send(
+        &mut restored,
+        "attempt-two-settled-failure",
+        ManagedCommand::SettleAttemptFailure {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-two".into(),
+            failure_code: "validation-failed".into(),
+            retryable: false,
+            receipt_digest: Some(b3('c')),
+        },
+    );
+    assert_eq!(
+        restored.snapshot().attempts["attempt-two"].phase,
+        AttemptPhase::Failed
+    );
+    assert_eq!(restored.snapshot().runs["run-v1"].phase, RunPhase::NeedsYou);
+    assert!(!restored.snapshot().runs["run-v1"].tasks["task-a"].ready);
+    assert!(
+        restored
+            .apply(
+                restored.snapshot().revision,
+                "attempt-three",
+                ManagedCommand::AdmitAttempt {
+                    run_id: "run-v1".into(),
+                    task_id: "task-a".into(),
+                    attempt_id: "attempt-three".into(),
+                    executor_principal: "server_auth.executor".into(),
+                    owner_epoch: 1,
+                    location_id: "test-location".into(),
+                    session_id: "test-session".into(),
+                }
+            )
+            .is_err()
+    );
 }
 
 #[test]
@@ -651,6 +1953,7 @@ fn cancellation_fences_task_admission_durably_across_restart() {
             task_id: "task-a".into(),
             dependencies: vec![],
             criterion_ids: vec![],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -683,6 +1986,10 @@ fn cancellation_fences_task_admission_durably_across_restart() {
                     run_id: "run-v1".into(),
                     task_id: "task-a".into(),
                     attempt_id: "att1".into(),
+                    executor_principal: "server_auth.executor".into(),
+                    owner_epoch: 1,
+                    location_id: "test-location".into(),
+                    session_id: "test-session".into(),
                 }
             )
             .is_err()
@@ -697,6 +2004,7 @@ fn cancellation_fences_task_admission_durably_across_restart() {
                     task_id: "task-b".into(),
                     dependencies: vec![],
                     criterion_ids: vec![],
+                    required_capabilities: vec![],
                 }
             )
             .is_err()
@@ -716,6 +2024,7 @@ fn cancelling_run_preserves_unknown_attempt_and_cancel_fence_after_restart() {
             task_id: "task-a".into(),
             dependencies: vec![],
             criterion_ids: vec![],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -733,6 +2042,10 @@ fn cancelling_run_preserves_unknown_attempt_and_cancel_fence_after_restart() {
             run_id: "run-v1".into(),
             task_id: "task-a".into(),
             attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
     );
     send(
@@ -742,15 +2055,20 @@ fn cancelling_run_preserves_unknown_attempt_and_cancel_fence_after_restart() {
             run_id: "run-v1".into(),
         },
     );
-    send(
-        &mut store,
-        "unknown",
-        ManagedCommand::MarkAttemptUnknown {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            attempt_id: "attempt-one".into(),
-        },
-    );
+    let unknown_revision = store.snapshot().revision;
+    let unknown_command = ManagedCommand::MarkAttemptUnknown {
+        run_id: "run-v1".into(),
+        task_id: "task-a".into(),
+        attempt_id: "attempt-one".into(),
+    };
+    store
+        .apply(unknown_revision, "unknown", unknown_command.clone())
+        .unwrap();
+    let revision_after_unknown = store.snapshot().revision;
+    store
+        .apply(unknown_revision, "unknown", unknown_command)
+        .unwrap();
+    assert_eq!(store.snapshot().revision, revision_after_unknown);
 
     assert_eq!(store.snapshot().runs["run-v1"].phase, RunPhase::Cancelling);
     assert!(store.snapshot().runs["run-v1"].tasks["task-a"].unknown_effect);
@@ -791,6 +2109,10 @@ fn cancelling_run_preserves_unknown_attempt_and_cancel_fence_after_restart() {
                     run_id: "run-v1".into(),
                     task_id: "task-a".into(),
                     attempt_id: "attempt-two".into(),
+                    executor_principal: "server_auth.executor".into(),
+                    owner_epoch: 1,
+                    location_id: "test-location".into(),
+                    session_id: "test-session".into(),
                 }
             )
             .is_err()
@@ -800,6 +2122,150 @@ fn cancelling_run_preserves_unknown_attempt_and_cancel_fence_after_restart() {
             .apply(
                 restored.snapshot().revision,
                 "late-resume",
+                ManagedCommand::ResumeRun {
+                    run_id: "run-v1".into(),
+                }
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn unknown_settling_attempt_replays_and_remains_fenced_after_restart() {
+    let root = PrivateRoot::new();
+    let mut store = ManagedControl::open(root.path(), "goal-settling-unknown").unwrap();
+    accepted_run(&mut store);
+    send(
+        &mut store,
+        "task",
+        ManagedCommand::AddTask {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            dependencies: vec![],
+            criterion_ids: vec![],
+            required_capabilities: vec![],
+        },
+    );
+    send(
+        &mut store,
+        "ready",
+        ManagedCommand::MarkTaskReady {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+        },
+    );
+    send(
+        &mut store,
+        "attempt",
+        ManagedCommand::AdmitAttempt {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
+        },
+    );
+    send(
+        &mut store,
+        "executing",
+        ManagedCommand::StartAttempt {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+        },
+    );
+    send(
+        &mut store,
+        "settling",
+        ManagedCommand::BeginAttemptSettlement {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+        },
+    );
+
+    let unknown_revision = store.snapshot().revision;
+    let unknown_command = ManagedCommand::MarkAttemptUnknown {
+        run_id: "run-v1".into(),
+        task_id: "task-a".into(),
+        attempt_id: "attempt-one".into(),
+    };
+    store
+        .apply(unknown_revision, "unknown", unknown_command.clone())
+        .unwrap();
+    let revision_after_unknown = store.snapshot().revision;
+    store
+        .apply(unknown_revision, "unknown", unknown_command)
+        .unwrap();
+    assert_eq!(store.snapshot().revision, revision_after_unknown);
+    assert!(
+        store
+            .apply(
+                revision_after_unknown,
+                "unknown-id-reuse",
+                ManagedCommand::SettleAttempt {
+                    run_id: "run-v1".into(),
+                    task_id: "task-a".into(),
+                    attempt_id: "attempt-one".into(),
+                    receipt_digest: b3('a'),
+                }
+            )
+            .is_err()
+    );
+    assert!(
+        store
+            .apply(
+                revision_after_unknown,
+                "failure-after-unknown",
+                ManagedCommand::SettleAttemptFailure {
+                    run_id: "run-v1".into(),
+                    task_id: "task-a".into(),
+                    attempt_id: "attempt-one".into(),
+                    failure_code: "guessed-failure".into(),
+                    retryable: true,
+                    receipt_digest: Some(b3('d')),
+                }
+            )
+            .is_err()
+    );
+    drop(store);
+
+    let mut restored = ManagedControl::open(root.path(), "goal-settling-unknown").unwrap();
+    let task = &restored.snapshot().runs["run-v1"].tasks["task-a"];
+    assert_eq!(
+        restored.snapshot().runs["run-v1"].phase,
+        RunPhase::Reconciling
+    );
+    assert_eq!(
+        restored.snapshot().attempts["attempt-one"].phase,
+        AttemptPhase::Unknown
+    );
+    assert!(task.unknown_effect);
+    assert_eq!(task.active_attempt.as_deref(), Some("attempt-one"));
+    assert!(
+        restored
+            .apply(
+                restored.snapshot().revision,
+                "retry-after-settling-unknown",
+                ManagedCommand::AdmitAttempt {
+                    run_id: "run-v1".into(),
+                    task_id: "task-a".into(),
+                    attempt_id: "attempt-two".into(),
+                    executor_principal: "server_auth.executor".into(),
+                    owner_epoch: 1,
+                    location_id: "test-location".into(),
+                    session_id: "test-session".into(),
+                }
+            )
+            .is_err()
+    );
+    assert!(
+        restored
+            .apply(
+                restored.snapshot().revision,
+                "resume-after-settling-unknown",
                 ManagedCommand::ResumeRun {
                     run_id: "run-v1".into(),
                 }
@@ -821,6 +2287,7 @@ fn unknown_attempt_blocks_retries_and_remains_unknown_after_replay() {
             task_id: "task-a".into(),
             dependencies: vec![],
             criterion_ids: vec![],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -835,6 +2302,19 @@ fn unknown_attempt_blocks_retries_and_remains_unknown_after_replay() {
         &mut store,
         "attempt",
         ManagedCommand::AdmitAttempt {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
+        },
+    );
+    send(
+        &mut store,
+        "executing",
+        ManagedCommand::StartAttempt {
             run_id: "run-v1".into(),
             task_id: "task-a".into(),
             attempt_id: "attempt-one".into(),
@@ -869,6 +2349,10 @@ fn unknown_attempt_blocks_retries_and_remains_unknown_after_replay() {
                     run_id: "run-v1".into(),
                     task_id: "task-a".into(),
                     attempt_id: "attempt-two".into(),
+                    executor_principal: "server_auth.executor".into(),
+                    owner_epoch: 1,
+                    location_id: "test-location".into(),
+                    session_id: "test-session".into(),
                 }
             )
             .is_err()
@@ -888,6 +2372,7 @@ fn unknown_attempt_during_pause_moves_run_to_reconciliation_and_blocks_resume() 
             task_id: "task-a".into(),
             dependencies: vec![],
             criterion_ids: vec![],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -905,6 +2390,10 @@ fn unknown_attempt_during_pause_moves_run_to_reconciliation_and_blocks_resume() 
             run_id: "run-v1".into(),
             task_id: "task-a".into(),
             attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
     );
     send(
@@ -958,6 +2447,7 @@ fn dependencies_are_not_claimed_passed_from_worker_or_model_output() {
             task_id: "task-a".into(),
             dependencies: vec![],
             criterion_ids: vec![],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -968,6 +2458,7 @@ fn dependencies_are_not_claimed_passed_from_worker_or_model_output() {
             task_id: "task-b".into(),
             dependencies: vec!["task-a".into()],
             criterion_ids: vec![],
+            required_capabilities: vec![],
         },
     );
     assert!(
@@ -979,6 +2470,10 @@ fn dependencies_are_not_claimed_passed_from_worker_or_model_output() {
                     run_id: "run-v1".into(),
                     task_id: "task-b".into(),
                     attempt_id: "att-b".into(),
+                    executor_principal: "server_auth.executor".into(),
+                    owner_epoch: 1,
+                    location_id: "test-location".into(),
+                    session_id: "test-session".into(),
                 }
             )
             .is_err()
@@ -993,6 +2488,7 @@ fn dependencies_are_not_claimed_passed_from_worker_or_model_output() {
                     task_id: "cycle".into(),
                     dependencies: vec!["cycle".into()],
                     criterion_ids: vec![],
+                    required_capabilities: vec![],
                 }
             )
             .is_err()
@@ -1007,6 +2503,7 @@ fn dependencies_are_not_claimed_passed_from_worker_or_model_output() {
                     task_id: "task-c".into(),
                     dependencies: vec![],
                     criterion_ids: vec!["not-in-spec".into()],
+                    required_capabilities: vec![],
                 }
             )
             .is_err()
@@ -1026,7 +2523,8 @@ fn spec_max_workers_caps_concurrent_attempt_admission() {
                 run_id: "run-v1".into(),
                 task_id: task_id.into(),
                 dependencies: vec![],
-                criterion_ids: vec![],
+                criterion_ids: vec!["tests-pass".into()],
+                required_capabilities: vec![],
             },
         );
         send(
@@ -1045,6 +2543,10 @@ fn spec_max_workers_caps_concurrent_attempt_admission() {
             run_id: "run-v1".into(),
             task_id: "task-a".into(),
             attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
     );
 
@@ -1056,6 +2558,10 @@ fn spec_max_workers_caps_concurrent_attempt_admission() {
                 run_id: "run-v1".into(),
                 task_id: "task-b".into(),
                 attempt_id: "attempt-two".into(),
+                executor_principal: "server_auth.executor".into(),
+                owner_epoch: 1,
+                location_id: "test-location".into(),
+                session_id: "test-session".into(),
             }
         ),
         Err(ManagedError::Conflict(_))
@@ -1080,6 +2586,10 @@ fn spec_max_workers_caps_concurrent_attempt_admission() {
             run_id: "run-v1".into(),
             task_id: "task-b".into(),
             attempt_id: "attempt-two".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
     );
     assert_eq!(
@@ -1087,6 +2597,306 @@ fn spec_max_workers_caps_concurrent_attempt_admission() {
             .active_attempt
             .as_deref(),
         Some("attempt-two")
+    );
+}
+
+#[test]
+fn managed_single_attempt_gate_prevents_fanout_even_when_spec_budget_allows_it() {
+    let root = PrivateRoot::new();
+    let mut store = ManagedControl::open(root.path(), "goal-single-attempt").unwrap();
+    accepted_run_with_workers(&mut store, 2);
+    for task_id in ["task-a", "task-b"] {
+        send(
+            &mut store,
+            &format!("propose-{task_id}"),
+            ManagedCommand::AddTask {
+                run_id: "run-v1".into(),
+                task_id: task_id.into(),
+                dependencies: vec![],
+                criterion_ids: vec!["tests-pass".into()],
+                required_capabilities: vec![],
+            },
+        );
+        send(
+            &mut store,
+            &format!("ready-{task_id}"),
+            ManagedCommand::MarkTaskReady {
+                run_id: "run-v1".into(),
+                task_id: task_id.into(),
+            },
+        );
+    }
+
+    send(
+        &mut store,
+        "attempt-one",
+        ManagedCommand::AdmitAttempt {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
+        },
+    );
+    let revision = store.snapshot().revision;
+    assert!(matches!(
+        store.apply(
+            revision,
+            "attempt-two-before-verification",
+            ManagedCommand::AdmitAttempt {
+                run_id: "run-v1".into(),
+                task_id: "task-b".into(),
+                attempt_id: "attempt-two".into(),
+                executor_principal: "server_auth.executor".into(),
+                owner_epoch: 1,
+                location_id: "test-location".into(),
+                session_id: "test-session".into(),
+            }
+        ),
+        Err(ManagedError::Conflict(_))
+    ));
+    assert_eq!(store.snapshot().revision, revision);
+    assert!(!store.snapshot().attempts.contains_key("attempt-two"));
+
+    settle_attempt_success(
+        &mut store,
+        "settle-attempt-one",
+        "run-v1",
+        "task-a",
+        "attempt-one",
+        'e',
+    );
+    let pending_verification_revision = store.snapshot().revision;
+    assert!(matches!(
+        store.apply(
+            pending_verification_revision,
+            "attempt-two-before-independent-verification",
+            ManagedCommand::AdmitAttempt {
+                run_id: "run-v1".into(),
+                task_id: "task-b".into(),
+                attempt_id: "attempt-two".into(),
+                executor_principal: "server_auth.executor".into(),
+                owner_epoch: 1,
+                location_id: "test-location".into(),
+                session_id: "test-session".into(),
+            }
+        ),
+        Err(ManagedError::Conflict(_))
+    ));
+    assert_eq!(store.snapshot().revision, pending_verification_revision);
+
+    send(
+        &mut store,
+        "verify-attempt-one",
+        ManagedCommand::VerifyTask {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+            verifier_id: "server_auth.verifier".into(),
+            source_revision: sha('a'),
+            evidence_digest: sha('d'),
+        },
+    );
+    send(
+        &mut store,
+        "attempt-two-after-independent-verification",
+        ManagedCommand::AdmitAttempt {
+            run_id: "run-v1".into(),
+            task_id: "task-b".into(),
+            attempt_id: "attempt-two".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
+        },
+    );
+    assert_eq!(
+        store.snapshot().runs["run-v1"].tasks["task-b"]
+            .active_attempt
+            .as_deref(),
+        Some("attempt-two")
+    );
+}
+
+#[test]
+fn scheduler_selects_one_deterministic_ready_task_only_after_prior_verification() {
+    let root = PrivateRoot::new();
+    let mut store = ManagedControl::open(root.path(), "goal-scheduler-candidate").unwrap();
+    accepted_run_with_workers(&mut store, 2);
+    for task_id in ["task-b", "task-a"] {
+        send(
+            &mut store,
+            &format!("propose-{task_id}"),
+            ManagedCommand::AddTask {
+                run_id: "run-v1".into(),
+                task_id: task_id.into(),
+                dependencies: vec![],
+                criterion_ids: vec!["tests-pass".into()],
+                required_capabilities: vec![],
+            },
+        );
+        send(
+            &mut store,
+            &format!("ready-{task_id}"),
+            ManagedCommand::MarkTaskReady {
+                run_id: "run-v1".into(),
+                task_id: task_id.into(),
+            },
+        );
+    }
+    assert_eq!(
+        store.snapshot().next_schedulable_task("run-v1"),
+        Some("task-a".into())
+    );
+
+    send(
+        &mut store,
+        "attempt-one",
+        ManagedCommand::AdmitAttempt {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
+        },
+    );
+    assert_eq!(store.snapshot().next_schedulable_task("run-v1"), None);
+    settle_attempt_success(
+        &mut store,
+        "settle-attempt-one",
+        "run-v1",
+        "task-a",
+        "attempt-one",
+        'e',
+    );
+    assert_eq!(store.snapshot().next_schedulable_task("run-v1"), None);
+    send(
+        &mut store,
+        "verify-attempt-one",
+        ManagedCommand::VerifyTask {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+            verifier_id: "server_auth.verifier".into(),
+            source_revision: sha('a'),
+            evidence_digest: sha('d'),
+        },
+    );
+    assert_eq!(
+        store.snapshot().next_schedulable_task("run-v1"),
+        Some("task-b".into())
+    );
+    send(
+        &mut store,
+        "pause",
+        ManagedCommand::PauseRun {
+            run_id: "run-v1".into(),
+        },
+    );
+    assert_eq!(store.snapshot().next_schedulable_task("run-v1"), None);
+}
+
+#[test]
+fn scheduler_skips_lexically_first_task_until_dependency_is_verified() {
+    let root = PrivateRoot::new();
+    let mut store = ManagedControl::open(root.path(), "goal-scheduler-dependency").unwrap();
+    accepted_run(&mut store);
+    send(
+        &mut store,
+        "source-task",
+        ManagedCommand::AddTask {
+            run_id: "run-v1".into(),
+            task_id: "task-z-source".into(),
+            dependencies: vec![],
+            criterion_ids: vec!["tests-pass".into()],
+            required_capabilities: vec![],
+        },
+    );
+    send(
+        &mut store,
+        "dependent-task",
+        ManagedCommand::AddTask {
+            run_id: "run-v1".into(),
+            task_id: "task-a-dependent".into(),
+            dependencies: vec!["task-z-source".into()],
+            criterion_ids: vec![],
+            required_capabilities: vec![],
+        },
+    );
+    send(
+        &mut store,
+        "ready-source",
+        ManagedCommand::MarkTaskReady {
+            run_id: "run-v1".into(),
+            task_id: "task-z-source".into(),
+        },
+    );
+    assert!(
+        store
+            .apply(
+                store.snapshot().revision,
+                "ready-dependent-too-early",
+                ManagedCommand::MarkTaskReady {
+                    run_id: "run-v1".into(),
+                    task_id: "task-a-dependent".into(),
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(
+        store.snapshot().next_schedulable_task("run-v1"),
+        Some("task-z-source".into())
+    );
+
+    send(
+        &mut store,
+        "source-attempt",
+        ManagedCommand::AdmitAttempt {
+            run_id: "run-v1".into(),
+            task_id: "task-z-source".into(),
+            attempt_id: "source-attempt".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
+        },
+    );
+    settle_attempt_success(
+        &mut store,
+        "settle-source-attempt",
+        "run-v1",
+        "task-z-source",
+        "source-attempt",
+        'e',
+    );
+    assert_eq!(store.snapshot().next_schedulable_task("run-v1"), None);
+    send(
+        &mut store,
+        "verify-source-task",
+        ManagedCommand::VerifyTask {
+            run_id: "run-v1".into(),
+            task_id: "task-z-source".into(),
+            attempt_id: "source-attempt".into(),
+            verifier_id: "server_auth.verifier".into(),
+            source_revision: sha('a'),
+            evidence_digest: sha('d'),
+        },
+    );
+    send(
+        &mut store,
+        "ready-dependent-after-verification",
+        ManagedCommand::MarkTaskReady {
+            run_id: "run-v1".into(),
+            task_id: "task-a-dependent".into(),
+        },
+    );
+    assert_eq!(
+        store.snapshot().next_schedulable_task("run-v1"),
+        Some("task-a-dependent".into())
     );
 }
 
@@ -1103,6 +2913,7 @@ fn pause_is_a_durable_admission_fence_and_resume_restores_only_safe_work() {
             task_id: "task-a".into(),
             dependencies: vec![],
             criterion_ids: vec![],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -1132,6 +2943,10 @@ fn pause_is_a_durable_admission_fence_and_resume_restores_only_safe_work() {
                     run_id: "run-v1".into(),
                     task_id: "task-a".into(),
                     attempt_id: "attempt-one".into(),
+                    executor_principal: "server_auth.executor".into(),
+                    owner_epoch: 1,
+                    location_id: "test-location".into(),
+                    session_id: "test-session".into(),
                 }
             )
             .is_err()
@@ -1150,6 +2965,10 @@ fn pause_is_a_durable_admission_fence_and_resume_restores_only_safe_work() {
             run_id: "run-v1".into(),
             task_id: "task-a".into(),
             attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
     );
     assert_eq!(restored.snapshot().runs["run-v1"].phase, RunPhase::Running);
@@ -1168,6 +2987,7 @@ fn restarting_with_admitted_but_unsettled_attempt_fences_execution_as_unknown() 
             task_id: "task-a".into(),
             dependencies: vec![],
             criterion_ids: vec![],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -1185,6 +3005,10 @@ fn restarting_with_admitted_but_unsettled_attempt_fences_execution_as_unknown() 
             run_id: "run-v1".into(),
             task_id: "task-a".into(),
             attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
     );
     drop(store); // Crash between task admission and any observed receipt.
@@ -1207,6 +3031,10 @@ fn restarting_with_admitted_but_unsettled_attempt_fences_execution_as_unknown() 
                     run_id: "run-v1".into(),
                     task_id: "task-a".into(),
                     attempt_id: "attempt-two".into(),
+                    executor_principal: "server_auth.executor".into(),
+                    owner_epoch: 1,
+                    location_id: "test-location".into(),
+                    session_id: "test-session".into(),
                 }
             )
             .is_err()
@@ -1225,7 +3053,7 @@ fn restarting_with_admitted_but_unsettled_attempt_fences_execution_as_unknown() 
 }
 
 #[test]
-fn verified_task_unblocks_dependency_but_run_requires_fresh_all_criteria_evidence() {
+fn verified_task_unblocks_dependency_but_digest_only_evidence_cannot_finalize_run() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-verified").unwrap();
     accepted_run(&mut store);
@@ -1237,6 +3065,7 @@ fn verified_task_unblocks_dependency_but_run_requires_fresh_all_criteria_evidenc
             task_id: "task-a".into(),
             dependencies: vec![],
             criterion_ids: vec!["tests-pass".into()],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -1246,7 +3075,8 @@ fn verified_task_unblocks_dependency_but_run_requires_fresh_all_criteria_evidenc
             run_id: "run-v1".into(),
             task_id: "task-b".into(),
             dependencies: vec!["task-a".into()],
-            criterion_ids: vec![],
+            criterion_ids: vec!["tests-pass".into()],
+            required_capabilities: vec![],
         },
     );
     assert!(
@@ -1276,8 +3106,13 @@ fn verified_task_unblocks_dependency_but_run_requires_fresh_all_criteria_evidenc
             run_id: "run-v1".into(),
             task_id: "task-a".into(),
             attempt_id: "a-1".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
     );
+    settle_attempt_success(&mut store, "task-a-attempt", "run-v1", "task-a", "a-1", 'e');
     send(
         &mut store,
         "verified-a",
@@ -1285,6 +3120,7 @@ fn verified_task_unblocks_dependency_but_run_requires_fresh_all_criteria_evidenc
             run_id: "run-v1".into(),
             task_id: "task-a".into(),
             attempt_id: "a-1".into(),
+            verifier_id: "server_auth.verifier".into(),
             source_revision: sha('a'),
             evidence_digest: sha('c'),
         },
@@ -1304,6 +3140,10 @@ fn verified_task_unblocks_dependency_but_run_requires_fresh_all_criteria_evidenc
             run_id: "run-v1".into(),
             task_id: "task-b".into(),
             attempt_id: "b-1".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
     );
     assert!(
@@ -1314,10 +3154,12 @@ fn verified_task_unblocks_dependency_but_run_requires_fresh_all_criteria_evidenc
                 ManagedCommand::BeginVerification {
                     run_id: "run-v1".into(),
                     final_revision: sha('b'),
+                    verifier_id: "server_auth.verifier".into(),
                 }
             )
             .is_err()
     );
+    settle_attempt_success(&mut store, "task-b-attempt", "run-v1", "task-b", "b-1", 'd');
     send(
         &mut store,
         "verified-b",
@@ -1325,6 +3167,7 @@ fn verified_task_unblocks_dependency_but_run_requires_fresh_all_criteria_evidenc
             run_id: "run-v1".into(),
             task_id: "task-b".into(),
             attempt_id: "b-1".into(),
+            verifier_id: "server_auth.verifier".into(),
             source_revision: sha('b'),
             evidence_digest: sha('d'),
         },
@@ -1335,6 +3178,7 @@ fn verified_task_unblocks_dependency_but_run_requires_fresh_all_criteria_evidenc
         ManagedCommand::BeginVerification {
             run_id: "run-v1".into(),
             final_revision: sha('b'),
+            verifier_id: "server_auth.verifier".into(),
         },
     );
     assert!(
@@ -1359,7 +3203,7 @@ fn verified_task_unblocks_dependency_but_run_requires_fresh_all_criteria_evidenc
                     criterion_id: "tests-pass".into(),
                     source_revision: sha('a'),
                     evidence_digest: sha('d'),
-                    verifier_id: "rust-test-runner".into(),
+                    verifier_id: "server_auth.verifier".into(),
                 }
             )
             .is_err()
@@ -1372,7 +3216,7 @@ fn verified_task_unblocks_dependency_but_run_requires_fresh_all_criteria_evidenc
             criterion_id: "tests-pass".into(),
             source_revision: sha('b'),
             evidence_digest: sha('d'),
-            verifier_id: "rust-test-runner".into(),
+            verifier_id: "server_auth.verifier".into(),
         },
     );
     assert!(
@@ -1393,36 +3237,46 @@ fn verified_task_unblocks_dependency_but_run_requires_fresh_all_criteria_evidenc
         restored.snapshot().runs["run-v1"].phase,
         RunPhase::Verifying
     );
+    assert!(matches!(
+        restored.apply(
+            restored.snapshot().revision,
+            "final-with-digest-only-evidence",
+            ManagedCommand::FinalizeRun {
+                run_id: "run-v1".into(),
+                final_revision: sha('b'),
+            }
+        ),
+        Err(ManagedError::Conflict(_))
+    ));
+    assert_eq!(
+        restored.snapshot().runs["run-v1"].phase,
+        RunPhase::Verifying
+    );
+    assert_eq!(
+        restored.snapshot().attempts["a-1"].phase,
+        AttemptPhase::Succeeded
+    );
+    assert_eq!(
+        restored.snapshot().attempts["b-1"].phase,
+        AttemptPhase::Succeeded
+    );
     send(
         &mut restored,
-        "final",
-        ManagedCommand::FinalizeRun {
+        "cancel-incomplete-verification",
+        ManagedCommand::RequestCancel {
             run_id: "run-v1".into(),
-            final_revision: sha('b'),
+        },
+    );
+    send(
+        &mut restored,
+        "complete-cancel-incomplete-verification",
+        ManagedCommand::CompleteCancel {
+            run_id: "run-v1".into(),
         },
     );
     assert_eq!(
         restored.snapshot().runs["run-v1"].phase,
-        RunPhase::Succeeded
-    );
-    assert_eq!(
-        restored.snapshot().attempts["a-1"].phase,
-        AttemptPhase::Verified
-    );
-    assert_eq!(
-        restored.snapshot().attempts["b-1"].phase,
-        AttemptPhase::Verified
-    );
-    assert!(
-        restored
-            .apply(
-                restored.snapshot().revision,
-                "late-cancel",
-                ManagedCommand::RequestCancel {
-                    run_id: "run-v1".into(),
-                }
-            )
-            .is_err()
+        RunPhase::Cancelled
     );
 }
 
@@ -1439,6 +3293,7 @@ fn a_run_with_unsettled_unknown_attempt_cannot_enter_verification() {
             task_id: "task-a".into(),
             dependencies: vec![],
             criterion_ids: vec![],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -1456,6 +3311,10 @@ fn a_run_with_unsettled_unknown_attempt_cannot_enter_verification() {
             run_id: "run-v1".into(),
             task_id: "task-a".into(),
             attempt_id: "a-1".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
     );
     send(
@@ -1475,6 +3334,7 @@ fn a_run_with_unsettled_unknown_attempt_cannot_enter_verification() {
                 ManagedCommand::BeginVerification {
                     run_id: "run-v1".into(),
                     final_revision: sha('a'),
+                    verifier_id: "server_auth.verifier".into(),
                 }
             )
             .is_err()
@@ -1494,6 +3354,7 @@ fn cancelling_run_unknown_attempt_cannot_settle_verify_or_finalize() {
             task_id: "task-a".into(),
             dependencies: vec![],
             criterion_ids: vec![],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -1511,6 +3372,10 @@ fn cancelling_run_unknown_attempt_cannot_settle_verify_or_finalize() {
             run_id: "run-v1".into(),
             task_id: "task-a".into(),
             attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
     );
     send(
@@ -1617,6 +3482,7 @@ fn cancelling_run_unknown_attempt_cannot_settle_verify_or_finalize() {
                     run_id: "run-v1".into(),
                     task_id: "task-a".into(),
                     attempt_id: "attempt-one".into(),
+                    verifier_id: "server_auth.verifier".into(),
                     source_revision: sha('a'),
                     evidence_digest: sha('d'),
                 }
@@ -1631,6 +3497,7 @@ fn cancelling_run_unknown_attempt_cannot_settle_verify_or_finalize() {
                 ManagedCommand::BeginVerification {
                     run_id: "run-v1".into(),
                     final_revision: sha('a'),
+                    verifier_id: "server_auth.verifier".into(),
                 }
             )
             .is_err()
@@ -1680,6 +3547,7 @@ fn cancelling_run_unknown_attempt_cannot_settle_verify_or_finalize() {
                     task_id: "task-b".into(),
                     dependencies: vec![],
                     criterion_ids: vec![],
+                    required_capabilities: vec![],
                 }
             )
             .is_err()
@@ -1728,6 +3596,7 @@ fn cancelling_run_unknown_attempt_cannot_settle_verify_or_finalize() {
                     run_id: "run-v1".into(),
                     task_id: "task-a".into(),
                     attempt_id: "attempt-one".into(),
+                    verifier_id: "server_auth.verifier".into(),
                     source_revision: sha('a'),
                     evidence_digest: sha('d'),
                 }
@@ -1826,6 +3695,7 @@ fn cancel_fence_matches_lifecycle_from_paused_verifying_and_needs_you() {
             task_id: "task-v".into(),
             dependencies: vec![],
             criterion_ids: vec!["tests-pass".into()],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -1843,7 +3713,19 @@ fn cancel_fence_matches_lifecycle_from_paused_verifying_and_needs_you() {
             run_id: "run-verifying".into(),
             task_id: "task-v".into(),
             attempt_id: "attempt-v".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
+    );
+    settle_attempt_success(
+        &mut store,
+        "verifying-attempt",
+        "run-verifying",
+        "task-v",
+        "attempt-v",
+        'e',
     );
     send(
         &mut store,
@@ -1852,6 +3734,7 @@ fn cancel_fence_matches_lifecycle_from_paused_verifying_and_needs_you() {
             run_id: "run-verifying".into(),
             task_id: "task-v".into(),
             attempt_id: "attempt-v".into(),
+            verifier_id: "server_auth.verifier".into(),
             source_revision: sha('a'),
             evidence_digest: sha('c'),
         },
@@ -1862,6 +3745,7 @@ fn cancel_fence_matches_lifecycle_from_paused_verifying_and_needs_you() {
         ManagedCommand::BeginVerification {
             run_id: "run-verifying".into(),
             final_revision: sha('a'),
+            verifier_id: "server_auth.verifier".into(),
         },
     );
     assert_eq!(
@@ -1890,7 +3774,7 @@ fn cancel_fence_matches_lifecycle_from_paused_verifying_and_needs_you() {
                     criterion_id: "tests-pass".into(),
                     source_revision: sha('a'),
                     evidence_digest: sha('d'),
-                    verifier_id: "rust-test-runner".into(),
+                    verifier_id: "server_auth.verifier".into(),
                 }
             )
             .is_err()
@@ -2077,6 +3961,7 @@ fn attempt_ids_are_global_and_settlement_requires_exact_ownership() {
             task_id: "task-a".into(),
             dependencies: vec![],
             criterion_ids: vec![],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -2094,6 +3979,10 @@ fn attempt_ids_are_global_and_settlement_requires_exact_ownership() {
             run_id: "run-v1".into(),
             task_id: "task-a".into(),
             attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
     );
     send(
@@ -2104,6 +3993,7 @@ fn attempt_ids_are_global_and_settlement_requires_exact_ownership() {
             task_id: "task-a".into(),
             dependencies: vec![],
             criterion_ids: vec![],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -2123,6 +4013,10 @@ fn attempt_ids_are_global_and_settlement_requires_exact_ownership() {
                 run_id: "run-v2".into(),
                 task_id: "task-a".into(),
                 attempt_id: "attempt-one".into(),
+                executor_principal: "server_auth.executor".into(),
+                owner_epoch: 1,
+                location_id: "test-location".into(),
+                session_id: "test-session".into(),
             }
         ),
         Err(ManagedError::Conflict(_))
@@ -2135,6 +4029,10 @@ fn attempt_ids_are_global_and_settlement_requires_exact_ownership() {
             run_id: "run-v2".into(),
             task_id: "task-a".into(),
             attempt_id: "attempt-two".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
     );
     assert_eq!(
@@ -2153,6 +4051,7 @@ fn attempt_ids_are_global_and_settlement_requires_exact_ownership() {
             task_id: "task-b".into(),
             dependencies: vec![],
             criterion_ids: vec![],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -2189,6 +4088,7 @@ fn attempt_ids_are_global_and_settlement_requires_exact_ownership() {
                 run_id: "run-v1".into(),
                 task_id: "task-b".into(),
                 attempt_id: "attempt-one".into(),
+                verifier_id: "server_auth.verifier".into(),
                 source_revision: sha('a'),
                 evidence_digest: sha('d'),
             },
@@ -2208,6 +4108,7 @@ fn attempt_ids_are_global_and_settlement_requires_exact_ownership() {
                 run_id: "run-v2".into(),
                 task_id: "task-a".into(),
                 attempt_id: "attempt-one".into(),
+                verifier_id: "server_auth.verifier".into(),
                 source_revision: sha('a'),
                 evidence_digest: sha('d'),
             }
@@ -2277,6 +4178,7 @@ fn task_depending_on_unknown_effect_task_never_becomes_ready() {
             task_id: "task-a".into(),
             dependencies: vec![],
             criterion_ids: vec![],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -2287,6 +4189,7 @@ fn task_depending_on_unknown_effect_task_never_becomes_ready() {
             task_id: "task-b".into(),
             dependencies: vec!["task-a".into()],
             criterion_ids: vec![],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -2317,6 +4220,10 @@ fn task_depending_on_unknown_effect_task_never_becomes_ready() {
             run_id: "run-v1".into(),
             task_id: "task-a".into(),
             attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
     );
     assert!(
@@ -2407,6 +4314,10 @@ fn task_depending_on_unknown_effect_task_never_becomes_ready() {
                     run_id: "run-v1".into(),
                     task_id: "task-b".into(),
                     attempt_id: "attempt-two".into(),
+                    executor_principal: "server_auth.executor".into(),
+                    owner_epoch: 1,
+                    location_id: "test-location".into(),
+                    session_id: "test-session".into(),
                 }
             )
             .is_err()
@@ -2581,6 +4492,7 @@ fn cancellation_completes_only_after_every_attempt_settles_and_is_terminal() {
             task_id: "task-a".into(),
             dependencies: vec![],
             criterion_ids: vec![],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -2598,6 +4510,10 @@ fn cancellation_completes_only_after_every_attempt_settles_and_is_terminal() {
             run_id: "run-blocked".into(),
             task_id: "task-a".into(),
             attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
     );
     send(
@@ -2665,6 +4581,7 @@ fn cancellation_completes_only_after_every_attempt_settles_and_is_terminal() {
             task_id: "task-b".into(),
             dependencies: vec![],
             criterion_ids: vec![],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -2682,6 +4599,10 @@ fn cancellation_completes_only_after_every_attempt_settles_and_is_terminal() {
             run_id: "run-settled".into(),
             task_id: "task-b".into(),
             attempt_id: "attempt-two".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
     );
     send(
@@ -2776,6 +4697,10 @@ fn cancellation_completes_only_after_every_attempt_settles_and_is_terminal() {
                 run_id: "run-settled".into(),
                 task_id: "task-b".into(),
                 attempt_id: "attempt-three".into(),
+                executor_principal: "server_auth.executor".into(),
+                owner_epoch: 1,
+                location_id: "test-location".into(),
+                session_id: "test-session".into(),
             },
         ),
         (
@@ -2785,6 +4710,7 @@ fn cancellation_completes_only_after_every_attempt_settles_and_is_terminal() {
                 task_id: "task-c".into(),
                 dependencies: vec![],
                 criterion_ids: vec![],
+                required_capabilities: vec![],
             },
         ),
         (
@@ -2799,6 +4725,7 @@ fn cancellation_completes_only_after_every_attempt_settles_and_is_terminal() {
             ManagedCommand::BeginVerification {
                 run_id: "run-settled".into(),
                 final_revision: sha('a'),
+                verifier_id: "server_auth.verifier".into(),
             },
         ),
         (
@@ -2854,9 +4781,9 @@ fn cancellation_completes_only_after_every_attempt_settles_and_is_terminal() {
 }
 
 #[test]
-fn fail_run_from_verifying_records_bounded_code_and_is_terminal() {
+fn verification_can_rebind_after_restart_only_without_current_revision_evidence() {
     let root = PrivateRoot::new();
-    let mut store = ManagedControl::open(root.path(), "goal-fail-verify").unwrap();
+    let mut store = ManagedControl::open(root.path(), "goal-verification-rebind").unwrap();
     accepted_run(&mut store);
     send(
         &mut store,
@@ -2866,6 +4793,7 @@ fn fail_run_from_verifying_records_bounded_code_and_is_terminal() {
             task_id: "task-a".into(),
             dependencies: vec![],
             criterion_ids: vec!["tests-pass".into()],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -2883,7 +4811,146 @@ fn fail_run_from_verifying_records_bounded_code_and_is_terminal() {
             run_id: "run-v1".into(),
             task_id: "task-a".into(),
             attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
+    );
+    settle_attempt_success(&mut store, "settle", "run-v1", "task-a", "attempt-one", 'e');
+    send(
+        &mut store,
+        "verify-task",
+        ManagedCommand::VerifyTask {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+            verifier_id: "server_auth.verifier".into(),
+            source_revision: sha('a'),
+            evidence_digest: sha('d'),
+        },
+    );
+    send(
+        &mut store,
+        "begin-verification",
+        ManagedCommand::BeginVerification {
+            run_id: "run-v1".into(),
+            final_revision: sha('a'),
+            verifier_id: "server_auth.verifier".into(),
+        },
+    );
+    drop(store);
+
+    let mut restored = ManagedControl::open(root.path(), "goal-verification-rebind").unwrap();
+    let before_retry_revision = {
+        let before_retry = restored.snapshot();
+        let run = &before_retry.runs["run-v1"];
+        assert_eq!(run.phase, RunPhase::Verifying);
+        assert_eq!(run.final_revision.as_deref(), Some(sha('a').as_str()));
+        assert_eq!(run.verifier_id.as_deref(), Some("server_auth.verifier"));
+        assert!(run.criterion_evidence.is_empty());
+        before_retry.revision
+    };
+
+    let retry = restored.apply(
+        before_retry_revision,
+        "begin-verification-after-restart",
+        ManagedCommand::BeginVerification {
+            run_id: "run-v1".into(),
+            final_revision: sha('a'),
+            verifier_id: "server_auth.verifier".into(),
+        },
+    );
+    assert!(
+        retry.is_ok(),
+        "a clean same-revision verifier run should rebind after restart"
+    );
+    let rebound_revision = {
+        let rebound = restored.snapshot();
+        assert_eq!(rebound.revision, before_retry_revision + 1);
+        assert_eq!(rebound.runs["run-v1"].phase, RunPhase::Verifying);
+        assert_eq!(
+            rebound.runs["run-v1"].final_revision.as_deref(),
+            Some(sha('a').as_str())
+        );
+        assert!(rebound.runs["run-v1"].criterion_evidence.is_empty());
+        rebound.revision
+    };
+
+    restored
+        .apply(
+            rebound_revision,
+            "record-current-criterion-evidence",
+            ManagedCommand::RecordCriterionEvidence {
+                run_id: "run-v1".into(),
+                criterion_id: "tests-pass".into(),
+                source_revision: sha('a'),
+                evidence_digest: sha('f'),
+                verifier_id: "server_auth.verifier".into(),
+            },
+        )
+        .unwrap();
+    let before_evidence_retry_revision = restored.snapshot().revision;
+    assert!(
+        restored
+            .apply(
+                before_evidence_retry_revision,
+                "begin-verification-with-evidence",
+                ManagedCommand::BeginVerification {
+                    run_id: "run-v1".into(),
+                    final_revision: sha('a'),
+                    verifier_id: "server_auth.verifier".into(),
+                },
+            )
+            .is_err()
+    );
+    assert_eq!(restored.snapshot().revision, before_evidence_retry_revision);
+}
+
+#[test]
+fn fail_run_from_verifying_records_bounded_code_and_is_terminal() {
+    let root = PrivateRoot::new();
+    let mut store = ManagedControl::open(root.path(), "goal-fail-verify").unwrap();
+    accepted_run(&mut store);
+    send(
+        &mut store,
+        "task",
+        ManagedCommand::AddTask {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            dependencies: vec![],
+            criterion_ids: vec!["tests-pass".into()],
+            required_capabilities: vec![],
+        },
+    );
+    send(
+        &mut store,
+        "ready",
+        ManagedCommand::MarkTaskReady {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+        },
+    );
+    send(
+        &mut store,
+        "attempt",
+        ManagedCommand::AdmitAttempt {
+            run_id: "run-v1".into(),
+            task_id: "task-a".into(),
+            attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
+        },
+    );
+    settle_attempt_success(
+        &mut store,
+        "verifying-attempt",
+        "run-v1",
+        "task-a",
+        "attempt-one",
+        'e',
     );
     send(
         &mut store,
@@ -2892,6 +4959,7 @@ fn fail_run_from_verifying_records_bounded_code_and_is_terminal() {
             run_id: "run-v1".into(),
             task_id: "task-a".into(),
             attempt_id: "attempt-one".into(),
+            verifier_id: "server_auth.verifier".into(),
             source_revision: sha('a'),
             evidence_digest: sha('d'),
         },
@@ -2902,6 +4970,7 @@ fn fail_run_from_verifying_records_bounded_code_and_is_terminal() {
         ManagedCommand::BeginVerification {
             run_id: "run-v1".into(),
             final_revision: sha('a'),
+            verifier_id: "server_auth.verifier".into(),
         },
     );
     assert_eq!(store.snapshot().runs["run-v1"].phase, RunPhase::Verifying);
@@ -2991,6 +5060,7 @@ fn fail_run_from_verifying_records_bounded_code_and_is_terminal() {
             ManagedCommand::BeginVerification {
                 run_id: "run-v1".into(),
                 final_revision: sha('a'),
+                verifier_id: "server_auth.verifier".into(),
             },
         ),
         (
@@ -3000,7 +5070,7 @@ fn fail_run_from_verifying_records_bounded_code_and_is_terminal() {
                 criterion_id: "tests-pass".into(),
                 source_revision: sha('a'),
                 evidence_digest: sha('e'),
-                verifier_id: "rust-test-runner".into(),
+                verifier_id: "server_auth.verifier".into(),
             },
         ),
         (
@@ -3017,6 +5087,7 @@ fn fail_run_from_verifying_records_bounded_code_and_is_terminal() {
                 task_id: "task-c".into(),
                 dependencies: vec![],
                 criterion_ids: vec![],
+                required_capabilities: vec![],
             },
         ),
     ] {
@@ -3078,6 +5149,7 @@ fn fail_run_is_fenced_by_unsettled_attempts_and_wrong_phases() {
             task_id: "task-a".into(),
             dependencies: vec![],
             criterion_ids: vec![],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -3095,6 +5167,10 @@ fn fail_run_is_fenced_by_unsettled_attempts_and_wrong_phases() {
             run_id: "run-v1".into(),
             task_id: "task-a".into(),
             attempt_id: "attempt-one".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
     );
     send(
@@ -3163,6 +5239,7 @@ fn fail_run_is_fenced_by_unsettled_attempts_and_wrong_phases() {
             task_id: "task-c".into(),
             dependencies: vec![],
             criterion_ids: vec![],
+            required_capabilities: vec![],
         },
     );
     send(
@@ -3180,6 +5257,10 @@ fn fail_run_is_fenced_by_unsettled_attempts_and_wrong_phases() {
             run_id: "run-cancelling".into(),
             task_id: "task-c".into(),
             attempt_id: "attempt-c".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: 1,
+            location_id: "test-location".into(),
+            session_id: "test-session".into(),
         },
     );
     send(
@@ -3230,4 +5311,54 @@ fn fail_run_is_fenced_by_unsettled_attempts_and_wrong_phases() {
     ));
     assert!(restored.snapshot().runs["run-v1"].failure_code.is_none());
     assert_eq!(restored.snapshot().revision, revision);
+}
+
+/// §11.18: durable replay must fail closed on a physically well-formed event
+/// that the owner log cannot distinguish from a trusted commit. Unknown kinds
+/// and malformed payloads for known kinds must never be silently ignored or
+/// partially applied; `ManagedControl::open` must refuse the stream.
+#[test]
+fn forged_or_unknown_durable_events_fail_closed_on_replay() {
+    let cases: [(&str, &str, serde_json::Value); 3] = [
+        // Unknown kind with a structurally valid, empty payload.
+        ("unknown-kind", "goal_deleted", json!({})),
+        // Known kind whose payload passes the dispatch guard but fails nested validation.
+        ("malformed-known-kind", "goal_created", json!({"goal": {}})),
+        // Known kind with a wrong-typed field.
+        ("wrong-typed-field", "run_paused", json!({"runId": 42})),
+    ];
+
+    for (name, kind, payload) in cases {
+        let root = PrivateRoot::new();
+        let goal_id = format!("goal-forged-{name}");
+        {
+            let mut log = OwnerLogV2::open(
+                root.path(),
+                OwnerIdentity::new("managed_goal".to_owned(), goal_id.clone()).unwrap(),
+                DurabilityProfile::RunDurable,
+            )
+            .unwrap();
+            let event = OwnerEventInput {
+                schema_version: 1,
+                time_ms: 1_700_000_000_000,
+                kind: kind.to_owned(),
+                data: payload,
+                delivery_id: None,
+                command_digest: None,
+            };
+            let delivery_id = "forged-delivery-1";
+            let digest = OwnerLogV2::command_digest(delivery_id, &[event.clone()]).unwrap();
+            log.append_batch(delivery_id, &digest, &[event], None)
+                .unwrap();
+        }
+
+        let error = match ManagedControl::open(root.path(), &goal_id) {
+            Ok(_) => panic!("case {name}: forged durable event was accepted on replay"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, ManagedError::Invalid(_)),
+            "case {name}: expected fail-closed Invalid at replay, got {error:?}"
+        );
+    }
 }

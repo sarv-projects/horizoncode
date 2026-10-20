@@ -9,6 +9,7 @@ export function make(overrides: Partial<Config.Interface> = {}) {
     getConsoleState: () => Effect.succeed(emptyConsoleState),
     getFeatures: () => Effect.succeed([]),
     updateFeature: () => Effect.succeed([]),
+    applyPendingFeatures: () => Effect.void,
     update: () => Effect.void,
     updateGlobal: (config) => Effect.succeed({ info: config, changed: false }),
     invalidate: () => Effect.void,

@@ -83,6 +83,14 @@ The actual function names should follow existing package conventions rather than
 
 All proposed services must first locate/reuse an existing compatible implementation before a new module is created.
 
+For V1 LSP/DAP launch, reuse Core Config's existing configuration owner and project only a
+trusted immutable launch profile to HostKernel. HostKernel remains the executable resolver and
+the existing ExecutionHost remains the sole process supervisor. Do not forward OpenCode-derived
+raw `command`/`env` values from the broker as authority, create a second process registry, or
+let project/plugin/external config select an executable before its trust rules are implemented.
+The projection's strict machine schema and fixtures belong to the owning process/profile
+contract; until they are present and Guard/confinement admission is wired, launch stays disabled.
+
 ## 20.4 Existing versus proposed truth
 
 Architecture labels:
@@ -183,7 +191,7 @@ Do not migrate JCode's entire agent/session tool runtime. Preserve exact Horizon
 | Work unit | Confirmed tracked override / pinned inherited source | Required patch/callers |
 |---|---|---|
 | Multi-session observer | `packages/core/src/session/supervisor.ts`, `kernel/src/bin/session_supervisor.rs`, `kernel/src/{supervisor_session,subscription,session_projection,protocol,transport}.rs` | Keep exported `SessionSupervisor.Service` types; add feature-negotiated attachment adapter and Rust broker, reuse per-Session binary until security and PSS benchmarks |
-| Guard execution | `packages/opencode/src/session/tool-batch.ts`, `packages/core/src/session/runner/llm.ts`, `packages/core/src/tool/{tool,registry,write}.ts`, `kernel/src/{guard,effect_host,request_cancellation}.rs`; inherited `opencode/packages/opencode/src/session/{prompt,tools,llm}.ts` | Map every effect origin before dispatch; bounded complete batch, authenticated Rust Guard, prepare/lease/receipt and UNKNOWN per capability |
+| Guard execution | `packages/opencode/src/session/tool-batch.ts`, `packages/core/src/session/runner/llm.ts`, `packages/core/src/tool/{tool,registry,write}.ts`, `kernel/src/{guard,effect_host,request_cancellation,terminal_process}.rs`, `horizoncode-sandbox/`; inherited `opencode/packages/opencode/src/session/{prompt,tools,llm}.ts` | Terminal and non-PTY process paths prepare and require Linux sandbox guarantees before dispatch; map every other effect origin before dispatch; bounded complete batch, authenticated Rust Guard, prepare/lease/receipt and UNKNOWN per capability |
 | P2 scheduler | `kernel/src/{managed_control,owner_log,owner_log_index}.rs`, managed tests; existing host Session correlation | Add authenticated managed RPC, accepted spec version body and source digests, Task DAG admission, resource leases, worker execution, independent verifier; never write a Rust copy of conversation history |
 | Process resource metrics | Rust kernel owns worker/execution lease identities; host supervisor owns known process spawn; inherited OS process abstractions | Attach process-start fingerprint and OS quota sampler, deduplicated tree accounting, redacted UI projection; no process-manager bypass |
 | Headless workers | inherited Core/legacy direct Session runner plus Horizon Rust Attempt identity; §14 single ExecutionHost | Client attachment to existing model/provider Session if read-only, OS-supervised worker for effects; no full TUI or automatically new worktree per helper |

@@ -75,8 +75,10 @@ export const authorizationLayer = Layer.effect(
           )
           return yield* new UnauthorizedError({ message: "Authentication required" })
         }
+        const username = ServerAuth.authenticatedUsername(credential, config)
+        if (!username) return yield* effect
         return yield* Effect.provideService(effect, TrustedPrincipalContext, {
-          principal: { kind: "server_auth", subject: config.username },
+          principal: { kind: "server_auth", subject: username },
         })
       }),
     )

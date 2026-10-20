@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
 import { Schema } from "effect"
 import * as Composition from "../src/composition-v1"
 import * as AgentProfile from "../src/agent-profile-v2"
@@ -38,6 +39,7 @@ const profile = {
   memoryPolicy: "none",
   isolation: "read_only",
   lifecycleHooks: [],
+  capabilityCeiling: [],
   permissionCeilingDigest: digest,
   limits: { maxDepth: 1, maxActiveChildren: 1, maxTotalChildren: 2, maxPendingMessages: 4, maxMessageBytes: 4096, tokenBudget: 8192, wallTimeMs: 60000 },
   maxParallelChildren: 1,
@@ -63,6 +65,49 @@ describe("AgentProfileV2 schema and safe resolution", () => {
     expect(Schema.encodeSync(AgentProfile.AgentProfileV2)(decoded)).toEqual(profile)
   })
 
+  test("Core definition omits Rust-minted digests and rejects caller-supplied digest fields", () => {
+    const definition = Object.fromEntries(
+      Object.entries(profile).filter(([key]) => key !== "definitionDigest" && key !== "permissionCeilingDigest"),
+    )
+    const decoded = Schema.decodeUnknownSync(AgentProfile.AgentProfileDefinitionV2)(definition as unknown)
+    expect(decoded.profileId).toBe("specialist.reader")
+    const callerWithDigest = Schema.decodeUnknownSync(AgentProfile.AgentProfileDefinitionV2)(profile as unknown)
+    expect(callerWithDigest).not.toHaveProperty("definitionDigest")
+    expect(callerWithDigest).not.toHaveProperty("permissionCeilingDigest")
+    expect(() => Schema.decodeUnknownSync(AgentProfile.AgentProfileDefinitionV2)(profile as unknown, { onExcessProperty: "error" })).toThrow()
+  })
+
+  test("shares the exact digest-free profile bytes fixture with Rust", () => {
+    const fixture = JSON.parse(readFileSync(new URL("../../../kernel/tests/fixtures/agent-profile-definition-v2.json", import.meta.url), "utf8"))
+    const definition = Schema.decodeUnknownSync(AgentProfile.AgentProfileDefinitionV2)(fixture.definition)
+    expect(Schema.encodeSync(AgentProfile.AgentProfileDefinitionV2)(definition)).toEqual(fixture.definition)
+    expect(definition.capabilityCeiling).toEqual(["files.read"])
+    expect(fixture.definition).not.toHaveProperty("definitionDigest")
+    expect(fixture.definition).not.toHaveProperty("permissionCeilingDigest")
+  })
+
+  test("publishes the definition and Rust-resolved projections in one strict JSON contract", () => {
+    const contract = AgentProfile.jsonSchemaDocument()
+    const published = JSON.parse(readFileSync(new URL("../../../arch_V1/contracts-v2/agent-profile-v2.schema.json", import.meta.url), "utf8"))
+    expect(published).toEqual(contract)
+    expect(contract.$ref).toBe("#/$defs/AgentProfileDefinitionV2")
+    const definition = contract.$defs.AgentProfileDefinitionV2 as { properties: Record<string, unknown>; additionalProperties: boolean }
+    expect(definition.additionalProperties).toBe(false)
+    expect(definition.properties).not.toHaveProperty("definitionDigest")
+    expect(definition.properties).not.toHaveProperty("permissionCeilingDigest")
+    expect(Object.keys(definition.properties).sort()).toEqual([
+      "adapter", "allowedMcpServers", "allowedMcpToolPatterns", "allowedSkillIds", "allowedSubagentIds",
+      "capabilityCeiling", "context", "deniedSkillIds", "deniedSubagentIds", "description", "enabled",
+      "harness", "inputMode", "instructions", "isolation", "lifecycleHooks", "limits", "maxParallelChildren",
+      "memoryPolicy", "model", "name", "pathRules", "profileId", "purpose", "reasoning", "revision", "roles",
+      "schemaVersion", "source", "tools", "variants", "whenNotToUse", "whenToUse",
+    ].sort())
+    const resolved = contract.$defs.AgentProfileV2 as { properties: Record<string, unknown> }
+    expect(resolved.properties).toHaveProperty("definitionDigest")
+    expect(resolved.properties).toHaveProperty("permissionCeilingDigest")
+    expect(contract.$defs.ProfileRevisionRef).toBeDefined()
+  })
+
   test("rejects malformed IDs, revisions, limits, and digests", () => {
     const decode = Schema.decodeUnknownSync(AgentProfile.AgentProfileV2)
     expect(() => decode({ ...profile, profileId: "bad id" } as unknown)).toThrow()
@@ -71,6 +116,8 @@ describe("AgentProfileV2 schema and safe resolution", () => {
     expect(() => decode({ ...profile, maxParallelChildren: -1 } as unknown)).toThrow()
     expect(() => decode({ ...profile, limits: { ...profile.limits, tokenBudget: 0 } } as unknown)).toThrow()
     expect(() => decode({ ...profile, definitionDigest: "sha256:bad" } as unknown)).toThrow()
+    expect(() => decode({ ...profile, capabilityCeiling: ["files.read", "files.patch"] } as unknown)).toThrow()
+    expect(() => decode({ ...profile, capabilityCeiling: ["files.patch", "files.patch"] } as unknown)).toThrow()
     expect(() => Schema.decodeUnknownSync(Composition.Digest)("sha256:bad")).toThrow()
   })
 

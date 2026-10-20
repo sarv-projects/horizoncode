@@ -1,5 +1,8 @@
 export { Agent } from "./agent"
 export * as AgentProfileV2 from "./agent-profile-v2"
+export * as ContextSelectionV1 from "./context-selection-v1"
+export * as RepoIntelligenceV1 from "./repo-intelligence-v1"
+export * as SubagentDeliveryV1 from "./subagent-delivery-v1"
 export { Command } from "./command"
 export { Connection } from "./connection"
 export { Credential } from "./credential"

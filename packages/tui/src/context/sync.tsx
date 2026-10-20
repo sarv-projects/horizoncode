@@ -18,6 +18,7 @@ import type {
   VcsInfo,
   SnapshotFileDiff,
   ConsoleState,
+  EventMessagePartDelta,
 } from "@opencode-ai/sdk/v2"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useProject } from "./project"
@@ -27,15 +28,20 @@ import { useTuiStartup } from "./runtime"
 import { createSimpleContext } from "./helper"
 import { useExit } from "./exit"
 import { useArgs } from "./args"
-import { batch, onMount } from "solid-js"
+import { batch, onCleanup, onMount } from "solid-js"
 import path from "path"
 import { useKV } from "./kv"
 import { usePermission } from "./permission"
+import { createUiEventMux } from "./ui-event-mux"
 
 const emptyConsoleState: ConsoleState = {
   consoleManagedProviders: [],
   switchableOrgCount: 0,
 }
+
+const SESSION_MESSAGE_PAGE_SIZE = 100
+const SESSION_MESSAGE_HISTORY_LIMIT = 10_000
+const SESSION_MESSAGE_HARD_LIMIT = 20_000
 
 function search<T>(items: T[], target: string, key: (item: T) => string) {
   let left = 0
@@ -56,6 +62,8 @@ function compareMessage(a: Message, b: Message) {
 
 const messageKey = (message: Message) => message.time.created + message.id
 
+type GuardApprovalState = "pending" | "submitting"
+
 type GuardApprovalRequest = {
   approvalID: string
   challengeID: string
@@ -67,8 +75,58 @@ type GuardApprovalRequest = {
   normalizedTargets: unknown[]
   expiresAtUnixMs: number
   policySummary: string
+  origin?: "session_batch" | "user_action" | "managed_run"
+  source?: "core.tool_batch" | "authenticated.user_action" | "host.managed_verifier"
+  policyID?: string
+  policyDigest?: string
+  normalizedAction?: string
+  argumentSummary?:
+    | { readonly status: "available"; readonly text: string }
+    | { readonly status: "unavailable"; readonly reason: string }
+  requestedGuarantees?: string[]
+  guaranteeAssessment?:
+    | { readonly status: "assessed"; readonly residual: string[] }
+    | { readonly status: "not_assessed"; readonly residual: null }
+  runID?: string
+  noResponse?: "deny_and_expire"
+  allowEnabled?: boolean
   directory: string
   workspace?: string
+  state?: GuardApprovalState
+}
+
+export type GuardApprovalDecision = "allow_once" | "deny"
+
+// A complete ToolBatch admits one challenge per effectful call, so several Guard
+// approvals can be pending at the same time. Keep the queue bounded and stable.
+export const MAX_PENDING_GUARD_APPROVALS = 16
+
+/**
+ * Insert or refresh one Guard approval request. A repeated challenge (new approval ID for
+ * the same challenge) replaces its previous entry instead of queueing twice, and the
+ * queue is capped by dropping the entries that expire first.
+ */
+export function upsertGuardApprovalRequest(
+  current: GuardApprovalRequest[],
+  request: GuardApprovalRequest,
+  max = MAX_PENDING_GUARD_APPROVALS,
+): GuardApprovalRequest[] {
+  const next = current.filter(
+    (item) => item.approvalID !== request.approvalID && item.challengeID !== request.challengeID,
+  )
+  next.push(request)
+  next.sort((a, b) => a.expiresAtUnixMs - b.expiresAtUnixMs || a.approvalID.localeCompare(b.approvalID))
+  return next.length > max ? next.slice(-max) : next
+}
+
+/** Pending approvals in decision order: the earliest expiry is answered first. */
+export function pendingGuardApprovals(
+  current: GuardApprovalRequest[],
+  nowMs = Date.now(),
+): GuardApprovalRequest[] {
+  return current
+    .filter((item) => item.expiresAtUnixMs > nowMs)
+    .toSorted((a, b) => a.expiresAtUnixMs - b.expiresAtUnixMs || a.approvalID.localeCompare(b.approvalID))
 }
 
 function parseGuardApprovalRequest(value: unknown, directory: string, workspace?: string): GuardApprovalRequest | undefined {
@@ -89,6 +147,63 @@ function parseGuardApprovalRequest(value: unknown, directory: string, workspace?
   ) {
     return
   }
+  const summary = item.argumentSummary
+  const summaryRecord = typeof summary === "object" && summary !== null && !Array.isArray(summary)
+    ? summary as Record<string, unknown>
+    : undefined
+  const argumentSummary =
+    summaryRecord?.status === "available" &&
+    typeof summaryRecord.text === "string" &&
+    summaryRecord.text.trim().length > 0 &&
+    Buffer.byteLength(summaryRecord.text, "utf8") <= 512
+      ? { status: "available" as const, text: summaryRecord.text }
+      : summaryRecord?.status === "unavailable" &&
+          typeof summaryRecord.reason === "string" &&
+          Buffer.byteLength(summaryRecord.reason, "utf8") <= 256
+        ? { status: "unavailable" as const, reason: summaryRecord.reason }
+        : undefined
+  const assessment = item.guaranteeAssessment
+  const assessmentRecord = typeof assessment === "object" && assessment !== null && !Array.isArray(assessment)
+    ? assessment as Record<string, unknown>
+    : undefined
+  const guaranteeAssessment =
+    assessmentRecord?.status === "assessed" &&
+    Array.isArray(assessmentRecord.residual) &&
+    assessmentRecord.residual.length <= 16 &&
+    assessmentRecord.residual.every((id) => typeof id === "string" && /^[a-z][a-z0-9._-]{0,63}$/.test(id)) &&
+    new Set(assessmentRecord.residual).size === assessmentRecord.residual.length
+      ? { status: "assessed" as const, residual: assessmentRecord.residual as string[] }
+      : assessmentRecord?.status === "not_assessed" && assessmentRecord.residual === null
+        ? { status: "not_assessed" as const, residual: null }
+        : undefined
+  const requestedGuarantees =
+    Array.isArray(item.requestedGuarantees) &&
+    item.requestedGuarantees.length > 0 &&
+    item.requestedGuarantees.length <= 16 &&
+    item.requestedGuarantees.every((id) => typeof id === "string" && /^[a-z][a-z0-9._-]{0,63}$/.test(id)) &&
+    new Set(item.requestedGuarantees).size === item.requestedGuarantees.length
+      ? item.requestedGuarantees as string[]
+      : undefined
+  const origin = item.origin === "session_batch" || item.origin === "user_action" || item.origin === "managed_run"
+    ? item.origin
+    : undefined
+  const source = item.source === "core.tool_batch" || item.source === "authenticated.user_action" || item.source === "host.managed_verifier"
+    ? item.source
+    : undefined
+  const consentFieldsValid =
+    origin !== undefined && source !== undefined &&
+    (origin === "managed_run" ? source === "host.managed_verifier" : true) &&
+    typeof item.policyID === "string" && /^[a-z][a-z0-9._-]{0,127}$/.test(item.policyID) &&
+    typeof item.policyDigest === "string" && /^blake3:[0-9a-f]{64}$/.test(item.policyDigest) &&
+    item.normalizedAction === item.capabilityID &&
+    argumentSummary !== undefined && requestedGuarantees !== undefined &&
+    guaranteeAssessment !== undefined && item.noResponse === "deny_and_expire" &&
+    ((guaranteeAssessment.status === "not_assessed") ||
+      (guaranteeAssessment.status === "assessed" &&
+        guaranteeAssessment.residual.every((id) => requestedGuarantees.includes(id))) )
+  const allowEnabled = item.allowEnabled === true
+    ? consentFieldsValid && argumentSummary?.status === "available" && guaranteeAssessment?.status === "assessed"
+    : item.allowEnabled === false ? false : undefined
   return {
     approvalID: item.approvalID,
     challengeID: item.challengeID,
@@ -100,8 +215,20 @@ function parseGuardApprovalRequest(value: unknown, directory: string, workspace?
     normalizedTargets: item.normalizedTargets,
     expiresAtUnixMs: item.expiresAtUnixMs,
     policySummary: item.policySummary,
+    ...(origin ? { origin } : {}),
+    ...(source ? { source } : {}),
+    ...(typeof item.policyID === "string" ? { policyID: item.policyID } : {}),
+    ...(typeof item.policyDigest === "string" ? { policyDigest: item.policyDigest } : {}),
+    ...(typeof item.normalizedAction === "string" ? { normalizedAction: item.normalizedAction } : {}),
+    ...(argumentSummary ? { argumentSummary } : {}),
+    ...(requestedGuarantees ? { requestedGuarantees } : {}),
+    ...(guaranteeAssessment ? { guaranteeAssessment } : {}),
+    ...(typeof item.runID === "string" ? { runID: item.runID } : {}),
+    ...(item.noResponse === "deny_and_expire" ? { noResponse: item.noResponse } : {}),
+    ...(allowEnabled !== undefined ? { allowEnabled } : {}),
     directory,
     ...(workspace ? { workspace } : {}),
+    state: "pending",
   }
 }
 
@@ -145,6 +272,9 @@ export const {
       message: {
         [sessionID: string]: Message[]
       }
+      session_message_truncated: {
+        [sessionID: string]: boolean
+      }
       part: {
         [messageID: string]: Part[]
       }
@@ -181,6 +311,7 @@ export const {
       session_diff: {},
       todo: {},
       message: {},
+      session_message_truncated: {},
       part: {},
       lsp: [],
       mcp: {},
@@ -193,14 +324,274 @@ export const {
     const project = useProject()
     const sdk = useSDK()
 
+    // Replies already in flight, so a second click/second surface cannot double-answer
+    // the same one-use challenge.
+    const guardSubmissions = new Set<string>()
+
+    const removeGuardApproval = (approvalID: string) => {
+      setStore(
+        "guard_approval",
+        produce((draft) => {
+          const index = draft.findIndex((item) => item.approvalID === approvalID)
+          if (index !== -1) draft.splice(index, 1)
+        }),
+      )
+    }
+
+    const setGuardApprovalState = (approvalID: string, state: GuardApprovalState) => {
+      setStore(
+        "guard_approval",
+        produce((draft) => {
+          const index = draft.findIndex((item) => item.approvalID === approvalID)
+          if (index !== -1) draft[index] = { ...draft[index], state }
+        }),
+      )
+    }
+
+    /**
+     * Answer one Guard approval exactly once. `allow_once` consumes the one-use lease;
+     * `deny` closes the challenge. A 404/409 means the challenge is already resolved or
+     * expired, so the stale entry is dropped instead of being retried forever.
+     */
+    const replyGuardApproval = async (approvalID: string, decision: GuardApprovalDecision): Promise<boolean> => {
+      const entry = store.guard_approval.find((item) => item.approvalID === approvalID)
+      if (!entry || guardSubmissions.has(approvalID)) return false
+      guardSubmissions.add(approvalID)
+      setGuardApprovalState(approvalID, "submitting")
+      try {
+        const response = await sdk.client.guard.approval.reply(
+          {
+            approvalID,
+            decision,
+            directory: entry.directory,
+            ...(entry.workspace ? { workspace: entry.workspace } : {}),
+          },
+          { throwOnError: false },
+        )
+        if (response.error) {
+          const status = response.response?.status
+          if (status === 404 || status === 409) removeGuardApproval(approvalID)
+          else setGuardApprovalState(approvalID, "pending")
+          return false
+        }
+        removeGuardApproval(approvalID)
+        return true
+      } catch {
+        setGuardApprovalState(approvalID, "pending")
+        return false
+      } finally {
+        guardSubmissions.delete(approvalID)
+      }
+    }
+
     const fullSyncedSessions = new Set<string>()
     const syncingSessions = new Map<string, Promise<void>>()
+    const olderMessageCursors = new Map<string, string>()
+    const loadingOlderMessages = new Map<string, Promise<boolean>>()
     const hydratingSessions = new Map<string, { messages: Set<string>; parts: Set<string> }>()
+    const resnapshotTasks = new Map<string, Promise<void>>()
+    const resnapshotAgain = new Set<string>()
+    // The event's source cursor may seed a live stream only when its separate
+    // UTF-16 offset agrees with the canonical text currently projected.
+    const replaySeeded = new Set<string>()
+    const replaySeedKey = (sessionID: string, partID: string, generation: string) =>
+      JSON.stringify([sessionID, partID, generation])
     const touchMessage = (sessionID: string, messageID: string) => {
       hydratingSessions.get(sessionID)?.messages.add(messageID)
     }
     const touchPart = (sessionID: string, partID: string) => {
       hydratingSessions.get(sessionID)?.parts.add(partID)
+    }
+
+    function applyPartDelta(event: EventMessagePartDelta) {
+      if (event.properties.field !== "text") return false
+      const parts = store.part[event.properties.messageID]
+      if (!parts) {
+        void resnapshotSession(event.properties.sessionID)
+        return false
+      }
+      const result = search(parts, event.properties.partID, (part) => part.id)
+      if (!result.found) {
+        void resnapshotSession(event.properties.sessionID)
+        return false
+      }
+      const part = parts[result.index]
+      if (
+        event.properties.field !== "text" ||
+        (part.type !== "text" && part.type !== "reasoning") ||
+        part.text.length !== event.properties.offset
+      ) {
+        if (part.type === "text" || part.type === "reasoning") void resnapshotSession(event.properties.sessionID)
+        return false
+      }
+      touchPart(event.properties.sessionID, event.properties.partID)
+      setStore(
+        "part",
+        event.properties.messageID,
+        produce((draft) => {
+          const part = draft[result.index]
+          const field = event.properties.field as keyof typeof part
+          const existing = part[field] as string | undefined
+          ;(part[field] as string) = (existing ?? "") + event.properties.delta
+        }),
+      )
+      return true
+    }
+
+    const streamMux = createUiEventMux<EventMessagePartDelta>({
+      sessionID: (item) => item.properties.sessionID,
+      key: (item) => `${item.properties.messageID}:${item.properties.partID}:${item.properties.field}`,
+      merge: (previous, next) => ({
+        ...previous,
+        properties: { ...previous.properties, delta: previous.properties.delta + next.properties.delta },
+      }),
+      size: (item) => new TextEncoder().encode(item.properties.delta).byteLength,
+      sizeProvenance: "measured",
+      cursor: (item) => {
+        const sequence = item.properties.sequence
+        const sourceGeneration = item.properties.sourceGeneration
+        const partID = `${item.properties.messageID}:${item.properties.partID}:${item.properties.field}`
+        const validSequence = Number.isSafeInteger(sequence) && sequence >= 0
+        const validOffset = Number.isSafeInteger(item.properties.offset) && item.properties.offset >= 0
+        const validGeneration =
+          typeof sourceGeneration === "string" && sourceGeneration.length > 0 && sourceGeneration.length <= 256
+        if (!validSequence || !validOffset || !validGeneration) return
+        if (resnapshotTasks.has(item.properties.sessionID)) return
+        const seedKey = replaySeedKey(item.properties.sessionID, partID, sourceGeneration)
+        if (!replaySeeded.has(seedKey)) {
+          const parts = store.part[item.properties.messageID]
+          const result = parts && search(parts, item.properties.partID, (part) => part.id)
+          const canonical = result?.found ? parts?.[result.index] : undefined
+          if (!canonical) {
+            // A fresh part can only begin at ordinal/offset zero. A later replay
+            // delta needs canonical text to prove its separate edit offset.
+            if (sequence !== 0 || item.properties.offset !== 0) return
+          } else if (
+            (canonical.type !== "text" && canonical.type !== "reasoning") ||
+            canonical.text.length !== item.properties.offset
+          ) {
+            return
+          }
+          streamMux.seedStream({
+            sessionID: item.properties.sessionID,
+            partID,
+            sourceGeneration,
+            sequence,
+          })
+          replaySeeded.add(seedKey)
+          while (replaySeeded.size > 4096) {
+            const oldest = replaySeeded.values().next().value
+            if (oldest === undefined) break
+            replaySeeded.delete(oldest)
+          }
+        }
+        return {
+          sessionID: item.properties.sessionID,
+          partID,
+          sourceGeneration,
+          sequence,
+          advance: 1,
+        }
+      },
+      onResnapshotRequired: (cursor) => {
+        replaySeeded.delete(replaySeedKey(cursor.sessionID, cursor.partID, cursor.sourceGeneration))
+        void resnapshotSession(cursor.sessionID)
+      },
+      deliver: (items) => {
+        for (const item of items) {
+          if (!applyPartDelta(item)) {
+            const partID = `${item.properties.messageID}:${item.properties.partID}:${item.properties.field}`
+            replaySeeded.delete(replaySeedKey(item.properties.sessionID, partID, item.properties.sourceGeneration))
+          }
+        }
+      },
+      maxQueuedEvents: 1024,
+      maxQueuedBytes: 64 * 1024,
+      maxQueuedSessions: 64,
+      flushAfterMs: 16,
+      maxStreamCursors: 4096,
+    })
+
+    async function resnapshotSessionOnce(sessionID: string) {
+      streamMux.flush(sessionID)
+      streamMux.forgetStream(sessionID)
+      for (const key of replaySeeded) {
+        const [owner] = JSON.parse(key) as [string, string, string]
+        if (owner === sessionID) replaySeeded.delete(key)
+      }
+      const tracker = { messages: new Set<string>(), parts: new Set<string>() }
+      hydratingSessions.set(sessionID, tracker)
+      try {
+        const pages: Array<{ info: Message; parts: Part[] }> = []
+        let response = await sdk.client.session.messages(
+          { sessionID, limit: SESSION_MESSAGE_PAGE_SIZE },
+          { throwOnError: true },
+        )
+        pages.push(...(response.data ?? []))
+        let cursor = response.response.headers.get("X-Next-Cursor") ?? undefined
+        let count = pages.length
+        const seen = new Set<string>()
+        while (cursor && count < SESSION_MESSAGE_HISTORY_LIMIT && !seen.has(cursor)) {
+          seen.add(cursor)
+          response = await sdk.client.session.messages(
+            { sessionID, limit: Math.min(SESSION_MESSAGE_PAGE_SIZE, SESSION_MESSAGE_HISTORY_LIMIT - count), before: cursor },
+            { throwOnError: true },
+          )
+          const next = response.data ?? []
+          if (!next.length) break
+          pages.push(...next)
+          count += next.length
+          cursor = response.response.headers.get("X-Next-Cursor") ?? undefined
+        }
+        const current = new Map((store.message[sessionID] ?? []).map((message) => [message.id, message]))
+        const canonical = pages.flatMap((item) => {
+          const live = current.get(item.info.id)
+          const currentParts = store.part[item.info.id] ?? []
+          const parts = item.parts.map((part) => {
+            if (!tracker.parts.has(part.id)) return part
+            return currentParts.find((currentPart) => currentPart.id === part.id) ?? part
+          })
+          parts.push(...currentParts.filter((part) => tracker.parts.has(part.id) && !parts.some((item) => item.id === part.id)))
+          setStore("part", item.info.id, parts)
+          return [tracker.messages.has(item.info.id) && live ? live : item.info]
+        })
+        const canonicalIDs = new Set(canonical.map((message) => message.id))
+        canonical.push(...[...current.values()].filter((message) => tracker.messages.has(message.id) && !canonicalIDs.has(message.id)))
+        const sorted = canonical.sort(compareMessage).slice(-SESSION_MESSAGE_HISTORY_LIMIT)
+        setStore("message", sessionID, sorted)
+        olderMessageCursors.set(sessionID, cursor ?? "")
+        if (!cursor) olderMessageCursors.delete(sessionID)
+        setStore("session_message_truncated", sessionID, Boolean(cursor))
+      } catch {
+        // A failed reconnect snapshot is retried by the next SSE reconnect or
+        // by an out-of-sequence event; live state remains available meanwhile.
+      } finally {
+        hydratingSessions.delete(sessionID)
+      }
+    }
+
+    function resnapshotSession(sessionID: string) {
+      const current = resnapshotTasks.get(sessionID)
+      if (current) {
+        resnapshotAgain.add(sessionID)
+        return current
+      }
+      const task = (async () => {
+        let passes = 0
+        do {
+          resnapshotAgain.delete(sessionID)
+          await resnapshotSessionOnce(sessionID)
+          passes++
+        } while (resnapshotAgain.has(sessionID) && passes < 2)
+        if (resnapshotAgain.has(sessionID)) {
+          resnapshotAgain.delete(sessionID)
+          setTimeout(() => void resnapshotSession(sessionID), 250)
+        }
+      })().finally(() => {
+        resnapshotTasks.delete(sessionID)
+      })
+      resnapshotTasks.set(sessionID, task)
+      return task
     }
 
     function sessionListQuery(): { scope?: "project"; path?: string } {
@@ -219,25 +610,19 @@ export const {
         .then((x) => (x.data ?? []).toSorted((a, b) => a.id.localeCompare(b.id)))
     }
 
-    event.subscribe((event, { directory, workspace }) => {
-      const rawEvent = event as { type: string; properties?: unknown }
+    const unsubscribeEvents = event.subscribe((event, { directory, workspace }) => {
+      const rawEvent = event as { id?: string; type: string; properties?: unknown }
       if (rawEvent.type === "guard.approval.requested") {
         if (directory === "global") return
         const request = parseGuardApprovalRequest(rawEvent.properties, directory, workspace)
         if (!request) return
-        setStore(
-          "guard_approval",
-          produce((draft) => {
-            const index = draft.findIndex((item) => item.approvalID === request.approvalID)
-            if (index === -1) draft.push(request)
-            else draft[index] = request
-          }),
-        )
+        setStore("guard_approval", (current) => upsertGuardApprovalRequest(current, request))
         return
       }
       if (rawEvent.type === "guard.approval.resolved") {
         const approvalID = (rawEvent.properties as { approvalID?: unknown } | undefined)?.approvalID
         if (typeof approvalID !== "string") return
+        guardSubmissions.delete(approvalID)
         setStore(
           "guard_approval",
           produce((draft) => {
@@ -247,8 +632,18 @@ export const {
         )
         return
       }
+      if (event.type === "message.part.delta") {
+        const delta = event as EventMessagePartDelta
+        streamMux.push(delta)
+        return
+      }
+      const properties = event.properties as { sessionID?: unknown } | undefined
+      const eventSessionID = properties && typeof properties.sessionID === "string" ? properties.sessionID : undefined
+      if (typeof eventSessionID === "string") streamMux.flush(eventSessionID)
       switch (event.type) {
         case "server.instance.disposed":
+          guardSubmissions.clear()
+          setStore("guard_approval", [])
           void bootstrap()
           break
         case "permission.replied": {
@@ -373,7 +768,7 @@ export const {
             }),
           )
           const updated = store.message[event.properties.info.sessionID]
-          if (updated.length > 100) {
+          if (updated.length > SESSION_MESSAGE_HISTORY_LIMIT) {
             const oldest = updated[0]
             batch(() => {
               setStore(
@@ -410,6 +805,12 @@ export const {
         }
         case "message.part.updated": {
           touchPart(event.properties.part.sessionID, event.properties.part.id)
+          const part = event.properties.part
+          if (part.type === "text" || part.type === "reasoning") {
+          // Part snapshots intentionally carry no live source ordinal. They
+          // cannot seed replay authority from text length or stable IDs.
+          streamMux.forgetStream(part.sessionID, `${part.messageID}:${part.id}:text`)
+          }
           const parts = store.part[event.properties.part.messageID]
           if (!parts) {
             setStore("part", event.properties.part.messageID, [event.properties.part])
@@ -425,25 +826,6 @@ export const {
             event.properties.part.messageID,
             produce((draft) => {
               draft.splice(result.index, 0, event.properties.part)
-            }),
-          )
-          break
-        }
-
-        case "message.part.delta": {
-          const parts = store.part[event.properties.messageID]
-          if (!parts) break
-          const result = search(parts, event.properties.partID, (part) => part.id)
-          if (!result.found) break
-          touchPart(event.properties.sessionID, event.properties.partID)
-          setStore(
-            "part",
-            event.properties.messageID,
-            produce((draft) => {
-              const part = draft[result.index]
-              const field = event.properties.field as keyof typeof part
-              const existing = part[field] as string | undefined
-              ;(part[field] as string) = (existing ?? "") + event.properties.delta
             }),
           )
           break
@@ -478,6 +860,21 @@ export const {
           break
         }
       }
+    })
+
+    const unsubscribeReconnect = sdk.onReconnect(async (signal) => {
+      streamMux.reconnect()
+      replaySeeded.clear()
+      const sessionIDs = Object.keys(store.message)
+      for (let offset = 0; offset < sessionIDs.length; offset += 8) {
+        if (signal.aborted) return
+        await Promise.all(sessionIDs.slice(offset, offset + 8).map(resnapshotSession))
+      }
+    })
+    onCleanup(() => {
+      unsubscribeEvents()
+      unsubscribeReconnect()
+      streamMux.close()
     })
 
     const exit = useExit()
@@ -603,13 +1000,28 @@ export const {
       get path() {
         return project.instance.path()
       },
+      /**
+       * Pending Guard approvals (one per effectful ToolBatch call). `reply` answers exactly
+       * one challenge; the server consumes a one-use approval. The list is already ordered
+       * by expiry, so callers can render/answer `pending()[0]` first.
+       */
+      guardApproval: {
+        pending: () => pendingGuardApprovals(store.guard_approval),
+        reply: (approvalID: string, decision: GuardApprovalDecision) => replyGuardApproval(approvalID, decision),
+        approve: (approvalID: string) => replyGuardApproval(approvalID, "allow_once"),
+        deny: (approvalID: string) => replyGuardApproval(approvalID, "deny"),
+      },
+      stream: {
+        stats: () => streamMux.stats(),
+        streamStats: () => streamMux.streamStats(),
+        observations: () => streamMux.observations(),
+      },
       session: {
         get(sessionID: string) {
           const match = search(store.session, sessionID, (s) => s.id)
           if (match.found) return store.session[match.index]
           return undefined
-        },
-        query() {
+        },        query() {
           return sessionListQuery()
         },
         async refresh() {
@@ -633,20 +1045,49 @@ export const {
           const tracker = { messages: new Set<string>(), parts: new Set<string>() }
           hydratingSessions.set(sessionID, tracker)
           const task = (async () => {
-            const [session, messages, todo, diff] = await Promise.all([
+            const [session, firstMessages, todo, diff] = await Promise.all([
               sdk.client.session.get({ sessionID }, { throwOnError: true }),
-              sdk.client.session.messages({ sessionID, limit: 100 }),
+              sdk.client.session.messages({ sessionID, limit: SESSION_MESSAGE_PAGE_SIZE }, { throwOnError: true }),
               sdk.client.session.todo({ sessionID }),
               sdk.client.session.diff({ sessionID }),
             ])
+            // V1 pages are newest-first by cursor, while each page is internally
+            // chronological. Bound both the request count and retained history so
+            // long sessions never create an unbounded TUI store.
+            const messagePages = [firstMessages.data ?? []]
+            let loadedMessages = messagePages[0]!.length
+            let cursor = firstMessages.response.headers.get("X-Next-Cursor") ?? undefined
+            const seenCursors = new Set<string>()
+            while (cursor && loadedMessages < SESSION_MESSAGE_HISTORY_LIMIT) {
+              if (seenCursors.has(cursor)) break
+              seenCursors.add(cursor)
+              const page = await sdk.client.session.messages(
+                {
+                  sessionID,
+                  limit: Math.min(SESSION_MESSAGE_PAGE_SIZE, SESSION_MESSAGE_HISTORY_LIMIT - loadedMessages),
+                  before: cursor,
+                },
+                { throwOnError: true },
+              )
+              const items = page.data ?? []
+              if (items.length === 0) break
+              messagePages.push(items)
+              loadedMessages += items.length
+              cursor = page.response.headers.get("X-Next-Cursor") ?? undefined
+            }
+            const historyTruncated = Boolean(cursor)
+            if (cursor) olderMessageCursors.set(sessionID, cursor)
+            else olderMessageCursors.delete(sessionID)
+            const messageItems = messagePages.reverse().flat()
             setStore(
               produce((draft) => {
                 const match = search(draft.session, sessionID, (s) => s.id)
                 if (match.found) draft.session[match.index] = session.data!
                 if (!match.found) draft.session.splice(match.index, 0, session.data!)
                 draft.todo[sessionID] = todo.data ?? []
+                draft.session_message_truncated[sessionID] = historyTruncated
                 const currentMessages = draft.message[sessionID] ?? []
-                const infos = (messages.data ?? []).flatMap((message) => {
+                const infos = messageItems.flatMap((message) => {
                   if (!tracker.messages.has(message.info.id)) return [message.info]
                   const current = currentMessages.find((item) => item.id === message.info.id)
                   return current ? [current] : []
@@ -657,10 +1098,10 @@ export const {
                   ),
                 )
                 infos.sort(compareMessage)
-                const removed = infos.slice(0, -100)
-                const visible = infos.slice(-100)
+                const removed = infos.slice(0, -SESSION_MESSAGE_HISTORY_LIMIT)
+                const visible = infos.slice(-SESSION_MESSAGE_HISTORY_LIMIT)
                 const visibleIDs = new Set(visible.map((message) => message.id))
-                for (const message of messages.data ?? []) {
+                for (const message of messageItems) {
                   if (!visibleIDs.has(message.info.id)) {
                     delete draft.part[message.info.id]
                     continue
@@ -698,6 +1139,57 @@ export const {
             hydratingSessions.delete(sessionID)
           })
           syncingSessions.set(sessionID, task)
+          return task
+        },
+        async loadOlder(sessionID: string) {
+          const existing = loadingOlderMessages.get(sessionID)
+          if (existing) return existing
+          const cursor = olderMessageCursors.get(sessionID)
+          const current = store.message[sessionID] ?? []
+          if (!cursor || current.length >= SESSION_MESSAGE_HARD_LIMIT) return false
+
+          const task = (async () => {
+            const limit = Math.min(SESSION_MESSAGE_PAGE_SIZE, SESSION_MESSAGE_HARD_LIMIT - current.length)
+            const page = await sdk.client.session.messages(
+              { sessionID, limit, before: cursor },
+              { throwOnError: true },
+            )
+            const items = page.data ?? []
+            const nextCursor = page.response.headers.get("X-Next-Cursor") ?? undefined
+            if (!items.length) {
+              olderMessageCursors.delete(sessionID)
+              setStore("session_message_truncated", sessionID, false)
+              return false
+            }
+
+            const currentParts = store.part
+            setStore(
+              produce((draft) => {
+                const currentMessages = draft.message[sessionID] ?? []
+                const currentIDs = new Set(currentMessages.map((message) => message.id))
+                const added = items.flatMap((message) => (currentIDs.has(message.info.id) ? [] : [message.info]))
+                const visible = [...added, ...currentMessages]
+                  .sort(compareMessage)
+                  .slice(0, SESSION_MESSAGE_HARD_LIMIT)
+                const visibleIDs = new Set(visible.map((message) => message.id))
+                for (const message of items) {
+                  if (!visibleIDs.has(message.info.id)) continue
+                  const retained = currentParts[message.info.id] ?? []
+                  const parts = message.parts.map((part) => retained.find((item) => item.id === part.id) ?? part)
+                  for (const part of retained) {
+                    if (!parts.some((item) => item.id === part.id)) parts.push(part)
+                  }
+                  draft.part[message.info.id] = parts
+                }
+                draft.message[sessionID] = visible
+                draft.session_message_truncated[sessionID] = Boolean(nextCursor)
+              }),
+            )
+            if (nextCursor) olderMessageCursors.set(sessionID, nextCursor)
+            else olderMessageCursors.delete(sessionID)
+            return true
+          })().finally(() => loadingOlderMessages.delete(sessionID))
+          loadingOlderMessages.set(sessionID, task)
           return task
         },
       },

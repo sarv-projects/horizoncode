@@ -1,229 +1,223 @@
-import { describe, expect } from "bun:test"
-import { $ } from "bun"
+import { expect } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
-import { Effect, Exit } from "effect"
+import { Effect, Exit, Layer } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Git } from "@opencode-ai/core/git"
+import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
+import { AppProcess } from "@opencode-ai/core/process"
+import { Global } from "@opencode-ai/core/global"
 import { AbsolutePath, RelativePath } from "@opencode-ai/core/schema"
-import { branch, commit, gitRemote } from "./fixture/git"
 import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(LayerNode.compile(Git.node))
 
-describe("Git", () => {
-  it.live("clones a remote and reads checkout metadata", () =>
-    withRemote((fixture) =>
+testEffect(Layer.empty).live("refuses the legacy direct git apply process before dispatch", () =>
+  Effect.acquireUseRelease(
+    Effect.promise(() => tmpdir()),
+    (tmp) =>
       Effect.gen(function* () {
-        const git = yield* Git.Service
-        const target = AbsolutePath.make(path.join(fixture.root, "checkout"))
-        const repository = yield* git.repo.clone({ remote: fixture.remote, directory: target })
-
-        expect(yield* git.remote.get(repository)).toBe(fixture.remote)
-        expect(yield* git.history.head(repository)).toBeString()
-        expect(yield* git.history.branch(repository)).toBe("main")
-        expect(yield* git.history.defaultRemoteBranch(repository)).toBe("main")
-        expect(repository.worktree).toBe(target)
-        expect(repository.gitDirectory).toBe(AbsolutePath.make(path.join(target, ".git")))
-        expect(repository.commonDirectory).toBe(repository.gitDirectory)
-        expect(yield* read(path.join(target, "README.md"))).toBe("one\n")
+        let processCalls = 0
+        const appProcess = Layer.succeed(
+          AppProcess.Service,
+          AppProcess.Service.of({
+            run: () =>
+              Effect.sync(() => {
+                processCalls++
+                return {
+                  command: "git apply -",
+                  exitCode: 0,
+                  stdout: Buffer.alloc(0),
+                  stderr: Buffer.alloc(0),
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                }
+              }),
+            runStream: () => {
+              processCalls++
+              throw new Error("unexpected process stream")
+            },
+          } as unknown as AppProcess.Interface),
+        )
+        const layer = AppNodeBuilder.build(Git.node, [
+          [Global.node, Global.layerWith({ data: tmp.path, config: path.join(tmp.path, "config") })],
+          [AppProcess.node, appProcess],
+        ])
+        const git = yield* Git.Service.pipe(Effect.provide(layer))
+        const directory = AbsolutePath.make(tmp.path)
+        const repository = new Git.Repository({
+          worktree: directory,
+          gitDirectory: directory,
+          commonDirectory: directory,
+        })
+        const result = yield* Effect.exit(
+          git.change.apply({
+            repository,
+            path: directory,
+            changes: Git.ChangeSet.make("diff --git a/file.txt b/file.txt\n"),
+          }),
+        )
+        expect(result._tag).toBe("Failure")
+        const discarded = yield* Effect.exit(
+          git.change.discard({ repository, path: directory, index: "reset", untracked: "remove" }),
+        )
+        expect(discarded._tag).toBe("Failure")
+        expect(processCalls).toBe(0)
       }),
-    ),
-  )
+    (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+  ),
+)
 
-  it.live("fetches, checks out, and resets remote changes", () =>
-    withRemote((fixture) =>
+testEffect(Layer.empty).live("refuses unguarded Git mutation and network origins before dispatch", () =>
+  Effect.acquireUseRelease(
+    Effect.promise(() => tmpdir()),
+    (tmp) =>
       Effect.gen(function* () {
-        const git = yield* Git.Service
-        const target = AbsolutePath.make(path.join(fixture.root, "checkout"))
-        const repository = yield* git.repo.clone({ remote: fixture.remote, directory: target })
+        let processCalls = 0
+        const appProcess = Layer.succeed(
+          AppProcess.Service,
+          AppProcess.Service.of({
+            run: () =>
+              Effect.sync(() => {
+                processCalls++
+                return {
+                  command: "git mutation",
+                  exitCode: 0,
+                  stdout: Buffer.alloc(0),
+                  stderr: Buffer.alloc(0),
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                }
+              }),
+            runStream: () => {
+              processCalls++
+              throw new Error("unexpected process stream")
+            },
+          } as unknown as AppProcess.Interface),
+        )
+        const layer = AppNodeBuilder.build(Git.node, [
+          [Global.node, Global.layerWith({ data: tmp.path, config: path.join(tmp.path, "config") })],
+          [AppProcess.node, appProcess],
+        ])
+        const git = yield* Git.Service.pipe(Effect.provide(layer))
+        const root = AbsolutePath.make(tmp.path)
+        const repository = new Git.Repository({
+          worktree: root,
+          gitDirectory: root,
+          commonDirectory: root,
+        })
+        const absentGitDirectory = AbsolutePath.make(path.join(tmp.path, "new-git-directory"))
+        const attempts: Array<Effect.Effect<unknown, unknown>> = [
+          git.repo.clone({
+            remote: "https://example.invalid/repo.git",
+            directory: AbsolutePath.make(path.join(tmp.path, "clone")),
+          }),
+          git.repo.create({ worktree: root, gitDirectory: absentGitDirectory }),
+          git.sync.fetchRemotes(repository),
+          git.sync.fetchBranch(repository, { branch: "main" }),
+          git.sync.checkoutRemoteBranch(repository, { branch: "main" }),
+          git.sync.resetHard(repository, "HEAD"),
+          git.change.apply({
+            repository,
+            path: root,
+            changes: Git.ChangeSet.make("diff --git a/a b/a\n"),
+          }),
+          git.change.discard({ repository, path: root, index: "reset", untracked: "remove" }),
+          git.worktree.create({ repository, directory: AbsolutePath.make(path.join(tmp.path, "linked")) }),
+          git.worktree.remove({ repository, directory: root, force: true }),
+          git.index.refresh({ repository, scope: RelativePath.make(".") }),
+          git.tree.capture({ repository, scopes: [RelativePath.make(".")] }),
+          git.tree.write(repository),
+          git.tree.preview({
+            repository,
+            current: Git.TreeID.make("deadbeef"),
+            files: new Map(),
+          }),
+        ]
+        const results = yield* Effect.forEach(attempts, (attempt) => Effect.exit(attempt), {
+          concurrency: 1,
+        })
 
-        yield* Effect.promise(() => commit(fixture.source, "two\n", "second"))
-        yield* git.sync.fetchRemotes(repository)
-        yield* git.sync.resetHard(repository, "origin/main")
-        expect(yield* read(path.join(target, "README.md"))).toBe("two\n")
-
-        yield* Effect.promise(() => branch(fixture.source, "feature/docs", "feature\n"))
-        yield* git.sync.fetchBranch(repository, { branch: "feature/docs" })
-        yield* git.sync.checkoutRemoteBranch(repository, { branch: "feature/docs" })
-        yield* git.sync.resetHard(repository, "origin/feature/docs")
-        expect(yield* git.history.branch(repository)).toBe("feature/docs")
-        expect(yield* read(path.join(target, "README.md"))).toBe("feature\n")
+        expect(results.every((result) => result._tag === "Failure")).toBe(true)
+        expect(processCalls).toBe(0)
+        const createdPaths = yield* Effect.forEach(
+          ["new-git-directory", "clone", "linked"],
+          (name) =>
+            Effect.promise(async () => {
+              try {
+                await fs.stat(path.join(tmp.path, name))
+                return true
+              } catch {
+                return false
+              }
+            }),
+          { concurrency: 1 },
+        )
+        expect(createdPaths).toEqual([false, false, false])
       }),
-    ),
-  )
-})
+    (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+  ),
+)
 
-function withRemote<A, E, R>(body: (fixture: Awaited<ReturnType<typeof gitRemote>>) => Effect.Effect<A, E, R>) {
-  return Effect.acquireUseRelease(
-    Effect.promise(async () => {
-      const root = await tmpdir()
-      return { root, fixture: await gitRemote(root.path) }
-    }),
-    (input) => body(input.fixture),
-    (input) => Effect.promise(() => input.root[Symbol.asyncDispose]()),
-  )
-}
+it.live("fails closed for Git inspection subprocesses before dispatch", () =>
+  Effect.acquireUseRelease(
+    Effect.promise(() => tmpdir()),
+    (tmp) =>
+      Effect.gen(function* () {
+        let processCalls = 0
+        const appProcess = Layer.succeed(
+          AppProcess.Service,
+          AppProcess.Service.of({
+            run: () =>
+              Effect.sync(() => {
+                processCalls++
+                return {
+                  command: "git",
+                  exitCode: 0,
+                  stdout: Buffer.alloc(0),
+                  stderr: Buffer.alloc(0),
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                }
+              }),
+            runStream: () => {
+              processCalls++
+              throw new Error("unexpected Git process stream")
+            },
+          } as unknown as AppProcess.Interface),
+        )
+        const layer = AppNodeBuilder.build(Git.node, [
+          [Global.node, Global.layerWith({ data: tmp.path, config: path.join(tmp.path, "config") })],
+          [AppProcess.node, appProcess],
+        ])
+        const git = yield* Git.Service.pipe(Effect.provide(layer))
+        const directory = AbsolutePath.make(tmp.path)
+        const repository = new Git.Repository({
+          worktree: directory,
+          gitDirectory: directory,
+          commonDirectory: directory,
+        })
+        const inspections = [
+          git.remote.get(repository),
+          git.history.head(repository),
+          git.history.branch(repository),
+          git.history.defaultRemoteBranch(repository),
+          git.history.rootCommits(repository),
+          git.index.ignored({ repository, paths: [RelativePath.make("file.txt")] }),
+          git.tree.files({ repository, from: Git.TreeID.make("a".repeat(40)), to: Git.TreeID.make("b".repeat(40)) }),
+          git.tree.diff({ repository, from: Git.TreeID.make("a".repeat(40)), to: Git.TreeID.make("b".repeat(40)) }),
+          git.tree.readFile({ repository, tree: Git.TreeID.make("a".repeat(40)), path: RelativePath.make("file.txt") }),
+          git.worktree.list(repository),
+          git.change.capture({ repository, path: directory }),
+        ]
+        const results = yield* Effect.forEach(inspections, (inspection) => Effect.exit(inspection), {
+          concurrency: 1,
+        })
 
-function read(file: string) {
-  return Effect.promise(() => fs.readFile(file, "utf8")).pipe(Effect.map((content) => content.replace(/\r\n/g, "\n")))
-}
-
-async function initRepo(directory: string) {
-  await $`git init`.cwd(directory).quiet()
-  await $`git config core.fsmonitor false`.cwd(directory).quiet()
-  await $`git config commit.gpgsign false`.cwd(directory).quiet()
-  await $`git config user.email test@opencode.test`.cwd(directory).quiet()
-  await $`git config user.name Test`.cwd(directory).quiet()
-  await $`git commit --allow-empty -m root`.cwd(directory).quiet()
-}
-
-describe("Git worktrees", () => {
-  it.live("creates, lists, and removes linked worktrees", () =>
-    Effect.gen(function* () {
-      const root = yield* Effect.acquireRelease(
-        Effect.promise(() => tmpdir()),
-        (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
-      )
-      yield* Effect.promise(() => initRepo(root.path))
-      const directory = AbsolutePath.make(yield* Effect.promise(() => fs.realpath(root.path)))
-      const worktree = AbsolutePath.make(`${root.path}-git-worktree`)
-      yield* Effect.addFinalizer(() =>
-        Effect.promise(() => fs.rm(worktree, { recursive: true, force: true })).pipe(Effect.ignore),
-      )
-      const git = yield* Git.Service
-      const repo = yield* git.repo.discover(directory)
-      if (!repo) throw new Error("Repository not found")
-
-      yield* git.worktree.create({ repository: repo, directory: worktree })
-
-      expect((yield* git.worktree.list(repo)).some((entry) => entry.directory.endsWith("-git-worktree"))).toBe(true)
-      const linked = yield* git.repo.discover(worktree)
-      expect(linked?.worktree).toBe(AbsolutePath.make(yield* Effect.promise(() => fs.realpath(worktree))))
-      expect(linked?.commonDirectory).toBe(repo.commonDirectory)
-      expect(linked?.gitDirectory).not.toBe(repo.gitDirectory)
-      if (!linked) throw new Error("Linked worktree not found")
-      yield* git.worktree.remove({ repository: linked, directory: worktree, force: false })
-      expect((yield* git.worktree.list(repo)).some((entry) => entry.directory.endsWith("-git-worktree"))).toBe(false)
-    }),
-  )
-})
-
-describe("Git trees", () => {
-  it.live("captures, compares, and previews scoped trees", () =>
-    Effect.gen(function* () {
-      const root = yield* Effect.acquireRelease(
-        Effect.promise(() => tmpdir()),
-        (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
-      )
-      yield* Effect.promise(async () => {
-        await initRepo(root.path)
-        await fs.mkdir(path.join(root.path, "scope"))
-        await fs.writeFile(path.join(root.path, "scope", "tracked.txt"), "one\n")
-        await fs.writeFile(path.join(root.path, "outside.txt"), "outside\n")
-        await $`git add .`.cwd(root.path).quiet()
-        await $`git commit -m initial`.cwd(root.path).quiet()
-      })
-      const git = yield* Git.Service
-      const source = yield* git.repo.discover(AbsolutePath.make(root.path))
-      if (!source) throw new Error("Repository not found")
-      const storage = AbsolutePath.make(path.join(root.path, ".snapshot"))
-      const repository = yield* git.repo.create({ worktree: source.worktree, gitDirectory: storage, seed: source })
-      yield* git.index.refresh({ repository, scope: RelativePath.make("scope") })
-      const before = yield* git.tree.write(repository)
-
-      yield* Effect.promise(async () => {
-        await fs.writeFile(path.join(root.path, "scope", "tracked.txt"), "two\n")
-        await fs.writeFile(path.join(root.path, "scope", "added.txt"), "added\n")
-        await fs.writeFile(path.join(root.path, "outside.txt"), "changed outside\n")
-      })
-      yield* git.index.refresh({ repository, scope: RelativePath.make("scope") })
-      const after = yield* git.tree.write(repository)
-
-      expect(yield* git.tree.files({ repository, from: before, to: after })).toEqual([
-        RelativePath.make("scope/added.txt"),
-        RelativePath.make("scope/tracked.txt"),
-      ])
-      const diffs = yield* git.tree.diff({ repository, from: before, to: after, context: 1 })
-      expect(diffs.map((item) => [item.path, item.status])).toEqual([
-        [RelativePath.make("scope/added.txt"), "added"],
-        [RelativePath.make("scope/tracked.txt"), "modified"],
-      ])
-
-      const files = new Map([[RelativePath.make("scope/tracked.txt"), before]])
-      const preview = yield* git.tree.preview({ repository, current: after, files, context: 1 })
-      expect(preview).toHaveLength(1)
-      expect(preview[0]?.path).toBe(RelativePath.make("scope/tracked.txt"))
-      expect(preview[0]?.patch).toContain("-two")
-      expect(preview[0]?.patch).toContain("+one")
-      expect(yield* read(path.join(root.path, "scope", "tracked.txt"))).toBe("two\n")
-      expect(yield* read(path.join(root.path, "scope", "added.txt"))).toBe("added\n")
-      expect(yield* read(path.join(root.path, "outside.txt"))).toBe("changed outside\n")
-    }),
-  )
-  it.live("reads exact bounded binary snapshot blobs without changing the worktree", () =>
-    Effect.gen(function* () {
-      const root = yield* Effect.acquireRelease(
-        Effect.promise(() => tmpdir()),
-        (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
-      )
-      const file = path.join(root.path, "scope", "[binary].bin")
-      const beforeBytes = Uint8Array.from([0, 255, 1, 13, 10])
-      const afterBytes = Uint8Array.from([255, 0, 2, 0, 128])
-      yield* Effect.promise(async () => {
-        await initRepo(root.path)
-        await fs.mkdir(path.dirname(file))
-        await fs.writeFile(file, beforeBytes)
-        await $`git add .`.cwd(root.path).quiet()
-        await $`git commit -m "add binary fixture"`.cwd(root.path).quiet()
-      })
-
-      const git = yield* Git.Service
-      const source = yield* git.repo.discover(AbsolutePath.make(root.path))
-      if (!source) throw new Error("Repository not found")
-      const repository = yield* git.repo.create({
-        worktree: source.worktree,
-        gitDirectory: AbsolutePath.make(path.join(root.path, ".snapshot")),
-        seed: source,
-      })
-      const relative = RelativePath.make("scope/[binary].bin")
-      yield* git.index.refresh({ repository, scope: RelativePath.make("scope") })
-      const before = yield* git.tree.write(repository)
-
-      yield* Effect.promise(() => fs.writeFile(file, afterBytes))
-      yield* git.index.refresh({ repository, scope: RelativePath.make("scope") })
-      const after = yield* git.tree.write(repository)
-
-      const old = yield* git.tree.readFile({ repository, tree: before, path: relative })
-      const current = yield* git.tree.readFile({ repository, tree: after, path: relative })
-      const absent = yield* git.tree.readFile({
-        repository,
-        tree: before,
-        path: RelativePath.make("scope/missing.bin"),
-      })
-      expect(Array.from(old?.content ?? [])).toEqual(Array.from(beforeBytes))
-      expect(Array.from(current?.content ?? [])).toEqual(Array.from(afterBytes))
-      expect(old?.executable).toBe(false)
-      expect(current?.executable).toBe(false)
-      expect(absent).toBeUndefined()
-      expect(Array.from(yield* Effect.promise(() => fs.readFile(file)))).toEqual(Array.from(afterBytes))
-      const oversizedPath = path.join(root.path, "scope", "oversized.bin")
-      const oversizedBytes = Buffer.alloc(2 * 1024 * 1024 + 1, 42)
-      yield* Effect.promise(() => fs.writeFile(oversizedPath, oversizedBytes))
-      yield* git.index.refresh({ repository, scope: RelativePath.make("scope") })
-      const oversizedTree = yield* git.tree.write(repository)
-      const oversized = yield* Effect.exit(
-        git.tree.readFile({
-          repository,
-          tree: oversizedTree,
-          path: RelativePath.make("scope/oversized.bin"),
-        }),
-      )
-      expect(Exit.isFailure(oversized)).toBe(true)
-      const oversizedStat = yield* Effect.promise(() => fs.stat(oversizedPath))
-      expect(oversizedStat.size).toBe(oversizedBytes.byteLength)
-    }),
-  )
-
-})
+        expect(results.some((result) => result._tag === "Failure")).toBe(true)
+        expect(processCalls).toBe(0)
+      }),
+    (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+  ),
+)

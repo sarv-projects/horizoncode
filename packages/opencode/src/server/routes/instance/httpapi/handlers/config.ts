@@ -5,11 +5,10 @@ import { Effect } from "effect"
 import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
 import { markInstanceForDisposal } from "../lifecycle"
-import { ConflictError } from "../errors"
+import { ConflictError, ForbiddenError } from "../errors"
 
 export const configHandlers = HttpApiBuilder.group(InstanceHttpApi, "config", (handlers) =>
   Effect.gen(function* () {
-    const providerSvc = yield* Provider.Service
     const configSvc = yield* Config.Service
 
     const get = Effect.fn("ConfigHttpApi.get")(function* () {
@@ -28,17 +27,23 @@ export const configHandlers = HttpApiBuilder.group(InstanceHttpApi, "config", (h
 
     const featureUpdate = Effect.fn("ConfigHttpApi.featureUpdate")(function* (ctx) {
       const result = yield* configSvc.updateFeature(ctx.payload).pipe(
-        Effect.mapError((error) =>
-          error instanceof Config.FeatureSettingConflict
-            ? new ConflictError({ message: error.message, resource: ctx.payload.featureId })
-            : new HttpApiError.InternalServerError({}),
-        ),
+        Effect.mapError((error) => {
+          if (error instanceof Config.FeatureSettingConflict)
+            return new ConflictError({ message: error.message, resource: ctx.payload.featureId })
+          if (error instanceof Config.FeatureSettingLocked)
+            return new ForbiddenError({ message: error.message })
+          return new HttpApiError.InternalServerError({})
+        }),
       )
       yield* markInstanceForDisposal(yield* InstanceState.context)
       return result
     })
 
     const providers = Effect.fn("ConfigHttpApi.providers")(function* () {
+      // Provider construction may inspect catalog/provider integration state.
+      // Keep that work exclusive to this endpoint; feature settings must be
+      // readable without resolving any provider or credential surface.
+      const providerSvc = yield* Provider.Service
       const providers = yield* providerSvc.list()
       return {
         providers: Object.values(providers).map(Provider.toPublicInfo),

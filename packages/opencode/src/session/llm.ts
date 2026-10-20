@@ -37,8 +37,17 @@ import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
 import { SessionSupervisor, Service as SessionSupervisorService } from "@opencode-ai/core/session/supervisor"
+import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 import { requireMediatedWorkflowProvider } from "./hosted-tools"
-import { createToolBatchContext, requireToolExecution, toolBatchMiddleware, type ToolBatchDefinition } from "./tool-batch"
+import {
+  createToolBatchContext,
+  isStandaloneControlTool,
+  requireToolExecution,
+  toolBatchMiddleware,
+  type ToolBatchDefinition,
+  type DirectAttemptAuthority,
+} from "./tool-batch"
+import type { ManagedAttemptAuthority } from "./managed-control"
 
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
@@ -47,6 +56,10 @@ export type StreamInput = {
   user: SessionV1.User
   sessionID: string
   parentSessionID?: string
+  /** Trusted direct child Attempt authority injected by TaskTool only. */
+  directAttempt?: DirectAttemptAuthority
+  /** Trusted managed Task Attempt authority injected by the managed scheduler only. */
+  managedAttempt?: ManagedAttemptAuthority
   model: Provider.Model
   agent: Agent.Info
   permission?: PermissionV1.Ruleset
@@ -98,6 +111,7 @@ const live: Layer.Layer<
     const locations = yield* Effect.serviceOption(LocationServiceMap.Service)
 
     const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
+      const trustedPrincipal = yield* Effect.serviceOption(TrustedPrincipalContext)
       const instance = yield* InstanceState.context
       const locationRef = Location.Ref.make({ directory: AbsolutePath.make(instance.directory) })
       yield* Effect.logInfo("stream", {
@@ -109,15 +123,63 @@ const live: Layer.Layer<
         mode: input.agent.mode,
       })
 
-      const [language, cfg, item, info] = yield* Effect.all(
-        [
-          provider.getLanguage(input.model),
-          config.get(),
-          provider.getProvider(input.model.providerID),
-          auth.get(input.model.providerID),
-        ],
+      // No provider SDK may receive legacy auth, environment credentials or
+      // credential headers until the SecretBroker lease is wired to the native
+      // request-scoped transport. Fail before provider construction or plugin
+      // hooks so an unsupported native route cannot silently fall back to AI SDK auth.
+      const sensitiveHeaders = (value: unknown) =>
+        typeof value === "object" && value !== null
+          ? Object.entries(value).some(
+              ([name, item]) =>
+                /auth|api[-_]?key|access[-_]?token|refresh[-_]?token|secret|credential/i.test(name) &&
+                item !== undefined &&
+                item !== null &&
+                (typeof item !== "string" || item.length > 0),
+            )
+          : false
+      // Provider resolution can invoke provider/plugin hooks. Reject all
+      // credential material visible from the already loaded config and model
+      // before calling that service, so denial has no provider-hook effects.
+      const [cfg, info] = yield* Effect.all(
+        [config.get(), auth.get(input.model.providerID)],
         { concurrency: "unbounded" },
       )
+      const configured = cfg.provider?.[input.model.providerID]
+      const hasCredentialValue = (value: unknown) =>
+        value !== undefined && value !== null && (typeof value !== "string" || value.length > 0)
+      const hasConfiguredCredential =
+        hasCredentialValue(configured?.options?.apiKey) ||
+        (configured?.env ?? []).some((name) => typeof process.env[name] === "string" && process.env[name]!.length > 0) ||
+        sensitiveHeaders(configured?.options?.headers)
+      const hasCredentialedAuth =
+        info !== undefined ||
+        hasConfiguredCredential ||
+        hasCredentialValue(input.model.options.apiKey) ||
+        sensitiveHeaders(input.model.options.headers) ||
+        sensitiveHeaders(input.model.headers)
+      if (hasCredentialedAuth) {
+        return yield* Effect.fail(
+          new Auth.AuthError({
+            message: "Provider credentials are unavailable until request-scoped SecretBroker transport is verified",
+          }),
+        )
+      }
+
+      const item = yield* provider.getProvider(input.model.providerID)
+      const hasResolvedCredential =
+        hasCredentialValue(item.options.apiKey) ||
+        hasCredentialValue(item.key) ||
+        item.env.some((name) => typeof process.env[name] === "string" && process.env[name]!.length > 0) ||
+        sensitiveHeaders(item.options.headers)
+      if (hasResolvedCredential) {
+        return yield* Effect.fail(
+          new Auth.AuthError({
+            message: "Provider credentials are unavailable until request-scoped SecretBroker transport is verified",
+          }),
+        )
+      }
+
+      const language = yield* provider.getLanguage(input.model)
 
       const isWorkflow = language instanceof GitLabWorkflowLanguageModel
       // This provider may execute tools server-side before our callbacks run.
@@ -176,14 +238,23 @@ const live: Layer.Layer<
         .digest("hex")}`
       const batchMiddleware = toolBatchMiddleware({
         sessionID: input.sessionID,
+        parentSessionID: input.parentSessionID,
+        directAttempt: input.directAttempt,
+        managedAttempt: input.managedAttempt,
         locationRef,
         turnContextDigest,
         signal: input.abort,
         definitions,
         context: batchContext,
         prepareToolBatch: (request) => {
+          if (Option.isNone(trustedPrincipal)) {
+            return Promise.resolve({ status: "denied" as const, reason: "Authenticated principal is unavailable" })
+          }
           if (!request.calls.some((call) => call.capabilityID === "terminal.run"))
-            return bridge.promise(supervisor.prepareToolBatch(request))
+            return bridge.promise(
+              supervisor.prepareToolBatch(request).pipe(Effect.provideService(TrustedPrincipalContext, trustedPrincipal.value)),
+              { signal: request.signal },
+            )
           if (!Option.isSome(locations)) {
             return Promise.resolve({
               status: "denied" as const,
@@ -194,9 +265,29 @@ const live: Layer.Layer<
             Effect.gen(function* () {
               const terminal = yield* Pty.Service
               return yield* terminal.prepareToolBatch(request)
-            }).pipe(Effect.provide(locations.value.get(locationRef))),
+            }).pipe(
+              Effect.provide(locations.value.get(locationRef)),
+              Effect.provideService(TrustedPrincipalContext, trustedPrincipal.value),
+            ),
+            { signal: request.signal },
           )
         },
+        cancelToolBatch: ({ sessionID, batchID }) =>
+          Option.isNone(trustedPrincipal)
+            ? Promise.resolve()
+            : bridge.promise(
+                Effect.gen(function* () {
+                  const locationID = yield* supervisor.registerHostLocation(locationRef)
+                  yield* supervisor
+                    .requestHostKernel(
+                      "effects.v2",
+                      "cancel_batch",
+                      { locationID, sessionID, batchID },
+                      { trustedPrincipal: trustedPrincipal.value.principal },
+                    )
+                    .pipe(Effect.asVoid)
+                }).pipe(Effect.provideService(TrustedPrincipalContext, trustedPrincipal.value)),
+              ),
       })
       if (language instanceof GitLabWorkflowLanguageModel) {
         const workflowModel = language as GitLabWorkflowLanguageModel & {
@@ -467,7 +558,7 @@ const live: Layer.Layer<
   }),
 )
 
-function filterTools(
+export function filterTools(
   tools: Record<string, Tool>,
   definitions: Readonly<Record<string, ToolBatchDefinition>>,
   allowEffects: boolean,
@@ -479,7 +570,8 @@ function filterTools(
     const allowed =
       definition.internal === true ||
       definition.capability.effectClass === "read_only" ||
-      (allowEffects && definition.capability.effectClass === "effect")
+      (allowEffects && definition.capability.effectClass === "effect") ||
+      isStandaloneControlTool(name, definition)
     if (!allowed) continue
     if (!item.execute) {
       result[name] = item
@@ -492,6 +584,7 @@ function filterTools(
         requireToolExecution({
           context: options.experimental_context,
           callID: options.toolCallId,
+          toolName: name,
           capability: definition.capability,
           internal: definition.internal,
         })

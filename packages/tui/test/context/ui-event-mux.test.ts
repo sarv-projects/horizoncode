@@ -1,13 +1,27 @@
 import { expect, test } from "bun:test"
-import { createUiEventMux } from "../../src/context/ui-event-mux"
+import {
+  createStreamEnvelopeGuard,
+  createStreamReplayGuard,
+  createUiEventMux,
+  type StreamCursorV1,
+} from "../../src/context/ui-event-mux"
 
 type Delta = {
   sessionID: string
   partID: string
   text: string
+  cursor?: StreamCursorV1 & { advance: number }
 }
 
-function mux(options: { maxQueuedEvents?: number; maxQueuedBytes?: number; flushAfterMs?: number } = {}) {
+function mux(
+  options: {
+    maxQueuedEvents?: number
+    maxQueuedBytes?: number
+    maxQueuedSessions?: number
+    sizeProvenance?: "measured" | "estimated" | "unknown"
+    flushAfterMs?: number
+  } = {},
+) {
   const batches: Delta[][] = []
   const queue = createUiEventMux<Delta>({
     sessionID: (event) => event.sessionID,
@@ -17,9 +31,55 @@ function mux(options: { maxQueuedEvents?: number; maxQueuedBytes?: number; flush
     deliver: (events) => batches.push([...events]),
     maxQueuedEvents: options.maxQueuedEvents ?? 8,
     maxQueuedBytes: options.maxQueuedBytes ?? 64,
+    maxQueuedSessions: options.maxQueuedSessions,
+    sizeProvenance: options.sizeProvenance,
     flushAfterMs: options.flushAfterMs ?? 10_000,
   })
   return { queue, batches }
+}
+
+function envelopedMux(
+  options: {
+    maxQueuedEvents?: number
+    maxQueuedBytes?: number
+    maxQueuedSessions?: number
+    maxStreamCursors?: number
+    flushAfterMs?: number
+  } = {},
+) {
+  const batches: Delta[][] = []
+  const resnapshots: Array<StreamCursorV1 & { advance: number }> = []
+  const queue = createUiEventMux<Delta>({
+    sessionID: (event) => event.sessionID,
+    key: (event) => event.partID,
+    merge: (previous, next) => ({ ...previous, text: previous.text + next.text }),
+    size: (event) => new TextEncoder().encode(event.text).byteLength,
+    sizeProvenance: "measured",
+    cursor: (event) => event.cursor,
+    onResnapshotRequired: (cursor) => resnapshots.push(cursor),
+    maxStreamCursors: options.maxStreamCursors,
+    maxQueuedSessions: options.maxQueuedSessions,
+    deliver: (events) => batches.push([...events]),
+    maxQueuedEvents: options.maxQueuedEvents ?? 8,
+    maxQueuedBytes: options.maxQueuedBytes ?? 64,
+    flushAfterMs: options.flushAfterMs ?? 10_000,
+  })
+  return { queue, batches, resnapshots }
+}
+
+function envelope(
+  sessionID: string,
+  partID: string,
+  sequence: number,
+  text: string,
+  sourceGeneration = "generation-1",
+): Delta {
+  return {
+    sessionID,
+    partID,
+    text,
+    cursor: { sessionID, partID, sourceGeneration, sequence, advance: 1 },
+  }
 }
 
 test("coalesces adjacent paint deltas without changing text or crossing session order", () => {
@@ -43,7 +103,12 @@ test("flushes before queue limits are exceeded and delivers oversized deltas dir
   expect(queue.stats()).toEqual({ pendingEvents: 2, pendingBytes: 2, coalesced: 0 })
 
   queue.push({ sessionID: "a", partID: "three", text: "c" })
-  expect(batches).toEqual([[{ sessionID: "a", partID: "one", text: "a" }, { sessionID: "a", partID: "two", text: "b" }]])
+  expect(batches).toEqual([
+    [
+      { sessionID: "a", partID: "one", text: "a" },
+      { sessionID: "a", partID: "two", text: "b" },
+    ],
+  ])
   expect(queue.stats()).toEqual({ pendingEvents: 1, pendingBytes: 1, coalesced: 0 })
 
   queue.push({ sessionID: "a", partID: "large", text: "12345" })
@@ -97,6 +162,24 @@ test("drops a merge that would exceed the byte budget instead of coalescing", ()
   queue.close()
 })
 
+test("flushes before an adjacent merge would exceed the aggregate session byte budget", () => {
+  const { queue, batches } = mux({ maxQueuedBytes: 10 })
+  queue.push({ sessionID: "a", partID: "first", text: "123" })
+  queue.push({ sessionID: "a", partID: "second", text: "4567" })
+
+  queue.push({ sessionID: "a", partID: "second", text: "8901" })
+
+  expect(batches).toEqual([
+    [
+      { sessionID: "a", partID: "first", text: "123" },
+      { sessionID: "a", partID: "second", text: "4567" },
+    ],
+  ])
+  expect(queue.stats()).toEqual({ pendingEvents: 1, pendingBytes: 4, coalesced: 0 })
+  queue.close()
+  expect(batches[1]).toEqual([{ sessionID: "a", partID: "second", text: "8901" }])
+})
+
 test("delivers events with an unmeasurable size directly", () => {
   const batches: Delta[][] = []
   const queue = createUiEventMux<Delta>({
@@ -140,5 +223,463 @@ test("delivers every event directly when no queueing is configured", () => {
     [{ sessionID: "a", partID: "k1", text: "one" }],
     [{ sessionID: "a", partID: "k1", text: "two" }],
   ])
+  queue.close()
+})
+
+test("bounds the number of queued sessions and delivers excess sessions without dropping deltas", () => {
+  const { queue, batches } = mux({ maxQueuedSessions: 1 })
+  queue.push({ sessionID: "a", partID: "k1", text: "one" })
+  queue.push({ sessionID: "b", partID: "k1", text: "two" })
+
+  expect(queue.stats().pendingEvents).toBe(1)
+  expect(batches).toEqual([[{ sessionID: "b", partID: "k1", text: "two" }]])
+
+  queue.close()
+  expect(batches).toEqual([
+    [{ sessionID: "b", partID: "k1", text: "two" }],
+    [{ sessionID: "a", partID: "k1", text: "one" }],
+  ])
+})
+
+test("keeps a slow session bounded while other streaming sessions flush independently", () => {
+  const { queue, batches } = mux({ maxQueuedEvents: 1024, maxQueuedBytes: 4096, maxQueuedSessions: 16 })
+  for (let index = 0; index < 1000; index++) {
+    queue.push({ sessionID: "slow", partID: "text", text: "x" })
+  }
+
+  for (let index = 0; index < 15; index++) {
+    const sessionID = `session-${index}`
+    queue.push({ sessionID, partID: "text", text: sessionID })
+    queue.flush(sessionID)
+  }
+
+  expect(queue.stats()).toEqual({ pendingEvents: 1, pendingBytes: 1000, coalesced: 999 })
+  expect(batches.flat().map((event) => event.sessionID)).toEqual(
+    Array.from({ length: 15 }, (_, index) => `session-${index}`),
+  )
+
+  queue.flush("slow")
+  expect(batches.flat().filter((event) => event.sessionID === "slow")).toEqual([
+    { sessionID: "slow", partID: "text", text: "x".repeat(1000) },
+  ])
+  expect(queue.stats()).toEqual({ pendingEvents: 0, pendingBytes: 0, coalesced: 999 })
+  queue.close()
+})
+
+test("treats non-finite queue limits as direct-delivery mode", () => {
+  const { queue, batches } = mux({ maxQueuedBytes: Number.NaN })
+  queue.push({ sessionID: "a", partID: "k1", text: "one" })
+  expect(batches).toEqual([[{ sessionID: "a", partID: "k1", text: "one" }]])
+  expect(queue.stats().pendingEvents).toBe(0)
+  queue.close()
+})
+
+test("accepts one next stream sequence and suppresses replayed prefixes", () => {
+  const replay = createStreamReplayGuard({ maxCursors: 2 })
+  const cursor = {
+    sessionID: "a",
+    partID: "text-1",
+    sourceGeneration: "generation-1",
+    sequence: 4,
+  }
+
+  expect(replay.seed(cursor)).toBe(true)
+  expect(replay.accept({ ...cursor, sequence: 5 })).toBe("apply")
+  expect(replay.accept({ ...cursor, sequence: 5 })).toBe("duplicate")
+  expect(replay.accept({ ...cursor, sequence: 3 })).toBe("duplicate")
+  expect(replay.accept({ ...cursor, sequence: 6 })).toBe("apply")
+})
+
+test("requires canonical resnapshot after sequence gaps, generation changes or cursor eviction", () => {
+  const replay = createStreamReplayGuard({ maxCursors: 1 })
+  const first = {
+    sessionID: "a",
+    partID: "text-1",
+    sourceGeneration: "generation-1",
+    sequence: 4,
+  }
+  expect(replay.seed(first)).toBe(true)
+  expect(replay.accept({ ...first, sequence: 6 })).toBe("resnapshot_required")
+  expect(replay.accept({ ...first, sourceGeneration: "generation-2", sequence: 5 })).toBe("resnapshot_required")
+
+  expect(
+    replay.seed({
+      sessionID: "b",
+      partID: "text-2",
+      sourceGeneration: "generation-1",
+      sequence: 0,
+    }),
+  ).toBe(true)
+  expect(replay.accept({ ...first, sequence: 5 })).toBe("resnapshot_required")
+})
+
+test("rejects malformed runtime cursors without throwing or changing tracked state", () => {
+  const replay = createStreamReplayGuard()
+  const valid = {
+    sessionID: "a",
+    partID: "text-1",
+    sourceGeneration: "generation-1",
+    sequence: 4,
+  }
+  expect(replay.seed(valid)).toBe(true)
+
+  const malformed = { ...valid, sessionID: null } as unknown as typeof valid
+  expect(() => replay.seed(malformed)).not.toThrow()
+  expect(() => replay.accept(malformed)).not.toThrow()
+  expect(replay.seed(malformed)).toBe(false)
+  expect(replay.accept(malformed)).toBe("resnapshot_required")
+  expect(replay.stats()).toEqual({ trackedCursors: 1 })
+  expect(replay.accept({ ...valid, sequence: 5 })).toBe("apply")
+})
+
+test("rejects oversized replay cursor identities before retaining them", () => {
+  const replay = createStreamReplayGuard()
+  const oversized = {
+    sessionID: "s".repeat(257),
+    partID: "text-1",
+    sourceGeneration: "generation-1",
+    sequence: 1,
+  }
+
+  expect(replay.seed(oversized)).toBe(false)
+  expect(replay.accept(oversized)).toBe("resnapshot_required")
+  expect(replay.stats()).toEqual({ trackedCursors: 0 })
+})
+
+test("reports queue analytics with explicit measured and size provenance", () => {
+  const { queue } = mux({ sizeProvenance: "estimated" })
+  queue.push({ sessionID: "a", partID: "k1", text: "one" })
+
+  const observations = queue.observations()
+  expect(observations.map(({ observedAtMs: _time, ...observation }) => observation)).toEqual([
+    {
+      metric: "ui.queue.pending_events",
+      value: 1,
+      unit: "events",
+      provenance: "measured",
+      source: "ui-event-mux",
+    },
+    {
+      metric: "ui.queue.pending_bytes",
+      value: 3,
+      unit: "bytes",
+      provenance: "estimated",
+      source: "ui-event-mux",
+    },
+    {
+      metric: "ui.queue.coalesced_events",
+      value: 0,
+      unit: "events",
+      provenance: "measured",
+      source: "ui-event-mux",
+    },
+    {
+      metric: "ui.queue.direct_deliveries",
+      value: 0,
+      unit: "events",
+      provenance: "measured",
+      source: "ui-event-mux",
+    },
+    {
+      metric: "ui.stream.duplicates_suppressed",
+      value: 0,
+      unit: "events",
+      provenance: "measured",
+      source: "ui-event-mux",
+    },
+    {
+      metric: "ui.stream.resnapshots_required",
+      value: 0,
+      unit: "events",
+      provenance: "measured",
+      source: "ui-event-mux",
+    },
+  ])
+  expect(observations.every((observation) => Number.isSafeInteger(observation.observedAtMs))).toBe(true)
+  queue.close()
+})
+
+test("reports unknown byte provenance until the caller declares how sizes are measured", () => {
+  const { queue } = mux()
+  queue.push({ sessionID: "a", partID: "k1", text: "one" })
+
+  const pendingBytes = queue.observations().find((observation) => observation.metric === "ui.queue.pending_bytes")
+  expect(pendingBytes).toMatchObject({ value: 3, unit: "bytes", provenance: "unknown" })
+  queue.close()
+})
+
+test("counts oversized and session-capped bypasses as measured direct deliveries", () => {
+  const oversized = mux({ maxQueuedBytes: 4 })
+  oversized.queue.push({ sessionID: "a", partID: "k1", text: "abc" })
+  oversized.queue.push({ sessionID: "a", partID: "k2", text: "12345" })
+  expect(
+    oversized.queue.observations().find((observation) => observation.metric === "ui.queue.direct_deliveries"),
+  ).toMatchObject({ value: 1, unit: "events", provenance: "measured" })
+  expect(oversized.batches).toEqual([
+    [{ sessionID: "a", partID: "k1", text: "abc" }],
+    [{ sessionID: "a", partID: "k2", text: "12345" }],
+  ])
+  oversized.queue.close()
+
+  const capped = mux({ maxQueuedSessions: 1 })
+  capped.queue.push({ sessionID: "a", partID: "k1", text: "a" })
+  capped.queue.push({ sessionID: "b", partID: "k1", text: "b" })
+  expect(
+    capped.queue.observations().find((observation) => observation.metric === "ui.queue.direct_deliveries"),
+  ).toMatchObject({ value: 1, unit: "events", provenance: "measured" })
+  expect(capped.batches).toEqual([[{ sessionID: "b", partID: "k1", text: "b" }]])
+  capped.queue.close()
+})
+
+test("counts post-close deliveries as measured direct deliveries", () => {
+  const { queue, batches } = mux()
+  queue.push({ sessionID: "a", partID: "k1", text: "a" })
+  queue.close()
+  queue.push({ sessionID: "a", partID: "k1", text: "b" })
+
+  expect(
+    queue.observations().find((observation) => observation.metric === "ui.queue.direct_deliveries"),
+  ).toMatchObject({ value: 1, unit: "events", provenance: "measured" })
+  expect(batches).toEqual([
+    [{ sessionID: "a", partID: "k1", text: "a" }],
+    [{ sessionID: "a", partID: "k1", text: "b" }],
+  ])
+})
+
+test("envelope guard reserves source ordinals and suppresses duplicates or gaps", () => {
+  const guard = createStreamEnvelopeGuard()
+  const cursor = { sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 4 }
+  expect(guard.seed(cursor)).toBe(true)
+
+  expect(guard.accept({ ...cursor, advance: 1 })).toBe("apply")
+  expect(guard.commit({ ...cursor, advance: 1 })).toBe(true)
+  expect(guard.accept({ ...cursor, sequence: 5, advance: 1 })).toBe("apply")
+  expect(guard.accept({ ...cursor, sequence: 5, advance: 1 })).toBe("duplicate")
+  expect(guard.commit({ ...cursor, sequence: 5, advance: 1 })).toBe(true)
+  expect(guard.accept({ ...cursor, sequence: 6, advance: 1 })).toBe("apply")
+  expect(guard.accept({ ...cursor, sequence: 4, advance: 1 })).toBe("duplicate")
+  expect(guard.accept({ ...cursor, sequence: 10, advance: 1 })).toBe("resnapshot_required")
+  expect(guard.accept({ ...cursor, sequence: 5, advance: 1 })).toBe("duplicate")
+  expect(guard.accept({ ...cursor, sequence: 6, advance: 2 })).toBe("resnapshot_required")
+  expect(guard.accept({ ...cursor, sourceGeneration: "generation-2", sequence: 6, advance: 1 })).toBe(
+    "resnapshot_required",
+  )
+})
+
+test("envelope guard fails closed after cursor eviction and after forget", () => {
+  const guard = createStreamEnvelopeGuard({ maxCursors: 1 })
+  const first = { sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0 }
+  expect(guard.seed(first)).toBe(true)
+
+  const second = { sessionID: "a", partID: "text-2", sourceGeneration: "generation-1", sequence: 0 }
+  expect(guard.seed(second)).toBe(true)
+  expect(guard.stats()).toEqual({ trackedCursors: 1 })
+  expect(guard.accept({ ...first, advance: 1 })).toBe("resnapshot_required")
+  expect(guard.accept({ ...second, advance: 1 })).toBe("apply")
+  expect(guard.commit({ ...second, advance: 1 })).toBe(true)
+  expect(guard.accept({ ...second, sequence: 1, advance: 1 })).toBe("apply")
+
+  guard.forget("a")
+  expect(guard.stats()).toEqual({ trackedCursors: 0 })
+  expect(guard.accept({ ...second, sequence: 2, advance: 1 })).toBe("resnapshot_required")
+})
+
+test("envelope guard rejects malformed and non-advancing cursors without throwing", () => {
+  const guard = createStreamEnvelopeGuard()
+  const cursor = { sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0 }
+  expect(guard.seed(cursor)).toBe(true)
+
+  const malformed = { ...cursor, advance: 1, sequence: Number.NaN } as typeof cursor & { advance: number }
+  expect(() => guard.accept(malformed)).not.toThrow()
+  expect(guard.accept(malformed)).toBe("resnapshot_required")
+  expect(guard.seed({ ...cursor, sourceGeneration: "x".repeat(257) })).toBe(false)
+  expect(guard.accept({ ...cursor, advance: -1 })).toBe("resnapshot_required")
+  expect(guard.stats()).toEqual({ trackedCursors: 1 })
+})
+
+test("mux coalesces contiguous envelope deltas and commits them on delivery", () => {
+  const { queue, batches } = envelopedMux()
+  queue.seedStream({ sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0 })
+  expect(queue.push(envelope("a", "text-1", 0, "hel"))).toBe("apply")
+  expect(queue.push(envelope("a", "text-1", 1, "lo"))).toBe("apply")
+  expect(queue.streamStats()).toMatchObject({ duplicatesSuppressed: 0, resnapshotsRequired: 0 })
+
+  queue.flush("a")
+  expect(batches).toEqual([[{ sessionID: "a", partID: "text-1", text: "hello", cursor: expect.anything() }]])
+  expect(queue.streamStats().duplicatesSuppressed).toBe(0)
+
+  expect(queue.push(envelope("a", "text-1", 2, "!"))).toBe("apply")
+  queue.flush("a")
+  expect(batches[1]?.[0]?.text).toBe("!")
+  queue.close()
+})
+
+test("mux drops replayed envelope deltas without delivering duplicated text", () => {
+  const { queue, batches } = envelopedMux()
+  queue.seedStream({ sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0 })
+  queue.push(envelope("a", "text-1", 0, "hello"))
+  queue.flush("a")
+  expect(batches).toEqual([[{ sessionID: "a", partID: "text-1", text: "hello", cursor: expect.anything() }]])
+
+  expect(queue.push(envelope("a", "text-1", 0, "llo"))).toBe("duplicate")
+  expect(queue.push(envelope("a", "text-1", 0, "hello"))).toBe("duplicate")
+  queue.flush("a")
+  expect(batches).toHaveLength(1)
+  expect(queue.streamStats().duplicatesSuppressed).toBe(2)
+  expect(
+    queue.observations().find((observation) => observation.metric === "ui.stream.duplicates_suppressed"),
+  ).toMatchObject({ value: 2, unit: "events", provenance: "measured" })
+  queue.close()
+})
+
+test("mux flushes accepted deltas then requests a resnapshot for a gap or a stale generation", () => {
+  const { queue, batches, resnapshots } = envelopedMux()
+  queue.seedStream({ sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0 })
+  queue.push(envelope("a", "text-1", 0, "hel"))
+  expect(queue.push(envelope("a", "text-1", 9, "gap"))).toBe("resnapshot_required")
+  expect(batches).toEqual([[{ sessionID: "a", partID: "text-1", text: "hel", cursor: expect.anything() }]])
+  expect(resnapshots).toEqual([
+    { sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 9, advance: 1 },
+  ])
+
+  queue.seedStream({ sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 9 })
+  expect(queue.push(envelope("a", "text-1", 10, "lo"))).toBe("apply")
+  queue.flush("a")
+  expect(batches[1]?.[0]?.text).toBe("lo")
+
+  expect(queue.push(envelope("a", "text-1", 11, "!", "generation-2"))).toBe("resnapshot_required")
+  expect(resnapshots).toHaveLength(2)
+  expect(queue.streamStats().resnapshotsRequired).toBe(2)
+  expect(
+    queue.observations().find((observation) => observation.metric === "ui.stream.resnapshots_required"),
+  ).toMatchObject({ value: 2, unit: "events", provenance: "measured" })
+  queue.close()
+})
+
+test("mux requires a seed before accepting envelope deltas after a reload", () => {
+  const { queue, batches, resnapshots } = envelopedMux()
+  expect(queue.push(envelope("a", "text-1", 0, "hel"))).toBe("resnapshot_required")
+  expect(batches).toEqual([])
+  expect(resnapshots).toHaveLength(1)
+
+  queue.seedStream({ sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0 })
+  expect(queue.push(envelope("a", "text-1", 0, "hel"))).toBe("apply")
+  queue.flush("a")
+  expect(batches[0]?.[0]?.text).toBe("hel")
+
+  queue.forgetStream("a", "text-1")
+  expect(queue.push(envelope("a", "text-1", 2, "lo"))).toBe("resnapshot_required")
+  queue.close()
+})
+
+test("mux commits direct deliveries and delivers a stale generation as a separate resnapshot", () => {
+  const { queue, batches, resnapshots } = envelopedMux({ maxQueuedBytes: 4 })
+  queue.seedStream({ sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0 })
+  expect(queue.push(envelope("a", "text-1", 0, "12345"))).toBe("apply")
+  expect(batches).toEqual([[{ sessionID: "a", partID: "text-1", text: "12345", cursor: expect.anything() }]])
+  expect(
+    queue.observations().find((observation) => observation.metric === "ui.queue.direct_deliveries"),
+  ).toMatchObject({ value: 1, unit: "events", provenance: "measured" })
+
+  expect(queue.push(envelope("a", "text-1", 1, "!"))).toBe("apply")
+  queue.flush("a")
+  expect(batches[1]?.[0]?.text).toBe("!")
+  expect(resnapshots).toEqual([])
+  queue.close()
+})
+
+test("mux keeps legacy paint events coalescing alongside gated envelope deltas", () => {
+  const { queue, batches } = envelopedMux()
+  queue.push({ sessionID: "a", partID: "legacy", text: "one" })
+  queue.push({ sessionID: "a", partID: "legacy", text: "two" })
+  queue.flush("a")
+  expect(batches).toEqual([[{ sessionID: "a", partID: "legacy", text: "onetwo" }]])
+
+  expect(queue.push(envelope("a", "text-1", 0, "x"))).toBe("resnapshot_required")
+  queue.seedStream({ sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0 })
+  expect(queue.push(envelope("a", "text-1", 0, "x"))).toBe("apply")
+  queue.push({ sessionID: "a", partID: "text-1", text: "y" })
+  queue.flush("a")
+  expect(batches[1]?.map((item) => item.text)).toEqual(["x", "y"])
+  queue.close()
+})
+
+test("rejects a cursor from another subscription generation and requires a resnapshot (AC-011)", () => {
+  const { queue, batches, resnapshots } = envelopedMux()
+  queue.seedStream({ sessionID: "a", partID: "text-1", sourceGeneration: "subscription-1", sequence: 0 })
+  expect(queue.push(envelope("a", "text-1", 0, "x", "subscription-1"))).toBe("apply")
+  queue.flush("a")
+  expect(batches).toHaveLength(1)
+
+  // A durable cursor from another subscription/owner epoch cannot apply.
+  expect(queue.push(envelope("a", "text-1", 1, "y", "subscription-2"))).toBe("resnapshot_required")
+  expect(resnapshots).toEqual([
+    { sessionID: "a", partID: "text-1", sourceGeneration: "subscription-2", sequence: 1, advance: 1 },
+  ])
+  queue.close()
+})
+
+test("reconnect flushes accepted deltas then forgets cursors so pre-reconnect offsets cannot apply", () => {
+  const { queue, batches, resnapshots } = envelopedMux()
+  queue.seedStream({ sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0 })
+  queue.push(envelope("a", "text-1", 0, "hel"))
+  queue.push(envelope("a", "text-1", 1, "lo"))
+  expect(queue.streamStats().trackedCursors).toBe(1)
+
+  expect(queue.reconnect()).toEqual({ flushedSessions: 1, forgottenCursors: 1 })
+  expect(batches).toEqual([[{ sessionID: "a", partID: "text-1", text: "hello", cursor: expect.anything() }]])
+  expect(queue.streamStats().trackedCursors).toBe(0)
+
+  // After reconnect the next delta must be proven against a fresh canonical state.
+  expect(queue.push(envelope("a", "text-1", 2, "!"))).toBe("resnapshot_required")
+  expect(resnapshots).toHaveLength(1)
+  queue.close()
+})
+
+test("keeps 16 streaming sessions bounded while a slow session drains (AC-012)", () => {
+  const { queue, batches } = envelopedMux({ maxQueuedEvents: 1024, maxQueuedBytes: 4096, maxQueuedSessions: 16 })
+  for (let index = 0; index < 16; index++) {
+    const sessionID = `session-${index}`
+    queue.seedStream({ sessionID, partID: "text", sourceGeneration: sessionID, sequence: 0 })
+    for (let delta = 0; delta < 40; delta++) {
+      expect(queue.push(envelope(sessionID, "text", delta, "x", sessionID))).toBe("apply")
+    }
+  }
+  expect(queue.stats().pendingEvents).toBe(16)
+  expect(queue.stats().pendingBytes).toBeLessThanOrEqual(4096)
+
+  queue.flush()
+  expect(batches).toHaveLength(16)
+  expect(new Set(batches.flat().map((event) => event.sessionID)).size).toBe(16)
+  expect(
+    batches
+      .flat()
+      .map((event) => event.sessionID)
+      .toSorted((a, b) => Number(a.slice("session-".length)) - Number(b.slice("session-".length))),
+  ).toEqual(Array.from({ length: 16 }, (_, index) => `session-${index}`))
+  for (const batch of batches) expect(batch[0]?.text).toBe("x".repeat(40))
+  expect(queue.stats()).toEqual({ pendingEvents: 0, pendingBytes: 0, coalesced: 16 * 39 })
+  queue.close()
+})
+
+test("seals an ended stream so a late delta cannot re-append text, and a restart unseals it", () => {
+  const { queue, batches } = envelopedMux()
+  const cursor = { sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0 }
+  queue.resetStream(cursor)
+  expect(queue.push(envelope("a", "text-1", 0, "hel"))).toBe("apply")
+  queue.flush("a")
+  expect(batches[0]?.[0]?.text).toBe("hel")
+
+  expect(queue.seedStream({ ...cursor, sequence: 1 })).toBe(true)
+  expect(queue.sealStream({ ...cursor, sequence: 1 })).toBe(true)
+  expect(queue.push(envelope("a", "text-1", 1, "lo"))).toBe("duplicate")
+  queue.flush("a")
+  expect(batches).toHaveLength(1)
+
+  // A restarted part clears the seal and accepts fresh deltas.
+  expect(queue.resetStream(cursor)).toBe(true)
+  expect(queue.push(envelope("a", "text-1", 0, "fresh"))).toBe("apply")
+  queue.flush("a")
+  expect(batches[1]?.[0]?.text).toBe("fresh")
   queue.close()
 })

@@ -1,12 +1,27 @@
-import { describe, expect } from "bun:test"
-import { Cause, Effect, Exit, Layer } from "effect"
-import { existsSync } from "node:fs"
+import { afterAll, describe, expect } from "bun:test"
+import { Cause, Effect, Exit, Fiber, Layer, Queue } from "effect"
+import { createHash } from "node:crypto"
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
 import path from "node:path"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
+import { Database } from "@opencode-ai/core/database/database"
+import { Location } from "@opencode-ai/core/location"
+import { buildLocationServiceMap, LocationServiceMap, locationServiceMapNode } from "@opencode-ai/core/location-services"
+import { Pty } from "@opencode-ai/core/pty"
+import { AbsolutePath } from "@opencode-ai/core/schema"
+import {
+  GuardApprovalRequested,
+  SessionSupervisor,
+  type GuardApprovalRequest,
+} from "@opencode-ai/core/session/supervisor"
+import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Config } from "@/config/config"
 import { Agent } from "../../src/agent/agent"
+import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { Plugin } from "../../src/plugin"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { ShellTool } from "../../src/tool/shell"
@@ -103,5 +118,235 @@ describe("tool.shell Guard boundary", () => {
       }
       expect(legacyApprovalCalls).toBe(0)
     }),
+    // Loading the Config/Agent/Plugin graph can exceed the 5s default on a loaded
+    // machine; the denials under test are immediate once the layer is built.
+    { timeout: 20_000 },
   )
 })
+
+// C13/PTY-001 live acceptance: the real host kernel, the app's location graph and an
+// explicit `allow_once` Guard challenge. The tool must execute only the prepared
+// `terminal.run` arguments and surface the kernel receipt; a tampered guarded patch
+// must be refused by the kernel's one-use capability lease.
+const liveRoot = mkdtempSync(path.join(tmpdir(), "opencode-shell-live-"))
+afterAll(() => rmSync(liveRoot, { recursive: true, force: true }))
+
+const hostKernelPath = path.resolve(import.meta.dir, "../../../../kernel/target/debug/hz-kernel")
+const sessionSupervisorPath = path.resolve(import.meta.dir, "../../../../kernel/target/debug/session_supervisor")
+const hostKernelBinaryAvailable = process.platform === "linux" && existsSync(hostKernelPath)
+const liveRustAvailable = hostKernelBinaryAvailable && existsSync(sessionSupervisorPath)
+
+const binaryManifest = (binary: string, binaryName: string) =>
+  JSON.stringify({
+    schemaVersion: 1,
+    status: "available",
+    binaryName,
+    target: `linux-${process.arch}-gnu`,
+    sha256: createHash("sha256").update(readFileSync(binary)).digest("hex"),
+  })
+
+const liveRuntimeNode = LayerNode.make({
+  service: SessionSupervisor.RuntimeConfig,
+  layer: Layer.succeed(
+    SessionSupervisor.RuntimeConfig,
+    SessionSupervisor.RuntimeConfig.of({
+      assetPath: liveRustAvailable ? sessionSupervisorPath : undefined,
+      manifestJSON: liveRustAvailable ? binaryManifest(sessionSupervisorPath, "session_supervisor") : undefined,
+      installRoot: path.join(liveRoot, "session-observer-install"),
+      stateRoot: path.join(liveRoot, "session-observer-state"),
+      hostKernelAssetPath: liveRustAvailable ? hostKernelPath : undefined,
+      hostKernelManifestJSON: liveRustAvailable ? binaryManifest(hostKernelPath, "hz-kernel") : undefined,
+      hostKernelInstallRoot: path.join(liveRoot, "host-kernel-install"),
+      hostKernelStateRoot: path.join(liveRoot, "host-kernel-state"),
+    }),
+  ),
+  deps: [],
+})
+
+const liveLocationServiceMapNode = LayerNode.make({
+  service: LocationServiceMap.Service,
+  layer: buildLocationServiceMap([[SessionSupervisor.runtimeConfigNode, liveRuntimeNode]]),
+  deps: [],
+})
+
+const liveDatabaseNode = makeGlobalNode({
+  service: Database.Service,
+  layer: Database.layerFromPath(path.join(liveRoot, "shell-live.sqlite")),
+  deps: [],
+})
+
+const liveShellLayer = Layer.mergeAll(
+  LayerNode.compile(
+    LayerNode.group([
+      CrossSpawnSpawner.node,
+      FSUtil.node,
+      Plugin.node,
+      Truncate.node,
+      Config.node,
+      Agent.node,
+      RuntimeFlags.node,
+      EventV2Bridge.node,
+      SessionSupervisor.node,
+      Database.node,
+      locationServiceMapNode,
+    ]),
+    [
+      [Database.node, liveDatabaseNode],
+      [SessionSupervisor.runtimeConfigNode, liveRuntimeNode],
+      [locationServiceMapNode, liveLocationServiceMapNode],
+    ],
+  ),
+  testInstanceStoreLayer,
+  Layer.succeed(TrustedPrincipalContext, {
+    principal: { kind: "server_auth" as const, subject: "shell-live-test" },
+  }),
+)
+const liveIt = testEffect(liveShellLayer)
+const withLiveShell = liveRustAvailable ? liveIt.live : liveIt.live.skip
+
+const liveTurnContextDigest = `sha256:${"a".repeat(64)}`
+
+const liveApprovalResponder = (
+  events: EventV2Bridge.Interface,
+  supervisor: SessionSupervisor.Interface,
+  decision: "allow_once" | "deny",
+) =>
+  Effect.gen(function* () {
+    const approvals = yield* Queue.unbounded<GuardApprovalRequest>()
+    const off = yield* events.listen((event) => {
+      if (event.type === GuardApprovalRequested.type) {
+        Queue.offerUnsafe(approvals, event.data as GuardApprovalRequest)
+      }
+      return Effect.void
+    })
+    yield* Effect.addFinalizer(() => off)
+    return { approvals, reply: Effect.gen(function* () {
+      const request = yield* Queue.take(approvals)
+      expect(request.capabilityID).toBe("terminal.run")
+      yield* supervisor.replyGuardApproval({ approvalID: request.approvalID, decision })
+      return request
+    }) }
+  })
+
+describe("tool.shell live Guard admission", () => {
+  withLiveShell(
+    "executes an approved bash call through the real terminal.run lease and receipt",
+    () =>
+      Effect.gen(function* () {
+        const directory = yield* tmpdirScoped()
+        const marker = path.join(directory, "shell-live-marker")
+        const command = `printf 'SHELL_LIVE_STDOUT\\n'; touch '${marker}'`
+        const locationRef = Location.Ref.make({ directory: AbsolutePath.make(directory) })
+        const locations = yield* LocationServiceMap.Service
+        const pty = yield* Pty.Service.pipe(Effect.provide(locations.get(locationRef)))
+        const supervisor = yield* SessionSupervisor.Service
+        const events = yield* EventV2Bridge.Service
+        const { reply } = yield* liveApprovalResponder(events, supervisor, "allow_once")
+        const responder = yield* Effect.forkChild(reply)
+        const sessionID = SessionID.make("ses_shell_live_approved")
+
+        const prepared = yield* pty.prepareToolBatch({
+          sessionID,
+          locationRef,
+          batchID: "batch_shell_live_approved",
+          turnContextDigest: liveTurnContextDigest,
+          calls: [
+            {
+              callID: "call_shell_live_approved",
+              capabilityID: "terminal.run",
+              arguments: { command, cwd: directory, timeoutMs: 30_000 },
+            },
+          ],
+        })
+        yield* Fiber.join(responder)
+        if (prepared.admission.status !== "prepared") {
+          return yield* Effect.die(
+            new Error(`approved shell batch was not prepared: ${JSON.stringify(prepared.admission)}`),
+          )
+        }
+
+        const result = yield* runIn(
+          directory,
+          run(
+            { command, workdir: directory },
+            {
+              ...context,
+              sessionID,
+              trustedPrincipal: { kind: "server_auth", subject: "shell-live-test" },
+              extra: {
+                guardedLease: prepared.admission.lease,
+                guardedPatch: prepared.calls[0]!.arguments,
+              },
+            },
+          ),
+        )
+        return { result, marker: existsSync(marker) }
+      }),
+    { timeout: 120_000 },
+  )
+
+  withLiveShell(
+    "refuses a guarded patch that differs from the approved terminal.run arguments",
+    () =>
+      Effect.gen(function* () {
+        const directory = yield* tmpdirScoped()
+        const approvedMarker = path.join(directory, "shell-live-approved-marker")
+        const tamperedMarker = path.join(directory, "shell-live-tampered-marker")
+        const approvedCommand = `touch '${approvedMarker}'`
+        const locationRef = Location.Ref.make({ directory: AbsolutePath.make(directory) })
+        const locations = yield* LocationServiceMap.Service
+        const pty = yield* Pty.Service.pipe(Effect.provide(locations.get(locationRef)))
+        const supervisor = yield* SessionSupervisor.Service
+        const events = yield* EventV2Bridge.Service
+        const { reply } = yield* liveApprovalResponder(events, supervisor, "allow_once")
+        const responder = yield* Effect.forkChild(reply)
+        const sessionID = SessionID.make("ses_shell_live_tampered")
+
+        const prepared = yield* pty.prepareToolBatch({
+          sessionID,
+          locationRef,
+          batchID: "batch_shell_live_tampered",
+          turnContextDigest: liveTurnContextDigest,
+          calls: [
+            {
+              callID: "call_shell_live_tampered",
+              capabilityID: "terminal.run",
+              arguments: { command: approvedCommand, cwd: directory, timeoutMs: 30_000 },
+            },
+          ],
+        })
+        yield* Fiber.join(responder)
+        if (prepared.admission.status !== "prepared") {
+          return yield* Effect.die(
+            new Error(`tamper probe batch was not prepared: ${JSON.stringify(prepared.admission)}`),
+          )
+        }
+
+        const exit = yield* runIn(
+          directory,
+          run(
+            { command: approvedCommand, workdir: directory },
+            {
+              ...context,
+              sessionID,
+              trustedPrincipal: { kind: "server_auth", subject: "shell-live-test" },
+              extra: {
+                guardedLease: prepared.admission.lease,
+                guardedPatch: {
+                  ...(prepared.calls[0]!.arguments as Record<string, unknown>),
+                  command: `touch '${tamperedMarker}'`,
+                },
+              },
+            },
+          ),
+        ).pipe(Effect.exit)
+        return {
+          exit,
+          approvedMarker: existsSync(approvedMarker),
+          tamperedMarker: existsSync(tamperedMarker),
+        }
+      }),
+    { timeout: 120_000 },
+  )
+})
+

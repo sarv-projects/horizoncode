@@ -53,11 +53,29 @@ type StreamDeltaEvent =
   | Extract<V2Event, { type: "session.next.reasoning.delta" }>
   | Extract<V2Event, { type: "session.next.tool.input.delta" }>
 
+type StreamDeltaKind = StreamDeltaEvent["type"]
+
 type StreamDelta = {
   sessionID: string
+  assistantMessageID: string
+  targetID: string
   key: string
   text: string
+  /** Source-owned event ordinal. */
+  sequence: number
+  /** Source-owned stream generation. */
+  sourceGeneration: string
+  /** Separate UTF-16 offset used only to reconcile the rendered projection. */
+  offset: number
   event: StreamDeltaEvent
+}
+
+function streamKey(kind: StreamDeltaKind, assistantMessageID: string, targetID: string) {
+  return `${kind}:${assistantMessageID}:${targetID}`
+}
+
+function replaySeedKey(sessionID: string, partID: string, sourceGeneration: string) {
+  return JSON.stringify([sessionID, partID, sourceGeneration])
 }
 
 function streamDelta(event: V2Event): StreamDelta | undefined {
@@ -66,22 +84,37 @@ function streamDelta(event: V2Event): StreamDelta | undefined {
     case "session.next.text.delta":
       return {
         sessionID: event.data.sessionID,
-        key: `${event.type}:${event.data.assistantMessageID}:${event.data.textID}`,
+        assistantMessageID: event.data.assistantMessageID,
+        targetID: event.data.textID,
+        key: streamKey(event.type, event.data.assistantMessageID, event.data.textID),
         text: event.data.delta,
+        sequence: event.data.sequence,
+        sourceGeneration: event.data.sourceGeneration,
+        offset: event.data.offset,
         event,
       }
     case "session.next.reasoning.delta":
       return {
         sessionID: event.data.sessionID,
-        key: `${event.type}:${event.data.assistantMessageID}:${event.data.reasoningID}`,
+        assistantMessageID: event.data.assistantMessageID,
+        targetID: event.data.reasoningID,
+        key: streamKey(event.type, event.data.assistantMessageID, event.data.reasoningID),
         text: event.data.delta,
+        sequence: event.data.sequence,
+        sourceGeneration: event.data.sourceGeneration,
+        offset: event.data.offset,
         event,
       }
     case "session.next.tool.input.delta":
       return {
         sessionID: event.data.sessionID,
-        key: `${event.type}:${event.data.assistantMessageID}:${event.data.callID}`,
+        assistantMessageID: event.data.assistantMessageID,
+        targetID: event.data.callID,
+        key: streamKey(event.type, event.data.assistantMessageID, event.data.callID),
         text: event.data.delta,
+        sequence: event.data.sequence,
+        sourceGeneration: event.data.sourceGeneration,
+        offset: event.data.offset,
         event,
       }
   }
@@ -305,6 +338,11 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
               text: "",
             })
           })
+          if (event.data.sourceGeneration) {
+            const partID = streamKey("session.next.text.delta", event.data.assistantMessageID, event.data.textID)
+            streamMux.resetStream({ sessionID: event.data.sessionID, partID, sourceGeneration: event.data.sourceGeneration, sequence: 0 })
+            markReplaySeeded(replaySeedKey(event.data.sessionID, partID, event.data.sourceGeneration))
+          }
           break
         case "session.next.text.delta":
           message.update(event.data.sessionID, (draft) => {
@@ -317,6 +355,11 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             const match = message.latestText(message.assistant(draft, event.data.assistantMessageID), event.data.textID)
             if (match) match.text = event.data.text
           })
+          const partID = streamKey("session.next.text.delta", event.data.assistantMessageID, event.data.textID)
+          if (event.data.sourceGeneration && event.data.sequence !== undefined) {
+            streamMux.seedStream({ sessionID: event.data.sessionID, partID, sourceGeneration: event.data.sourceGeneration, sequence: event.data.sequence })
+            streamMux.sealStream({ sessionID: event.data.sessionID, partID, sourceGeneration: event.data.sourceGeneration, sequence: event.data.sequence })
+          } else streamMux.forgetStream(event.data.sessionID, partID)
           break
         case "session.next.tool.input.started":
           message.update(event.data.sessionID, (draft) => {
@@ -328,6 +371,11 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
               state: { status: "pending", input: "" },
             })
           })
+          if (event.data.sourceGeneration) {
+            const partID = streamKey("session.next.tool.input.delta", event.data.assistantMessageID, event.data.callID)
+            streamMux.resetStream({ sessionID: event.data.sessionID, partID, sourceGeneration: event.data.sourceGeneration, sequence: 0 })
+            markReplaySeeded(replaySeedKey(event.data.sessionID, partID, event.data.sourceGeneration))
+          }
           break
         case "session.next.tool.input.delta":
           message.update(event.data.sessionID, (draft) => {
@@ -340,6 +388,11 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             const match = message.latestTool(message.assistant(draft, event.data.assistantMessageID), event.data.callID)
             if (match?.state.status === "pending") match.state.input = event.data.text
           })
+          const partID = streamKey("session.next.tool.input.delta", event.data.assistantMessageID, event.data.callID)
+          if (event.data.sourceGeneration && event.data.sequence !== undefined) {
+            streamMux.seedStream({ sessionID: event.data.sessionID, partID, sourceGeneration: event.data.sourceGeneration, sequence: event.data.sequence })
+            streamMux.sealStream({ sessionID: event.data.sessionID, partID, sourceGeneration: event.data.sourceGeneration, sequence: event.data.sequence })
+          } else streamMux.forgetStream(event.data.sessionID, partID)
           break
         case "session.next.tool.called":
           message.update(event.data.sessionID, (draft) => {
@@ -406,6 +459,11 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
               providerMetadata: event.data.providerMetadata,
             })
           })
+          if (event.data.sourceGeneration) {
+            const partID = streamKey("session.next.reasoning.delta", event.data.assistantMessageID, event.data.reasoningID)
+            streamMux.resetStream({ sessionID: event.data.sessionID, partID, sourceGeneration: event.data.sourceGeneration, sequence: 0 })
+            markReplaySeeded(replaySeedKey(event.data.sessionID, partID, event.data.sourceGeneration))
+          }
           break
         case "session.next.reasoning.delta":
           message.update(event.data.sessionID, (draft) => {
@@ -427,6 +485,11 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
               if (event.data.providerMetadata !== undefined) match.providerMetadata = event.data.providerMetadata
             }
           })
+          const partID = streamKey("session.next.reasoning.delta", event.data.assistantMessageID, event.data.reasoningID)
+          if (event.data.sourceGeneration && event.data.sequence !== undefined) {
+            streamMux.seedStream({ sessionID: event.data.sessionID, partID, sourceGeneration: event.data.sourceGeneration, sequence: event.data.sequence })
+            streamMux.sealStream({ sessionID: event.data.sessionID, partID, sourceGeneration: event.data.sourceGeneration, sequence: event.data.sequence })
+          } else streamMux.forgetStream(event.data.sessionID, partID)
           break
         case "session.next.retried":
         case "session.next.compaction.started":
@@ -499,13 +562,155 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
       }
     }
 
+    const seenDeltaEventIDs = new Map<string, true>()
+    const replaySeeded = new Set<string>()
+
+    function markReplaySeeded(key: string) {
+      replaySeeded.delete(key)
+      replaySeeded.add(key)
+      while (replaySeeded.size > 4096) {
+        const oldest = replaySeeded.values().next().value
+        if (oldest === undefined) break
+        replaySeeded.delete(oldest)
+      }
+    }
+
+    function rememberDeltaEventID(id: unknown) {
+      if (typeof id !== "string" || id.length === 0) return true
+      if (seenDeltaEventIDs.has(id)) return false
+      seenDeltaEventIDs.set(id, true)
+      if (seenDeltaEventIDs.size > 4096) {
+        const oldest = seenDeltaEventIDs.keys().next().value
+        if (oldest !== undefined) seenDeltaEventIDs.delete(oldest)
+      }
+      return true
+    }
+
+    async function refreshSessionMessages(sessionID: string) {
+      const pageSize = 100
+      const historyLimit = 10_000
+      const pages: SessionMessage[][] = []
+      let result = await sdk.client.v2.session.messages(
+        { sessionID, limit: pageSize, order: "desc" },
+        { throwOnError: true },
+      )
+      pages.push(result.data.data)
+      let loaded = result.data.data.length
+      let older = result.data.cursor.previous
+      while (older && loaded < historyLimit) {
+        result = await sdk.client.v2.session.messages(
+          {
+            sessionID,
+            limit: Math.min(pageSize, historyLimit - loaded),
+            order: "desc",
+            cursor: older,
+          },
+          { throwOnError: true },
+        )
+        if (result.data.data.length === 0) break
+        pages.push(result.data.data)
+        loaded += result.data.data.length
+        older = result.data.cursor.previous
+      }
+      const canonical = pages.reverse().flatMap((page) => page.toReversed())
+      streamMux.flush(sessionID)
+      streamMux.forgetStream(sessionID)
+      for (const key of replaySeeded) {
+        const [owner] = JSON.parse(key) as [string, string, string]
+        if (owner === sessionID) replaySeeded.delete(key)
+      }
+      setStore("session", "message", sessionID, canonical)
+    }
+
+    async function refreshSessionMessagesUntilSuccessful(sessionID: string, signal: AbortSignal) {
+      let failures = 0
+      while (!signal.aborted) {
+        try {
+          await refreshSessionMessages(sessionID)
+          return
+        } catch {
+          if (signal.aborted) return
+          const delay = Math.min(1000 * 2 ** Math.min(failures++, 5), 30_000)
+          await new Promise<void>((resolve) => {
+            if (signal.aborted) return resolve()
+            const finish = () => {
+              clearTimeout(timer)
+              signal.removeEventListener("abort", finish)
+              resolve()
+            }
+            const timer = setTimeout(finish, delay)
+            signal.addEventListener("abort", finish, { once: true })
+          })
+        }
+      }
+    }
+
+    const resnapshotAbortController = new AbortController()
+    const resnapshotSessions = new Set<string>()
+    function requestResnapshot(sessionID: string) {
+      if (resnapshotSessions.has(sessionID) || resnapshotAbortController.signal.aborted) return
+      resnapshotSessions.add(sessionID)
+      void refreshSessionMessagesUntilSuccessful(sessionID, resnapshotAbortController.signal).finally(() => {
+        resnapshotSessions.delete(sessionID)
+      })
+    }
+
     const streamMux = createUiEventMux<StreamDelta>({
       sessionID: (event) => event.sessionID,
       key: (event) => event.key,
       merge: (previous, next) => ({ ...previous, text: previous.text + next.text }),
       size: (event) => new TextEncoder().encode(event.text).byteLength,
+      sizeProvenance: "measured",
+      cursor: (event) => {
+        const seedKey = replaySeedKey(event.sessionID, event.key, event.sourceGeneration)
+        if (!replaySeeded.has(seedKey)) {
+          const messages = store.session.message[event.sessionID] ?? []
+          const assistant = message.assistant(messages, event.assistantMessageID)
+          const projected =
+            event.event.type === "session.next.text.delta"
+              ? message.latestText(assistant, event.targetID)?.text.length
+              : event.event.type === "session.next.reasoning.delta"
+                ? message.latestReasoning(assistant, event.targetID)?.text.length
+                : message.latestTool(assistant, event.targetID)?.state.status === "pending"
+                  ? (message.latestTool(assistant, event.targetID)!.state as { input: string }).input.length
+                  : undefined
+          if (projected !== event.offset) return
+          streamMux.seedStream({
+            sessionID: event.sessionID,
+            partID: event.key,
+            sourceGeneration: event.sourceGeneration,
+            sequence: event.sequence,
+          })
+          markReplaySeeded(seedKey)
+        }
+        return {
+          sessionID: event.sessionID,
+          partID: event.key,
+          sourceGeneration: event.sourceGeneration,
+          sequence: event.sequence,
+          advance: 1,
+        }
+      },
+      onResnapshotRequired: (cursor) => {
+        requestResnapshot(cursor.sessionID)
+      },
+      maxStreamCursors: 4096,
       deliver: (events) => {
         for (const item of events) {
+          const messages = store.session.message[item.sessionID] ?? []
+          const assistant = message.assistant(messages, item.assistantMessageID)
+          const projected =
+            item.event.type === "session.next.text.delta"
+              ? message.latestText(assistant, item.targetID)?.text.length
+              : item.event.type === "session.next.reasoning.delta"
+                ? message.latestReasoning(assistant, item.targetID)?.text.length
+                : message.latestTool(assistant, item.targetID)?.state.status === "pending"
+                  ? (message.latestTool(assistant, item.targetID)!.state as { input: string }).input.length
+                  : undefined
+          if (projected !== item.offset) {
+            requestResnapshot(item.sessionID)
+            continue
+          }
           switch (item.event.type) {
             case "session.next.text.delta":
               handleEvent({ ...item.event, data: { ...item.event.data, delta: item.text } })
@@ -525,6 +730,16 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
     })
 
     onMount(() => {
+      const unsubscribeReconnect = sdk.onReconnect(async (signal) => {
+        streamMux.reconnect()
+        replaySeeded.clear()
+        const sessionIDs = Object.keys(store.session.message)
+        const batchSize = 8
+        for (let offset = 0; offset < sessionIDs.length; offset += batchSize) {
+          const batch = sessionIDs.slice(offset, offset + batchSize)
+          await Promise.all(batch.map((sessionID) => refreshSessionMessagesUntilSuccessful(sessionID, signal)))
+        }
+      })
       const unsub = events.subscribe((event, metadata) => {
         const mapped = {
           ...event,
@@ -533,6 +748,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
         } as V2Event
         const delta = streamDelta(mapped)
         if (delta) {
+          if (!rememberDeltaEventID(mapped.id)) return
           streamMux.push(delta)
           return
         }
@@ -540,6 +756,8 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
         handleEvent(mapped)
       })
       onCleanup(() => {
+        resnapshotAbortController.abort()
+        unsubscribeReconnect()
         streamMux.close()
         unsub()
       })
@@ -549,6 +767,17 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
       stream: {
         stats() {
           return streamMux.stats()
+        },
+        streamStats() {
+          return streamMux.streamStats()
+        },
+        /** SSE/control-stream reconnected: drop stale cursors and request canonical resnapshots implicitly. */
+        reconnect() {
+          replaySeeded.clear()
+          return streamMux.reconnect()
+        },
+        observations() {
+          return streamMux.observations()
         },
       },
       session: {
@@ -564,8 +793,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             return store.session.message[sessionID]
           },
           async refresh(sessionID: string) {
-            const result = await sdk.client.v2.session.messages({ sessionID }, { throwOnError: true })
-            setStore("session", "message", sessionID, result.data.data)
+            await refreshSessionMessages(sessionID)
           },
         },
         permission: {

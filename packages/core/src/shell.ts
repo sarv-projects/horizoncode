@@ -1,15 +1,13 @@
 export * as Shell from "./shell"
 
-import { spawn, spawnSync, type ChildProcess } from "child_process"
+import type { ChildProcess } from "child_process"
 import path from "path"
 import { readFile } from "fs/promises"
 import { statSync } from "fs"
-import { setTimeout as sleep } from "node:timers/promises"
 import { Flag } from "./flag/flag"
 import { FSUtil } from "./fs-util"
 import { which } from "./util/which"
 
-const SIGKILL_TIMEOUT_MS = 200
 const META: Record<string, { deny?: boolean; login?: boolean; posix?: boolean; ps?: boolean }> = {
   bash: { login: true, posix: true },
   dash: { login: true, posix: true },
@@ -33,15 +31,12 @@ export type ProfileKind =
   | "posix.bash"
   | "windows.powershell7"
   | "windows.cmd"
-  | "wsl.ubuntu.bash"
-  | "wsl.debian.bash"
 
 export type Profile = {
   profileKey: string
   kind: ProfileKind
   executable: string
   login: boolean
-  distribution?: string
 }
 
 export type Discovery = {
@@ -49,6 +44,7 @@ export type Discovery = {
   bash?: string
   pwsh7?: string
   cmd?: string
+  /** Legacy data fields are ignored; WSL launch is unavailable until Guarded. */
   wsl?: string
   distributions?: string[]
 }
@@ -82,19 +78,6 @@ export function profilesFromDiscovery(discovery: Discovery): Profile[] {
       login: false,
     })
   }
-  for (const distribution of discovery.distributions ?? []) {
-    const normalized = distribution.toLowerCase()
-    const kind =
-      normalized.includes("ubuntu") ? "wsl.ubuntu.bash" : normalized.includes("debian") ? "wsl.debian.bash" : undefined
-    if (!kind) continue
-    profiles.push({
-      profileKey: `wsl:${distribution}`,
-      kind,
-      executable: discovery.wsl ?? "wsl.exe",
-      login: true,
-      distribution,
-    })
-  }
   return profiles
 }
 
@@ -108,16 +91,12 @@ export function resolveDiscoveredProfile(
       profiles.find((profile) => profile.profileKey === "windows:powershell7") ??
       profiles.find((profile) => profile.profileKey === "windows:cmd")
   }
-  if (configured.startsWith("wsl:")) {
-    return profiles.find((profile) => profile.profileKey === configured && profile.distribution === configured.slice(4))
-  }
   return profiles.find(
     (profile) =>
-      !profile.distribution &&
-      (profile.profileKey === configured ||
-        profile.executable === configured ||
-        profile.executable.replace(/\\/g, "/").split("/").at(-1)?.toLowerCase() ===
-          configured.replace(/\\/g, "/").split("/").at(-1)?.toLowerCase()),
+      profile.profileKey === configured ||
+      profile.executable === configured ||
+      profile.executable.replace(/\\/g, "/").split("/").at(-1)?.toLowerCase() ===
+        configured.replace(/\\/g, "/").split("/").at(-1)?.toLowerCase(),
   )
 }
 
@@ -128,21 +107,6 @@ export function resolveProfile(
   if (!discovery) return undefined
   const profiles = "platform" in discovery ? profilesFromDiscovery(discovery) : discovery
   return resolveDiscoveredProfile(configShell, profiles)
-}
-
-const DISCOVERY_TIMEOUT_MS = 1500
-
-export function parseWslDistributions(text: Buffer | string): string[] {
-  const value = Buffer.isBuffer(text) ? text.toString("utf16le") : text
-  return Array.from(
-    new Set(
-      value
-        .replace(/^\uFEFF/, "")
-        .split(/\r?\n/)
-        .map((line) => line.replace(/\0/g, "").trim())
-        .filter(Boolean),
-    ),
-  )
 }
 
 export function supportsPowerShell7Path(executable: string): boolean {
@@ -174,51 +138,15 @@ export async function discoverProfiles(): Promise<Profile[]> {
   const trustedSystemRoot = systemRoot && path.win32.isAbsolute(systemRoot) ? systemRoot : undefined
   const cmdCandidate = trustedSystemRoot && path.win32.join(trustedSystemRoot, "System32", "cmd.exe")
   const cmd = cmdCandidate && stat(cmdCandidate)?.isFile() ? cmdCandidate : undefined
-  const wslCandidate = trustedSystemRoot && path.win32.join(trustedSystemRoot, "System32", "wsl.exe")
-  const wsl = wslCandidate && stat(wslCandidate)?.isFile() ? wslCandidate : undefined
-
-  let distributions: string[] = []
-  if (wsl) {
-    const result = spawnSync(wsl, ["--list", "--quiet"], {
-      timeout: DISCOVERY_TIMEOUT_MS,
-      maxBuffer: 64 * 1024,
-      encoding: "buffer",
-      windowsHide: true,
-    })
-    if (result.status === 0 && Buffer.isBuffer(result.stdout)) distributions = parseWslDistributions(result.stdout)
-  }
-  return profilesFromDiscovery({ platform: "win32", pwsh7, cmd, wsl, distributions })
+  return profilesFromDiscovery({ platform: "win32", pwsh7, cmd })
 }
 
 export async function killTree(proc: ChildProcess, opts?: { exited?: () => boolean }): Promise<void> {
-  const pid = proc.pid
-  if (!pid || opts?.exited?.()) return
-
-  if (process.platform === "win32") {
-    await new Promise<void>((resolve) => {
-      const killer = spawn("taskkill", ["/pid", String(pid), "/f", "/t"], {
-        stdio: "ignore",
-        windowsHide: true,
-      })
-      killer.once("exit", () => resolve())
-      killer.once("error", () => resolve())
-    })
-    return
-  }
-
-  try {
-    process.kill(-pid, "SIGTERM")
-    await sleep(SIGKILL_TIMEOUT_MS)
-    if (!opts?.exited?.()) {
-      process.kill(-pid, "SIGKILL")
-    }
-  } catch {
-    proc.kill("SIGTERM")
-    await sleep(SIGKILL_TIMEOUT_MS)
-    if (!opts?.exited?.()) {
-      proc.kill("SIGKILL")
-    }
-  }
+  // Raw ChildProcess values do not prove that this Core instance retains the
+  // Guard-approved supervisor identity. Keep cleanup unavailable until it accepts
+  // an opaque ExecutionHost handle; never signal a caller-supplied or stale PID.
+  void proc
+  void opts
 }
 
 function stat(file: string) {
@@ -394,14 +322,5 @@ export async function list(): Promise<Item[]> {
     )
     return info(shell, supported)
   })
-  for (const profile of profiles) {
-    if (!profile.distribution) continue
-    listed.push({
-      path: `wsl:${profile.distribution}`,
-      name: profile.distribution,
-      acceptable: true,
-      supported: true,
-    })
-  }
   return listed
 }

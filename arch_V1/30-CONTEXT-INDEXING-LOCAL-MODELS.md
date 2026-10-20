@@ -394,6 +394,9 @@ type LanguageServiceSourceV1 =
   | { kind: "supervised"; executionId: string; serverName: string }
   | { kind: "external"; adapterId: string; serverName: string }
 
+type LanguageServiceLifecycleV1 =
+  | "discovered" | "starting" | "active" | "idle" | "stopping" | "stopped"
+
 type LanguageServiceSnapshotV1 = {
   source: LanguageServiceSourceV1
   workspaceId: WorkspaceId
@@ -423,6 +426,8 @@ Rules:
 - server stderr/output is bounded/artifactized;
 - project-supplied server binaries/config are untrusted execution inputs and use ExecutionHost;
 - optional LSP/MCP adapters normalize into the same definitions/references/diagnostics tools.
+
+`LanguageServiceLifecycleV1` is internal broker state, separate from `LanguageServiceSnapshotV1.health`; the existing snapshot wire shape does not change here. Concurrent starts coalesce only for the full compatible identity: source owner, authenticated principal/read scope, workspace/root/config/toolchain/executable/version, policy generation, and sandbox profile. These bindings are resolved by trusted owners, not caller-asserted. An active query holds a bounded generation pin through completion, cancellation, or deadline. The pin is broker bookkeeping, not Guard/resource authorization. Only an idle Horizon-owned supervised service may be evicted, and only after query pins drain, process ownership is confirmed, and no effect is active or unsettled. An editor/external service may be detached from or marked degraded, never stopped/reconfigured/evicted by HorizonCode. Startup failure, resource refusal, stale generation, or unhealthy editor service returns explicit fallback provenance; an old result is never presented as current.
 
 The local `indexd` implementation is currently only a bounded lexical slice; it must not be
 reported as this complete service until persistence, parsing/symbols, watcher lifecycle and
@@ -575,3 +580,36 @@ type RecallCandidateV1 = {
 **Concurrent invalidations:** editor overlay N+1 invalidates symbol/snippet/cache objects from N; async request holding a pinned immutable N can finish read with explicit N provenance but may not authorize a write against N when current revision differs. A user revoking a workspace/secret permission invalidates all dependent cached projections immediately; no stale cross-session result. On daemon restart, rebuild caches from source and carry only explicit immutable artifact hashes, not raw secret-bearing client buffers.
 
 **Tests:** same 100k-token transcript with remote/local models, 100 MB log artifact, two workspaces containing identical path names, 20 concurrent Session reads, ACL revocation between retrieval and prompt injection, stale overlay, secret document, hostile embedded instructions, cache under byte pressure, tokenizer change, no silent paid inference and context summary with source lineage. Source refs, measured/estimated tokens and full/sampled fidelity are required for acceptance.
+
+## 30.22 Adaptive RepoIntel policy and revision-coherent queries (A-V2-32)
+
+There is one RepoIntelService and one derived index model. `lightweight | adaptive | full` are requested/effective analysis profiles, not separate engines, capability registries, schedulers, or permission modes:
+
+- **lightweight:** use available immutable index/parser/lexical sources; do not activate LSP, embeddings, or another optional helper implicitly. If richer analysis is requested, report that it is unavailable under the effective profile and offer an explicit escalation where appropriate.
+- **adaptive:** a query may request compatible LSP or other optional analysis on demand, subject to effective settings, authenticated scope, Guard/ExecutionHost for processes, and existing resource admission.
+- **full:** permits broader on-demand analysis. Changing the setting does not prewarm or spawn services; any explicit prewarm is a separate user action subject to normal process/resource admission. Embeddings remain independently selected, and remote embeddings require their own provider/network/cost authorization.
+
+The existing config owner resolves `requested → effective` using precedence, platform/build eligibility, Guard policy, and current resource state. Missing/invalid setting state resolves to `lightweight`. Pressure may narrow effective analysis or queue optional work with a typed reason; it must not silently change the selected model/provider, present unavailable analysis as complete, or block ordinary direct-session input. RepoIntel uses the existing §18/§37 resource and cache owners: it creates no second RAM controller, and hard per-machine limits are not invented without representative measurements.
+
+Base generations are immutable and keyed by the existing repository/workspace/source revision, parser set, and read-scope/policy pins. Identical concurrent requests share one in-flight compatible build and immutable generation. Buffer overlays are separate immutable snapshots keyed by exact content digest and bound to the authenticated query owner (Session/Attempt identity where applicable). A shared base is reusable only when all base pins match; an overlay is never selected by “latest” or path alone. Authenticated request context resolves principal, workspace, read scope, and overlay; caller/model fields cannot self-assert them. Existing RepoGeneration and content digests remain authoritative—no independent revision counter is introduced.
+
+Each query pins the existing RepoGeneration and, when present, an owner-issued immutable overlay reference/digest; query transport references the snapshot rather than embedding an unbounded overlay body. Results identify the exact base revision/generation and overlay digest served, source kind (`symbol_index`, `parser`, `lexical`, `lsp`), completeness (`complete | partial`), freshness (`current | stale | unknown`), whether the requested generation was available, and a typed stale/unavailable/fallback reason from the canonical error registry. A query that supplies `overlayRef` requires that exact owner-bound snapshot: missing, expired, foreign, base-mismatched or policy-stale overlays return typed unavailable/stale with no nodes and never downgrade to a base-only answer. A separate query that does not request an overlay may return an explicitly partial base-only answer only when its exact base revision is named; it must never claim to answer for a caller's divergent workspace. Corrupt derived indexes are discarded/rebuilt from source without modifying source files.
+
+An immutable query pinned to generation N may finish with N provenance after the workspace advances, but it cannot authorize a write. Before mutation, the ordinary files.patch/Guard path re-resolves the current target and checks expected content digest/workspace fence. If a file changed after query, reject stale and require re-read/rebase; do not silently apply a stale range. Existing symbol signatures, local structural context and RepoGeneration remain the freshness mechanism.
+
+LSP document synchronization uses §12.18 `RepoDocumentReadRequestV1` through authenticated
+`repo-intel.v1/read_document`. It receives only HostKernel-read UTF-8 text plus
+content/workspace digests at the requested current revision; the LSP client never opens
+workspace paths itself. This is the same RepoIntel boundary, not a new file service or
+process authority. A stale or denied read is unavailable and cannot fall back to an
+app-process filesystem read.
+
+Under existing §18.18 pressure rules, throttle or suspend background indexing first, reduce new index concurrency, defer optional embeddings, and refuse/queue optional LSP startup when admission is insufficient. Evict only unpinned rebuildable derived caches. An idle Horizon-owned LSP may stop only after query pins drain and normal effect/process settlement; do not terminate editor-owned services, active queries/effects, or unsettled workers. Preserve interactive input/cancellation responsiveness and disclose any partial coverage.
+
+**Acceptance additions:** five concurrent agents querying the same symbol share one compatible base-generation build; two agents with different uncommitted overlays get distinct correct results; read-scope mismatch prevents sharing; index corruption rebuilds without a source write; LSP startup/resource refusal returns typed partial fallback; pressure throttles optional indexing while direct work remains responsive; result provenance and query-to-patch freshness are covered by §32.4/§32.23/§32.32–33. These are target requirements, not claims that the current lexical index or production bridge implements them.
+
+## 30.23 Structural references and demand paging (A-V2-33)
+
+Use §12.18 `RepoGenerationRequestV1`, `RepoGenerationPinV1`, `RepoNodeRefV1` and `RepoStructureQueryV1` over the single existing RepoIntel generation. First, Core calls `repo-intel.v1/ensure_generation` with authenticated RepoRead context and bounded relative `rootRef`/collection limits; HostKernel resolves Location and Guard `files.read`, securely collects bounded snapshots, and returns a short-lived generation pin. The registered Location must carry a durable principal binding established by authenticated registration; unbound legacy Locations and principal mismatches have no RepoIntel read authority and are rejected before filesystem observation. Core then calls `query_structure` with the returned index digest. The measured workspace `sourceRevision` and derived index `sourceGeneration` are distinct pins; a source/policy change between calls returns typed STALE and no nodes. A reference is opaque, short-lived and bound to workspace, source generation/revision, file digest, parser identity and exact byte range. A query pins one compatible base/owner overlay and returns bounded node pages, explicit coverage/completeness and typed fallback provenance. Enforce server-side hard maxima for nodes, bytes, depth and deadline; cursors bind to the same authenticated owner and generation. Unsupported parser features return partial/lexical/LSP provenance, never fabricated AST certainty.
+
+Structural results are read evidence only. A later edit reopens the current file and validates digest/range through canonical `files.patch` and Guard. Generation changes, overlay mismatch, incomplete parse or stale digest returns a typed stale/partial result and requires refresh. The P3 phase owns the source adapter and transport; a large index generation must use bounded authenticated chunks or an embedded API, never exceed the existing HostKernel RPC frame limit. Query paging is V1 scope; broader parser language coverage is evidence-gated.

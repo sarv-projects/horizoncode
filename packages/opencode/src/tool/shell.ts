@@ -10,7 +10,8 @@ import { Pty } from "@opencode-ai/core/pty"
 import { LocationServiceMap } from "@opencode-ai/core/location-services"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
-import type { EffectLease } from "@opencode-ai/core/session/supervisor"
+import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
+import type { DirectAttemptScopeV1, EffectLease } from "@opencode-ai/core/session/supervisor"
 import type { Parameters } from "./shell/prompt"
 
 export { Parameters } from "./shell/prompt"
@@ -51,6 +52,10 @@ export const ShellTool = Tool.define(
               const instance = yield* InstanceState.context
               const lease = ctx.extra?.guardedLease
               if (!isLease(lease)) return yield* Effect.fail(new Error("Shell denied: missing Rust Guard lease"))
+              const trustedPrincipal = ctx.trustedPrincipal
+              if (trustedPrincipal?.kind !== "server_auth" || !trustedPrincipal.subject) {
+                return yield* Effect.fail(new Error("Shell denied: missing authenticated principal"))
+              }
               const callID = ctx.callID
               if (typeof callID !== "string" || callID.length === 0) {
                 return yield* Effect.fail(new Error("Shell denied: tool call has no callID to bind to its lease"))
@@ -73,8 +78,14 @@ export const ShellTool = Tool.define(
                     capabilityID: "terminal.run",
                     arguments: ctx.extra?.guardedPatch,
                   },
+                  ...(ctx.extra?.directAttempt !== undefined
+                    ? { directAttempt: ctx.extra.directAttempt as DirectAttemptScopeV1 }
+                    : {}),
                 })
-              }).pipe(Effect.provide(locations.value.get(locationRef)))
+              }).pipe(
+                Effect.provide(locations.value.get(locationRef)),
+                Effect.provideService(TrustedPrincipalContext, { principal: trustedPrincipal }),
+              )
               return {
                 title: params.command,
                 metadata: {
@@ -83,6 +94,9 @@ export const ShellTool = Tool.define(
                   ...(result.exitCode === undefined ? {} : { exit: result.exitCode }),
                   artifactRef: result.artifactRef,
                   receiptRef: result.receiptRef,
+                  previewTruncated: result.previewTruncated,
+                  artifactTruncated: result.artifactTruncated,
+                  artifactFidelity: result.artifactFidelity,
                   truncated: result.previewTruncated || result.artifactTruncated,
                 },
                 output: result.preview,

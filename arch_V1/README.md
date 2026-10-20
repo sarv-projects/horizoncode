@@ -58,6 +58,8 @@ Other numbered Markdown files in arch_V1 are compatibility stubs or retained nav
 
 Research material for OMP and other competitors is evidence only. Accepted behavior has been distilled into 16, 31, 33, 37 and the test catalog.
 
+**Derived navigation (non-normative):** `45-V1-EVENT-FLOWS-ATLAS.md` is a derived, non-authoritative synthesis of V1 flows, events and state machines with a full document coverage matrix. On any conflict, the normative topic owner wins; the atlas must never be cited as authority or evidence.
+
 ## Implementation reading rule
 
 Do not read every architecture file for every task.

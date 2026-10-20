@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { afterAll, describe, expect } from "bun:test"
 import { Database as SQLite } from "bun:sqlite"
 import {
   LLMClient,
@@ -37,13 +37,15 @@ import { SessionRunner } from "@opencode-ai/core/session/runner"
 import * as SessionRunnerLLM from "@opencode-ai/core/session/runner/llm"
 import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
 import { SessionSupervisor, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
-import type { GuardedToolCall } from "@opencode-ai/core/session/supervisor"
+import type { EffectAdmission, GuardedToolCall } from "@opencode-ai/core/session/supervisor"
+import { sameTrustedPrincipal, TrustedPrincipalContext, type TrustedPrincipal } from "@opencode-ai/core/trusted-principal"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { ApplicationTools } from "@opencode-ai/core/tool/application-tools"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { Config } from "@opencode-ai/core/config"
 import { ConfigCompaction } from "@opencode-ai/core/config/compaction"
 import { Tool } from "@opencode-ai/core/tool/tool"
+import { WriteTool } from "@opencode-ai/core/tool/write"
 import {
   SessionContextEpochTable,
   SessionInputTable,
@@ -60,7 +62,7 @@ import { Location } from "@opencode-ai/core/location"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
 import { asc, eq } from "drizzle-orm"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { testEffect } from "./lib/effect"
@@ -118,13 +120,18 @@ const authorizations: Tool.Context[] = []
 const executions: string[] = []
 const effectBatches: GuardedToolCall[][] = []
 const effectTurnContextDigests: string[] = []
+let writeExecutionCalls = 0
+let writePermissionAllowed = false
+let preparedEffectAdmission: EffectAdmission | undefined
+const writeExecutions: Array<{ readonly content: string; readonly effectID: string }> = []
+const effectExecutionOrder: string[] = []
 let rustEffectHostUnavailable = false
 const defaultPermissionPolicyDigest = `sha256:${"0".repeat(64)}`
 let permissionPolicyDigest = defaultPermissionPolicyDigest
 const permission = Layer.succeed(
   PermissionV2.Service,
   PermissionV2.Service.of({
-    assert: () => Effect.die("unused"),
+    assert: () => (writePermissionAllowed ? Effect.void : Effect.die("unused")),
     ask: () => Effect.die("unused"),
     reply: () => Effect.die("unused"),
     get: () => Effect.die("unused"),
@@ -142,6 +149,7 @@ const supervisor = Layer.succeed(
       Effect.sync(() => {
         effectBatches.push([...input.calls])
         effectTurnContextDigests.push(input.turnContextDigest)
+        effectExecutionOrder.push(`prepare:${input.calls.length}`)
       }).pipe(
         Effect.andThen(() =>
           rustEffectHostUnavailable
@@ -149,15 +157,37 @@ const supervisor = Layer.succeed(
                 new SessionSupervisorError({
                   stage: "effect",
                   reason: "no active Rust effect owner",
+                  hostCode: "effect_unavailable",
                 }),
               )
-            : Effect.succeed({ status: "denied" as const, reason: "denied by test Guard" }),
+            : Effect.succeed(preparedEffectAdmission ?? { status: "denied" as const, reason: "denied by test Guard" }),
         ),
       ),
     replyGuardApproval: () => Effect.die("unused"),
+    awaitManagedVerifierApprovals: () => Effect.die("unused"),
     executePatch: () => Effect.die("unused"),
     runPatch: () => Effect.die("unused"),
-    executeWrite: () => Effect.die("unused"),
+    executeWrite: (input) =>
+      Effect.sync(() => {
+        writeExecutionCalls++
+        const admission = preparedEffectAdmission
+        if (admission?.status !== "prepared_batch") throw new Error("unexpected Rust write execution")
+        const member = admission.calls.find((entry) => entry.lease.effectID === input.lease.effectID)
+        const call = effectBatches.at(-1)?.find((entry) => entry.callID === member?.callID)
+        const args = call?.arguments
+        if (!member || !call || typeof args !== "object" || args === null || !("path" in args) || typeof args.path !== "string") {
+          throw new Error("write lease did not match a prepared batch member")
+        }
+        effectExecutionOrder.push(`execute:${member.callID}`)
+        writeExecutions.push({ content: input.content, effectID: input.lease.effectID })
+        return {
+          effectID: input.lease.effectID,
+          receiptDigest: `blake3:${"f".repeat(64)}`,
+          target: path.resolve(locationDirectory, args.path),
+          resource: args.path,
+          existed: false,
+        }
+      }),
     registerHostLocation: () => Effect.die("unused"),
     prepareUserEffect: () => Effect.die("unused"),
     requestHostKernel: () => Effect.die("unused"),
@@ -258,6 +288,14 @@ const referenceGuidance = Layer.mock(ReferenceGuidance.Service, { load: () => Ef
 const config = Layer.succeed(
   Config.Service,
   Config.Service.of({
+    turnSnapshot: () =>
+      Effect.sync(() => {
+        try {
+          return Config.parseTurnSnapshot(readFileSync(path.join(locationDirectory, "config.json"), "utf8"))
+        } catch {
+          return {}
+        }
+      }),
     entries: () =>
       Effect.succeed([
         new Config.Document({
@@ -272,6 +310,8 @@ const config = Layer.succeed(
       ]),
   }),
 )
+const locationDirectory = mkdtempSync(path.join(tmpdir(), "horizoncode-session-runner-"))
+afterAll(() => rmSync(locationDirectory, { recursive: true, force: true }))
 const runnerLayer = AppNodeBuilder.build(SessionRunnerLLM.node, [
   [Snapshot.node, Snapshot.noopLayer],
   [LayerNodePlatform.llmClient, client],
@@ -288,13 +328,22 @@ const execution = Layer.effect(
   SessionExecution.Service,
   Effect.gen(function* () {
     const sessionRunner = yield* SessionRunner.Service
-    const coordinator = yield* SessionRunCoordinator.make<SessionV2.ID, SessionRunner.RunError>({
-      drain: (sessionID, force) => sessionRunner.run({ sessionID, force }),
+    const coordinator = yield* SessionRunCoordinator.make<SessionV2.ID, SessionRunner.RunError, TrustedPrincipal>({
+      sameAuthority: sameTrustedPrincipal,
+      drain: (sessionID, force, principal) =>
+        sessionRunner.run({ sessionID, force }).pipe(
+          Effect.provideService(TrustedPrincipalContext, { principal }),
+        ),
     })
+    const rejectStaleOwner = () => new SessionSupervisorError({ stage: "authorization", reason: "Session execution owner changed" })
     return SessionExecution.Service.of({
       active: coordinator.active,
-      resume: coordinator.run,
-      wake: coordinator.wake,
+      resume: (sessionID, principal) => coordinator.run(sessionID, principal).pipe(
+        Effect.flatMap((accepted) => accepted ? Effect.void : Effect.fail(rejectStaleOwner())),
+      ),
+      wake: (sessionID, principal) => coordinator.wake(sessionID, principal).pipe(
+        Effect.flatMap((accepted) => accepted ? Effect.void : Effect.fail(rejectStaleOwner())),
+      ),
       interrupt: coordinator.interrupt,
     })
   }),
@@ -311,6 +360,7 @@ const it = testEffect(
       AgentV2.node,
       ToolRegistry.node,
       ToolRegistry.toolsNode,
+      WriteTool.node,
       echoNode,
       SessionRunnerModel.node,
       SystemContextRegistry.node,
@@ -329,7 +379,7 @@ const it = testEffect(
       [SessionRunnerModel.node, models],
       [SessionSupervisor.node, supervisor],
       [SystemContextRegistry.node, systemContext],
-      [Location.node, Location.boundNode({ directory: AbsolutePath.make("/project") })],
+      [Location.node, Location.boundNode({ directory: AbsolutePath.make(locationDirectory) })],
       [SkillGuidance.node, skillGuidance],
       [ReferenceGuidance.node, referenceGuidance],
       [Snapshot.node, Snapshot.noopLayer],
@@ -340,6 +390,7 @@ const it = testEffect(
 )
 const sessionID = SessionV2.ID.make("ses_runner_test")
 const otherSessionID = SessionV2.ID.make("ses_runner_other")
+const sessionTestPrincipal: TrustedPrincipal = { kind: "server_auth", subject: "core-test-user" }
 const rustProbe = path.resolve(import.meta.dir, "../../../kernel/target/debug/session_sync_probe")
 
 const insertSession = (id: SessionV2.ID) =>
@@ -351,7 +402,7 @@ const insertSession = (id: SessionV2.ID) =>
         id,
         project_id: Project.ID.global,
         slug: id,
-        directory: "/project",
+        directory: locationDirectory,
         title: "test",
         version: "test",
       })
@@ -363,6 +414,7 @@ const insertSession = (id: SessionV2.ID) =>
 const setup = Effect.gen(function* () {
   const { db } = yield* Database.Service
   response = []
+  rmSync(path.join(locationDirectory, "config.json"), { force: true })
   systemBaseline = "Initial context"
   systemRemoved = false
   systemUnavailable = false
@@ -372,6 +424,11 @@ const setup = Effect.gen(function* () {
   skillBaselines.clear()
   effectBatches.length = 0
   effectTurnContextDigests.length = 0
+  writeExecutionCalls = 0
+  writePermissionAllowed = false
+  preparedEffectAdmission = undefined
+  writeExecutions.length = 0
+  effectExecutionOrder.length = 0
   permissionPolicyDigest = defaultPermissionPolicyDigest
   rustEffectHostUnavailable = false
   responses = undefined
@@ -386,7 +443,7 @@ const setup = Effect.gen(function* () {
   maxActiveToolExecutions = 0
   yield* db
     .insert(ProjectTable)
-    .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+    .values({ id: Project.ID.global, worktree: AbsolutePath.make(locationDirectory), sandboxes: [] })
     .onConflictDoNothing()
     .run()
     .pipe(Effect.orDie)
@@ -546,7 +603,20 @@ const verifyEphemeralDeltas = (kind: FragmentKind) =>
       .where(eq(EventTable.type, EventV2.versionedType(fixture.delta.type, 1)))
       .all()
       .pipe(Effect.orDie)
-    expect(Array.from(yield* Fiber.join(live))).toHaveLength(32)
+    const streamed = Array.from(yield* Fiber.join(live)) as Array<{
+      data: { assistantMessageID?: string; sequence?: number; sourceGeneration?: string }
+    }>
+    expect(streamed).toHaveLength(32)
+    const expectedSequences: number[] = []
+    let sequence = 0
+    for (const chunk of chunks) {
+      expectedSequences.push(sequence)
+      sequence += chunk.length
+    }
+    expect(streamed.map((event) => event.data.sequence)).toEqual(expectedSequences)
+    expect(new Set(streamed.map((event) => event.data.sourceGeneration))).toEqual(
+      new Set([`${streamed[0].data.assistantMessageID}:${fragmentID(kind, "many")}`]),
+    )
     expect(deltas).toHaveLength(0)
     expect(yield* session.context(sessionID)).toMatchObject(expectedContext)
 
@@ -661,9 +731,11 @@ describe("SessionRunnerLLM", () => {
           agent: AgentV2.ID.make("build"),
           assistantMessageID: expect.stringMatching(/^msg_/),
           toolCallID: "call-application",
+          trustedPrincipal: { kind: "server_auth", subject: "core-test-user" },
         },
       ])
-      expect(yield* session.context(sessionID)).toMatchObject([
+      const projected = yield* session.context(sessionID)
+      expect(projected).toMatchObject([
         { type: "user", text: "Use application context" },
         {
           type: "assistant",
@@ -676,6 +748,10 @@ describe("SessionRunnerLLM", () => {
           ],
         },
       ])
+      const projectedAssistant = projected[1]
+      if (projectedAssistant?.type !== "assistant") throw new Error("expected projected assistant")
+      expect(projectedAssistant.cost).toBeUndefined()
+      expect(projectedAssistant.tokens).toBeUndefined()
     }),
   )
 
@@ -684,21 +760,6 @@ describe("SessionRunnerLLM", () => {
       yield* setup
       executions.length = 0
       const session = yield* SessionV2.Service
-      const registry = yield* ToolRegistry.Service
-      let effectSettlements = 0
-      yield* registry.register({
-        write: Tool.make({
-          capability: { id: "files.write", effectClass: "effect" },
-          description: "Write one file",
-          input: Schema.Struct({ path: Schema.String, content: Schema.String }),
-          output: Schema.Struct({ written: Schema.Boolean }),
-          execute: () =>
-            Effect.sync(() => {
-              effectSettlements++
-              return { written: true }
-            }),
-        }),
-      })
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Write and echo" }), resume: false })
       responses = [
         [
@@ -719,7 +780,7 @@ describe("SessionRunnerLLM", () => {
           { callID: "call-echo", capabilityID: "test.echo", arguments: { text: "sibling" } },
         ],
       ])
-      expect(effectSettlements).toBe(0)
+      expect(writeExecutionCalls).toBe(0)
       expect(executions).toEqual([])
       expect(yield* session.context(sessionID)).toMatchObject([
         { type: "user", text: "Write and echo" },
@@ -759,26 +820,131 @@ describe("SessionRunnerLLM", () => {
       expect(effectTurnContextDigests[1]).not.toBe(initialDigest)
     }),
   )
+  it.effect("settles each member of a prepared multi-write ToolBatch with its own call-bound lease", () =>
+    Effect.gen(function* () {
+      yield* setup
+      writePermissionAllowed = true
+      preparedEffectAdmission = {
+        status: "prepared_batch",
+        // Deliberately reverse the host order: Core must bind leases by call ID, not array position.
+        calls: [
+          {
+            callID: "call-write-second",
+            capabilityID: "files.write",
+            lease: { effectID: "effect-second", capabilityLeaseDigest: `blake3:${"b".repeat(64)}` },
+          },
+          {
+            callID: "call-write-first",
+            capabilityID: "files.write",
+            lease: { effectID: "effect-first", capabilityLeaseDigest: `blake3:${"a".repeat(64)}` },
+          },
+        ],
+      }
+      const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Write two files" }), resume: false })
+      responses = [
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.toolCall({
+            id: "call-write-first",
+            name: "write",
+            input: { path: "first.txt", content: "first" },
+          }),
+          LLMEvent.toolCall({
+            id: "call-write-second",
+            name: "write",
+            input: { path: "second.txt", content: "second" },
+          }),
+          LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+          LLMEvent.finish({ reason: "tool-calls" }),
+        ],
+        [],
+      ]
+
+      yield* session.resume(sessionID)
+
+      expect(effectBatches).toHaveLength(1)
+      expect(effectBatches[0]?.map((call) => call.callID)).toEqual(["call-write-first", "call-write-second"])
+      expect(writeExecutionCalls).toBe(2)
+      expect(writeExecutions).toHaveLength(2)
+      expect(writeExecutions).toContainEqual({ content: "first", effectID: "effect-first" })
+      expect(writeExecutions).toContainEqual({ content: "second", effectID: "effect-second" })
+      expect(new Set(writeExecutions.map((entry) => entry.effectID)).size).toBe(2)
+      expect(effectExecutionOrder[0]).toBe("prepare:2")
+      expect(effectExecutionOrder.slice(1).sort()).toEqual(["execute:call-write-first", "execute:call-write-second"])
+    }),
+  )
+  it.effect("denies a mismatched prepared ToolBatch before settling any member", () =>
+    Effect.gen(function* () {
+      yield* setup
+      writePermissionAllowed = true
+      preparedEffectAdmission = {
+        status: "prepared_batch",
+        calls: [
+          {
+            callID: "call-write-first",
+            capabilityID: "files.write",
+            lease: { effectID: "effect-first", capabilityLeaseDigest: `blake3:${"a".repeat(64)}` },
+          },
+          {
+            // The provider's second call cannot inherit the first call's lease.
+            callID: "call-write-first",
+            capabilityID: "files.write",
+            lease: { effectID: "effect-second", capabilityLeaseDigest: `blake3:${"b".repeat(64)}` },
+          },
+        ],
+      }
+      const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Write with a malformed Guard response" }), resume: false })
+      responses = [
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.toolCall({
+            id: "call-write-first",
+            name: "write",
+            input: { path: "first.txt", content: "first" },
+          }),
+          LLMEvent.toolCall({
+            id: "call-write-second",
+            name: "write",
+            input: { path: "second.txt", content: "second" },
+          }),
+          LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+          LLMEvent.finish({ reason: "tool-calls" }),
+        ],
+        [],
+      ]
+
+      yield* session.resume(sessionID)
+
+      expect(effectBatches).toHaveLength(1)
+      expect(writeExecutionCalls).toBe(0)
+      expect(effectExecutionOrder).toEqual(["prepare:2"])
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Write with a malformed Guard response" },
+        {
+          type: "assistant",
+          content: [
+            {
+              type: "tool",
+              id: "call-write-first",
+              state: { status: "error", error: { message: expect.stringContaining("mismatched prepared ToolBatch") } },
+            },
+            {
+              type: "tool",
+              id: "call-write-second",
+              state: { status: "error", error: { message: expect.stringContaining("mismatched prepared ToolBatch") } },
+            },
+          ],
+        },
+      ])
+    }),
+  )
   it.effect("denies the complete batch when Rust effect preparation is unavailable", () =>
     Effect.gen(function* () {
       yield* setup
       executions.length = 0
       const session = yield* SessionV2.Service
-      const registry = yield* ToolRegistry.Service
-      let effectSettlements = 0
-      yield* registry.register({
-        write: Tool.make({
-          capability: { id: "files.write", effectClass: "effect" },
-          description: "Write one file",
-          input: Schema.Struct({ path: Schema.String, content: Schema.String }),
-          output: Schema.Struct({ written: Schema.Boolean }),
-          execute: () =>
-            Effect.sync(() => {
-              effectSettlements++
-              return { written: true }
-            }),
-        }),
-      })
       yield* session.prompt({
         sessionID,
         prompt: Prompt.make({ text: "Write and echo while Rust is unavailable" }),
@@ -808,7 +974,7 @@ describe("SessionRunnerLLM", () => {
 
       expect(effectBatches).toHaveLength(1)
       expect(effectBatches[0]).toHaveLength(2)
-      expect(effectSettlements).toBe(0)
+      expect(writeExecutionCalls).toBe(0)
       expect(executions).toEqual([])
       expect(yield* session.context(sessionID)).toMatchObject([
         { type: "user", text: "Write and echo while Rust is unavailable" },
@@ -820,7 +986,7 @@ describe("SessionRunnerLLM", () => {
               id: "call-write-offline",
               state: {
                 status: "error",
-                error: { message: expect.stringContaining("Rust Guard unavailable") },
+                error: { message: "effect_unavailable: no active Rust effect owner" },
               },
             },
             {
@@ -828,7 +994,7 @@ describe("SessionRunnerLLM", () => {
               id: "call-echo-offline",
               state: {
                 status: "error",
-                error: { message: expect.stringContaining("Rust Guard unavailable") },
+                error: { message: "effect_unavailable: no active Rust effect owner" },
               },
             },
           ],
@@ -872,7 +1038,7 @@ describe("SessionRunnerLLM", () => {
 
       expect(requests).toHaveLength(1)
       expect(requests[0]?.model).toBe(model)
-      expect(requests[0]?.tools.map((tool) => tool.name)).toEqual(["echo", "defect"])
+      expect(requests[0]?.tools.map((tool) => tool.name)).toEqual(["write", "echo", "defect"])
       expect(requests[0]?.messages.map((message) => ({ role: message.role, content: message.content }))).toEqual([
         { role: "user", content: [{ type: "text", text: "First" }] },
         { role: "user", content: [{ type: "text", text: "Second" }] },
@@ -1433,6 +1599,71 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
+  it.effect("applies pending compaction settings on the next turn while pinning model selection", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      currentModel = compactModel
+      yield* Effect.sync(() =>
+        writeFileSync(path.join(locationDirectory, "config.json"), JSON.stringify({ compaction: { auto: false, prune: false } })),
+      )
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: `Turn one context ${"preserve this detail ".repeat(300)}` }),
+        resume: false,
+      })
+
+      requests.length = 0
+      responses = [
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.toolCall({ id: "call-turn-one-echo", name: "echo", input: { text: "continuation" } }),
+          LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+          LLMEvent.finish({ reason: "tool-calls" }),
+        ],
+        fragmentFixture("text", "text-turn-one-final", ["Turn one complete"]).completeEvents,
+      ]
+      streamGate = yield* Deferred.make<void>()
+      streamStarted = yield* Deferred.make<void>()
+      const firstTurn = yield* session.resume(sessionID).pipe(Effect.forkChild)
+      yield* Deferred.await(streamStarted)
+
+      yield* Effect.sync(() =>
+        writeFileSync(
+          path.join(locationDirectory, "config.json"),
+          JSON.stringify({ compaction: { auto: true, prune: true }, model: "changed/model", provider: "changed" }),
+        ),
+      )
+      yield* Deferred.succeed(streamGate, undefined)
+      yield* Fiber.join(firstTurn)
+      streamGate = undefined
+      streamStarted = undefined
+
+      expect(requests).toHaveLength(2)
+      expect(requests.map((request) => request.model)).toEqual([compactModel, compactModel])
+      expect(requests.some((request) => userTexts(request).some((text) => text.includes("Create a new anchored summary")))).toBe(
+        false,
+      )
+
+      requests.length = 0
+      responses = [
+        fragmentFixture("text", "text-turn-two-summary", ["## Objective\n- Apply pending settings"]).completeEvents,
+        fragmentFixture("text", "text-turn-two-final", ["Turn two complete"]).completeEvents,
+      ]
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: `Turn two recent context ${"keep this recent detail ".repeat(300)}` }),
+        resume: false,
+      })
+      yield* session.resume(sessionID)
+
+      expect(requests).toHaveLength(2)
+      expect(requests.map((request) => request.model)).toEqual([compactModel, compactModel])
+      expect(userTexts(requests[0])[0]).toContain("Create a new anchored summary")
+      expect(userTexts(requests[1])[0]).toContain("<summary>\n## Objective\n- Apply pending settings\n</summary>")
+    }),
+  )
+
   it.effect("retains only complete serialized messages during compaction", () =>
     Effect.gen(function* () {
       yield* setup
@@ -1714,13 +1945,26 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests).toHaveLength(1)
-      expect(requests[0]?.tools.map((tool) => tool.name)).toEqual(["echo", "defect"])
+      expect(requests[0]?.tools.map((tool) => tool.name)).toEqual(["write", "echo", "defect"])
       expect(yield* session.context(sessionID)).toMatchObject([
         { type: "user", text: "Use tools" },
         {
           type: "assistant",
           finish: "tool-calls",
-          tokens: { input: 8, output: 3, reasoning: 1, cache: { read: 2, write: 0 } },
+          usageProvenance: {
+            providerID: "fake",
+            modelID: "fake-model",
+            cost: { status: "unknown" },
+            tokens: {
+              input: { status: "provider-reported", value: 8 },
+              output: { status: "provider-reported", value: 3 },
+              reasoning: { status: "provider-reported", value: 1 },
+              cache: {
+                read: { status: "provider-reported", value: 2 },
+                write: { status: "unknown" },
+              },
+            },
+          },
           content: [
             { type: "reasoning", id: "reasoning-1", text: "Think" },
             {
@@ -2644,7 +2888,7 @@ describe("SessionRunnerLLM", () => {
 
       expect(requests).toHaveLength(2)
       expect(userTexts(requests[1]!)).toEqual(["Start working", "First steer", "Second steer"])
-      yield* (yield* SessionExecution.Service).wake(sessionID)
+      yield* (yield* SessionExecution.Service).wake(sessionID, sessionTestPrincipal)
       yield* Effect.yieldNow
       expect(requests).toHaveLength(2)
     }),
@@ -2700,6 +2944,7 @@ describe("SessionRunnerLLM", () => {
         assistantMessageID,
         callID: "call-interrupted",
         name: "echo",
+        sourceGeneration: "generation-interrupted",
       })
       yield* events.publish(SessionEvent.Tool.Input.Ended, {
         sessionID,
@@ -2707,6 +2952,8 @@ describe("SessionRunnerLLM", () => {
         assistantMessageID,
         callID: "call-interrupted",
         text: '{"text":"stale"}',
+        sequence: 0,
+        sourceGeneration: "generation-interrupted",
       })
       yield* events.publish(SessionEvent.Tool.Called, {
         sessionID,
@@ -2764,6 +3011,7 @@ describe("SessionRunnerLLM", () => {
         assistantMessageID,
         callID: "call-hosted-interrupted",
         name: "web_search",
+        sourceGeneration: "generation-hosted-interrupted",
       })
       yield* events.publish(SessionEvent.Tool.Input.Ended, {
         sessionID,
@@ -2771,6 +3019,8 @@ describe("SessionRunnerLLM", () => {
         assistantMessageID,
         callID: "call-hosted-interrupted",
         text: '{"query":"stale"}',
+        sequence: 0,
+        sourceGeneration: "generation-hosted-interrupted",
       })
       yield* events.publish(SessionEvent.Tool.Called, {
         sessionID,
@@ -2824,6 +3074,7 @@ describe("SessionRunnerLLM", () => {
         assistantMessageID,
         callID: "call-pending-interrupted",
         name: "echo",
+        sourceGeneration: "generation-pending-interrupted",
       })
       requests.length = 0
       response = []
@@ -2850,7 +3101,7 @@ describe("SessionRunnerLLM", () => {
       })
 
       requests.length = 0
-      yield* (yield* SessionExecution.Service).wake(sessionID)
+      yield* (yield* SessionExecution.Service).wake(sessionID, sessionTestPrincipal)
       yield* Effect.yieldNow
 
       expect(requests).toHaveLength(1)
@@ -2877,7 +3128,7 @@ describe("SessionRunnerLLM", () => {
         LLMEvent.finish({ reason: "stop" }),
       ]
 
-      yield* (yield* SessionExecution.Service).wake(sessionID)
+      yield* (yield* SessionExecution.Service).wake(sessionID, sessionTestPrincipal)
       while (requests.length === 0) yield* Effect.yieldNow
 
       expect(userTexts(requests[0]!)).toEqual(["Recover promoted input"])
@@ -3295,7 +3546,12 @@ describe("SessionRunnerLLM", () => {
           input: Schema.Struct({}),
           output: Schema.Struct({}),
           execute: (_, context) =>
-            questions.ask({ sessionID: context.sessionID, questions: [] }).pipe(Effect.as({}), Effect.orDie),
+            questions
+              .ask({
+                sessionID: context.sessionID,
+                questions: [{ question: "Continue?", header: "Continue", options: [{ label: "Yes", description: "Continue" }] }],
+              })
+              .pipe(Effect.as({}), Effect.orDie),
         }),
       })
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Ask then stop" }), resume: false })
@@ -3312,12 +3568,12 @@ describe("SessionRunnerLLM", () => {
       ]
 
       const run = yield* session.resume(sessionID).pipe(Effect.exit, Effect.forkChild)
-      let pending = yield* questions.list()
+      let pending = yield* questions.list(sessionID)
       while (pending.length === 0) {
         yield* Effect.yieldNow
-        pending = yield* questions.list()
+        pending = yield* questions.list(sessionID)
       }
-      yield* questions.reject(pending[0]!.id)
+      yield* questions.reject({ sessionID, requestID: pending[0]!.id })
       const exit = yield* Fiber.join(run)
 
       expect(exit._tag).toBe("Failure")
@@ -3892,6 +4148,27 @@ describe("SessionRunnerLLM", () => {
 
       expect(yield* session.resume(sessionID).pipe(Effect.catchDefect(Effect.succeed))).toBe(
         "Duplicate text start: text-1",
+      )
+    }),
+  )
+
+  it.effect("rejects reusing a streamed text part ID after end to preserve generation fencing", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      responses = undefined
+      streamGate = undefined
+      streamStarted = undefined
+      response = [
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.textStart({ id: "text-reused" }),
+        LLMEvent.textDelta({ id: "text-reused", text: "first" }),
+        LLMEvent.textEnd({ id: "text-reused" }),
+        LLMEvent.textStart({ id: "text-reused" }),
+      ]
+
+      expect(yield* session.resume(sessionID).pipe(Effect.catchDefect(Effect.succeed))).toBe(
+        "Duplicate text start: text-reused",
       )
     }),
   )

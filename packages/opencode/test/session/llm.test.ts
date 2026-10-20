@@ -1,6 +1,6 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import path from "path"
 import { tool, type ModelMessage } from "ai"
@@ -10,7 +10,8 @@ import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import z from "zod"
 import { LLM } from "../../src/session/llm"
 import { LLMClient, RequestExecutor } from "@opencode-ai/llm/route"
-import { SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
+import { SessionSupervisor, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
+import type { Service as SessionSupervisorService } from "@opencode-ai/core/session/supervisor"
 import { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
@@ -29,24 +30,31 @@ import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
 import { ProviderError } from "@/provider/error"
+import { Plugin } from "@/plugin"
+import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
+import { Parameters as QuestionParameters } from "@/tool/question"
 
 type ConfigModel = NonNullable<NonNullable<ConfigV1.Info["provider"]>[string]["models"]>[string]
 
-const openAIConfig = (model: ModelsDev.Provider["models"][string], baseURL: string): Partial<ConfigV1.Info> => {
+const openAIConfig = (
+  model: ModelsDev.Provider["models"][string],
+  baseURL: string,
+  credentialed = false,
+): Partial<ConfigV1.Info> => {
   const { experimental: _experimental, ...configModel } = model
   return {
     enabled_providers: ["openai"],
     provider: {
       openai: {
         name: "OpenAI",
-        env: ["OPENAI_API_KEY"],
+        env: credentialed ? ["OPENAI_API_KEY"] : [],
         npm: "@ai-sdk/openai",
         api: "https://api.openai.com/v1",
         models: {
           [model.id]: JSON.parse(JSON.stringify(configModel)) as ConfigModel,
         },
         options: {
-          apiKey: "test-openai-key",
+          apiKey: credentialed ? "test-openai-key" : "",
           baseURL,
         },
       },
@@ -85,6 +93,26 @@ function llmLayerWithExecutor(
     [RuntimeFlags.node, RuntimeFlags.layer(options.flags)],
     ...(options.executor ? ([[LayerNodePlatform.requestExecutor, options.executor]] as const) : []),
   ])
+}
+
+function llmLayerWithSupervisor(supervisor: Layer.Layer<SessionSupervisorService>) {
+  const supervisorNode = LayerNode.make({
+    service: SessionSupervisor.Service,
+    layer: supervisor,
+    deps: [],
+    tag: SessionSupervisor.node.tag,
+  })
+  return AppNodeBuilder.build(LLM.node, [[SessionSupervisor.node, supervisorNode]])
+}
+
+function llmLayerWithProvider(provider: Layer.Layer<Provider.Service>) {
+  const providerNode = LayerNode.make({
+    service: Provider.Service,
+    layer: provider,
+    deps: [],
+    tag: Provider.node.tag,
+  })
+  return AppNodeBuilder.build(LLM.node, [[Provider.node, providerNode]])
 }
 
 describe("session.llm.hasToolCalls", () => {
@@ -503,6 +531,53 @@ describe("session.llm.ai-sdk adapter", () => {
     })
     expect(result.tokens.cache.write).toBe(300)
     expect(result.tokens.cache.read).toBe(200)
+    expect(result.usageProvenance.tokens.cache.write).toEqual({ status: "provider-reported", value: 300 })
+    expect(result.usageProvenance.cost).toEqual({ status: "unknown" })
+  })
+
+  test("usage provenance keeps missing cache and pricing unknown while preserving reported zero", () => {
+    const model = {
+      id: "model-no-prices",
+      providerID: "provider-test",
+      cost: undefined,
+    } as never
+    const noPrices = SessionNs.getUsage({ model, usage: { inputTokens: 4, outputTokens: 2 } as never })
+    expect(noPrices.usageProvenance.cost).toEqual({ status: "unknown" })
+    expect(noPrices.usageProvenance.tokens.cache.read).toEqual({ status: "unknown" })
+    expect(noPrices.usageProvenance.tokens.cache.write).toEqual({ status: "unknown" })
+
+    const reportedZero = SessionNs.getUsage({
+      model,
+      usage: { inputTokens: 0, outputTokens: 0 } as never,
+      metadata: { copilot: { totalNanoAiu: 0 } } as never,
+    })
+    expect(reportedZero.usageProvenance.cost).toEqual({ status: "provider-reported", value: 0 })
+    expect(reportedZero.usageProvenance.tokens.input).toEqual({ status: "provider-reported", value: 0 })
+  })
+
+  test("estimated usage binds complete token inputs to an immutable pricing snapshot", () => {
+    const model = {
+      id: "model-priced",
+      providerID: "provider-test",
+      cost: { input: 1, output: 2, cache: { read: 0.5, write: 1.5 } },
+    } as never
+    const result = SessionNs.getUsage({
+      model,
+      usage: {
+        inputTokens: 10,
+        outputTokens: 3,
+        reasoningTokens: 1,
+        cacheReadInputTokens: 2,
+        cacheWriteInputTokens: 1,
+      } as never,
+    })
+    expect(result.usageProvenance.cost).toMatchObject({
+      status: "estimated",
+      priceSource: "selected-model-catalog",
+      algorithm: "per-million-linear-v1",
+      pricing: { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 1.5 },
+      tokenInputs: { input: 7, output: 2, reasoning: 1, cacheRead: 2, cacheWrite: 1 },
+    })
   })
 
   test("captures Copilot billed usage from raw Anthropic message deltas per step", async () => {
@@ -565,6 +640,7 @@ type Capture = {
 
 const state = {
   server: null as ReturnType<typeof Bun.serve> | null,
+  receivedRequests: 0,
   queue: [] as Array<{
     path: string
     response: Response | ((req: Request, capture: Capture) => Response)
@@ -642,6 +718,7 @@ beforeAll(() => {
   state.server = Bun.serve({
     port: 0,
     async fetch(req) {
+      state.receivedRequests++
       const next = state.queue.shift()
       if (!next) {
         return new Response("unexpected request", { status: 500 })
@@ -664,6 +741,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   state.queue.length = 0
+  state.receivedRequests = 0
 })
 
 afterAll(() => {
@@ -757,6 +835,84 @@ describe("session.llm.stream", () => {
   const vivgridFixture = { providerID: "vivgrid", modelID: "gemini-3.1-pro-preview" }
   const opencodeFixture = { providerID: "opencode-test", modelID: vivgridFixture.modelID }
 
+  it.instance(
+    "rejects hosted workflow before invoking the provider request boundary",
+    () =>
+      Effect.gen(function* () {
+        const fixture = loadFixture(vivgridFixture.providerID, vivgridFixture.modelID)
+        const model = yield* Provider.use.getModel(ProviderV2.ID.make("hosted-test"), ModelV2.ID.make(fixture.model.id))
+        const providerInfo = yield* Provider.use.getProvider(ProviderV2.ID.make("hosted-test"))
+        const language = new GitLabWorkflowLanguageModel(
+          model.id,
+          {
+            provider: "gitlab.workflow",
+            instanceUrl: "https://gitlab.invalid",
+            getHeaders: () => ({}),
+          },
+        )
+        const request = spyOn(language, "doStream").mockImplementation(async () => {
+          throw new Error("unexpected hosted provider request")
+        })
+        const provider = Layer.mock(Provider.Service, {
+          getLanguage: () => Effect.succeed(language),
+          getProvider: () => Effect.succeed(providerInfo),
+        })
+        const providerID = ProviderV2.ID.make("hosted-test")
+        const sessionID = SessionID.make("session-hosted-workflow")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const user = {
+          id: MessageID.make("msg_user-hosted-workflow"),
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: { providerID, modelID: model.id },
+        } satisfies SessionV1.User
+
+        const exit = yield* Effect.exit(
+          drainWith(llmLayerWithProvider(provider), {
+            user,
+            sessionID,
+            model,
+            agent,
+            system: ["Do not run hosted tools."],
+            messages: [{ role: "user", content: "Run the hosted workflow." }],
+            tools: {},
+          }),
+        )
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) {
+          expect(Cause.squash(exit.cause)).toMatchObject({
+            message: expect.stringContaining("Hosted workflow provider unavailable"),
+          })
+        }
+        expect(request).not.toHaveBeenCalled()
+      }),
+    {
+      config: () => ({
+        enabled_providers: ["hosted-test"],
+        provider: {
+          "hosted-test": {
+            name: "Hosted Test",
+            npm: "@ai-sdk/openai-compatible",
+            models: {
+              [vivgridFixture.modelID]: configModel(
+                loadFixture(vivgridFixture.providerID, vivgridFixture.modelID).model,
+              ) as ConfigModel,
+            },
+            env: [],
+            options: { apiKey: "", baseURL: `${state.server!.url.origin}/v1` },
+          },
+        },
+      }),
+    },
+  )
+
   const headerCases = [
     { providerID: opencodeFixture.providerID, child: false },
     { providerID: opencodeFixture.providerID, child: true },
@@ -832,7 +988,8 @@ describe("session.llm.stream", () => {
                 name: "OpenCode Test",
                 npm: "@ai-sdk/openai-compatible",
                 models: { [fixture.model.id]: configModel(fixture.model) as ConfigModel },
-                options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
+                env: [],
+                options: { apiKey: "", baseURL: `${state.server!.url.origin}/v1` },
               },
             },
           }
@@ -894,7 +1051,7 @@ describe("session.llm.stream", () => {
 
         expect(url.pathname.startsWith("/v1/")).toBe(true)
         expect(url.pathname.endsWith("/chat/completions")).toBe(true)
-        expect(headers.get("Authorization")).toBe("Bearer test-key")
+        expect(headers.get("Authorization")).toBeNull()
 
         expect(body.model).toBe(resolved.api.id)
         expect(body.temperature).toBe(0.4)
@@ -913,7 +1070,8 @@ describe("session.llm.stream", () => {
         enabled_providers: [vivgridFixture.providerID],
         provider: {
           [vivgridFixture.providerID]: {
-            options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
+            env: [],
+            options: { apiKey: "", baseURL: `${state.server!.url.origin}/v1` },
           },
         },
       }),
@@ -977,7 +1135,8 @@ describe("session.llm.stream", () => {
         enabled_providers: [vivgridFixture.providerID],
         provider: {
           [vivgridFixture.providerID]: {
-            options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
+            env: [],
+            options: { apiKey: "", baseURL: `${state.server!.url.origin}/v1` },
           },
         },
       }),
@@ -1051,7 +1210,8 @@ describe("session.llm.stream", () => {
         enabled_providers: [cerebrasFixture.providerID],
         provider: {
           [cerebrasFixture.providerID]: {
-            options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
+            env: [],
+            options: { apiKey: "", baseURL: `${state.server!.url.origin}/v1` },
           },
         },
       }),
@@ -1162,7 +1322,8 @@ describe("session.llm.stream", () => {
         enabled_providers: [mistralFixture.providerID],
         provider: {
           [mistralFixture.providerID]: {
-            options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
+            env: [],
+            options: { apiKey: "", baseURL: `${state.server!.url.origin}/v1` },
           },
         },
       }),
@@ -1225,7 +1386,8 @@ describe("session.llm.stream", () => {
         enabled_providers: [alibabaQwenFixture.providerID],
         provider: {
           [alibabaQwenFixture.providerID]: {
-            options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
+            env: [],
+            options: { apiKey: "", baseURL: `${state.server!.url.origin}/v1` },
           },
         },
       }),
@@ -1274,13 +1436,20 @@ describe("session.llm.stream", () => {
           agent,
           permission: [{ permission: "question", pattern: "*", action: "allow" }],
           system: ["You are a helpful assistant."],
-          messages: [{ role: "user", content: "Hello" }],
+            messages: [{ role: "user", content: "Hello" }],
           tools: {
             question: tool({
               description: "Ask a question",
-              inputSchema: z.object({}),
+              inputSchema: z.object({ questions: z.array(z.unknown()) }),
               execute: async () => ({ output: "" }),
             }),
+          },
+          toolDefinitions: {
+            question: {
+              capability: { id: "question.ask", effectClass: "control" },
+              schema: QuestionParameters,
+              validate: async (value) => value,
+            },
           },
         })
 
@@ -1293,7 +1462,8 @@ describe("session.llm.stream", () => {
         enabled_providers: [alibabaQwenFixture.providerID],
         provider: {
           [alibabaQwenFixture.providerID]: {
-            options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
+            env: [],
+            options: { apiKey: "", baseURL: `${state.server!.url.origin}/v1` },
           },
         },
       }),
@@ -1389,64 +1559,25 @@ describe("session.llm.stream", () => {
         expect((body.reasoning as { mode?: string } | undefined)?.mode).toBe("pro")
 
         const maxTokens = body.max_output_tokens as number | undefined
-        expect(maxTokens).toBe(undefined) // match codex cli behavior
+        expect(maxTokens).toBe(ProviderTransform.maxOutputTokens(resolved))
       }),
     { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
   )
 
   it.instance(
-    "keeps supported OpenAI models on AI SDK path when native flag is off",
+    "does not fall back to AI SDK for a credentialed model without a SecretBroker lease",
     () =>
       Effect.gen(function* () {
         const model = loadFixture("openai", "gpt-5.2").model
-        const request = waitRequest(
-          "/responses",
-          createEventResponse(
-            [
-              {
-                type: "response.created",
-                response: {
-                  id: "resp-flag-off",
-                  created_at: Math.floor(Date.now() / 1000),
-                  model: model.id,
-                  service_tier: null,
-                },
-              },
-              {
-                type: "response.output_item.added",
-                output_index: 0,
-                item: { type: "message", id: "item-flag-off", status: "in_progress", role: "assistant", content: [] },
-              },
-              {
-                type: "response.content_part.added",
-                item_id: "item-flag-off",
-                output_index: 0,
-                content_index: 0,
-                part: { type: "output_text", text: "", annotations: [] },
-              },
-              {
-                type: "response.output_text.delta",
-                item_id: "item-flag-off",
-                delta: "Flag off",
-                logprobs: null,
-              },
-              {
-                type: "response.completed",
-                response: {
-                  incomplete_details: null,
-                  usage: {
-                    input_tokens: 1,
-                    input_tokens_details: null,
-                    output_tokens: 1,
-                    output_tokens_details: null,
-                  },
-                  service_tier: null,
-                },
-              },
-            ],
-            true,
-          ),
-        )
+        let pluginListCalls = 0
+        const plugin = Plugin.Service.of({
+          init: () => Effect.void,
+          list: () => Effect.sync(() => {
+            pluginListCalls++
+            return []
+          }),
+          trigger: (_name, _input, output) => Effect.succeed(output),
+        } satisfies Plugin.Interface)
         const failingNativeClient = Layer.succeed(
           LLMClient.Service,
           LLMClient.Service.of({
@@ -1457,6 +1588,10 @@ describe("session.llm.stream", () => {
         )
 
         const resolved = yield* Provider.use.getModel(ProviderV2.ID.openai, ModelV2.ID.make(model.id))
+        // Resolve the input model before installing the adversarial provider
+        // hook. The denied LLM request must not resolve providers or enumerate
+        // plugin hooks itself.
+        pluginListCalls = 0
         const sessionID = SessionID.make("session-test-native-flag-off")
         const agent = {
           name: "test",
@@ -1465,10 +1600,16 @@ describe("session.llm.stream", () => {
           permission: [{ permission: "*", pattern: "*", action: "allow" }],
         } satisfies Agent.Info
 
-        yield* drainWith(
+        const result = yield* Effect.exit(drainWith(
           AppNodeBuilder.build(LLM.node, [
             [LayerNodePlatform.llmClient, failingNativeClient],
             [RuntimeFlags.node, RuntimeFlags.layer({ experimentalNativeLlm: false })],
+            [Plugin.node, LayerNode.make({
+              service: Plugin.Service,
+              layer: Layer.succeed(Plugin.Service, plugin),
+              deps: [],
+              tag: Plugin.node.tag,
+            })],
           ]),
           {
             user: {
@@ -1486,42 +1627,20 @@ describe("session.llm.stream", () => {
             messages: [{ role: "user", content: "Hello" }],
             tools: {},
           },
-        )
+        ))
 
-        const capture = yield* Effect.promise(() => request)
-        expect(capture.url.pathname.endsWith("/responses")).toBe(true)
-        expect(capture.body.model).toBe(resolved.api.id)
+        expect(result._tag).toBe("Failure")
+        expect(state.receivedRequests).toBe(0)
+        expect(pluginListCalls).toBe(0)
       }),
-    { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
+    { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`, true) },
   )
 
   it.instance(
-    "streams OpenAI through native runtime when opted in",
+    "keeps credentialed native OpenAI unavailable before provider dispatch without a SecretBroker lease",
     () =>
       Effect.gen(function* () {
         const model = loadFixture("openai", "gpt-5.2").model
-        const chunks = [
-          { type: "response.created", response: { id: "resp-native" } },
-          {
-            type: "response.output_item.added",
-            item: { type: "message", id: "item-native", status: "in_progress" },
-          },
-          { type: "response.output_text.delta", item_id: "item-native", delta: "Hello native" },
-          {
-            type: "response.completed",
-            response: {
-              incomplete_details: null,
-              usage: {
-                input_tokens: 1,
-                input_tokens_details: null,
-                output_tokens: 1,
-                output_tokens_details: null,
-              },
-            },
-          },
-        ]
-        const request = waitRequest("/responses", createEventResponse(chunks, true))
-
         const resolved = yield* Provider.use.getModel(ProviderV2.ID.openai, ModelV2.ID.make(model.id))
         const sessionID = SessionID.make("session-test-native")
         const agent = {
@@ -1532,7 +1651,7 @@ describe("session.llm.stream", () => {
           temperature: 0.2,
         } satisfies Agent.Info
 
-        yield* drainWith(llmLayerWithExecutor({ flags: { experimentalNativeLlm: true } }), {
+        const result = yield* Effect.exit(drainWith(llmLayerWithExecutor({ flags: { experimentalNativeLlm: true } }), {
           user: {
             id: MessageID.make("msg_user-native"),
             sessionID,
@@ -1547,19 +1666,11 @@ describe("session.llm.stream", () => {
           system: ["You are a helpful assistant."],
           messages: [{ role: "user", content: "Hello" }],
           tools: {},
-        })
-
-        const capture = yield* Effect.promise(() => request)
-        expect(capture.url.pathname.endsWith("/responses")).toBe(true)
-        expect(capture.headers.get("Authorization")).toBe("Bearer test-openai-key")
-        expect(capture.body.model).toBe(model.id)
-        expect(capture.body.stream).toBe(true)
-        expect((capture.body.reasoning as { effort?: string } | undefined)?.effort).toBe("high")
-        expect(capture.body.include).toEqual(["reasoning.encrypted_content"])
-        expect(JSON.stringify(capture.body.input)).toContain("You are a helpful assistant.")
-        expect(capture.body.input).toContainEqual({ role: "user", content: [{ type: "input_text", text: "Hello" }] })
+        }))
+        expect(Exit.isFailure(result)).toBe(true)
+        expect(state.receivedRequests).toBe(0)
       }),
-    { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
+    { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`, true) },
   )
 
   it.instance(
@@ -1615,7 +1726,7 @@ describe("session.llm.stream", () => {
           permission: [{ permission: "*", pattern: "*", action: "allow" }],
         } satisfies Agent.Info
 
-        yield* drainWith(llmLayerWithExecutor({ executor, flags: { experimentalNativeLlm: true } }), {
+        const result = yield* Effect.exit(drainWith(llmLayerWithExecutor({ executor, flags: { experimentalNativeLlm: true } }), {
           user: {
             id: MessageID.make("msg_user-native-injected-tool"),
             sessionID,
@@ -1639,46 +1750,21 @@ describe("session.llm.stream", () => {
               },
             }),
           },
-        })
+        }))
 
-        expect(captured?.model).toBe(model.id)
-        expect(captured?.tools).toBeUndefined()
+        expect(Exit.isFailure(result)).toBe(true)
+        expect(captured).toBeUndefined()
         expect(executed).toBeUndefined()
+        expect(state.receivedRequests).toBe(0)
       }),
-    { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, "https://injected-openai.test/v1") },
+    { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`, true) },
   )
 
   it.instance(
-    "does not execute ad hoc OpenAI tool calls through native runtime",
+    "does not dispatch credentialed ad hoc OpenAI tools without a SecretBroker lease",
     () =>
       Effect.gen(function* () {
         const model = loadFixture("openai", "gpt-5.2").model
-        const chunks = [
-          {
-            type: "response.output_item.added",
-            item: { type: "function_call", id: "item-native-tool", call_id: "call-native-tool", name: "lookup" },
-          },
-          {
-            type: "response.function_call_arguments.delta",
-            item_id: "item-native-tool",
-            delta: '{"query":"weather"}',
-          },
-          {
-            type: "response.output_item.done",
-            item: {
-              type: "function_call",
-              id: "item-native-tool",
-              call_id: "call-native-tool",
-              name: "lookup",
-              arguments: '{"query":"weather"}',
-            },
-          },
-          {
-            type: "response.completed",
-            response: { incomplete_details: null, usage: { input_tokens: 1, output_tokens: 1 } },
-          },
-        ]
-        const request = waitRequest("/responses", createEventResponse(chunks, true))
         let executed: unknown
 
         const resolved = yield* Provider.use.getModel(ProviderV2.ID.openai, ModelV2.ID.make(model.id))
@@ -1690,7 +1776,7 @@ describe("session.llm.stream", () => {
           permission: [{ permission: "*", pattern: "*", action: "allow" }],
         } satisfies Agent.Info
 
-        yield* drainWith(llmLayerWithExecutor({ flags: { experimentalNativeLlm: true } }), {
+        const result = yield* Effect.exit(drainWith(llmLayerWithExecutor({ flags: { experimentalNativeLlm: true } }), {
           user: {
             id: MessageID.make("msg_user-native-tool"),
             sessionID,
@@ -1714,30 +1800,129 @@ describe("session.llm.stream", () => {
               },
             }),
           },
-        })
+        }))
 
-        const capture = yield* Effect.promise(() => request)
-        expect(capture.body.tools).toBeUndefined()
+        expect(Exit.isFailure(result)).toBe(true)
         expect(executed).toBeUndefined()
+        expect(state.receivedRequests).toBe(0)
       }),
-    {
-      config: () => {
+    { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`, true) },
+  )
+
+  it.instance(
+    "does not prepare or execute child-session effects without Attempt-bound ToolBatch authority",
+    () =>
+      Effect.gen(function* () {
         const model = loadFixture("openai", "gpt-5.2").model
-        return {
-          enabled_providers: ["openai"],
-          provider: {
-            openai: {
-              name: "OpenAI",
-              env: ["OPENAI_API_KEY"],
-              npm: "@ai-sdk/openai",
-              api: "https://api.openai.com/v1",
-              models: { [model.id]: JSON.parse(JSON.stringify(model)) as ConfigModel },
-              options: { apiKey: "test-openai-key", baseURL: `${state.server!.url.origin}/v1` },
+        const args = { filePath: "/workspace/child.txt", content: "child mutation" }
+        const chunks = [
+          { type: "response.created", response: { id: "resp-child-effect" } },
+          {
+            type: "response.output_item.added",
+            output_index: 0,
+            item: {
+              type: "function_call",
+              id: "item-child-effect",
+              call_id: "call-child-effect",
+              name: "write",
+              arguments: "",
             },
           },
-        }
-      },
-    },
+          {
+            type: "response.function_call_arguments.delta",
+            item_id: "item-child-effect",
+            output_index: 0,
+            delta: JSON.stringify(args),
+          },
+          {
+            type: "response.output_item.done",
+            output_index: 0,
+            item: {
+              type: "function_call",
+              id: "item-child-effect",
+              call_id: "call-child-effect",
+              name: "write",
+              arguments: JSON.stringify(args),
+              status: "completed",
+            },
+          },
+          {
+            type: "response.completed",
+            response: { incomplete_details: null, usage: { input_tokens: 1, output_tokens: 1 } },
+          },
+        ]
+        const request = waitRequest("/responses", createEventResponse(chunks, true))
+        let preparations = 0
+        let executions = 0
+        const supervisor = Layer.mock(SessionSupervisor.Service, {
+          prepareToolBatch: () =>
+            Effect.sync(() => {
+              preparations++
+              return {
+                status: "admitted" as const,
+                challenge: {
+                  challengeID: "ch_child",
+                  effectID: "eff_child",
+                  target: args.filePath,
+                  resource: "child.txt",
+                  existed: false,
+                },
+              }
+            }),
+        })
+        const resolved = yield* Provider.use.getModel(ProviderV2.ID.openai, ModelV2.ID.make(model.id))
+        const sessionID = SessionID.make("session-child-effect")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+
+        yield* drainWith(llmLayerWithSupervisor(supervisor), {
+          user: {
+            id: MessageID.make("msg-child-effect"),
+            sessionID,
+            role: "user",
+            time: { created: Date.now() },
+            agent: agent.name,
+            model: { providerID: ProviderV2.ID.openai, modelID: resolved.id },
+          } satisfies SessionV1.User,
+          sessionID,
+          parentSessionID: SessionID.make("session-parent-effect"),
+          model: resolved,
+          agent,
+          system: [],
+          messages: [{ role: "user", content: "Write the child file" }],
+          tools: {
+            write: tool({
+              description: "Write a file",
+              inputSchema: z.object({ filePath: z.string(), content: z.string() }),
+              execute: async () => {
+                executions++
+                return { output: "written" }
+              },
+            }),
+          },
+          toolDefinitions: {
+            write: {
+              capability: { id: "files.write", effectClass: "effect" },
+              schema: {
+                type: "object",
+                properties: { filePath: { type: "string" }, content: { type: "string" } },
+                required: ["filePath", "content"],
+              },
+              validate: async (value) => value,
+              normalize: (value) => value,
+            },
+          },
+        })
+
+        yield* Effect.promise(() => request)
+        expect(preparations).toBe(0)
+        expect(executions).toBe(0)
+      }),
+    { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
   )
 
   it.instance(
@@ -1864,7 +2049,7 @@ describe("session.llm.stream", () => {
         expect(nativeRequests).toBe(0)
 
         expect(capture.url.pathname.endsWith("/responses")).toBe(true)
-        expect(capture.headers.get("Authorization")).toBe("Bearer test-openai-key")
+        expect(capture.headers.get("Authorization")).toBe("Bearer")
         expect(nativeTools).toBeUndefined()
       }),
     {
@@ -2061,7 +2246,8 @@ describe("session.llm.stream", () => {
         enabled_providers: [minimaxFixture.providerID],
         provider: {
           [minimaxFixture.providerID]: {
-            options: { apiKey: "test-anthropic-key", baseURL: `${state.server!.url.origin}/v1` },
+            env: [],
+            options: { apiKey: "", baseURL: `${state.server!.url.origin}/v1` },
           },
         },
       }),
@@ -2282,11 +2468,11 @@ describe("session.llm.stream", () => {
           provider: {
             anthropic: {
               name: "Anthropic",
-              env: ["ANTHROPIC_API_KEY"],
               npm: "@ai-sdk/anthropic",
               api: "https://api.anthropic.com/v1",
               models: { [model.id]: configModel(model) as ConfigModel },
-              options: { apiKey: "test-anthropic-key", baseURL: `${state.server!.url.origin}/v1` },
+              env: [],
+              options: { apiKey: "", baseURL: `${state.server!.url.origin}/v1` },
             },
           },
         }
@@ -2363,7 +2549,8 @@ describe("session.llm.stream", () => {
         enabled_providers: [geminiFixture.providerID],
         provider: {
           [geminiFixture.providerID]: {
-            options: { apiKey: "test-google-key", baseURL: `${state.server!.url.origin}/v1beta` },
+            env: [],
+            options: { apiKey: "", baseURL: `${state.server!.url.origin}/v1beta` },
           },
         },
       }),

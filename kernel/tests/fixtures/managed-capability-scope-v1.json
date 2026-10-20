@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "capabilityScope": ["files.patch", "files.read"],
+  "requiredCapabilities": ["files.patch"]
+}

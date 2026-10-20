@@ -68,14 +68,16 @@ Exit: common coding change remains fast, guarded and source-grounded.
 - reuse healthy editor LSP where possible; otherwise supervised LanguageServiceBroker;
 - code actions/rename are Guarded effects;
 - DebugAdapterBroker for attach, breakpoint, step, variables and guarded evaluate;
-- bounded persistent Python/JavaScript REPL workers with explicit lifecycle, resource caps and mediated tool callbacks;
+- bounded persistent Python/JavaScript REPL workers with explicit lifecycle, OS-enforced resource limits where required/supported, and mediated tool callbacks; keep execution unavailable when required CPU/memory guarantees are not enforced (`DEC-V1-27`);
 - no arbitrary host Eval escape.
 
 Exit: crash/restart, stale generation, multi-workspace and permission tests pass.
 
-## 10.7 P5 — Browser, desktop and built-in web search (post-V1)
+## 10.7 P5 — Browser/desktop (post-V1) and built-in web search (V1)
 
-Browser automation/attached-browser interaction, desktop/computer control, browser-based visual editing and built-in web search are **deferred post-V1** under A-V2-31. Keep these paths unavailable; a documented service contract or upstream implementation is not a V1 feature. Reopen only through an explicit scope decision and the existing Guard, privacy, auth, cost and platform acceptance gates.
+Browser automation/attached-browser interaction, desktop/computer control and browser-based visual editing are **deferred post-V1** under A-V2-31. Keep these paths unavailable; a documented service contract or upstream implementation is not a V1 feature. Reopen only through an explicit scope decision and the existing Guard, privacy, auth, cost and platform acceptance gates.
+
+Built-in web search is **in V1** per the 2026-10-18 user scope decision (`DEC-V1-26`): §33.9 `web.search.*`, §37.5 `WebSearchBrokerV1`, §16.7/§16.15 provider settings, `DEC-V1-20` cost/auth/reliability matrix, tests in §32. It remains a V1 goal until its Guarded implementation and acceptance tests pass; the built-in default route plus the BYO-key cascade must never silently change cost or auth class.
 
 ## 10.8 P6 — Agents, extensions, providers and settings UX (V1 CLI/TUI)
 
@@ -125,16 +127,16 @@ Exit: user intent is independently verified on final integrated revision.
 
 ## 10.12 Post-V1 / separately gated
 
-Web and desktop applications, browser/desktop interaction, built-in web search, remote/cloud continuation, shared live collaboration, autonomous self-improvement, broad voice/media features, hosted image generation, external ACP/VIS/DEP journeys, and full product identity/build migration remain post-V1 unless a later §17 decision promotes them.
+Web and desktop applications, browser/desktop interaction, remote/cloud continuation, shared live collaboration, autonomous self-improvement, broad voice/media features, hosted image generation, external ACP/VIS/DEP journeys, and full product identity/build migration remain post-V1 unless a later §17 decision promotes them.
 
 **Targeted adapted-code identity during V1:** newly adapted first-party modules, packages, folders and configuration identifiers use HorizonCode naming as they are created. Preserve upstream notices and genuine dependency names. This does not mean a wholesale rename of the pinned OpenCode-derived source or a public package migration during V1.
 
 ### Deferred engineering TODO — after V1 implementation and verification only
 
-Do **not** start this migration during P1–P9 or use it to block core V1 delivery. Once V1 is implemented, its end-to-end acceptance gates pass, and there is a stable release/build baseline:
+Do **not** start the broad migration during P1–P9 or use it to block core V1 delivery. (Amended 2026-10-18: the user directed the narrow CLI naming refactor — launcher, installer, user-visible command names — to begin during V1; both `horizoncode` and `hzcode` start the same CLI.) Once V1 is implemented, its end-to-end acceptance gates pass, and there is a stable release/build baseline:
 
 - [ ] Refactor the TypeScript workspace/build/typecheck/test architecture for HorizonCode ownership: package boundaries, project references, build graph, caching and incremental checks; retain full CI/release verification while making routine development checks faster.
-- [ ] Migrate public npm/package, executable, product, generated-client, artifact, script, environment/config, CI/workflow, release and displayed identifiers consistently to **HorizonCode** (public npm/CLI name: `horizoncode`; `hzcode` may be an alias). Remove obsolete OpenCode *product branding* where owned by HorizonCode.
+- [ ] Migrate public npm/package, executable, product, generated-client, artifact, script, environment/config, CI/workflow, release and displayed identifiers consistently to **HorizonCode** (public npm and canonical user-facing CLI name: `horizoncode`; `hzcode` is the shipped short command for the same entrypoint). Preserve private upstream workspace package IDs and genuine OpenCode dependency names until a separately tested migration. Remove obsolete OpenCode *product branding* where owned by HorizonCode.
 - [ ] Where feasible, migrate first-party TypeScript package scopes, internal import aliases and generated declarations away from `@opencode-ai/*` behind compatibility shims, in a versioned, staged manner; never blindly rename genuine upstream dependencies or break the pinned-source hydration model.
 - [ ] Preserve upstream OpenCode copyright/license/notices and source attribution even if HorizonCode's product-facing identity is unified. Never falsify authorship or strip legally required metadata.
 - [ ] Test Linux/Windows clean install, executable launch, full builds, monorepo and affected-package typechecks, tests/Guard flows, update/migration, npm publish dry-run/tarball contents, backward compatibility and rollback at the final integrated revision.
@@ -193,3 +195,18 @@ These previously had normative user journeys (§§3.16–3.18), but not the same
 - **Release evidence:** test an actual user-selected available backend against a disposable example application, with mutation isolation and outcome proof, before describing these as working. Running a generic shell command does not fulfill the deployment API, and the existence of OpenCode's ACP server does not fulfill Horizon's outbound adapter.
 
 The single operative dependency order is P0–P9 plus RC0–RC5 in the current plan; `implementationtov1release.md` owns the user-requested V1 scope/status crosswalk. Work can proceed on source-verified read-only adapter discovery in parallel with P1, but **no effectful rollout before universal Guard**.
+
+## 10.17 VEO note review: required phase refinements (A-V2-33)
+
+The complete supplied note review refines existing V1 delivery owners; it adds no phase after P9. Implement the selected requirements within the owning phases:
+
+| Phase | Required refinement | Dependency edge |
+|---|---|---|
+| P1 | Authenticated child/effect scope, one Guard/ExecutionHost, product confinement, denial before dispatch, cancellation and UNKNOWN reconciliation | Gate before P2 effects and all dependent P4/P5/P7/P8 effects |
+| P2 | One bounded managed Attempt, typed lineage-bearing result, distinct authenticated reviewer and independent verifier against live final workspace revision. Accepted deterministic checks may block settlement but cannot grant authority or alter criteria. | P1 dispatch proof; P7 ArtifactStore evidence API |
+| P3 | Bounded generation-bound structural navigation with parser/coverage provenance and stale-write refusal | P1 read-scope/source freshness contracts; existing embedded RepoIntel owner |
+| P6 | Provider/model-pinned cache/cost provenance; reviewed skill/profile proposals with no automatic activation | P1 for network/effectful probes; existing config and extension registry |
+| P7 | Full artifact/evidence refs behind compact redacted UI projection; durable replay separated from ephemeral progress; truthful artifact fidelity | P1/P2 for effectful automation and verifier consumption |
+| P8 | Attribute and reserve child/index/test/verifier resources; recover without releasing unsettled authority | P2 verified single Attempt before fan-out |
+
+P3, P6 and non-effectful P7 preparation proceed while P1/P2 dependencies are open. Effectful dependent paths remain unavailable until upstream contract and adversarial/recovery evidence pass. P4, P5 and P9 retain their current V1 scope. VEO-F1..F8 remain optional post-V1 proposals and do not block release. Contract, flow, event and test detail is owned by §§3.21, 4.13, 12.18, 29.20, 30.23, 31.19, 32.38 and 37.22.

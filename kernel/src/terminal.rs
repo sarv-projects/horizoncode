@@ -544,6 +544,355 @@ impl TerminalState {
     }
 }
 
+/// TM-001: a compiler log up to 100 MB must stay line-searchable while search answers
+/// remain bounded (results, excerpt bytes). Retention is a hard byte bound, not a hint.
+pub const RETAINED_LOG_CAPACITY: usize = 100 * 1024 * 1024;
+pub const MAX_SEARCH_RESULTS: usize = 100;
+pub const MAX_SEARCH_EXCERPT_BYTES: usize = 4 * 1024;
+pub const MAX_OUTPUT_RANGE_BYTES: usize = 64 * 1024;
+pub const MAX_RETAINED_LOGS: usize = 64;
+
+/// One bounded, line-addressed search hit. `generation` is the retained-log view the
+/// offset belongs to; a later truncation/rotation makes the ref stale instead of
+/// silently re-pointing at different content (TM-002).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LogLineRef {
+    pub generation: u64,
+    /// 1-based line number inside the retained view.
+    pub line_number: u64,
+    pub line_start_byte: u64,
+    pub excerpt: Vec<u8>,
+    pub excerpt_truncated: bool,
+}
+
+/// One bounded range read of retained lines. Ranges are clamped to the retained view
+/// and byte-truncated to the request cap, never flooded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LogRangePage {
+    pub generation: u64,
+    /// 1-based inclusive first line returned.
+    pub line_start: u64,
+    /// 1-based exclusive end actually returned (clamped to the retained view).
+    pub line_end_exclusive: u64,
+    pub bytes: Vec<u8>,
+    /// `true` when the requested range or the byte cap cut the answer short.
+    pub truncated: bool,
+}
+
+/// Bounded (100 MB), line-indexed, generation-scoped retained log used by
+/// `terminal.search` / `terminal.output_range`.
+///
+/// Line numbers are stable only inside one generation. Evicting whole lines to stay
+/// inside the byte bound, or an explicit rotation/truncation, advances the generation
+/// so a held range ref is reported stale instead of being reused for different lines.
+#[derive(Debug)]
+pub struct RetainedLog {
+    generation: u64,
+    bytes: Vec<u8>,
+    /// Byte offset of every line start; always begins with 0 while any bytes are kept.
+    line_starts: Vec<u64>,
+    invalidations: u64,
+}
+
+impl RetainedLog {
+    pub fn new(generation: u64) -> Self {
+        Self {
+            generation,
+            bytes: Vec::new(),
+            line_starts: vec![0],
+            invalidations: 0,
+        }
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn retained_bytes(&self) -> usize {
+        self.bytes.len()
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.line_starts.len()
+    }
+
+    /// Number of generation advances caused by eviction or rotation; observability for
+    /// tests and status, not an identity.
+    pub fn invalidations(&self) -> u64 {
+        self.invalidations
+    }
+
+    pub fn append(&mut self, chunk: &[u8]) {
+        let base = self.bytes.len();
+        self.bytes.extend_from_slice(chunk);
+        for (offset, byte) in chunk.iter().enumerate() {
+            if *byte == b'\n' {
+                self.line_starts.push((base + offset + 1) as u64);
+            }
+        }
+        self.evict();
+    }
+
+    /// External truncation/rotation: the log restarts empty under a newer generation so
+    /// every held ref is stale. A non-advancing request generation is advanced locally.
+    pub fn rotate(&mut self, generation: u64) {
+        self.generation = if generation > self.generation {
+            generation
+        } else {
+            self.generation.saturating_add(1)
+        };
+        self.bytes.clear();
+        self.line_starts.clear();
+        self.line_starts.push(0);
+        self.invalidations = self.invalidations.saturating_add(1);
+    }
+
+    fn evict(&mut self) {
+        if self.bytes.len() <= RETAINED_LOG_CAPACITY {
+            return;
+        }
+        let overflow = self.bytes.len() - RETAINED_LOG_CAPACITY;
+        let cut_index = self.line_starts.partition_point(|start| *start < overflow as u64);
+        if cut_index < self.line_starts.len() {
+            let cut = self.line_starts[cut_index] as usize;
+            self.bytes.drain(..cut);
+            self.line_starts.drain(..cut_index);
+            for start in &mut self.line_starts {
+                *start -= cut as u64;
+            }
+        } else {
+            // A single line exceeds the whole bound; keep its tail so retention stays bounded.
+            let cut = self.bytes.len() - RETAINED_LOG_CAPACITY;
+            self.bytes.drain(..cut);
+            self.line_starts.clear();
+            self.line_starts.push(0);
+        }
+        self.generation = self.generation.saturating_add(1);
+        self.invalidations = self.invalidations.saturating_add(1);
+    }
+
+    /// Literal, bounded search. Answers are distinct lines in order, each excerpt being
+    /// the matching line capped at `max_bytes_per_excerpt`; scanning stops at
+    /// `max_results` hits so a 100 MB log can never flood the caller.
+    pub fn search(
+        &self,
+        generation: u64,
+        query: &str,
+        max_results: usize,
+        max_bytes_per_excerpt: usize,
+    ) -> Result<Vec<LogLineRef>, TerminalError> {
+        if generation != self.generation {
+            return Err(TerminalError::StaleGeneration);
+        }
+        if query.is_empty() || query.len() > 4 * 1024 {
+            return Err(TerminalError::BadFrame);
+        }
+        if max_results == 0 || max_results > MAX_SEARCH_RESULTS {
+            return Err(TerminalError::TooLarge);
+        }
+        if max_bytes_per_excerpt == 0 || max_bytes_per_excerpt > MAX_SEARCH_EXCERPT_BYTES {
+            return Err(TerminalError::TooLarge);
+        }
+        let needle = query.as_bytes();
+        let mut results = Vec::new();
+        let mut from = 0usize;
+        let mut last_line: Option<usize> = None;
+        while results.len() < max_results {
+            let Some(offset) = find_bytes(&self.bytes[from..], needle) else {
+                break;
+            };
+            let absolute = from + offset;
+            let line_index = self.line_starts.partition_point(|start| *start <= absolute as u64) - 1;
+            if last_line != Some(line_index) {
+                last_line = Some(line_index);
+                let line_start = self.line_starts[line_index];
+                let line_end = self
+                    .line_starts
+                    .get(line_index + 1)
+                    .copied()
+                    .unwrap_or(self.bytes.len() as u64);
+                let excerpt_len = (line_end - line_start).min(max_bytes_per_excerpt as u64) as usize;
+                results.push(LogLineRef {
+                    generation: self.generation,
+                    line_number: line_index as u64 + 1,
+                    line_start_byte: line_start,
+                    excerpt: self.bytes[line_start as usize..line_start as usize + excerpt_len]
+                        .to_vec(),
+                    excerpt_truncated: (line_end - line_start) > excerpt_len as u64,
+                });
+            }
+            from = absolute + needle.len();
+            if from >= self.bytes.len() {
+                break;
+            }
+        }
+        Ok(results)
+    }
+
+    /// Bounded range read. Stale generations are refused outright; in-generation ranges
+    /// are clamped to the retained view and byte-capped.
+    pub fn output_range(
+        &self,
+        generation: u64,
+        line_start: u64,
+        line_end_exclusive: u64,
+        max_bytes: usize,
+    ) -> Result<LogRangePage, TerminalError> {
+        if generation != self.generation {
+            return Err(TerminalError::StaleGeneration);
+        }
+        if line_start == 0 || line_end_exclusive <= line_start {
+            return Err(TerminalError::BadFrame);
+        }
+        if max_bytes == 0 || max_bytes > MAX_OUTPUT_RANGE_BYTES {
+            return Err(TerminalError::TooLarge);
+        }
+        let line_count = self.line_count() as u64;
+        let end = line_end_exclusive.min(line_count + 1);
+        let mut bytes = Vec::new();
+        let mut truncated = end < line_end_exclusive;
+        for line in line_start..end {
+            let start = self.line_starts[(line - 1) as usize];
+            let segment_end = self
+                .line_starts
+                .get(line as usize)
+                .copied()
+                .unwrap_or(self.bytes.len() as u64);
+            let segment = &self.bytes[start as usize..segment_end as usize];
+            if bytes.len() + segment.len() > max_bytes {
+                let remaining = max_bytes.saturating_sub(bytes.len());
+                bytes.extend_from_slice(&segment[..remaining]);
+                truncated = true;
+                break;
+            }
+            bytes.extend_from_slice(segment);
+        }
+        Ok(LogRangePage {
+            generation: self.generation,
+            line_start,
+            line_end_exclusive: end,
+            bytes,
+            truncated,
+        })
+    }
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    let first = needle[0];
+    let last_index = haystack.len() - needle.len();
+    let mut index = 0usize;
+    while index <= last_index {
+        if haystack[index] == first && &haystack[index..index + needle.len()] == needle {
+            return Some(index);
+        }
+        index += 1;
+    }
+    None
+}
+
+/// Bounded registry of retained logs keyed by artifact ID. Lookups on an unknown or
+/// evicted artifact fail closed with `Unavailable`; the count is capped so a long
+/// session cannot retain unbounded log views.
+#[derive(Debug, Default)]
+pub struct RetainedLogRegistry {
+    logs: BTreeMap<String, RetainedLog>,
+    recency: VecDeque<String>,
+}
+
+impl RetainedLogRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.logs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.logs.is_empty()
+    }
+
+    fn touch(&mut self, artifact_id: &str) {
+        if let Some(position) = self.recency.iter().position(|id| id == artifact_id) {
+            self.recency.remove(position);
+        }
+        self.recency.push_back(artifact_id.to_owned());
+    }
+
+    pub fn append(&mut self, artifact_id: &str, generation: u64, chunk: &[u8]) {
+        if !self.logs.contains_key(artifact_id) {
+            while self.logs.len() >= MAX_RETAINED_LOGS {
+                let Some(evicted) = self.recency.pop_front() else {
+                    break;
+                };
+                self.logs.remove(&evicted);
+            }
+            self.logs
+                .insert(artifact_id.to_owned(), RetainedLog::new(generation));
+        }
+        if let Some(log) = self.logs.get_mut(artifact_id) {
+            log.append(chunk);
+        }
+        self.touch(artifact_id);
+    }
+
+    pub fn rotate(&mut self, artifact_id: &str, generation: u64) {
+        if let Some(log) = self.logs.get_mut(artifact_id) {
+            log.rotate(generation);
+        }
+        self.touch(artifact_id);
+    }
+
+    pub fn remove(&mut self, artifact_id: &str) -> bool {
+        let removed = self.logs.remove(artifact_id).is_some();
+        if let Some(position) = self.recency.iter().position(|id| id == artifact_id) {
+            self.recency.remove(position);
+        }
+        removed
+    }
+
+    pub fn generation(&self, artifact_id: &str) -> Option<u64> {
+        self.logs.get(artifact_id).map(RetainedLog::generation)
+    }
+
+    pub fn search(
+        &mut self,
+        artifact_id: &str,
+        generation: u64,
+        query: &str,
+        max_results: usize,
+        max_bytes_per_excerpt: usize,
+    ) -> Result<Vec<LogLineRef>, TerminalError> {
+        let log = self
+            .logs
+            .get(artifact_id)
+            .ok_or(TerminalError::Unavailable)?;
+        let result = log.search(generation, query, max_results, max_bytes_per_excerpt);
+        self.touch(artifact_id);
+        result
+    }
+
+    pub fn output_range(
+        &mut self,
+        artifact_id: &str,
+        generation: u64,
+        line_start: u64,
+        line_end_exclusive: u64,
+        max_bytes: usize,
+    ) -> Result<LogRangePage, TerminalError> {
+        let log = self
+            .logs
+            .get(artifact_id)
+            .ok_or(TerminalError::Unavailable)?;
+        let result = log.output_range(generation, line_start, line_end_exclusive, max_bytes);
+        self.touch(artifact_id);
+        result
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TerminalOperation {
     Run,
@@ -940,6 +1289,274 @@ mod tests {
         assert_eq!(
             state.accept_input("missing", 1, "grant", 0, b"x", 11, 4, 9),
             Err(TerminalError::OwnerLost)
+        );
+    }
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::*;
+
+    const ERROR_LINE: &[u8] = b"[error] src/main.rs(42,7): unresolved import `missing_crate`\n";
+
+    /// Fill a bounded chunk with fixed 200-byte lines so the 100 MB case builds fast and
+    /// every line boundary is deterministic.
+    fn filler_chunk() -> Vec<u8> {
+        let line: Vec<u8> = {
+            let mut line = b"[build] unit ".to_vec();
+            line.resize(199, b'.');
+            line.push(b'\n');
+            line
+        };
+        let mut chunk = Vec::with_capacity(65_400);
+        for _ in 0..327 {
+            chunk.extend_from_slice(&line);
+        }
+        chunk
+    }
+
+    #[test]
+    fn hundred_megabyte_compiler_log_search_is_bounded_and_stales_on_truncation() {
+        let mut log = RetainedLog::new(1);
+        let chunk = filler_chunk();
+        let mut appended = 0usize;
+        while appended < RETAINED_LOG_CAPACITY + 2 * 1024 * 1024 {
+            log.append(&chunk);
+            appended += chunk.len();
+        }
+        assert!(log.retained_bytes() <= RETAINED_LOG_CAPACITY);
+        assert!(log.invalidations() > 0, "retention must have evicted lines");
+
+        log.append(ERROR_LINE);
+        let generation = log.generation();
+        let hits = log
+            .search(generation, "unresolved import `missing_crate`", 100, 4096)
+            .expect("search must find the single target error");
+        assert_eq!(hits.len(), 1, "bounded search must return one line ref");
+        // The error is the last complete line; the trailing newline starts an empty view line.
+        assert_eq!(hits[0].line_number, log.line_count() as u64 - 1);
+        assert_eq!(hits[0].generation, generation);
+        assert_eq!(hits[0].excerpt, ERROR_LINE);
+        assert!(!hits[0].excerpt_truncated);
+
+        // TM-002: truncation after the caller holds the line ref must report staleness
+        // instead of re-pointing the same line number at different content.
+        for _ in 0..40 {
+            log.append(&chunk);
+        }
+        assert!(log.generation() > generation);
+        assert_eq!(
+            log.search(generation, "missing_crate", 100, 4096),
+            Err(TerminalError::StaleGeneration)
+        );
+        assert_eq!(
+            log.output_range(generation, hits[0].line_number, hits[0].line_number + 1, 4096),
+            Err(TerminalError::StaleGeneration)
+        );
+        // The old line number does address different bytes in the newer generation,
+        // which is exactly why stale refs are refused rather than reused.
+        let reused = log
+            .output_range(log.generation(), hits[0].line_number, hits[0].line_number + 1, 4096)
+            .expect("current generation range stays readable");
+        assert_ne!(reused.bytes, ERROR_LINE);
+    }
+
+    #[test]
+    fn rotation_reports_stale_generation_for_held_line_refs() {
+        let mut log = RetainedLog::new(3);
+        log.append(b"first target here\nsecond line\n");
+        let hits = log.search(3, "target", 10, 4096).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].line_number, 1);
+
+        log.rotate(9);
+        assert_eq!(log.generation(), 9);
+        assert_eq!(log.line_count(), 1);
+        assert_eq!(log.retained_bytes(), 0);
+        assert_eq!(
+            log.search(3, "target", 10, 4096),
+            Err(TerminalError::StaleGeneration)
+        );
+        assert_eq!(
+            log.output_range(3, 1, 2, 4096),
+            Err(TerminalError::StaleGeneration)
+        );
+
+        log.append(b"rotated log\n");
+        assert_eq!(log.search(9, "rotated", 10, 4096).unwrap()[0].line_number, 1);
+        // A rotation request that does not advance the generation still must not leave
+        // old refs valid.
+        let before = log.generation();
+        log.rotate(before);
+        assert!(log.generation() > before);
+        assert_eq!(
+            log.search(before, "rotated", 10, 4096),
+            Err(TerminalError::StaleGeneration)
+        );
+    }
+
+    #[test]
+    fn output_range_is_clamped_and_byte_bounded() {
+        let mut log = RetainedLog::new(1);
+        log.append(b"one\ntwo\nthree\n");
+        let generation = log.generation();
+
+        let all = log.output_range(generation, 1, 10, MAX_OUTPUT_RANGE_BYTES).unwrap();
+        assert_eq!(all.line_start, 1);
+        // The view is `one\ntwo\nthree\n`; line 4 is the empty view line the trailing
+        // newline starts, so the clamped exclusive end is one past it.
+        assert_eq!(all.line_end_exclusive, 5);
+        assert_eq!(all.bytes, b"one\ntwo\nthree\n");
+        assert!(all.truncated, "a clamped range is reported as truncated");
+
+        let capped = log.output_range(generation, 1, 3, 5).unwrap();
+        assert_eq!(capped.bytes, b"one\nt");
+        assert!(capped.truncated);
+
+        let exact = log.output_range(generation, 1, 2, 4).unwrap();
+        assert_eq!(exact.bytes, b"one\n");
+        assert!(!exact.truncated);
+
+        assert_eq!(
+            log.output_range(generation, 0, 2, 64),
+            Err(TerminalError::BadFrame)
+        );
+        assert_eq!(
+            log.output_range(generation, 2, 2, 64),
+            Err(TerminalError::BadFrame)
+        );
+        assert_eq!(
+            log.output_range(generation, 1, 2, 0),
+            Err(TerminalError::TooLarge)
+        );
+        assert_eq!(
+            log.output_range(generation, 1, 2, MAX_OUTPUT_RANGE_BYTES + 1),
+            Err(TerminalError::TooLarge)
+        );
+    }
+
+    #[test]
+    fn search_is_line_deduplicated_and_respects_result_and_excerpt_bounds() {
+        let mut log = RetainedLog::new(1);
+        log.append(b"alpha hit one\nhit hit hit\nbeta hit two\ngamma\n");
+        let generation = log.generation();
+
+        let hits = log.search(generation, "hit", 100, 4).unwrap();
+        assert_eq!(hits.len(), 2, "one ref per matching line, no context flooding");
+        assert_eq!(hits[0].line_number, 1);
+        assert_eq!(hits[1].line_number, 2);
+        assert_eq!(hits[0].excerpt, b"alph");
+        assert!(hits[0].excerpt_truncated);
+        assert_eq!(hits[1].excerpt, b"hit ");
+        assert!(hits[1].excerpt_truncated);
+
+        assert_eq!(log.search(generation, "hit", 1, 4096).unwrap().len(), 1);
+        assert_eq!(
+            log.search(generation, "hit", 0, 4096),
+            Err(TerminalError::TooLarge)
+        );
+        assert_eq!(
+            log.search(generation, "hit", MAX_SEARCH_RESULTS + 1, 4096),
+            Err(TerminalError::TooLarge)
+        );
+        assert_eq!(
+            log.search(generation, "hit", 1, MAX_SEARCH_EXCERPT_BYTES + 1),
+            Err(TerminalError::TooLarge)
+        );
+        assert_eq!(
+            log.search(generation, "", 1, 4096),
+            Err(TerminalError::BadFrame)
+        );
+        assert_eq!(
+            log.search(generation + 1, "hit", 1, 4096),
+            Err(TerminalError::StaleGeneration)
+        );
+    }
+
+    #[test]
+    fn registry_bounds_retained_logs_and_fails_closed_on_eviction() {
+        let mut registry = RetainedLogRegistry::new();
+        for index in 0..=MAX_RETAINED_LOGS {
+            registry.append(&format!("artifact-{index}"), 1, b"line\n");
+        }
+        assert_eq!(registry.len(), MAX_RETAINED_LOGS);
+        assert_eq!(registry.generation("artifact-0"), None);
+        assert_eq!(
+            registry.search("artifact-0", 1, "line", 1, 64),
+            Err(TerminalError::Unavailable)
+        );
+        assert_eq!(registry.generation("artifact-1"), Some(1));
+        assert_eq!(
+            registry.search(&format!("artifact-{MAX_RETAINED_LOGS}"), 1, "line", 1, 64)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(registry.remove(&format!("artifact-{MAX_RETAINED_LOGS}")));
+        assert!(!registry.remove(&format!("artifact-{MAX_RETAINED_LOGS}")));
+        registry.append("fresh", 5, b"fresh line\n");
+        assert_eq!(registry.generation("fresh"), Some(5));
+        assert_eq!(
+            registry
+                .output_range("fresh", 5, 1, 2, 64)
+                .unwrap()
+                .bytes,
+            b"fresh line\n"
+        );
+        assert_eq!(
+            registry.output_range("fresh", 4, 1, 2, 64),
+            Err(TerminalError::StaleGeneration)
+        );
+    }
+
+    #[test]
+    fn search_and_output_range_operation_parsing_enforces_bounds() {
+        let search = |max_results: u64, max_excerpt: u64| {
+            Value::Map(BTreeMap::from([
+                ("artifactID".into(), Value::String("artifact".into())),
+                ("generation".into(), Value::Unsigned(2)),
+                ("queryOrRegex".into(), Value::String("error".into())),
+                ("maxResults".into(), Value::Unsigned(max_results)),
+                ("maxBytesPerExcerpt".into(), Value::Unsigned(max_excerpt)),
+            ]))
+        };
+        assert_eq!(
+            TerminalOperation::parse("search", &search(100, 4096)),
+            Ok(TerminalOperation::Search)
+        );
+        assert_eq!(
+            TerminalOperation::parse("search", &search(0, 4096)),
+            Err(TerminalError::TooLarge)
+        );
+        assert_eq!(
+            TerminalOperation::parse("search", &search(101, 4096)),
+            Err(TerminalError::TooLarge)
+        );
+        assert_eq!(
+            TerminalOperation::parse("search", &search(10, 4097)),
+            Err(TerminalError::TooLarge)
+        );
+
+        let range = |start: u64, end: u64, max_bytes: u64| {
+            Value::Map(BTreeMap::from([
+                ("artifactID".into(), Value::String("artifact".into())),
+                ("generation".into(), Value::Unsigned(2)),
+                ("lineStart".into(), Value::Unsigned(start)),
+                ("lineEndExclusive".into(), Value::Unsigned(end)),
+                ("maxBytes".into(), Value::Unsigned(max_bytes)),
+            ]))
+        };
+        assert_eq!(
+            TerminalOperation::parse("output_range", &range(10, 20, 64 * 1024)),
+            Ok(TerminalOperation::OutputRange)
+        );
+        assert_eq!(
+            TerminalOperation::parse("output_range", &range(10, 10, 64)),
+            Err(TerminalError::TooLarge)
+        );
+        assert_eq!(
+            TerminalOperation::parse("output_range", &range(10, 20, 64 * 1024 + 1)),
+            Err(TerminalError::TooLarge)
         );
     }
 }
