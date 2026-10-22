@@ -66,7 +66,7 @@ if old.is_file():
     text=old.read_text()
     check('SUPERSEDED' in text[:1600] and plan.name in text[:1600],'historical P2 plan lacks successor banner')
 
-for rel in ['AGENTS.md','HANDOFF.md','IMPLEMENTER_PROMPT.md']:
+for rel in ['AGENTS.md','HANDOFF.md']:
     text=(R/rel).read_text()
     check('17-GOVERNANCE-DECISIONS.md' in text,rel+' missing governance pointer')
     check(plan.name in text,rel+' missing current plan pointer')

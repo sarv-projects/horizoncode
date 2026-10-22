@@ -44,6 +44,22 @@ bun run horizon:full-gate
 
 Official installers and signed releases are not shipped yet.
 
+## Project status
+
+HorizonCode is being implemented in public. **Interactive coding and the application foundation are present; the full managed-coding product is not yet released.**
+
+| In the repository now | Still being completed for V1 |
+| --- | --- |
+| Direct interactive sessions and provider/model selection | Complete branded installation and release packaging |
+| Rust Guard for supported approved file writes; bounded ToolBatch validation | Universal mediation of shell, process, plugin, MCP, subagent and other mutations |
+| Durable internal Goal / SpecVersion / Run / Task / Attempt event state | Authenticated managed UI, production scheduler/workers, leases and effect reconciliation |
+
+**Security note:** this is not a fully sandboxed, cross-platform production release. Specific execution paths and supported operating systems must pass their own tests before those protections can be claimed.
+
+Implementation record: [HANDOFF.md](HANDOFF.md). Operative plan and gates: [docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md](docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md).
+
+The private root workspace currently declares `UNLICENSED`, pending an explicit HorizonCode distribution license decision. Root-level license/third-party notices and final distribution packaging are being completed before release.
+
 ## Documentation
 
 | Topic | Where |
@@ -63,4 +79,4 @@ Official installers and signed releases are not shipped yet.
 
 ## Credits
 
-HorizonCode is developed by [sarv-projects](https://github.com/sarv-projects). License and distribution packaging for release are in progress.
+HorizonCode is developed by [sarv-projects](https://github.com/sarv-projects).
