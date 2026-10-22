@@ -20,14 +20,11 @@
 !/.github/workflows/release-github-action.yml
 !/.github/workflows/containers.yml
 !/.github/workflows/nix-hashes.yml
-!/IMPLEMENTER_PROMPT.md
 !/HANDOFF.md
 !/implementationtov1release.md
 !/README.md
 !/SECURITY.md
 !/CONTRIBUTING.md
-!/CONTEXT.md
-!/STATS.md
 !/bun.lock
 !/.opencode/
 !/.opencode/skills/
@@ -690,7 +687,6 @@ tsconfig.tsbuildinfo
 !/packages/opencode/src/session/managed-control.ts
 !/packages/opencode/src/session/managed-run-coordinator.ts
 !/packages/opencode/test/session/managed-control.test.ts
-!/packages/opencode/test/session/managed-run-coordinator.test.ts
 !/packages/opencode/src/format/index.ts
 !/packages/opencode/test/format/format.test.ts
 !/packages/core/test/session-supervisor-batch.test.ts
@@ -751,7 +747,6 @@ tsconfig.tsbuildinfo
 # 2026-10-18 A4 (2): new agent-created first-party test found by the overlay audit during handover.
 !/packages/opencode/test/session/tool-filter.test.ts
 # 2026-10-18 A4 (3): paste-ready next-agent handoff prompt.
-!/HANDOFF_PROMPT.md
 # 2026-10-18 A4 (4): first-party skill-origin zero-spawn regression.
 !/packages/opencode/test/tool/skill.test.ts
 # P2: preserve the SDK generator source for the managed Goal review API.
@@ -767,9 +762,6 @@ tsconfig.tsbuildinfo
 !/packages/opencode/src/tool/websearch-adapters.ts
 !/packages/opencode/src/tool/code-mode.ts
 !/packages/opencode/src/tool/code-mode-helper.ts
-!/packages/opencode/test/tool/websearch-inspect.test.ts
-!/packages/opencode/test/tool/websearch-runtime.test.ts
-!/packages/opencode/test/tool/websearch-adapters.test.ts
 !/packages/opencode/test/tool/websearch-cascade.fixture.ts
 !/packages/opencode/test/tool/code-mode.test.ts
 !/packages/opencode/src/dap/supervised.ts
@@ -930,7 +922,6 @@ tsconfig.tsbuildinfo
 !/packages/schema/src/agent-message-v1.ts
 !/packages/schema/src/subagent-status-v1.ts
 !/packages/schema/contracts-v2/
-!/packages/schema/contracts-v2/subagent-delivery-v1.schema.json
 !/kernel/src/context_selection.rs
 !/kernel/tests/fixtures/authenticated-request-context-v1.json
 !/kernel/tests/fixtures/context-selection-v1.json
